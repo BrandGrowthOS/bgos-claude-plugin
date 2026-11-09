@@ -12,6 +12,7 @@ import { test } from 'node:test'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 
 import {
+  THREAD_LANE_IDLE_MS,
   THREAD_ORPHAN_POLL_MS,
   THREAD_POST_RETRY_MS,
   THREAD_TURN_TIMEOUT_MS,
@@ -1852,6 +1853,93 @@ test('THREADCRASH: a main transcript too large to hold in memory still opens its
   assert.deepEqual(replyTexts(r), [], 'no failure')
 })
 
+test('THREADCRASH: a later start on the saved fork clears its goal on disk, never reading the fork whole', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const first = r.spawned[0]!.child
+  first.init(FORK_A)
+  first.result('First answer.')
+  await r.manager.idle()
+  r.fire(r.live(THREAD_LANE_IDLE_MS)[0]!)
+  first.exit()
+  await r.manager.idle()
+  assert.equal(saved(r).forkSessionId, FORK_A, 'the later start uses the saved fork')
+  const fork = sessionTranscriptPath(HOME, wt('101'), FORK_A, '')
+  r.files.set(fork, 'the thread history stays on disk\n')
+  const wholeReads: string[] = []
+  const read = r.deps.fs.readFile
+  r.deps.fs.readFile = (path) => {
+    if (path === fork) {
+      wholeReads.push(path)
+      throw new RangeError('Out of memory')
+    }
+    return read(path)
+  }
+  const cleared: string[] = []
+  r.deps.transcripts = {
+    copyClearingGoal: async () => assert.fail('a later start must not copy the main transcript again'),
+    clearGoal: async (path) => { cleared.push(path) },
+  }
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011' }))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 2, 'the fork starts again')
+  assert.deepEqual(cleared, [fork], 'the asynchronous goal clear gets the fork, not the main transcript')
+  assert.deepEqual(wholeReads, [], 'even a failed whole read must never be attempted')
+  assert.deepEqual(r.spawned[1]!.args, workArgs('101', FORK_A))
+  r.spawned[1]!.child.result('Second answer.')
+  await r.manager.idle()
+  assert.deepEqual(replyTexts(r), ['First answer.', 'Second answer.'])
+  assert.equal(r.files.get(fork), 'the thread history stays on disk\n')
+})
+
+test('THREADCRASH: closing while the main copy is in flight removes it when the copy finishes and never spawns', async () => {
+  const r = rig()
+  let release!: () => void
+  const copying = new Promise<void>((done) => { release = done })
+  const copied = sessionTranscriptPath(HOME, wt('101'), MAIN, '')
+  r.deps.transcripts = {
+    copyClearingGoal: async (from, to) => {
+      r.deps.fs.copyFile(from, to)
+      await copying
+    },
+    clearGoal: async () => false,
+  }
+  try {
+    r.manager.turn(turn('101'))
+    await flush()
+    assert.ok(r.files.has(copied), 'the copy is in flight')
+    await r.manager.close({ rootId: '101', removeWorktree: false })
+  } finally {
+    release()
+    await r.manager.idle()
+  }
+  assert.equal(r.spawned.length, 0, 'a closed lane never starts')
+  assert.equal(r.files.has(copied), false, 'a completed copy cannot leak after a close')
+  assert.equal(r.files.has(r.mainSrc), true, 'the parent stays')
+})
+
+test('THREADCRASH: a failed main copy removes its partial file and answers copy_failed, never no_session', async () => {
+  const r = rig()
+  const logs: string[] = []
+  r.deps.log = (line) => { logs.push(line) }
+  r.deps.transcripts = {
+    copyClearingGoal: async (_from, to) => {
+      r.files.set(to, 'partial transcript\n')
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' })
+    },
+    clearGoal: async () => false,
+  }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.equal(r.files.has(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), false, 'even a partial copy goes')
+  assert.equal(r.files.get(r.mainSrc), '{"main":true}\n', 'the parent stays intact')
+  assert.deepEqual(replyTexts(r), ['I could not open this thread: the main conversation could not be copied for it. Send your reply again to retry.'])
+  assert.ok(logs.includes('threads: turn 101 could not start (copy_failed)'))
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+})
+
 test('THREADCRASH: a lane that cannot be spawned answers in its own thread, removes its copy, and the next thread still opens', async () => {
   const r = rig()
   const spawn = r.deps.spawn
@@ -1874,26 +1962,30 @@ test('THREADCRASH: a lane that cannot be spawned answers in its own thread, remo
   assert.equal(r.spawned.length, 1, 'another thread opens')
 })
 
-test('THREADCRASH: a worktree git could not make (a checkout cut off by its timeout) answers in its thread and leaves no half folder', async () => {
-  const holder: { dirs: Set<string> | null } = { dirs: null }
-  const r = rig({
-    git: (sub) => {
-      if (sub[0] === 'worktree' && sub[1] === 'add') {
-        holder.dirs?.add(join(AGENT, sub[2]!))
-        return { ok: false, stdout: '' }
-      }
-      return undefined
-    },
+for (const removeOk of [true, false]) {
+  test(`THREADCRASH: a failed checkout leaves no half folder when worktree remove ${removeOk ? 'succeeds' : 'fails'}`, async () => {
+    const holder: { dirs: Set<string> | null } = { dirs: null }
+    const r = rig({
+      git: (sub) => {
+        if (sub[0] === 'worktree' && sub[1] === 'add') {
+          holder.dirs?.add(join(AGENT, sub[2]!))
+          return { ok: false, stdout: '' }
+        }
+        if (!removeOk && sub[0] === 'worktree' && sub[1] === 'remove') return { ok: false, stdout: '' }
+        return undefined
+      },
+    })
+    holder.dirs = r.dirs
+    r.manager.turn(turn('101'))
+    await r.manager.idle()
+    assert.equal(r.spawned.length, 0)
+    assert.match(String(replyTexts(r).at(-1)), /^I could not open this thread: its working copy could not be made/)
+    assert.ok(r.gitCalls.some((a) => a[2] === 'worktree' && a[3] === 'remove' && a.includes('--force')), 'the half worktree is removed')
+    assert.ok(r.gitCalls.some((a) => a[2] === 'worktree' && a[3] === 'prune'))
+    assert.equal(r.dirs.has(wt('101')), false)
+    assert.ok(r.removed.includes(wt('101')), 'the half folder is removed, falling back to rmrf if git cannot remove it')
   })
-  holder.dirs = r.dirs
-  r.manager.turn(turn('101'))
-  await r.manager.idle()
-  assert.equal(r.spawned.length, 0)
-  assert.match(String(replyTexts(r).at(-1)), /^I could not open this thread: its working copy could not be made/)
-  assert.ok(r.gitCalls.some((a) => a[2] === 'worktree' && a[3] === 'remove' && a.includes('--force')), 'the half worktree is removed')
-  assert.ok(r.gitCalls.some((a) => a[2] === 'worktree' && a[3] === 'prune'))
-  assert.equal(r.dirs.has(wt('101')), false)
-})
+}
 
 test('THREADCRASH: a lane that exits before it ever started says so in its thread, with its exit code', async () => {
   const r = rig()
@@ -1925,8 +2017,123 @@ test('THREADCRASH: a repository too large to copy gets a read only lane that rea
     emptyMcpConfigPath: MCP,
     confinement: { root: wt('101'), readOnly: true, shellSandbox: false, readDirs: [AGENT] },
   }))
-  assert.match(s.child.stdin[0]!, /read only/)
+  const prompt = JSON.parse(s.child.stdin[0]!).message.content[0].text
+  assert.ok(prompt.includes(`This thread is read only: read files in the agent folder ${JSON.stringify(AGENT)} and do not edit files.`))
+  assert.doesNotMatch(prompt, /not a git repository|Work on it in this folder only/)
 })
+
+test('THREADCRASH: a repository whose size cannot be measured gets a read only lane, never a checkout', async () => {
+  const r = rig()
+  const logs: string[] = []
+  r.deps.log = (line) => { logs.push(line) }
+  r.deps.checkoutTooLarge = async () => { throw new TypeError('size probe failed') }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 1)
+  assert.equal(r.gitCalls.some((a) => a[2] === 'worktree'), false)
+  assert.equal(saved(r).readOnly, true)
+  assert.equal(saved(r).worktree, false)
+  assert.ok(logs.some((line) => line.includes('its size could not be measured (TypeError)')))
+  assert.deepEqual(r.spawned[0]!.args, threadLaneArgs({
+    mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP,
+    confinement: { root: wt('101'), readOnly: true, shellSandbox: false, readDirs: [AGENT] },
+  }))
+})
+
+test('THREADCRASH: a read only lane whose plain folder cannot be made answers with the working copy failure', async () => {
+  const r = rig({ repo: false })
+  const mkdir = r.deps.fs.mkdir
+  r.deps.fs.mkdir = (path) => {
+    if (path === wt('101')) throw Object.assign(new Error(`cannot make ${path}`), { code: 'EACCES' })
+    mkdir(path)
+  }
+  const logs: string[] = []
+  r.deps.log = (line) => { logs.push(line) }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.deepEqual(replyTexts(r), ['I could not open this thread: its working copy could not be made. Send your reply again to retry.'])
+  assert.ok(logs.includes('threads: turn 101 could not start (worktree_failed)'))
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+})
+
+test('THREADCRASH: an unexpected start failure posts only its kind, keeping its message and paths in the local log', async () => {
+  const r = rig()
+  const message = `could not inspect ${join(AGENT, 'private', 'state.json')}\nprivate diagnostic`
+  r.deps.cliProblem = async () => { throw Object.assign(new Error(message), { code: 'EACCES' }) }
+  const logs: string[] = []
+  r.deps.log = (line) => { logs.push(line) }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.deepEqual(replyTexts(r), ['I could not open this thread: something went wrong while starting it (EACCES). Send your reply again to retry.'])
+  assert.equal(JSON.stringify(r.posts).includes(AGENT), false, 'no local path reaches the thread')
+  assert.equal(JSON.stringify(r.posts).includes('private diagnostic'), false, 'no error message reaches the thread')
+  assert.equal(logs.filter((line) => line.startsWith('threads: turn 101 could not start')).length, 1)
+  assert.ok(logs[0]!.includes(message.replace(/\s+/g, ' ')), 'the local log keeps the diagnostic on one line')
+})
+
+test('THREADCRASH: intentionally stopping before init posts only the timeout, never an opening failure on exit', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const child = r.spawned[0]!.child
+  r.fire(r.live(THREAD_TURN_TIMEOUT_MS)[0]!)
+  child.exit(null)
+  await r.manager.idle()
+  assert.deepEqual(child.killed, ['SIGTERM'])
+  assert.deepEqual(replyTexts(r), ['This turn took longer than 30 minutes, so it was stopped. Send your reply again to retry.'])
+  assert.equal(r.manager.runningCount(), 0)
+})
+
+test('THREADCRASH: an exit reported during an intentional stop before init is never misreported as a failure to open', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const child = r.spawned[0]!.child
+  // Node can emit an error synchronously from kill. The real spawner reports
+  // errors through onExit too, so the callback may run before kill returns.
+  child.kill = (signal) => { child.killed.push(signal); child.exit(null) }
+  r.fire(r.live(THREAD_TURN_TIMEOUT_MS)[0]!)
+  await r.manager.idle()
+  assert.deepEqual(child.killed, ['SIGTERM'])
+  assert.deepEqual(replyTexts(r), ['This turn failed before the agent could answer, so send your reply again to retry.'])
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+  assert.equal(r.manager.runningCount(), 0)
+})
+
+for (const callback of ['exit', 'turn timer', 'idle timer'] as const) {
+  test(`THREADCRASH: a fault in the lane ${callback} callback never reaches the event loop`, async () => {
+    const r = rig()
+    const logs: string[] = []
+    r.deps.log = (line) => { logs.push(line) }
+    r.manager.turn(turn('101'))
+    await r.manager.idle()
+    const child = r.spawned[0]!.child
+    if (callback !== 'turn timer') {
+      child.init(FORK_A)
+      child.result('First answer.')
+      await r.manager.idle()
+    }
+    let faults = 0
+    const fault = () => { faults++; throw new TypeError('callback fault') }
+    if (callback === 'exit') {
+      // An exit clears the idle timer even after a turn has finished.
+      const clear = r.deps.clearTimer
+      r.deps.clearTimer = () => { r.deps.clearTimer = clear; fault() }
+      assert.doesNotThrow(() => child.exit())
+    } else {
+      child.kill = fault
+      const ms = callback === 'turn timer' ? THREAD_TURN_TIMEOUT_MS : THREAD_LANE_IDLE_MS
+      assert.doesNotThrow(() => r.fire(r.live(ms)[0]!))
+    }
+    assert.equal(faults, 1, 'the callback reached the injected fault')
+    const what = callback === 'exit' ? 'lane 101 exit' : callback === 'turn timer' ? 'turn 101 timer' : 'lane 101 idle stop'
+    assert.ok(logs.includes(`threads: ${what} failed (TypeError: callback fault)`))
+    r.manager.turn(turn('102'))
+    await r.manager.idle()
+    assert.equal(r.spawned.length, 2, 'the daemon can still start another thread')
+  })
+}
 
 test('THREADCRASH: a fault while handling a lane frame stays in the lane and never reaches the event loop', async () => {
   const r = rig()

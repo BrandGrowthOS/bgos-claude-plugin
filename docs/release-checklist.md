@@ -31,7 +31,10 @@ the plugin's hooks), or the thread wiring in `server.ts`.
    checks that a thread answers, that a thread on a long lived agent (a 300 MB
    main transcript) keeps the daemon small and the main chat going, that a
    thread that cannot open says so in its own thread, and that a large
-   repository runs its thread read only with nothing copied.
+   repository runs its thread read only with nothing copied. The fifth case
+   appends an active goal to the main transcript's last uuid and checks that
+   its thread makes no goal check: exactly two API requests in all, neither
+   naming the condition. It must fail if the daemon's goal clear is unwired.
    `HOAI_LIVE_THREAD=1` makes a missing Claude Code a failure instead of a
    skip; `HOAI_LIVE_CLAUDE=<path>` picks a specific `claude` binary.
 

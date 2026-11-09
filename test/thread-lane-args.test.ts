@@ -285,6 +285,11 @@ test('a read only thread start says so', () => {
   assert.match(text, /do not edit/i)
 })
 
+test('a read only thread on a large repository names the agent folder as the place to read', () => {
+  const text = threadTurnPrompt({ mode: 'start', text: 'What does server.ts do?', title: 'Code', rootText: 'Read the code.', readOnly: true, agentFolder: '/work/large repo' })
+  assert.equal(text, '[You are now working in a thread of this chat titled "Code". It is a separate conversation about this message: Read the code. This thread is read only: read files in the agent folder "/work/large repo" and do not edit files. The main conversation continues without you. Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\nWhat does server.ts do?')
+})
+
 test('a thread reply is the text as is, and a summary asks for the summary only', () => {
   assert.equal(threadTurnPrompt({ mode: 'reply', text: 'And the logs?', title: 't', rootText: 'r' }), 'And the logs?')
   assert.equal(threadTurnPrompt({ mode: 'summary', text: 'ignored', title: 't', rootText: 'r' }), SUMMARY_INSTRUCTION)

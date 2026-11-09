@@ -20,7 +20,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -152,6 +153,32 @@ test('a repository too large to copy runs its thread read only in place, with no
     assert.equal(existsSync(join(h.folder, '.hoai', 'threads', 'R4', 'data', 'blob.bin')), false, 'nothing copied')
     const worktrees = spawnSync('git', ['worktree', 'list'], { cwd: h.folder, encoding: 'utf8' }).stdout
     assert.equal(worktrees.trim().split('\n').length, 1, `only the agent folder itself: ${worktrees}`)
+  } finally {
+    await h.close()
+  }
+})
+
+test('THREADGOAL: a thread clears the active main goal through the real daemon wiring, with no goal check', OPTS, async () => {
+  const h = await startDaemonHarness({ claude: CLAUDE })
+  try {
+    const condition = 'the file threadgoal.txt contains THREADGOAL-LIVE-CONDITION'
+    const rows: Array<{ uuid?: unknown }> = readFileSync(h.mainTranscript, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    const parentUuid = rows.reverse().find((row) => typeof row.uuid === 'string')?.uuid
+    assert.equal(typeof parentUuid, 'string', 'the goal attaches to the last transcript uuid so the CLI loads it')
+    appendFileSync(h.mainTranscript, `${JSON.stringify({
+      type: 'attachment', uuid: randomUUID(), parentUuid,
+      sessionId: h.mainSessionId, cwd: h.folder, timestamp: new Date().toISOString(),
+      attachment: { type: 'goal_status', met: false, sentinel: true, condition },
+    })}\n`)
+    const parent = readFileSync(h.mainTranscript, 'utf8')
+    assert.equal(h.api.requests.length, 1, 'one request made the main session')
+    h.threadTurn({ rpcId: 'rpc-live-5', chatId: '7', rootId: 'R5', replyId: 'p5', text: 'THREAD-QUESTION what is two plus two?' })
+    await waitFor(() => replies(h).length > 0 || h.exited !== null, 120_000)
+    assert.equal(h.exited, null, `the daemon went away${h.tail()}`)
+    assert.match(String(replies(h)[0]?.text), /^THREAD-ANSWER-\d+$/, `the thread answered${h.tail()}`)
+    assert.equal(h.api.requests.length, 2, 'only the main turn and the thread turn, with no inherited goal check')
+    assert.equal(h.api.requests.some((request) => JSON.stringify(request).includes(condition)), false, 'no API request names the main goal condition')
+    assert.equal(readFileSync(h.mainTranscript, 'utf8'), parent, 'the main goal stays active and the parent is untouched')
   } finally {
     await h.close()
   }

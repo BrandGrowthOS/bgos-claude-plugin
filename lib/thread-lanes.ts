@@ -655,7 +655,7 @@ export class ThreadLaneManager {
       lane.childTurn = turn
       lane.stopHookBlocks = 0
       this.armTurnTimer(lane, turn)
-      lane.child.write(userMessageLine(threadTurnPrompt({ ...turn, readOnly: lane.state.readOnly })))
+      lane.child.write(userMessageLine(threadTurnPrompt({ ...turn, readOnly: lane.state.readOnly, agentFolder: this.deps.agentFolder })))
     } catch (err) {
       // Nothing on a thread's start may reach the daemon's fault handlers: every
       // error ends here, as one plain log line and one reply in the thread.
