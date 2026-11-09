@@ -1,0 +1,18 @@
+Command: TMPDIR=<repo>/.agentpicture-test-tmp TSX_DISABLE_CACHE=1 RUN_TESTS_WORKERS=2 node --import tsx --test --test-concurrency=2 test/profile-image.test.ts test/bundled-instructions.test.ts test/capabilities.test.ts test/boards-download.test.ts test/turn-aware-tools.test.ts test/hooks-manifest.test.ts test/private-turn.test.ts test/claude-preseed.test.ts test/hook-events.test.ts test/bgos-doctor.test.ts
+Exit: 0
+Evidence shows the six new tests and totals for all ten focused files.
+
+✔ the tool validates arguments, identity, file kind, bytes and the 5 MB limit before uploading (7.504334ms)
+✔ uploads bytes by PUT to the own-agent route, independent of the file extension (1.351ms)
+✔ the advertised schema accepts only an absolute local file path (0.19825ms)
+✔ the real authenticated bgosPut uploads once in both auth modes and preserves a server refusal sentence (45.099291ms)
+✔ MCP discovery, dispatch, owner-turn admission, helper guards and capability text expose the tool (19.426042ms)
+✔ the real MCP call handler admits an owner, refuses an unverified turn and never uploads for a recipient (43.214791ms)
+ℹ tests 305
+ℹ suites 0
+ℹ pass 305
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1727.187833

@@ -186,7 +186,7 @@ test('boards, Artifacts and schedules require a verified private turn', async ()
     assert.equal(strictCalls, 1, name)
     assert.equal(refused?.isError, true, `${name}: an unverified turn is refused, wherever it is`)
   }
-  assert.match(admissionSource, /if \(req\.params\.name\.startsWith\('boards_'\) \|\| req\.params\.name\.startsWith\('artifact_'\) \|\| req\.params\.name\.startsWith\('vault_'\) \|\| \['schedule', 'list_schedules', 'cancel_schedule'\]\.includes\(req\.params\.name\)\) \{/, 'boards, Artifacts, the vault and schedules keep the strict private-turn gate')
+  assert.match(admissionSource, /if \(req\.params\.name\.startsWith\('boards_'\) \|\| req\.params\.name\.startsWith\('artifact_'\) \|\| req\.params\.name\.startsWith\('vault_'\) \|\| \['schedule', 'list_schedules', 'cancel_schedule', 'set_profile_image'\]\.includes\(req\.params\.name\)\) \{/, 'boards, Artifacts, the vault and schedules keep the strict private-turn gate')
 })
 
 test('a prompt carrying several deliveries at once (queued messages, the boot sweep) counts every sender', (t) => {

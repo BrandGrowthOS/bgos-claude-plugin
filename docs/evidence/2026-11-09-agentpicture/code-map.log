@@ -1,0 +1,61 @@
+Required queries were attempted before edits. This is the final audit, repeated for every changed file before the local commit. Errors are summarized to omit machine paths.
+
+$ node scripts/codegraph/query.mjs server.ts
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs lib/profile-image.ts
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs lib/capabilities.ts
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs lib/private-turn.mjs
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs lib/claude-preseed.mjs
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs lib/hook-events.ts
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs hooks/hooks.json
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs test/profile-image.test.ts
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs test/hooks-manifest.test.ts
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs test/boards-download.test.ts
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs test/turn-aware-tools.test.ts
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs docs/reports/2026-11-09-agentpicture.md
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-09-agentpicture/red.log
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-09-agentpicture/targeted.log
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-09-agentpicture/suite.log
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-09-agentpicture/tsc.log
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-09-agentpicture/code-map.log
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs docs/evidence/2026-11-09-agentpicture/api-contract.json
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ node scripts/codegraph/query.mjs --changed origin/main
+exit 1: MODULE_NOT_FOUND: code map script is absent
+
+$ git show-ref --verify --quiet refs/remotes/origin/main
+exit 1: ref absent

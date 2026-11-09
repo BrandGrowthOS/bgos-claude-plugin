@@ -34,6 +34,7 @@
 import { HARD_FLOOR_TOKEN, PERMISSION_CARD } from './claude-capability-tokens.js';
 import { AGENT_EMAIL_FILES_SENTENCE, AGENT_EMAIL_SEND_SENTENCE } from './agent-email-tools.ts';
 import { ARTIFACTS_GUIDANCE } from './artifacts-tools.js';
+import { PROFILE_IMAGE_GUIDANCE } from './profile-image.js';
 
 /** Compact frozen fallback used only when the served canon cannot be fetched. */
 export const BGOS_CAPABILITIES_FALLBACK = `# BGOS Channel Agent Capabilities (bundled fallback)
@@ -51,6 +52,7 @@ fetched from the backend at connect; if you are reading this, that fetch failed.
   questions) and withdraw_ask, set_status, schedule / list_schedules /
   cancel_schedule, call_owner, missions, list_peers / send_to_peer,
   meeting_reply, voice_consult_reply, complete_voice_task.
+- Your own picture: ${PROFILE_IMAGE_GUIDANCE}
 - Saved Artifacts: ${ARTIFACTS_GUIDANCE}
   Use artifact_create, artifact_update, artifact_read, artifact_list and
   artifact_versions. Call artifact_read without id for GET

@@ -347,6 +347,7 @@ export const OWN_MCP_TOOLS = [
   'edit_message',
   'rename_chat',
   'set_status',
+  'set_profile_image',
   'ask_user_input',
   // Retiring a question card is the agent talking to the owner too.
   'withdraw_ask',

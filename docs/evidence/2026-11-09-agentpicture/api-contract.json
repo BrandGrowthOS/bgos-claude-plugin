@@ -1,0 +1,30 @@
+{
+  "checkedOn": "2026-11-09",
+  "source": "https://api.brandgrowthos.ai/api-json",
+  "operationId": "AgentProfileImageController_setOwnAvatar",
+  "method": "PUT",
+  "path": "/api/v1/agent-profile-image/agents/{assistantId}",
+  "agentCredentialRequired": true,
+  "ownerRequestRequired": true,
+  "requestContentType": "application/json",
+  "requestSchema": "AgentProfileImageSourceDto",
+  "sourceFields": {
+    "imageBase64": {
+      "type": "string",
+      "encoding": "base64 image bytes",
+      "formats": ["PNG", "JPEG", "WebP", "GIF"],
+      "maxDecodedBytes": 5242880,
+      "typeDetection": "image bytes"
+    },
+    "uploadKey": {
+      "type": "string",
+      "source": "key returned by POST /files/upload-url"
+    }
+  },
+  "pluginSourceField": "imageBase64",
+  "capabilityGuideProbe": {
+    "path": "/api/v1/integrations/capabilities?channel=claude",
+    "httpStatus": 401,
+    "authenticatedReadAvailableInWorkspace": false
+  }
+}

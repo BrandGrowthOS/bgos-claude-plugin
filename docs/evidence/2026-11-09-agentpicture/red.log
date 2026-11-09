@@ -1,0 +1,115 @@
+✖ the tool validates arguments, identity, file kind, bytes and the 5 MB limit before uploading (1.746916ms)
+✖ uploads bytes by PUT to the own-agent route, independent of the file extension (0.2815ms)
+✖ the advertised schema accepts only an absolute local file path (0.224ms)
+✖ the real authenticated bgosPut uploads once in both auth modes and preserves a server refusal sentence (0.24675ms)
+✖ MCP discovery, dispatch, owner-turn admission, helper guards and capability text expose the tool (0.254375ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 0
+ℹ fail 5
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 525.434083
+
+✖ failing tests:
+
+test at test/profile-image.test.ts:1:1747
+✖ the tool validates arguments, identity, file kind, bytes and the 5 MB limit before uploading (1.746916ms)
+  AssertionError [ERR_ASSERTION]: the profile image tool exists
+  + actual - expected
+
+  + 'undefined'
+  - 'function'
+
+      at imageTools (<repo>/test/profile-image.test.ts:21:10)
+      at async TestContext.<anonymous> (<repo>/test/profile-image.test.ts:41:17)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'undefined',
+    expected: 'function',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/profile-image.test.ts:1:3085
+✖ uploads bytes by PUT to the own-agent route, independent of the file extension (0.2815ms)
+  AssertionError [ERR_ASSERTION]: the profile image tool exists
+  + actual - expected
+
+  + 'undefined'
+  - 'function'
+
+      at imageTools (<repo>/test/profile-image.test.ts:21:10)
+      at async TestContext.<anonymous> (<repo>/test/profile-image.test.ts:69:17)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'undefined',
+    expected: 'function',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/profile-image.test.ts:1:3743
+✖ the advertised schema accepts only an absolute local file path (0.224ms)
+  AssertionError [ERR_ASSERTION]: the profile image tool exists
+  + actual - expected
+
+  + 'undefined'
+  - 'function'
+
+      at imageTools (<repo>/test/profile-image.test.ts:21:10)
+      at async TestContext.<anonymous> (<repo>/test/profile-image.test.ts:84:17)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'undefined',
+    expected: 'function',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/profile-image.test.ts:2:71
+✖ the real authenticated bgosPut uploads once in both auth modes and preserves a server refusal sentence (0.24675ms)
+  AssertionError [ERR_ASSERTION]: the profile image tool exists
+  + actual - expected
+
+  + 'undefined'
+  - 'function'
+
+      at imageTools (<repo>/test/profile-image.test.ts:21:10)
+      at async TestContext.<anonymous> (<repo>/test/profile-image.test.ts:109:17)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'undefined',
+    expected: 'function',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/profile-image.test.ts:3:927
+✖ MCP discovery, dispatch, owner-turn admission, helper guards and capability text expose the tool (0.254375ms)
+  AssertionError [ERR_ASSERTION]: the profile image tool exists
+  + actual - expected
+
+  + 'undefined'
+  - 'function'
+
+      at imageTools (<repo>/test/profile-image.test.ts:21:10)
+      at async TestContext.<anonymous> (<repo>/test/profile-image.test.ts:148:17)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'undefined',
+    expected: 'function',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
