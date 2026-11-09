@@ -2,8 +2,9 @@
  * model-effort-catalog: what the owner's picker may offer for this agent, and
  * the report it fills itself from (owner model and effort control, Route A).
  *
- * NEVER A HARD CODED LIST. Both halves come from what the installed Claude
- * Code reports about itself:
+ * Efforts come from the installed Claude Code's help. A recognized model
+ * option on 2.1.319 selects the frozen exact model registry from
+ * that release. Other versions retain the help's alias catalog.
  *
  *   efforts  the choices its own `claude --help` lists for `--effort`
  *            ("(low, medium, high, xhigh, max)" on 2.1.309);
@@ -22,12 +23,12 @@
  * offers no efforts, because a change to it could never be confirmed.
  */
 
-import { isEffortLevel, isModelFamily, MODEL_LITERALS, type EffortLevel, type ModelFamily } from './compact-inject.ts'
+import { EXACT_MODEL_LABELS, EXACT_MODEL_LITERALS, isEffortLevel, isModelFamily, MODEL_LITERALS, type EffortLevel, type ModelFamily } from './compact-inject.ts'
 import type { ModelObservation } from './model-control-store.mjs'
 
 export interface HostCatalog {
   efforts: EffortLevel[]
-  models: ModelFamily[]
+  models: string[]
 }
 
 /** The proposal's own sentence for the one setting this host cannot confirm. */
@@ -46,8 +47,18 @@ function optionBlock(help: string, flag: string): string | null {
   return block.join(' ').replace(/\s+/g, ' ')
 }
 
+/** Retired registry ids from 2.1.319's own deprecation table, including its
+ * legacy registry spellings (the table calls those families *-latest).
+ * Deprecated Sonnet 4.5 remains offered: deprecated is not retired.
+ * This snapshot applies only to the matching installed release.
+ */
+const CLI319_RETIRED_MODELS = new Set([
+  'claude-opus-4-1', 'claude-opus-4-0', 'claude-sonnet-4-0',
+  'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku',
+])
+
 /** Parse the installed CLI's help for its own efforts and model aliases. */
-export function parseHelpCatalog(help: string | null | undefined): HostCatalog {
+export function parseHelpCatalog(help: string | null | undefined, version?: string | null): HostCatalog {
   if (typeof help !== 'string' || help === '') return { efforts: [], models: [] }
   const efforts: EffortLevel[] = []
   const effortBlock = optionBlock(help, '--effort')
@@ -60,6 +71,12 @@ export function parseHelpCatalog(help: string | null | undefined): HostCatalog {
   for (const m of modelBlock ? modelBlock.matchAll(/'([a-z0-9-]+)'/g) : []) {
     const alias = m[1]
     if (isModelFamily(alias) && !models.includes(alias)) models.push(alias)
+  }
+  // 2.1.319's baked model registry is broader than its help's example aliases.
+  // The frozen table mirrors that registry, not arbitrary ids seen in text.
+  const current = version === '2.1.319'
+  if (current && models.length > 0) {
+    return { efforts, models: Object.keys(EXACT_MODEL_LITERALS).filter((id) => !CLI319_RETIRED_MODELS.has(id)) }
   }
   return { efforts, models }
 }
@@ -82,7 +99,7 @@ export interface ModelEffortReport {
   /** The live effort, or null when the model reports none. */
   effort: string | null
   runtimeVersion: string | null
-  availableModels: ModelFamily[]
+  availableModels: string[]
   availableEfforts: EffortLevel[]
   ultracode: { available: false; reason: string }
   /** Would a set_model or set_effort be attempted now (preflight, no pane read)? */
@@ -220,14 +237,12 @@ export function familyLabel(id: string): string {
 }
 
 /**
- * The picker id of a running model: null when BGOS's pattern refuses the
- * session's own id (a report is never reinterpreted), else its table family
- * when it names exactly one, else that id.
- * A family is what the picker offers and what a switch types, so the row the
- * app highlights is the one that would be chosen again.
+ * Keep an offered exact id for the app's current row. Alias catalogs retain
+ * the older family mapping. Invalid ids never become a current row.
  */
-export function pickerModelOf(modelId: string): string | null {
+export function pickerModelOf(modelId: string, catalog?: HostCatalog): string | null {
   if (!isModelId(modelId)) return null
+  if (catalog?.models.includes(modelId)) return modelId
   return modelFamilyOf(modelId) ?? modelId
 }
 
@@ -257,7 +272,7 @@ export function buildPickerCatalog(input: {
   // No fresh report of THIS session: the current model and which efforts it
   // takes are unknown, so nothing is offered.
   if (!o || o.sessionId !== sessionId) return null
-  const running = pickerModelOf(o.modelId)
+  const running = pickerModelOf(o.modelId, catalog)
   const runningEffort = o.effort !== null && isId(o.effort) ? o.effort : null
   const ids: string[] = [...catalog.models]
   if (running && !ids.includes(running)) ids.push(running)
@@ -270,8 +285,10 @@ export function buildPickerCatalog(input: {
     const noEffort = id === running && o.effort === null
     return {
       id,
-      label: isModelFamily(id) ? familyLabel(id) : (runningLabel ?? id),
-      description: '',
+      label: isModelFamily(id) ? familyLabel(id) : Object.hasOwn(EXACT_MODEL_LITERALS, id)
+        ? exactModelLabel(id)
+        : (runningLabel ?? id),
+      description: Object.hasOwn(EXACT_MODEL_LITERALS, id) ? id : '',
       enabled: true,
       defaultEffort,
       efforts: [
@@ -291,4 +308,8 @@ export function buildPickerCatalog(input: {
     current: running ? { model: running, effort: runningEffort } : null,
     models,
   }
+}
+
+function exactModelLabel(id: string): string {
+  return EXACT_MODEL_LABELS[id as keyof typeof EXACT_MODEL_LABELS]
 }
