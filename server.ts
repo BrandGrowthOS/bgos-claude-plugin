@@ -209,6 +209,7 @@ import {
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
+import { PROFILE_IMAGE_TOOL, PROFILE_IMAGE_GUIDANCE, handleProfileImage } from './lib/profile-image.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
@@ -3389,6 +3390,7 @@ const mcp = new Server(
       'At the START of a session, call the `bgos_capabilities` tool to load the',
       'authoritative, always-current HOAI capability guide. It is fetched live',
       'from the backend at connect and supersedes the capability summary below.',
+      'When your owner asks you to change your own picture, call set_profile_image with the absolute path of the image file you made. Use PNG, JPEG, WebP or GIF, at most 5 MB. The tool uploads it through your existing HOAI connection and sets only your own picture. Never ask for an API key. If the server refuses, tell your owner the reason and stop.',
       '',
       'When you produce a dashboard, report, chart, table, plan, document or any page a person will read, share or revisit, make it an Artifact instead of a long chat message, then send a short reply with its link. Update the same Artifact for revisions rather than creating new ones.',
       'Use artifact_create, artifact_update, artifact_read, artifact_list and artifact_versions.',
@@ -6568,6 +6570,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     // never reveals that it exists.
     ...BOARDS_TOOL_DECLS,
     ...ARTIFACT_TOOL_DECLS,
+    PROFILE_IMAGE_TOOL,
     // Agent vault, request and fill (lib/vault-tools.ts): metadata, an owner
     // request card and a signed one-use fill ticket. Owner turns only.
     ...VAULT_TOOL_DECLS,
@@ -6745,7 +6748,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   }
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
-  if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
+  if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule', 'set_profile_image'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
@@ -6855,7 +6858,17 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   switch (req.params.name) {
     case 'bgos_capabilities': {
       const caps = await loadServedCapabilities()
-      return { content: [{ type: 'text', text: caps.text }] }
+      const text = caps.text.includes('set_profile_image') ? caps.text : `${caps.text}\n\n${PROFILE_IMAGE_GUIDANCE}`
+      return { content: [{ type: 'text', text }] }
+    }
+
+    case 'set_profile_image': {
+      return handleProfileImage(rawArgs, {
+        assistantId: ASSISTANT_ID,
+        ownerId: USER_ID,
+        actingUserId: privateCall!.actingUserId,
+        put: bgosPut,
+      })
     }
 
     case 'reply': {
