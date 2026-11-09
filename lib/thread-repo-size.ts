@@ -25,6 +25,8 @@ import { execFile, spawn } from 'node:child_process'
 export const THREAD_COPY_LIMIT_BYTES = 1024 * 1024 * 1024
 export const THREAD_COPY_LIMIT_FILES = 100_000
 export const THREAD_COPY_MEASURE_TIMEOUT_MS = 30_000
+/** How long a measure waits for a killed git to close before it answers anyway. */
+export const THREAD_COPY_KILL_WAIT_MS = 5_000
 
 export interface CheckoutLimits {
   bytes: number
@@ -75,6 +77,7 @@ function sumTrackedSizes(
     let files = 0
     let partial = ''
     let settled = false
+    let closed = false
     const finish = (v: { bytes: number; files: number } | null | 'timeout') => {
       if (settled) return
       settled = true
@@ -82,7 +85,14 @@ function sumTrackedSizes(
       try {
         child.kill('SIGKILL')
       } catch {}
-      resolve(v)
+      // Answer once git has gone: on Windows a folder cannot be removed while a git still runs in it (EPERM).
+      // A git that never started has nothing to wait for; one that will not close is waited for a bounded time.
+      if (closed || child.pid === undefined) return resolve(v)
+      const bound = setTimeout(() => resolve(v), THREAD_COPY_KILL_WAIT_MS)
+      child.once('close', () => {
+        clearTimeout(bound)
+        resolve(v)
+      })
     }
     const child = spawn('git', ['-C', folder, 'ls-files', '--format=%(objectsize)'], { cwd: folder, stdio: ['ignore', 'pipe', 'ignore'] })
     const timer = setTimeout(() => finish('timeout'), timeoutMs)
@@ -102,6 +112,7 @@ function sumTrackedSizes(
       if (bytes > limits.bytes || files > limits.files) finish({ bytes, files })
     })
     child.on('close', (code) => {
+      closed = true
       const n = Number(partial.trim())
       if (partial.trim() !== '' && Number.isFinite(n)) {
         bytes += n

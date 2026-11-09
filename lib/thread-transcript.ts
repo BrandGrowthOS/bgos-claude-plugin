@@ -120,21 +120,25 @@ async function copyRange(src: FileHandle, dst: FileHandle, from: number, to: num
 /** Write `path` again with one row replaced, through a temporary file renamed over it. */
 async function spliceRow(path: string, edit: GoalRowEdit, chunkBytes: number): Promise<void> {
   const temporary = `${path}.thread-goal.tmp`
-  const src = await open(path, 'r')
   try {
-    const { size } = await src.stat()
-    const dst = await open(temporary, 'w')
+    const src = await open(path, 'r')
     try {
-      await copyRange(src, dst, 0, edit.start, chunkBytes)
-      await dst.write(edit.replacement)
-      await copyRange(src, dst, edit.end, size, chunkBytes)
-      await dst.sync()
+      const { size } = await src.stat()
+      const dst = await open(temporary, 'w')
+      try {
+        await copyRange(src, dst, 0, edit.start, chunkBytes)
+        await dst.write(edit.replacement)
+        await copyRange(src, dst, edit.end, size, chunkBytes)
+        await dst.sync()
+      } finally {
+        await dst.close()
+      }
     } finally {
-      await dst.close()
+      await src.close()
     }
+    // Only after both are closed: Windows refuses to rename over a file that is still open (EPERM).
     await rename(temporary, path)
   } finally {
-    await src.close()
     await rm(temporary, { force: true }).catch(() => {})
   }
 }
