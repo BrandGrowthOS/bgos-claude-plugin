@@ -455,6 +455,20 @@ test('consent: the owner Show agent windows setting rides the sweep report wheth
   }
 })
 
+test('consent: agentWindows (one On or Off per agent) rides the sweep report beside showAgentWindows whether the switch is on or off; an answer without it adds no field', async () => {
+  for (const enabled of [true, false]) {
+    const fs = machine([])
+    const per = consent({ enabled, enabledAt: enabled ? 'e' : null, assistantIds: [], showAgentWindows: false, agentWindows: { '912': true, '7': false } })
+    const report = await runKeepAliveSweep(ctxFor(fs, recorder(), fakeClock(), { fetchKeepAlive: per.fetchKeepAlive }).ctx as any)
+    assert.deepEqual(report.agentWindows, { '7': false, '912': true }, `switch ${enabled}`)
+    assert.equal(report.showAgentWindows, false)
+    assert.deepEqual(JSON.parse(fs.files.get(keepAliveCachePath(HOME))!).agentWindows, { '7': false, '912': true }, `switch ${enabled}: cached`)
+    const older = consent({ enabled, enabledAt: enabled ? 'e' : null, assistantIds: [], showAgentWindows: true })
+    const plain = await runKeepAliveSweep(ctxFor(machine([]), recorder(), fakeClock(), { fetchKeepAlive: older.fetchKeepAlive }).ctx as any)
+    assert.equal('agentWindows' in plain, false, `switch ${enabled}, older server`)
+  }
+})
+
 // -- supervise -----------------------------------------------------------------------------------
 
 test('installProductSupervisor (shared by the sweep and create_agent): win32 registers the agent task (hidden launcher) and starts it only when asked; posix runs bgos-agent install --always-on from the given root, node dirs first on PATH; no root is a named failure', async () => {
