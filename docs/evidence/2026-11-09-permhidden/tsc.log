@@ -1,0 +1,3 @@
+Command: TMPDIR=<repo>/.permhidden-tmp node_modules/.bin/tsc --noEmit
+Exit: 0
+No diagnostics.

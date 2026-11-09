@@ -592,6 +592,7 @@ import {
   markFloorAttached,
   takeFloorRecord,
 } from './lib/floor-state.mjs'
+import { takePermissionInput } from './lib/permission-input.mjs'
 import {
   createMissionTurnStore,
   sameMissionTurnGoals,
@@ -3996,10 +3997,17 @@ const PermissionRequestSchema = z.object({
   }),
 })
 
-type PermissionRequestParams = z.infer<typeof PermissionRequestSchema>['params']
+type PermissionRequestParams = z.infer<typeof PermissionRequestSchema>['params'] & {
+  card_input_preview?: string
+}
 
 mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
   const { request_id, tool_name, description, input_preview } = params
+  // The raw copy only supplies the card. Floor checks and approval bindings
+  // continue to read the CLI notification and their existing hook records.
+  const cardParams: PermissionRequestParams = {
+    ...params, card_input_preview: takeOwnPermissionInput(tool_name, input_preview),
+  }
 
   log(`Permission request: ${tool_name} [${request_id}], ${description}`)
 
@@ -4053,10 +4061,10 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
         ? classifyPermissionRequest(tool_name, input_preview)
         : null,
   })
-  if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)
+  if (floorPlan.action === 'consult') return settleFloorRequest(cardParams, floorPlan)
   if (floorPlan.action === 'ask_elided') {
     log(`Floor asks about ${tool_name} [${request_id}]: ${floorPlan.reason}`)
-    return settleElidedFloorRequest(params)
+    return settleElidedFloorRequest(cardParams)
   }
 
   if (AUTO_APPROVE) {
@@ -4080,7 +4088,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
       })
   }
 
-  return relayPermissionToOwner(params)
+  return relayPermissionToOwner(cardParams)
 })
 
 /**
@@ -4319,7 +4327,7 @@ function relayPermissionToOwner(
         requestId: request_id,
         toolName: tool_name,
         description,
-        inputPreview: input_preview,
+        inputPreview: params.card_input_preview ?? input_preview,
         emailSend: emailCard?.block ?? null,
         floorEvidence,
       }),
@@ -4586,6 +4594,17 @@ function takeOwnFloorRecord(toolName: string, inputPreview: string | undefined):
     log(`floor: could not read the floor records (${err}); reading the preview instead`)
     return null
   }
+}
+
+/** A confirmed raw command for this session's card, otherwise the CLI preview. */
+function takeOwnPermissionInput(toolName: string, inputPreview: string | undefined): string | undefined {
+  return takePermissionInput({
+    root: FLOOR_STATE_ROOT,
+    keys: FLOOR_KEYS,
+    sessionId: hookIntake?.bound() ?? liveSessionId,
+    toolName,
+    inputPreview,
+  })
 }
 
 /**
