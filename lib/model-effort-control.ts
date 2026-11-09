@@ -88,6 +88,7 @@ import {
   parsePaneState,
   readComposer,
   isModelSwitchDialog,
+  isEffortSwitchDialog,
   type ProcessEntry,
 } from './model-effort-pane.ts'
 
@@ -431,6 +432,8 @@ export class ModelEffortControl {
     await this.run({ ...enter, delayMsBefore: 0 })
 
     const deadline = Math.min(this.deps.now() + this.opts.confirmTimeoutMs, deadlineAtMs - this.opts.confirmTailMs)
+    const isSwitchDialog = (screen: string) => op === 'set_model'
+      ? isModelSwitchDialog(screen, value) : isEffortSwitchDialog(screen, value)
     let answeredSwitch = false
     while (this.deps.now() < deadline) {
       await this.deps.sleep(this.opts.pollMs)
@@ -439,9 +442,9 @@ export class ModelEffortControl {
       if (o && o.seq > baseline.seq && matches(o)) {
         return { ok: true, op, applied: true, report: this.report(catalog, sessionId)! }
       }
-      if (op === 'set_model' && !answeredSwitch) {
+      if (!answeredSwitch) {
         const screen = await this.deps.exec(buildPaneCaptureArgs(pane))
-        if (isModelSwitchDialog(screen, value)) {
+        if (isSwitchDialog(screen)) {
           const late = this.checkIdle()
           if (late) throw late
           if (this.deps.sessionId() !== sessionId) throw new Refusal('session_changed')
@@ -450,7 +453,7 @@ export class ModelEffortControl {
           if (!state || state.dead || state.paneId !== pane.target) throw new Refusal('pane_lost')
           if (state.inMode) throw new Refusal('pane_in_mode')
           if (!agentOwnsPane(state.tty, state.pid, await this.deps.ancestry())) throw new Refusal('pane_not_agent')
-          if (!isModelSwitchDialog(await this.deps.exec(buildPaneCaptureArgs(pane)), value)) continue
+          if (!isSwitchDialog(await this.deps.exec(buildPaneCaptureArgs(pane)))) continue
           const finalCheck = this.checkIdle()
           if (finalCheck) throw finalCheck
           if (this.deps.sessionId() !== sessionId) throw new Refusal('session_changed')

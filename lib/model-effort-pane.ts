@@ -354,6 +354,20 @@ export function isModelSwitchDialog(capture: string, selection?: string): boolea
     : EXACT_MODEL_LABELS[selection as keyof typeof EXACT_MODEL_LABELS] === target
 }
 
+/** The effort variant of the same CLI cache confirmation component. */
+export function isEffortSwitchDialog(capture: string, selection: string): boolean {
+  if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(selection)) return false
+  const lines = String(capture ?? '').split('\n').map((l) => plain(l).trim()).filter(Boolean)
+  const at = lines.lastIndexOf('Change effort level?')
+  if (at < 0 || lines.filter((l) => l === 'Change effort level?').length !== 1) return false
+  const tail = lines.slice(at + 1)
+  return tail.length === 4
+    && tail[0] === 'Your next response will be slower and use more tokens'
+    && tail[1] === `This conversation is cached for the current effort level. Switching to ${selection} means the full history gets re-read.`
+    && tail[2] === `❯ 1. Yes, switch to ${selection}`
+    && tail[3] === '2. No, go back'
+}
+
 /**
  * Everything drawn in the composer, dim text included (a placeholder is only
  * there while nothing is typed, so after typing anything dim is the owner's,

@@ -39,6 +39,8 @@ const dimTags = process.env.FAKE_TUI_DIM_TAGS === '1'
 const terminalCursor = process.env.FAKE_TUI_TERMINAL_CURSOR === '1'
 const confirmModel = process.env.FAKE_TUI_CONFIRM_MODEL === '1'
 let pendingModel = null
+let pendingEffort = null
+const confirmEffort = process.env.FAKE_TUI_CONFIRM_EFFORT === '1'
 const TAG_RE = /\[(?:Pasted text #\d+(?: \+\d+ lines)?|Image #\d+)\]/g
 let draft = ''
 let cursor = 0
@@ -73,6 +75,10 @@ function composer() {
 
 function render() {
   process.stdout.write('\u001b[2J\u001b[H')
+  if (pendingEffort !== null) {
+    process.stdout.write(`Change effort level?\r\nYour next response will be slower and use more tokens\r\n\r\nThis conversation is cached for the current effort level. Switching to ${pendingEffort} means the full history gets re-read.\r\n\r\n❯ 1. Yes, switch to ${pendingEffort}\r\n  2. No, go back\r\n`)
+    return
+  }
   if (pendingModel !== null) {
     const [family, ...version] = pendingModel.slice('claude-'.length).split('-')
     const name = family.charAt(0).toUpperCase() + family.slice(1) + ' ' + version.join('.')
@@ -91,7 +97,10 @@ function submit(line) {
     if (confirmModel) { pendingModel = next; render(); return }
     model = next
   }
-  if (e && applies) effort = e[1]
+  if (e && applies) {
+    if (confirmEffort) { pendingEffort = e[1]; render(); return }
+    effort = e[1]
+  }
   last = m || e ? `Set ${line.slice(1)}` : `Unknown: ${line}`
   // Drawn BEFORE it is reported, so a daemon that reads the screen right after
   // the confirming observation sees the submitted composer, never the old one.
@@ -104,6 +113,13 @@ process.stdin.setEncoding('utf8')
 process.stdin.on('data', (chunk) => {
   for (const [ch] of chunk.matchAll(/\u001b\[[0-9;]*[A-Za-z~]|\u001bO[A-Za-z]|[\s\S]/gu)) {
     if (ch === '\r') {
+      if (pendingEffort !== null) {
+        effort = pendingEffort
+        pendingEffort = null
+        render()
+        statusLine()
+        continue
+      }
       if (pendingModel !== null) {
         model = pendingModel
         pendingModel = null

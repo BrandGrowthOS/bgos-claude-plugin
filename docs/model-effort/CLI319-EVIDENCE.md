@@ -1,6 +1,6 @@
 # Claude Code 2.1.319 picker evidence
 
-Baseline: `3bf390a`. Red-test commit: `38f6f11`.
+Baseline: `3bf390a`. Red-test commit: `fffa23ff`.
 
 ## Red first
 

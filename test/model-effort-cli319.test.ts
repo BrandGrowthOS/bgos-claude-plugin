@@ -1,7 +1,7 @@
 /** Sanitized composer and dialog crops from Claude Code 2.1.319 captures. No live agent or API is used. */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readComposer, isModelSwitchDialog } from '../lib/model-effort-pane.ts'
+import { readComposer, isModelSwitchDialog, isEffortSwitchDialog } from '../lib/model-effort-pane.ts'
 import { parseHelpCatalog, buildPickerCatalog } from '../lib/model-effort-catalog.ts'
 import { EXACT_MODEL_LABELS } from '../lib/compact-inject.ts'
 import { ModelEffortControl } from '../lib/model-effort-control.ts'
@@ -37,6 +37,7 @@ function rig(screen?: string, applies = true) {
   let submitted = false
   let seq = 1
   let model = 'claude-opus-5-5'
+  let effort = 'high'
   const keys: string[][] = []
   const target = { target: '%7', socketArgs: [], source: 'tmux-pane' as const }
   const control = new ModelEffortControl({
@@ -44,14 +45,14 @@ function rig(screen?: string, applies = true) {
     turnState: () => 'idle', dialogOpen: () => false, otherInjectionBusy: () => false,
     ancestry: async () => [{ pid: 900, tty: 'ttys012', pgid: 800, tpgid: 800 }, { pid: 800, tty: 'ttys012', pgid: 800, tpgid: 800 }],
     helpText: async () => HELP,
-    readObservation: () => ({ sessionId: 'test-session', modelId: model, modelDisplayName: 'Opus', effort: 'high', version: '2.1.319', seq, observedAtMs: now }),
+    readObservation: () => ({ sessionId: 'test-session', modelId: model, modelDisplayName: 'Opus', effort, version: '2.1.319', seq, observedAtMs: now }),
     exec: async (argv) => {
       if (argv.includes('display-message')) return '%7\t/dev/ttys012\t0\t0\t800' + (argv.at(-1)!.includes('cursor_x') ? '\t2\t2\t1' : '') + '\n'
       if (argv.includes('capture-pane')) return submitted ? activeScreen : [RULE, `❯\u00a0${typed || '\u001b[7m \u001b[0m'}`, RULE].join('\n')
       keys.push(argv)
       if (argv.includes('-l')) typed = argv.at(-1)!
       else if (argv.at(-1) === 'Enter' && !submitted) submitted = true
-      else if (argv.at(-1) === 'Enter' && submitted && applies) { model = typed.slice('/model '.length) === 'sonnet' ? 'claude-sonnet-5-5' : typed.slice('/model '.length); seq++ }
+      else if (argv.at(-1) === 'Enter' && submitted && applies) { if (typed.startsWith('/effort ')) effort = typed.slice('/effort '.length); else model = typed.slice('/model '.length) === 'sonnet' ? 'claude-sonnet-5-5' : typed.slice('/model '.length); seq++ }
       return ''
     },
     sleep: async (ms) => { now += ms }, now: () => now, log: () => {},
@@ -201,4 +202,95 @@ test('2.1.319 captures: the recorded model question is accepted and confirmed', 
   const out = await r.apply('claude-haiku-4-5')
   assert.equal(out.ok, true, JSON.stringify(out))
   assert.equal(r.keys.filter((a) => a.at(-1) === 'Enter').length, 2)
+})
+
+function effortQuestion(level: string): string {
+  return question(level).replace('Switch model?', 'Change effort level?').replace('current model.', 'current effort level.')
+}
+
+test('effort dialog requires the exact title, explanation, selected Yes and requested level', async () => {
+  const screen = effortQuestion('xhigh')
+  for (const bad of [screen.replace('xhigh means', 'high means'), screen.replace('Yes, switch to xhigh', 'Yes, switch to high'), screen.replace('current effort level', 'current model'), screen.replace('❯ 1.', '  1.'), screen + '\n' + empty, screen.replace('Your next response will be slower and use more tokens', 'A PreModelSwitch hook asked you to confirm')]) {
+    assert.equal(isEffortSwitchDialog(bad, 'xhigh'), false, bad)
+    const r = rig(bad)
+    const out = await r.control.apply({ sessionId: 'test-session', model: 'claude-opus-5-5', effort: 'xhigh' }, { deadlineAtMs: Infinity })
+    assert.equal(out.ok, false)
+    assert.equal(r.keys.filter((a) => a.at(-1) === 'Enter').length, 1)
+  }
+  const r = rig(screen)
+  const out = await r.control.apply({ sessionId: 'test-session', model: 'claude-opus-5-5', effort: 'xhigh' }, { deadlineAtMs: Infinity })
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.equal(r.keys.filter((a) => a.at(-1) === 'Enter').length, 2)
+})
+
+test('M7 M19 M20: each confirmation recheck independently refuses a change in its own gap', async () => {
+  for (const effort of [false, true]) for (const gap of ['first-idle', 'final-idle', 'final-session']) for (const signal of ['turn', 'permission', 'card']) {
+    const screen = effort ? effortQuestion('xhigh') : dialog
+    const r = rig(screen)
+    const exec = r.control.deps.exec
+    let captures = 0
+    let armed = false
+    r.control.deps.exec = async (argv) => {
+      const out = await exec(argv)
+      if (out === screen) {
+        captures++
+        if (captures === (gap === 'first-idle' ? 1 : 2)) armed = true
+      }
+      // A missed first check loses its signal as soon as the next pane read starts.
+      if (gap === 'first-idle' && argv.includes('display-message') && captures > 0) armed = false
+      return out
+    }
+    const consume = () => { const value = armed; armed = false; return value }
+    if (gap === 'final-session') r.control.deps.sessionId = () => consume() ? 'changed-session' : 'test-session'
+    else if (signal === 'turn') r.control.deps.turnState = () => consume() ? 'live' : 'idle'
+    else if (signal === 'permission') r.control.deps.dialogOpen = () => consume()
+    else r.control.deps.lastCardAtMs = () => consume() ? r.control.deps.now() : null
+    const out = effort
+      ? await r.control.apply({ sessionId: 'test-session', model: 'claude-opus-5-5', effort: 'xhigh' }, { deadlineAtMs: Infinity })
+      : await r.apply('sonnet')
+    assert.equal(out.ok, false, `${effort} ${gap} ${signal}`)
+    assert.equal(r.keys.filter((a) => a.at(-1) === 'Enter').length, 1, `${effort} ${gap} ${signal}`)
+  }
+})
+
+test('M11: cursor moves during capture, so only the fresh pane state may license typing', async () => {
+  const r = rig()
+  const exec = r.control.deps.exec
+  let captured = false
+  r.control.deps.exec = async (argv) => {
+    if (argv.includes('capture-pane') && !captured) { captured = true; return empty }
+    const out = await exec(argv)
+    return captured && argv.includes('display-message') ? out.replace('\t2\t2\t1', '\t3\t2\t1') : out
+  }
+  const out = await r.apply('sonnet')
+  assert.equal(out.ok, false)
+  assert.equal(r.keys.length, 0)
+})
+
+test('M3 M16: duplicate titles and unknown family labels are refused', () => {
+  assert.equal(isModelSwitchDialog('Switch model?\n' + dialog, 'sonnet'), false)
+  assert.equal(isModelSwitchDialog(question('Sonnet 99'), 'sonnet'), false)
+})
+
+test('M13: a version alone cannot enable exact ids without recognized model help', () => {
+  for (const help of [HELP.split('\n')[0], HELP.replace("'fable', 'opus', or 'sonnet'", "'unknown'")]) {
+    assert.deepEqual(parseHelpCatalog(help, '2.1.319').models, [])
+  }
+  assert.deepEqual(parseHelpCatalog(HELP, '2.1.320').models, ['fable', 'opus', 'sonnet'])
+})
+
+test('retired CLI registry spellings are excluded using the same release deprecation table', async () => {
+  const { readFileSync } = await import('node:fs')
+  const rows = JSON.parse(readFileSync(new URL('./fixtures/claude-2.1.319-deprecations.json', import.meta.url), 'utf8')) as Array<{ ids: string[]; status: string }>
+  const { EXACT_MODEL_LITERALS } = await import('../lib/compact-inject.ts')
+  const retired = Object.keys(EXACT_MODEL_LITERALS).filter((id) => rows.some((row) => row.status === 'retired' && row.ids.some((old) => old === id || old === `${id}-latest`)))
+  assert.equal(retired.length, 6)
+  const catalog = parseHelpCatalog(HELP, '2.1.319')
+  assert.deepEqual(catalog.models, Object.keys(EXACT_MODEL_LITERALS).filter((id) => !retired.includes(id)))
+  assert.ok(catalog.models.includes('claude-sonnet-4-5'), 'deprecated is not retired')
+  for (const model of retired) {
+    const r = rig()
+    assert.equal((await r.apply(model)).ok, false, model)
+    assert.equal(r.keys.length, 0, model)
+  }
 })

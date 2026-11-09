@@ -3,8 +3,8 @@
  * the report it fills itself from (owner model and effort control, Route A).
  *
  * Efforts come from the installed Claude Code's help. A recognized model
- * option on 2.1.319 and later selects the frozen exact model registry from
- * that release. Older versions retain the help's alias catalog.
+ * option on 2.1.319 selects the frozen exact model registry from
+ * that release. Other versions retain the help's alias catalog.
  *
  *   efforts  the choices its own `claude --help` lists for `--effort`
  *            ("(low, medium, high, xhigh, max)" on 2.1.309);
@@ -47,6 +47,16 @@ function optionBlock(help: string, flag: string): string | null {
   return block.join(' ').replace(/\s+/g, ' ')
 }
 
+/** Retired registry ids from 2.1.319's own deprecation table, including its
+ * legacy registry spellings (the table calls those families *-latest).
+ * Deprecated Sonnet 4.5 remains offered: deprecated is not retired.
+ * This snapshot applies only to the matching installed release.
+ */
+const CLI319_RETIRED_MODELS = new Set([
+  'claude-opus-4-1', 'claude-opus-4-0', 'claude-sonnet-4-0',
+  'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku',
+])
+
 /** Parse the installed CLI's help for its own efforts and model aliases. */
 export function parseHelpCatalog(help: string | null | undefined, version?: string | null): HostCatalog {
   if (typeof help !== 'string' || help === '') return { efforts: [], models: [] }
@@ -64,9 +74,9 @@ export function parseHelpCatalog(help: string | null | undefined, version?: stri
   }
   // 2.1.319's baked model registry is broader than its help's example aliases.
   // The frozen table mirrors that registry, not arbitrary ids seen in text.
-  const current = /^2\.1\.(\d+)$/.exec(version ?? '')
-  if (current && Number(current[1]) >= 319 && models.length > 0) {
-    return { efforts, models: Object.keys(EXACT_MODEL_LITERALS) }
+  const current = version === '2.1.319'
+  if (current && models.length > 0) {
+    return { efforts, models: Object.keys(EXACT_MODEL_LITERALS).filter((id) => !CLI319_RETIRED_MODELS.has(id)) }
   }
   return { efforts, models }
 }

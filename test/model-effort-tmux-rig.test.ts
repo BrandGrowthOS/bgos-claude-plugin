@@ -292,3 +292,11 @@ test('round 2 L1: an arrow key in the gap: the owner\'s key is never deleted', {
   assert.match(screen, /❯\sq\/model sonnet/, screen)
   assert.doesNotMatch(screen, /Unknown:|Set model/, screen)
 })
+
+test('2.1.319: effort alone answers the cache dialog and confirms from the bridge', { skip: !hasTmux }, async () => {
+  const { control } = await startRig('effort-dialog', { FAKE_TUI_TERMINAL_CURSOR: '1', FAKE_TUI_CONFIRM_EFFORT: '1' })
+  const out = await step(control, 'set_effort', 'xhigh')
+  assert.equal(out.ok, true, JSON.stringify(out))
+  assert.equal(out.report?.effort, 'xhigh')
+  assert.equal(out.report?.model, 'claude-opus-5-5')
+})

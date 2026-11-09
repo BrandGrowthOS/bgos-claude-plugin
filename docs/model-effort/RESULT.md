@@ -2,7 +2,7 @@
 
 ## Claude Code 2.1.319 repair (2026-11-09)
 
-Baseline: `3bf390a` (0.87.0). No version bump, fetch or push. Red tests were committed first in `38f6f11`.
+Baseline: `3bf390a` (0.87.0). No version bump, fetch or push. Red tests were committed first in `fffa23ff`.
 
 The current prompt can be empty without an inverse cursor cell. The pane probe now includes tmux's `cursor_x`, `cursor_y` and `cursor_flag`. An otherwise blank framed prompt is empty only with a visible cursor at its first input column on its prompt row. A hidden, missing, moved or malformed cursor, a faint tag, a draft and a continuation keep their refusals. The proof and subsequent keys stay bound to the pane id.
 
