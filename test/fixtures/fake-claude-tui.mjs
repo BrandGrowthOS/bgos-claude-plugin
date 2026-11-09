@@ -36,6 +36,9 @@ let model = 'claude-opus-5-5'
 let effort = 'high'
 const textSgr = process.env.FAKE_TUI_TEXT_SGR ?? ''
 const dimTags = process.env.FAKE_TUI_DIM_TAGS === '1'
+const terminalCursor = process.env.FAKE_TUI_TERMINAL_CURSOR === '1'
+const confirmModel = process.env.FAKE_TUI_CONFIRM_MODEL === '1'
+let pendingModel = null
 const TAG_RE = /\[(?:Pasted text #\d+(?: \+\d+ lines)?|Image #\d+)\]/g
 let draft = ''
 let cursor = 0
@@ -45,7 +48,7 @@ function statusLine() {
   const input = JSON.stringify({
     session_id: sessionId,
     model: { id: model, display_name: model.split('-')[1] },
-    version: '2.1.309',
+    version: terminalCursor ? '2.1.319' : '2.1.309',
     effort: { level: effort },
   })
   spawnSync(process.execPath, [bridge], { input, env: process.env, timeout: 5000 })
@@ -56,13 +59,13 @@ function styled(i) {
   let dim = false
   if (dimTags) for (const m of draft.matchAll(TAG_RE)) if (i >= m.index && i < m.index + m[0].length) dim = true
   const ch = draft[i] ?? ' '
-  const inv = i === cursor
+  const inv = !terminalCursor && i === cursor
   const sgr = [inv ? '7' : '', dim ? '2' : textSgr].filter(Boolean).join(';')
   return sgr ? `\u001b[${sgr}m${ch}\u001b[0m` : ch
 }
 
 function composer() {
-  if (draft === '') return '\u001b[7mT\u001b[0;2mry "fix lint errors"\u001b[0m'
+  if (draft === '') return terminalCursor ? '' : '\u001b[7mT\u001b[0;2mry "fix lint errors"\u001b[0m'
   let out = ''
   for (let i = 0; i <= draft.length; i++) if (i < draft.length || i === cursor) out += styled(i)
   return out
@@ -70,13 +73,24 @@ function composer() {
 
 function render() {
   process.stdout.write('\u001b[2J\u001b[H')
+  if (pendingModel !== null) {
+    const [family, ...version] = pendingModel.slice('claude-'.length).split('-')
+    const name = family.charAt(0).toUpperCase() + family.slice(1) + ' ' + version.join('.')
+    process.stdout.write(`Switch model?\r\nYour next response will be slower and use more tokens\r\n\r\nThis conversation is cached for the current model. Switching to ${name} means the full history gets re-read.\r\n\r\n❯ 1. Yes, switch to ${name}\r\n  2. No, go back\r\n`)
+    return
+  }
   process.stdout.write(`● ${last}\r\n\r\n${RULE}\r\n❯\u00a0${composer()}\r\n${RULE}\r\n  ? for shortcuts\r\n`)
+  if (terminalCursor) process.stdout.write(`\u001b[?25h\u001b[4;${3 + cursor}H`)
 }
 
 function submit(line) {
-  const m = /^\/model (opus|sonnet|fable|haiku)$/.exec(line)
+  const m = /^\/model (opus|sonnet|fable|haiku|claude-opus-5-5|claude-opus-5|claude-fable-5-1|claude-sonnet-5-5)$/.exec(line)
   const e = /^\/effort (low|medium|high|xhigh|max)$/.exec(line)
-  if (m && applies) model = `claude-${m[1]}-5-5`
+  if (m && applies) {
+    const next = m[1].startsWith('claude-') ? m[1] : `claude-${m[1]}-5-5`
+    if (confirmModel) { pendingModel = next; render(); return }
+    model = next
+  }
   if (e && applies) effort = e[1]
   last = m || e ? `Set ${line.slice(1)}` : `Unknown: ${line}`
   // Drawn BEFORE it is reported, so a daemon that reads the screen right after
@@ -90,6 +104,13 @@ process.stdin.setEncoding('utf8')
 process.stdin.on('data', (chunk) => {
   for (const [ch] of chunk.matchAll(/\u001b\[[0-9;]*[A-Za-z~]|\u001bO[A-Za-z]|[\s\S]/gu)) {
     if (ch === '\r') {
+      if (pendingModel !== null) {
+        model = pendingModel
+        pendingModel = null
+        render()
+        statusLine()
+        continue
+      }
       const line = draft
       draft = ''
       cursor = 0

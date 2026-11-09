@@ -1,5 +1,20 @@
 # RESULT: owner model and effort control for a running Claude Code session (Route A)
 
+## Claude Code 2.1.319 repair (2026-11-09)
+
+Baseline: `3bf390a` (0.87.0). No version bump, fetch or push. Red tests were committed first in `38f6f11`.
+
+The current prompt can be empty without an inverse cursor cell. The pane probe now includes tmux's `cursor_x`, `cursor_y` and `cursor_flag`. An otherwise blank framed prompt is empty only with a visible cursor at its first input column on its prompt row. A hidden, missing, moved or malformed cursor, a faint tag, a draft and a continuation keep their refusals. The proof and subsequent keys stay bound to the pane id.
+
+A model switch may open `Switch model?`. The transaction recognizes the exact Yes and No choices with Yes selected, rechecks the question, pane ownership, session, turn, permission state and injection lock, and answers it once. It still requires a higher status sequence from the same session reporting the requested value. An echoed command, unchanged status, another dialog, selected No, changed question or repeated question never causes another confirmation key.
+
+For runtime 2.1.319 and later in the 2.1 series, a recognized model help block enables the 22 frozen exact ids in the installed CLI's baked model registry. They include `claude-opus-5-5`, `claude-opus-5`, `claude-fable-5-1`, `claude-sonnet-5-5`, the Haiku releases and the other named releases in that registry. Rows keep family and version in their heading, and show the exact id in the description. Both the current picker row and RPC reply preserve exact ids. Exact confirmation compares the whole id, so Opus 5.5 cannot confirm a request for Opus 5. Older runtimes retain their alias catalog. Every typed model is still a frozen literal, checked against this host's catalog before injection.
+
+The regression tests retain sanitized ANSI crops from all five supplied captures, with machine headers and session links removed. The recorded switch question contains an explanation and a target name in both the explanation and the Yes choice. The reader requires that exact layout and the same known target, matching the requested exact model or alias family. The captured fresh hint stays unknown under the brief's strict blank-row rule; the captured blank after-turn rows use the tmux cursor proof. The private tmux rig uses a fake CLI with a real terminal cursor and the real status bridge. It switches Opus 5.5 to Opus 5 and back, then changes effort. No model API call or real agent is used.
+
+Validation: all 513 files completed with 11,625 passed, 0 failed and 62 skipped; the final focused run passed 153 tests and the type check was clean. The full runner had a cache-only artifact failure, corrected and rechecked with zero new paths. These results and the code-map limitation are recorded in [CLI319-EVIDENCE.md](CLI319-EVIDENCE.md). The historical sections below describe earlier work; the current switch-dialog handling and exact-id catalog supersede their one-Enter and alias-only assumptions.
+
+
 Branch `feat/owner-model-effort-control`, off the plugin's main at `457210c`. Board row c0cc7944. Not pushed (no GitHub access here); Data fetches the branch over ssh. Plugin bumped to 0.75.0 with a CHANGELOG entry. Commits: `078fe83` (red first tests), `81bae66` (implementation), `33469f8` (release bump), and this file.
 
 **Round 3 (0.74.4) replaced the wire.** BGOS #3060 merged and is authoritative: the picker speaks `model_effort_picker` and voice_rpc `list_model_effort` / `apply_model_effort`, and the assumed `model_effort_rpc` wire with `owner_model_effort_control`, `set_model`, `set_effort` and `describe` described in the sections up to "Round 2" is gone. See "Round 3".

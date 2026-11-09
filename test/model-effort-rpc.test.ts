@@ -119,6 +119,21 @@ test('apply answers what the session REPORTS, never the selection echoed', async
   assert.equal(r.notes.length, 0, 'no switched note for an unconfirmed switch')
 })
 
+test('an exact picker selection survives the reply and a different version cannot confirm it', async () => {
+  const model = 'claude-opus-5'
+  const frame = { ...APPLY, payload: { ...APPLY.payload, model } }
+  for (const observed of [model, 'claude-opus-5-5']) {
+    const r = rig({ outcome: { ok: true, op: 'apply', applied: true, report: { ...REPORT, model: observed } } })
+    const out = await r.handler.answer(frame)
+    if (observed === model) {
+      assert.deepEqual(out, { ok: true, payload: { current: { model, effort: 'xhigh' }, sessionId: SID } })
+    } else {
+      assert.equal(out.ok, false)
+      assert.equal(r.notes.length, 0)
+    }
+  }
+})
+
 test('a confirmed switch is reported on the session settings rail and noted in the chat', async () => {
   const r = rig()
   await r.handler.answer(APPLY)

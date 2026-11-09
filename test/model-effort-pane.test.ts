@@ -49,6 +49,15 @@ test('pane state: alive, dead, in a mode, and garbage', () => {
   }
 })
 
+test('tmux cursor coordinates are parsed strictly and never guessed', () => {
+  const pane = '%7\t/dev/ttys012\t0\t0\t4242'
+  assert.deepEqual(parsePaneState(pane + '\t2\t17\t1')!.cursor, { x: 2, y: 17, visible: true })
+  assert.equal(parsePaneState(pane + '\t2\t17\t0')!.cursor!.visible, false)
+  for (const tail of ['\t2\t17', '\t-1\t17\t1', '\t2\tx\t1', '\t2\t17\t2', '\t9007199254740992\t17\t1']) {
+    assert.equal(parsePaneState(pane + tail), null)
+  }
+})
+
 test('the agent owns the pane only when the pane\'s root is its ancestor and its own job is in front', () => {
   const pane = '/dev/ttys012'
   // The pane runs the CLI directly: the daemon (900) is the CLI's (800) child,

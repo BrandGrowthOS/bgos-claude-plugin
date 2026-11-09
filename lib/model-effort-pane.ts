@@ -35,9 +35,12 @@
  * and is followed by nothing, or by an SGR 2 placeholder that is not one of
  * the CLI's own reference tags ([Pasted text #1], [Image #1]). Anything
  * before the cursor, anything not dim after it, or any line between the
- * prompt and the closing frame is the owner's draft; no cursor drawn, or a
- * shape the CLI does not draw, is unknown. When in doubt, never empty.
+ * prompt and the closing frame is the owner's draft. On 2.1.319 no inverse
+ * cell is drawn: a blank prompt also requires tmux's visible cursor at the
+ * prompt's first input column, on that row. Anything else remains unknown.
  */
+
+import { EXACT_MODEL_LABELS, isModelFamily } from './compact-inject.ts'
 
 export interface PaneState {
   /** tmux pane id, %N. */
@@ -50,18 +53,33 @@ export interface PaneState {
   inMode: boolean
   /** The pane's root process. */
   pid: number
+  cursor?: TerminalCursor
+}
+
+/** tmux's zero based cursor in the visible capture, with cursor_flag set. */
+export interface TerminalCursor {
+  x: number
+  y: number
+  visible: boolean
 }
 
 /** Parse lib/compact-inject.ts PANE_STATE_FORMAT, or null for anything else. */
 export function parsePaneState(stdout: string): PaneState | null {
   const fields = String(stdout ?? '').replace(/\r?\n$/, '').split('\t')
-  if (fields.length !== 5) return null
+  if (fields.length !== 5 && fields.length !== 8) return null
   const [paneId, tty, dead, inMode, pid] = fields as [string, string, string, string, string]
   if (!/^%\d+$/.test(paneId)) return null
   if (!/^\/dev\/\S+$/.test(tty)) return null
   if (!/^[01]$/.test(dead) || !/^[01]$/.test(inMode)) return null
   if (!/^\d+$/.test(pid)) return null
-  return { paneId, tty, dead: dead === '1', inMode: inMode === '1', pid: Number(pid) }
+  const pane: PaneState = { paneId, tty, dead: dead === '1', inMode: inMode === '1', pid: Number(pid) }
+  if (fields.length === 8) {
+    const [x, y, flag] = fields.slice(5) as [string, string, string]
+    if (!/^\d+$/.test(x) || !/^\d+$/.test(y) || !/^[01]$/.test(flag)) return null
+    if (![Number(x), Number(y)].every(Number.isSafeInteger)) return null
+    pane.cursor = { x: Number(x), y: Number(y), visible: flag === '1' }
+  }
+  return pane
 }
 
 /** One process as `ps -o pid=,ppid=,tty=,pgid=,tpgid=` reports it. */
@@ -230,6 +248,9 @@ interface Composer {
   first: Glyph[]
   /** The continuation lines, frame characters removed. */
   more: Glyph[][]
+  row: number
+  /** Terminal column immediately after the prompt and its separator. */
+  column: number | null
 }
 
 /** A line of the older box without its left and right frame characters. */
@@ -281,7 +302,10 @@ function locateComposer(capture: string): Composer | null {
     const first = afterPrompt(read(raws[i]!))
     if (!first) return null
     const more = raws.slice(i + 1, end).map(read)
-    return { first, more }
+    // The current CLI's prompt is ASCII padding, a one cell arrow and one
+    // space or NBSP. Reject other prefixes rather than guess cell widths.
+    const prefix = /^( *[❯>]([ \u00a0]))/u.exec(lines[i]!)
+    return { first, more, row: i, column: !boxed && prefix ? prefix[1]!.length : null }
   }
   return null
 }
@@ -295,7 +319,7 @@ function locateComposer(capture: string): Composer | null {
  * cursor). A continuation line drawn only faint is not known to be anything,
  * so it is unknown, refused like a missing composer.
  */
-export function readComposer(capture: string): ComposerState {
+export function readComposer(capture: string, cursor?: TerminalCursor): ComposerState {
   const composer = locateComposer(capture)
   if (!composer) return 'unknown'
   const first = readPromptLine(composer.first)
@@ -304,7 +328,30 @@ export function readComposer(capture: string): ComposerState {
     const visible = line.filter((g) => !isBlank(g))
     if (visible.length === 0 || visible.some((g) => !g.faint)) return 'draft'
   }
-  return composer.more.length > 0 ? 'unknown' : first
+  if (composer.more.length > 0) return 'unknown'
+  if (first !== 'unknown') return first
+  // 2.1.319 leaves the cursor to the terminal. Only a completely blank row
+  // with the visible terminal cursor immediately after the prompt is empty.
+  // Typed spaces move that cursor; dim placeholders and tags remain unknown.
+  if (composer.first.length !== 0) return 'unknown'
+  return cursor?.visible === true && Number.isSafeInteger(cursor.x) && Number.isSafeInteger(cursor.y)
+    && cursor.x === composer.column && cursor.y === composer.row ? 'empty' : 'unknown'
+}
+
+/** The model switch question only, with Yes selected and no other UI below it. */
+export function isModelSwitchDialog(capture: string, selection?: string): boolean {
+  const lines = String(capture ?? '').split('\n').map((l) => plain(l).trim()).filter(Boolean)
+  const at = lines.lastIndexOf('Switch model?')
+  if (at < 0 || lines.filter((l) => l === 'Switch model?').length !== 1) return false
+  const tail = lines.slice(at + 1)
+  if (tail.length !== 4 || tail[0] !== 'Your next response will be slower and use more tokens') return false
+  const target = /^This conversation is cached for the current model\. Switching to (.+) means the full history gets re-read\.$/.exec(tail[1]!)?.[1]
+  if (!target || !(Object.values(EXACT_MODEL_LABELS) as string[]).includes(target)) return false
+  if (tail[2] !== `❯ 1. Yes, switch to ${target}` || tail[3] !== '2. No, go back') return false
+  if (selection === undefined) return true
+  return isModelFamily(selection)
+    ? target.startsWith(selection.charAt(0).toUpperCase() + selection.slice(1) + ' ')
+    : EXACT_MODEL_LABELS[selection as keyof typeof EXACT_MODEL_LABELS] === target
 }
 
 /**

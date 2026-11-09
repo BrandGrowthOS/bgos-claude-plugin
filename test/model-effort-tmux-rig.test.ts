@@ -150,6 +150,19 @@ test('set_model and set_effort are typed by real tmux and confirmed by the real 
   assert.match(await capture(socket), /Set effort max/)
 })
 
+test('2.1.319: a real terminal cursor and switch question allow distinct exact models', { skip: !hasTmux }, async () => {
+  const { control } = await startRig('cli319', { FAKE_TUI_TERMINAL_CURSOR: '1', FAKE_TUI_CONFIRM_MODEL: '1' })
+  const first = await step(control, 'set_model', 'claude-opus-5')
+  assert.equal(first.ok, true, JSON.stringify(first))
+  assert.equal(first.report?.model, 'claude-opus-5')
+  const second = await step(control, 'set_model', 'claude-opus-5-5')
+  assert.equal(second.ok, true, JSON.stringify(second))
+  assert.equal(second.report?.model, 'claude-opus-5-5')
+  const effort = await step(control, 'set_effort', 'max')
+  assert.equal(effort.ok, true, JSON.stringify(effort))
+  assert.equal(effort.report?.effort, 'max')
+})
+
 test('a real draft in the pane is refused and left exactly as the owner typed it', { skip: !hasTmux }, async () => {
   const { control, socket } = await startRig('draft')
   // The owner's own typing, simulated in this test's own pane.
