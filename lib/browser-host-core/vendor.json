@@ -22,8 +22,9 @@
     },
     "answer-privacy.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/answer-privacy.js",
-      "sha256": "f772f822a49e11ab5b0396ad4e63c027d64dddde41bd1c6bdc10b9f406117c78",
-      "sourceCommit": "1108f55db11ed26027c013206e0ddd220092586b"
+      "sha256": "172e4b128e962bc6bf67fc1d5c4112fae9fa3f4900825092e09c5ca267ccd69c",
+      "sourceCommit": "1108f55db11ed26027c013206e0ddd220092586b",
+      "aheadOfSource": "Local port of the bounded privacy read wait: track pending work by order, capture the cutoff after readiness, and retain the later proof recheck. sourceCommit records the vendored base; the desktop mirror and its vendor guard must adopt this hash when synchronized."
     }
   },
   "vendoredAt": "2026-11-06, whole-chord activation classification",

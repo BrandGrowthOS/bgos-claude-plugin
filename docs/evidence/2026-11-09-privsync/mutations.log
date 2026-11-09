@@ -1,0 +1,51 @@
+cutoff-before-ready: expected failure, exit 1
+✖ the read cutoff includes work registered while admission is still becoming ready (3.0935ms)
+✔ a later failed frame proof is retried after the bounded wait and blocks release until checked (1.4945ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 100.254125
+
+✖ failing tests:
+
+test at .tmp/privsync/mutations/cutoff-before-ready/proof.test.ts:1:2410
+✖ the read cutoff includes work registered while admission is still becoming ready (3.0935ms)
+  AssertionError [ERR_ASSERTION]: the cutoff must be captured after ready, so this child is awaited
+
+  true !== false
+
+      at TestContext.<anonymous> (<repo>/.tmp/privsync/mutations/cutoff-before-ready/proof.test.ts:74:12)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+missing-later-recheck: expected failure, exit 1
+✔ the read cutoff includes work registered while admission is still becoming ready (2.581542ms)
+✖ a later failed frame proof is retried after the bounded wait and blocks release until checked (2002.04975ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2107.665458
+
+✖ failing tests:
+
+test at .tmp/privsync/mutations/missing-later-recheck/proof.test.ts:1:3266
+✖ a later failed frame proof is retried after the bounded wait and blocks release until checked (2002.04975ms)
+  Error: privacy proof did not finish within 2000 ms
+      at Timeout.<anonymous> (<repo>/.tmp/privsync/mutations/missing-later-recheck/proof.test.ts:13:39)
+      at listOnTimeout (node:internal/timers:605:17)
+      at process.processTimers (node:internal/timers:541:7)
