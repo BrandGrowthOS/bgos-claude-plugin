@@ -25,6 +25,8 @@ import {
 import { THREAD_TEXT_MAX, threadLaneArgs, threadTurnPrompt } from '../lib/thread-lane-args.ts'
 import { userMessageLine, type StreamJsonChild } from '../lib/stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
+import { authHeaders } from '../lib/agent-credentials.ts'
+import { lowerCaseHeaders, threadReplyRefused } from './helpers/keyed-assistant-rule.ts'
 
 const MAIN = '435f1f18-2716-4c27-bfd8-e2c48f28b3ac'
 const FORK_A = 'dbd3b62b-f099-4f95-be1d-4687b4af9042'
@@ -62,13 +64,15 @@ class FakeChild implements StreamJsonChild {
 
 interface Timer { fn: () => void; ms: number; cleared: boolean; fired: boolean }
 
-function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null | (() => Promise<string | null>); platform?: NodeJS.Platform; git?: (sub: string[]) => { ok: boolean; stdout: string } | undefined } = {}) {
+function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; refusePosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null | (() => Promise<string | null>); platform?: NodeJS.Platform; git?: (sub: string[]) => { ok: boolean; stdout: string } | undefined } = {}) {
   const repo = opts.repo ?? true
   const files = new Map<string, string>(Object.entries(opts.files ?? {}))
   const dirs = new Set<string>()
   const spawned: Array<{ command: string; args: string[]; cwd: string; child: FakeChild }> = []
   const posts: Array<{ path: string; body: Record<string, unknown> }> = []
   const failedPosts: Array<{ path: string; body: Record<string, unknown> }> = []
+  const refusedPosts: Array<{ path: string; body: Record<string, unknown> }> = []
+  const modes = new Map<string, number>()
   const gitCalls: string[][] = []
   const removed: string[] = []
   const branchesDeleted: string[] = []
@@ -137,7 +141,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       mkdir: (p) => { dirs.add(p) },
       readFile: (p) => { const v = files.get(p); if (v === undefined) throw new Error(`ENOENT ${p}`); return v },
       writeFile: (p, s) => { files.set(p, s) },
-      appendFile: (p, s) => { files.set(p, (files.get(p) ?? '') + s) },
+      appendFile: (p, s, mode) => { files.set(p, (files.get(p) ?? '') + s); if (mode !== undefined) modes.set(p, mode) },
       copyFile: (a, b) => { const v = files.get(a); if (v === undefined) throw new Error(`ENOENT ${a}`); files.set(b, v) },
       unlink: (p) => { if (!files.delete(p)) throw new Error(`ENOENT ${p}`) },
       rmrf: (p) => { removed.push(p); dirs.delete(p) },
@@ -146,6 +150,10 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       list: (d) => [...files.keys()].filter((k) => dirname(k) === d).map((k) => k.slice(d.length + 1)),
     },
     post: async (path, body) => {
+      if (opts.refusePosts?.(path, body)) {
+        refusedPosts.push({ path, body })
+        throw Object.assign(new Error('POST 403: Invalid assistant credential.'), { name: 'HttpError', status: 403 })
+      }
       if (opts.failPosts?.(path, body)) { failedPosts.push({ path, body }); throw new Error('HTTP 500') }
       posts.push({ path, body })
     },
@@ -157,7 +165,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
   const manager = new ThreadLaneManager(deps)
   const live = (ms: number) => timers.filter((t) => t.ms === ms && !t.cleared && !t.fired)
   const fire = (t: Timer) => { t.fired = true; t.fn() }
-  return { manager, deps, files, dirs, spawned, posts, failedPosts, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc, procs, procKills, ctl, procCwd }
+  return { manager, deps, files, dirs, spawned, posts, failedPosts, refusedPosts, modes, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc, procs, procKills, ctl, procCwd }
 }
 
 /** The command the manager must build for a working lane in wt(root) (protected: the agent repo's own state). */
@@ -269,8 +277,8 @@ test('each result is posted as one thread reply, final unless it ends asking a q
   await r.manager.idle()
   const replies = r.posts.filter((p) => p.path === 'integrations/threads/reply').map((p) => p.body)
   assert.deepEqual(replies, [
-    { chatId: '55', rootId: '101', text: 'Done: the test is fixed.', final: true, clientId: 'thread-101-1010' },
-    { chatId: '55', rootId: '101', text: 'Shall I update the README too?', final: false, clientId: 'thread-101-1011' },
+    { chatId: '55', rootId: '101', text: 'Done: the test is fixed.', final: true },
+    { chatId: '55', rootId: '101', text: 'Shall I update the README too?', final: false },
   ])
 })
 
@@ -1239,7 +1247,7 @@ test('after a daemon restart a listed turn that already finished is never run ag
   assert.deepEqual(statePosts(r2), ['101:open'])
   const notice = r2.posts.find((p) => p.path === 'integrations/threads/reply')!.body
   assert.match(String(notice.text), /could not be delivered/)
-  assert.equal(notice.clientId, 'thread-101-1010', 'the same client id as the lost answer, so the server keeps one')
+  assert.equal('clientId' in notice, false, 'no client key: the server would refuse it')
   // A reply the person sent after it still runs.
   assert.equal(await r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1011', 'more')] }), { assistantIds: ['7'] }), 1)
   await r2.manager.idle()
@@ -2148,4 +2156,187 @@ test('THREADCRASH: a fault while handling a lane frame stays in the lane and nev
   r.spawned[0]!.child.result('answer')
   await r.manager.idle()
   assert.equal(replyTexts(r).at(-1), 'answer', 'the lane goes on')
+})
+
+// -- THREADREPLY (0.87.2): the server refuses a keyed assistant write this daemon cannot prove --
+
+const REPLY = 'integrations/threads/reply'
+const SAVED = join(STATE, '101.undelivered.txt')
+// The real headers a pairing daemon sends, judged by the server's rule.
+const PAIRED = lowerCaseHeaders(authHeaders({ mode: 'pairing', pairingToken: 'TOKEN' } as Parameters<typeof authHeaders>[0]))
+const serverRule = (path: string, body: Record<string, unknown>) => path === REPLY && threadReplyRefused(PAIRED, body)
+const refuseAnswer = (path: string, body: Record<string, unknown>) => path === REPLY && body.text === 'the answer.'
+
+async function answered(r: ReturnType<typeof rig>, text = 'the answer.', input: ThreadTurnInput = turn('101')) {
+  r.manager.turn(input)
+  await r.manager.idle()
+  r.spawned[0]!.child.init(FORK_A)
+  r.spawned[0]!.child.result(text)
+  await flush()
+}
+
+test('THREADREPLY: the daemon sends the pairing token and no proof it does not hold', () => {
+  assert.deepEqual(PAIRED, { 'x-bgos-pairing': 'TOKEN' })
+})
+
+test('THREADREPLY: an answer passes the server rule on the pairing headers alone', async () => {
+  const r = rig({ refusePosts: serverRule })
+  await answered(r)
+  assert.deepEqual(r.refusedPosts, [])
+  assert.deepEqual(replyTexts(r), ['the answer.'])
+})
+
+test('THREADREPLY: a failed turn tells the owner through a write that passes the server rule', async () => {
+  const r = rig({ refusePosts: serverRule })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  r.spawned[0]!.child.init(FORK_A)
+  r.spawned[0]!.child.result('')
+  await flush()
+  assert.deepEqual(r.refusedPosts, [])
+  assert.match(String(replyTexts(r)[0]), /failed before the agent could answer/)
+})
+
+test('THREADREPLY: a refused answer is tried once, the thread goes back to open, and the owner is told', async () => {
+  const r = rig({ refusePosts: refuseAnswer })
+  await answered(r)
+  assert.equal(r.refusedPosts.length, 1, 'never tried again')
+  assert.equal(r.timers.filter((t) => THREAD_POST_RETRY_MS.includes(t.ms) && !t.cleared).length, 0, 'no retry is waiting')
+  assert.equal(statePosts(r).at(-1), '101:open')
+  assert.equal(replyTexts(r).length, 1, 'one sentence')
+  assert.match(String(replyTexts(r)[0]), /refused/)
+})
+
+test('THREADREPLY: a refused answer is saved where it can be read, and the notice says so', async () => {
+  const r = rig({ refusePosts: refuseAnswer })
+  await answered(r)
+  assert.match(r.files.get(SAVED) ?? '', /the answer\./)
+  assert.match(String(replyTexts(r)[0]), /saved/)
+})
+
+test('THREADREPLY: the notice never claims a save that failed', async () => {
+  const r = rig({ refusePosts: refuseAnswer })
+  r.deps.fs.appendFile = () => { throw new Error('ENOSPC') }
+  await answered(r)
+  assert.match(String(replyTexts(r)[0]), /refused/)
+  assert.doesNotMatch(String(replyTexts(r)[0]), /saved/)
+  assert.equal(replyTexts(r).length, 1)
+})
+
+test('THREADREPLY: a refused summary is saved and the owner is told', async () => {
+  const r = rig({ refusePosts: (path) => path === 'integrations/threads/summary' })
+  await answered(r, 'the draft.', turn('101', { mode: 'summary' }))
+  assert.equal(r.refusedPosts.length, 1)
+  assert.match(r.files.get(SAVED) ?? '', /the draft\./)
+  assert.match(String(replyTexts(r)[0]), /refused/)
+})
+
+test('THREADREPLY: when every reply is refused nothing loops, and a reconnect does not start it again', async () => {
+  const r = rig({ refusePosts: (path) => path === REPLY })
+  await answered(r)
+  assert.equal(r.refusedPosts.length, 2, 'the answer and the one notice')
+  assert.equal(await r.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
+  await flush()
+  assert.equal(r.refusedPosts.length, 2, 'a reconnect posts nothing more for that turn')
+  assert.equal(r.spawned[0]!.child.stdin.length, 1, 'never run again')
+})
+
+test('THREADREPLY: a refusal survives a restart, the next daemon does not post for that turn again', async () => {
+  const r1 = rig({ refusePosts: (path) => path === REPLY })
+  await answered(r1)
+  const r2 = rig({ files: Object.fromEntries(r1.files), refusePosts: (path) => path === REPLY })
+  assert.equal(await r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
+  await flush()
+  assert.deepEqual(r2.refusedPosts, [])
+})
+
+test('THREADREPLY: a server failure that is not a refusal still retries', async () => {
+  let down = true
+  const r = rig({ failPosts: (path) => down && path === REPLY })
+  await answered(r)
+  assert.equal(r.failedPosts.length, 1)
+  assert.equal(r.live(THREAD_POST_RETRY_MS[0]!).length, 1, 'waits to try again')
+  down = false
+  r.fire(r.live(THREAD_POST_RETRY_MS[0]!)[0]!)
+  await flush()
+  assert.deepEqual(replyTexts(r), ['the answer.'])
+})
+
+test('THREADREPLY: deleting the thread removes its saved answer', async () => {
+  const r = rig({ refusePosts: refuseAnswer })
+  await answered(r)
+  assert.ok(r.files.has(SAVED))
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  r.spawned[0]!.child.exit()
+  await flush()
+  assert.equal(r.files.has(SAVED), false)
+})
+
+const httpFailure = (status: number) => Object.assign(new Error(`POST ${status}`), { name: 'HttpError', status })
+
+test('THREADREPLY: reconnects while a notice waits to retry post one sentence, and a later reconnect can try again', async () => {
+  const r1 = rig({ failPosts: (path) => path === REPLY })
+  await answered(r1)
+  let down = true
+  const r2 = rig({ files: Object.fromEntries(r1.files), failPosts: (path) => down && path === REPLY })
+  const reconnect = () => r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] })
+  await reconnect()
+  await flush()
+  await reconnect()
+  await flush()
+  assert.equal(r2.failedPosts.length, 1, 'the second reconnect queued no second sentence')
+  for (const ms of THREAD_POST_RETRY_MS) {
+    r2.fire(r2.live(ms)[0]!)
+    await flush()
+  }
+  assert.equal(r2.failedPosts.length, 4, 'the one sentence ran out of retries')
+  down = false
+  await reconnect()
+  await flush()
+  assert.equal(replyTexts(r2).length, 1, 'a reconnect after it settled tries again')
+})
+
+test('THREADREPLY: a refusal that arrives after the thread was deleted leaves nothing on disk', async () => {
+  const r = rig()
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  const post = r.deps.post
+  r.deps.post = async (path, body) => {
+    if (path === REPLY && body.text === 'the answer.') { await gate; throw httpFailure(403) }
+    return post(path, body)
+  }
+  await answered(r)
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  r.spawned[0]!.child.exit()
+  await flush()
+  assert.equal(r.files.has(join(STATE, '101.json')), false, 'the delete finished first')
+  release()
+  await flush()
+  assert.equal(r.files.has(SAVED), false)
+})
+
+test('THREADREPLY: an answer to a thread the owner closed stops at once, with no notice and no save', async () => {
+  const r = rig()
+  const post = r.deps.post
+  const conflicts: string[] = []
+  r.deps.post = async (path, body) => {
+    if (path === REPLY) { conflicts.push(String(body.text)); throw httpFailure(409) }
+    return post(path, body)
+  }
+  await answered(r)
+  assert.deepEqual(conflicts, ['the answer.'], 'tried once, and no sentence follows it')
+  assert.equal(r.files.has(SAVED), false)
+  assert.equal(await r.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
+  await flush()
+  assert.equal(conflicts.length, 1, 'a reconnect posts nothing more')
+})
+
+test('THREADREPLY: the saved answer is private to this user and the log names the file', async () => {
+  const r = rig({ refusePosts: refuseAnswer })
+  const logs: string[] = []
+  r.deps.log = (line) => logs.push(line)
+  await answered(r)
+  assert.equal(r.modes.get(SAVED), 0o600)
+  assert.ok(logs.some((l) => l.includes('101.undelivered.txt')), logs.join(' | '))
+  assert.equal(logs.some((l) => l.includes('the answer.')), false, 'the answer itself is never logged')
 })

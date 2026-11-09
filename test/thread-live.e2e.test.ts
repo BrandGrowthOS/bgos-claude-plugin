@@ -21,7 +21,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -80,11 +80,30 @@ test(`a thread on a real Claude Code agent (${CLAUDE_VERSION || 'no claude'}) ge
     assert.ok(reply, `no thread reply${h.tail()}`)
     assert.match(String(reply.text), /^THREAD-ANSWER-\d+$/, `the lane's own answer${h.tail()}`)
     assert.equal(reply.rootId, 'R1')
+    assert.deepEqual(h.refused, [], `the server rule refused a thread reply${h.tail()}`)
+    const sent = h.posts.find((p) => p.path === 'integrations/threads/reply')!.headers!
+    assert.equal(sent['x-bgos-pairing'], 'TESTTOKEN', 'the real daemon sends its pairing token')
     assert.deepEqual(states(h).slice(0, 1), ['R1:working'])
     // The lane really forked the main session: the fake API saw the main turn's word in the thread's request.
     const threadRequest = h.api.requests.find((r) => JSON.stringify(r.messages ?? '').includes('THREAD-QUESTION'))
     assert.ok(threadRequest && JSON.stringify(threadRequest.messages).includes('PELICAN'), 'the thread knows the main conversation')
     assert.ok(existsSync(join(h.folder, '.hoai', 'threads', 'R1', '.git')), 'a small repository gets its worktree')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a thread answer the server refuses is tried once, is saved, and the owner is told in the thread', OPTS, async () => {
+  const h = await startDaemonHarness({ claude: CLAUDE, refuseThreadReply: (body) => /^THREAD-ANSWER/.test(String(body?.text)) })
+  try {
+    h.threadTurn({ rpcId: 'rpc-live-refused', chatId: '7', rootId: 'R9', replyId: 'p9', text: 'THREAD-QUESTION are you there?' })
+    await waitFor(() => replies(h).length > 0 || h.exited !== null, 120_000)
+    assert.equal(h.exited, null, `the daemon went away${h.tail()}`)
+    assert.match(String(replies(h)[0]?.text), /refused/, `the owner is told${h.tail()}`)
+    assert.equal(h.refused.length, 1, 'a real 403 reaches the lane as a refusal: no retry')
+    assert.ok(states(h).includes('R9:open'), 'the thread is open again')
+    assert.match(readFileSync(join(h.stateDir, 'R9.undelivered.txt'), 'utf8'), /THREAD-ANSWER-\d+/)
+    assert.equal(statSync(join(h.stateDir, 'R9.undelivered.txt')).mode & 0o777, 0o600, 'only this user can read it')
   } finally {
     await h.close()
   }

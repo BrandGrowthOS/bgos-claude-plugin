@@ -26,6 +26,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { Server as SocketServer } from 'socket.io'
 
 import { startFakeAnthropicApi, type FakeAnthropicApi } from './fake-anthropic-api.ts'
+import { KEYED_ASSISTANT_REFUSAL, threadReplyRefused } from './keyed-assistant-rule.ts'
 
 const ROOT = join(import.meta.dirname, '..', '..')
 export const ASSISTANT_ID = 42
@@ -50,7 +51,7 @@ export async function waitFor(check: () => boolean, ms: number): Promise<boolean
   return check()
 }
 
-export type Post = { method: string; path: string; body: Record<string, unknown> | null; at: number }
+export type Post = { method: string; path: string; body: Record<string, unknown> | null; at: number; headers?: Record<string, unknown> }
 
 export interface DaemonHarness {
   root: string
@@ -61,6 +62,8 @@ export interface DaemonHarness {
   mainTranscript: string
   stateDir: string
   posts: Post[]
+  /** Posts the stand in refused with a 403, as the server would. */
+  refused: Post[]
   stderr: string[]
   api: FakeAnthropicApi
   /** Set when the daemon process went away, with when. */
@@ -81,6 +84,8 @@ export interface DaemonHarness {
 
 export interface HarnessOptions {
   claude: string
+  /** Refuse these thread replies with a 403 even though they pass the server's rule. */
+  refuseThreadReply?: (body: Record<string, unknown> | null) => boolean
   /** Bytes of extra history appended to the main transcript (a long lived agent). */
   padMainTranscriptBytes?: number
   /** Files added to the agent's git repository before the first commit, path to bytes. */
@@ -119,6 +124,7 @@ function padTranscript(path: string, bytes: number, sessionId: string, cwd: stri
 
 export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHarness> {
   const posts: Post[] = []
+  const refused: Post[] = []
   const pending: Array<Record<string, unknown>> = []
   // The owner's main chat with this agent, as the backend stores it.
   const rows: Array<Record<string, unknown> & { id: number; chatId: number }> = []
@@ -136,7 +142,13 @@ export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHa
       try {
         body = raw ? (JSON.parse(raw) as Record<string, unknown>) : null
       } catch {}
-      if (req.method !== 'GET') posts.push({ method: req.method ?? '', path, body, at: Date.now() })
+      const post: Post = { method: req.method ?? '', path, body, at: Date.now(), headers: req.headers }
+      if (req.method === 'POST' && path === 'integrations/threads/reply' && (threadReplyRefused(req.headers, body) || opts.refuseThreadReply?.(body))) {
+        refused.push(post)
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        return res.end(JSON.stringify({ statusCode: 403, message: KEYED_ASSISTANT_REFUSAL, error: 'Forbidden' }))
+      }
+      if (req.method !== 'GET') posts.push(post)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       if (req.method === 'GET' && path === 'peers/inbox') {
         return res.end(JSON.stringify({ chats: [{ id: MAIN_CHAT, assistantId: ASSISTANT_ID, kind: 'main', userId: USER_ID }] }))
@@ -260,6 +272,7 @@ export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHa
     mainTranscript,
     stateDir: join(home, '.bgos-agent', String(ASSISTANT_ID), 'threads'),
     posts,
+    refused,
     stderr,
     api,
     exited: null,
