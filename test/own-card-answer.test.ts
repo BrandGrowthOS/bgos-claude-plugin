@@ -5,6 +5,7 @@ import ts from 'typescript'
 import { decideButtonsAnswered, viewStreamMessage, buildStreamClickMeta } from '../lib/stream-apply.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { LOGIN_METHOD_WINDOW_MS } from '../lib/auth-login.ts'
+import { isBrowserDownloadCard } from '../lib/poll-core.ts'
 
 const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 function declaration(name: string): string {
@@ -269,7 +270,7 @@ test('historic sign-in cards never enter generic tracking; ordinary reply and pl
   const end = source.indexOf('      prevUnanswered,', rowsStart)
   const expression = source.slice(rowsStart, end).trim().replace(/,$/, '')
   const js = ts.transpileModule(`function rowsOf(data, loginMethodCard, chatId) { return ${expression} }`, { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText
-  const rowsOf = new Function(`${js}; return rowsOf`)() as (data: unknown, slot: unknown, chatId: string) => Array<{ id: number }>
+  const rowsOf = new Function('isBrowserDownloadCard', `${js}; return rowsOf`)(isBrowserDownloadCard) as (data: unknown, slot: unknown, chatId: string) => Array<{ id: number }>
   const reply = card(1005, false)
   reply.messageOptions = [{ callbackData: 'u:login:console', text: 'Agent-authored value' }]
   const plan = card(1006, false)
