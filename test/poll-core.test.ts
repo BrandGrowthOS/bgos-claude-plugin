@@ -49,6 +49,7 @@ import {
   WS_DOWN_FULL_SWEEP_INTERVAL_MS,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
   selectClickTransitions,
+  isBrowserDownloadCard,
 } from '../lib/poll-core.ts'
 
 // ── P1c: NOT_MODIFIED sentinel ───────────────────────────────────────────────
@@ -767,6 +768,31 @@ test('user rows and option-less rows are ignored', () => {
   assert.deepEqual(r.announce, [])
 })
 
+test("a tap on a browser download card is never announced: the card is the owner's, and its text names the file", () => {
+  // The browser host posts a download's ask and its kept notice in the owner's chat with the agent, as the agent. A tap
+  // on such a card is the owner's: the click watcher neither watches nor announces it. The agent reads its own
+  // downloads from the browser host's replies.
+  const r = selectClickTransitions({
+    rows: [
+      clickRow({ id: 11, messageType: 'approval_request', answered: true, browserDownloadCard: true }),
+      clickRow({ id: 12, messageType: 'approval_request', answered: false, browserDownloadCard: true }),
+      clickRow({ id: 13, messageType: 'approval_request', answered: true }),
+    ],
+    prevUnanswered: new Set([11, 13]),
+    isFirstPoll: false,
+  })
+  assert.deepEqual(r.announce, [13], "the agent's own gate card is announced as before")
+  assert.deepEqual([...r.nextUnanswered], [], 'a download card is not watched at all')
+})
+
+test('a browser download card is known by its own metadata, ask and kept notice alike', () => {
+  assert.equal(isBrowserDownloadCard({ tool: 'browser_gate', browser_gate: { kind: 'download', download: { stage: 'ask' } } }), true)
+  assert.equal(isBrowserDownloadCard({ tool: 'browser_gate', browser_gate: { kind: 'download', download: { stage: 'kept', reason: 'owner_download' } } }), true)
+  assert.equal(isBrowserDownloadCard({ tool: 'browser_gate', browser_gate: { kind: 'navigate' } }), false)
+  assert.equal(isBrowserDownloadCard({ tool: 'permission', browser_gate: { kind: 'download' } }), false)
+  for (const meta of [null, undefined, 'x', {}, { tool: 'browser_gate' }, { tool: 'browser_gate', browser_gate: null }]) assert.equal(isBrowserDownloadCard(meta), false)
+})
+
 // ── P6e: reconcileAlwaysOn cadence ───────────────────────────────────────────
 
 test('reconcileAlwaysOn cadence is 15 minutes (was 2)', () => {
@@ -875,6 +901,11 @@ test('server.ts detects clicks through selectClickTransitions', () => {
     serverSource.includes('selectClickTransitions({'),
     'the click detector must be the tested pure function, not a re-inlined loop',
   )
+})
+
+test('server.ts tells the click detector which rows are browser download cards', () => {
+  const call = serverSource.slice(serverSource.indexOf('selectClickTransitions({'), serverSource.indexOf('prevUnanswered,', serverSource.indexOf('selectClickTransitions({')))
+  assert.match(call, /browserDownloadCard: isBrowserDownloadCard\(m\.message\.approvalMeta\)/)
 })
 
 test('server.ts registers NO inbound_click WS listener (single click path)', () => {

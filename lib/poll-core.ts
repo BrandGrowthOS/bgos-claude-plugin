@@ -603,6 +603,22 @@ export interface ClickRow {
   hasOptions: boolean
   /** True once `answered_at` is set on the row. */
   answered: boolean
+  /** True for a browser download card (isBrowserDownloadCard): never watched, never announced. */
+  browserDownloadCard?: boolean
+}
+
+/**
+ * A browser download card: the browser host's ask about a file the page downloaded, or its notice that one is kept for
+ * the owner. The file may be the owner's own, so a tap on the card is the owner's business: the agent is never told of
+ * it, and never quoted the card's text, which names the file. Known by the browser_gate block, which only the host's
+ * card route writes.
+ */
+export function isBrowserDownloadCard(approvalMeta: unknown): boolean {
+  if (!approvalMeta || typeof approvalMeta !== 'object') return false
+  const meta = approvalMeta as { tool?: unknown; browser_gate?: unknown }
+  if (meta.tool !== 'browser_gate') return false
+  const gate = meta.browser_gate as { kind?: unknown } | null | undefined
+  return !!gate && typeof gate === 'object' && gate.kind === 'download'
 }
 
 /**
@@ -648,6 +664,7 @@ export function selectClickTransitions(opts: {
   const askAnswered: number[] = []
   for (const row of opts.rows) {
     if (row.sender !== 'assistant') continue
+    if (row.browserDownloadCard) continue
     if (opts.trackedAsks?.has(row.id)) {
       if (row.answered) askAnswered.push(row.id)
       continue

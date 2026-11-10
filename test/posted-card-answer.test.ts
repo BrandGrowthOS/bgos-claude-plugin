@@ -8,7 +8,7 @@ import * as stream from '../lib/stream-apply.ts'
 import * as text from '../lib/message-text.ts'
 import * as permission from '../lib/permission-relay.ts'
 import * as inbound from '../lib/inbound-channel.ts'
-import { BUTTON_PROMPT_FAST_WINDOW_MS, selectClickTransitions } from '../lib/poll-core.ts'
+import { BUTTON_PROMPT_FAST_WINDOW_MS, isBrowserDownloadCard, selectClickTransitions } from '../lib/poll-core.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { createPostedButtons, createPrivateTurnTracker, privateTapCard } from '../lib/private-turn.mjs'
 import * as card from '../lib/card-answer.ts'
@@ -52,7 +52,7 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown> = async () 
   const postedButtons = createPostedButtons()
   const scope = {
     ...plan, ...stream, ...text, ...permission, ...inbound, ...card,
-    BUTTON_PROMPT_FAST_WINDOW_MS, selectClickTransitions,
+    BUTTON_PROMPT_FAST_WINDOW_MS, isBrowserDownloadCard, selectClickTransitions,
     USER_ID: OWNER, ASSISTANT_ID: '42', FORWARD_CACHE_MAX: 500,
     postedButtonCards, announcedClickIds, recentButtonPrompts: prompts,
     chatUnansweredButtons: new Map(), postedButtons, openPlansByChat,
@@ -311,6 +311,37 @@ test('a deleted chat no longer requests special history recovery', async () => {
   h.flags.deleted = true
   assert.equal(h.api.hasPendingPostedButtonCard(CHAT), false)
 })
+
+// A browser download card names a file the page downloaded, and the file may be the owner's own. The real poll page
+// never watches it, so a tap on it reaches the agent as nothing and its text is never quoted. Another browser gate
+// card, through the same two polls, is announced: the rig would have caught a download card that was.
+for (const kind of ['download', 'sensitive'] as const) {
+  test(`the real poll page ${kind === 'download' ? 'never announces' : 'still announces'} a tap on a browser ${kind} card`, async () => {
+    const gateCard = (answered: boolean) => {
+      const r = row()
+      Object.assign(r.message, {
+        messageType: 'approval_request',
+        text: 'Sample agent wants to download sample-owner-file.pdf',
+        answeredAt: answered ? new Date().toISOString() : null,
+        answerPayload: answered ? { callbackData: 'ea:allow_once:g_sample01', buttonText: 'Allow once', answeredByUserId: OWNER, senderUserId: OWNER } : null,
+        approvalMeta: { tool: 'browser_gate', request_id: 'g_sample01', browser_gate: { gate_id: 'g_sample01', kind, summary: 'download sample-owner-file.pdf' } },
+      })
+      r.messageOptions = [{ text: 'Allow once', callbackData: 'ea:allow_once:g_sample01' }, { text: 'Deny', callbackData: 'ea:deny:g_sample01' }]
+      return r
+    }
+    const h = rig()
+    h.api.pollPage({ messages: [gateCard(false)] })
+    h.api.pollPage({ messages: [gateCard(true)] })
+    await flush()
+    if (kind === 'download') {
+      assert.equal(h.notes.length, 0, 'the tap is the owner\'s business: nothing reaches the agent')
+      assert.equal(h.unanswered.get(CHAT)?.has(ID) ?? false, false, 'the download card is never watched')
+    } else {
+      assert.equal(h.notes.length, 1, 'the same polls announce another gate card')
+      assert.match(h.notes[0].params.content, /sample-owner-file\.pdf/, 'and quote its text')
+    }
+  })
+}
 
 // ── A ui_card's answer is data, on every lane ──────────────────────────────
 //

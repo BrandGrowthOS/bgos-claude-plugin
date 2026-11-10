@@ -449,6 +449,7 @@ import {
   globalIntervalMs,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
   selectClickTransitions,
+  isBrowserDownloadCard,
   FIRST_RUN_RECENT_WINDOW_MS,
 } from './lib/poll-core.js'
 import {
@@ -12660,6 +12661,7 @@ async function pollChat(chatId: string): Promise<void> {
         messageType: m.message.messageType,
         hasOptions: (m.messageOptions ?? []).length > 0,
         answered: !!m.message.answeredAt,
+        browserDownloadCard: isBrowserDownloadCard(m.message.approvalMeta),
       })),
       prevUnanswered,
       isFirstPoll,

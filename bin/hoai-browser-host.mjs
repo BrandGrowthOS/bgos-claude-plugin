@@ -63,7 +63,7 @@ import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdi
 import { readdir, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir, hostname, tmpdir } from 'node:os'
-import { delimiter, dirname, isAbsolute, join, relative, resolve, posix as posixPath, win32 as win32Path } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, posix as posixPath, win32 as win32Path } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { EventEmitter } from 'node:events'
 import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
@@ -458,7 +458,18 @@ export function servedBrowserTools(playwrightTools) {
  * It overrides anything the general Agent Browser text says about downloads
  * (HOAI board row 67562770). Pinned by test/hoai-browser-host.downloads.test.ts.
  */
-export const DOWNLOAD_SENTENCE = `Downloads: a file the page starts downloading is asked for as its own card, for ${DOWNLOAD_ASK_WAIT_S} seconds whatever wait_seconds your action carried, and it does not hold your call; while that card is open your next gated action waits for it. Allowed, the file is saved in your browser folder and hoai_browser_status gives you its path. Denied, it is deleted. Not answered, it is kept for the owner on this machine (when it fits the keep limits; otherwise it is deleted) and you are not given it. hoai_browser_status lists your latest downloads and every file still kept for the owner under Downloads, each with its state. Do not download a kept file again, because a site may serve a file only once: ask the owner what to do with it.`
+/** The one line an agent gets when its owner gives it one of their own downloads with Allow once: once, no handle, no size. */
+export const ownerGaveLine = (fileName, folder) => `- ${fileName}: your owner gave you this file; it is in your browser folder (${folder}).`
+
+export const DOWNLOAD_SENTENCE = `Downloads: a file the page starts downloading is asked for as its own card, for ${DOWNLOAD_ASK_WAIT_S} seconds whatever wait_seconds your action carried, and it does not hold your call; while that card is open your next gated action waits for it. Allowed, the file is saved in your browser folder and hoai_browser_status gives you its path. Denied, it is deleted. Not answered, it is kept for the owner on this machine (when it fits the keep limits; otherwise it is deleted) and you are not given it. hoai_browser_status lists your latest downloads and every one of them still kept for the owner under Downloads, each with its state. A download the page starts while your owner holds the browser, or after they hand it back and before you act again, may be theirs: you are told only that your owner has a request open, and until when. If your owner gives you one of theirs with Allow once, you are told its name once, when it is in your browser folder; it is not listed in hoai_browser_status. Do not download a kept file again, because a site may serve a file only once: ask the owner what to do with it.`
+
+/**
+ * All an agent learns of a download that may be its owner's (SlotDownloads._mayBeOwners): that a request is open, and
+ * until when. Never the file's name, size or handle, and never the request's gate id.
+ */
+function ownersRequestOpen(expiresAt) {
+  return `Your owner has a request open until ${expiresAt}.`
+}
 
 /** What this host tells an agent at initialize. Dash free, like the canon. */
 export function hostInstructions(deviceLabel) {
@@ -2417,6 +2428,7 @@ export class BrowserHostCore {
   _pendingLine(ctx) {
     const gate = this.gates ? this.gates.pending(this.pool.slotKey(ctx)) : null
     if (!gate) return 'No pending permission.'
+    if (this._ownersRequest(ctx, gate)) return `${ownersRequestOpen(gate.expiresAt)} Your next gated action waits for it to end.`
     const download = this._downloadForGate(ctx, gate.gateId)
     if (download) {
       return `Waiting for the owner about a download the page started, ${download.fileName} (${download.handle}), until ${gate.expiresAt}. It is not an action of yours; your next gated action waits for it to end.`
@@ -2474,6 +2486,17 @@ export class BrowserHostCore {
     }
   }
 
+  /**
+   * A download gate the agent is never told about: one whose download may be its owner's, or one no download of this
+   * agent and person explains, since a download gate's summary names its file. Every other gate is for an action of the
+   * agent's own.
+   */
+  _ownersRequest(ctx, gate) {
+    if (!gate || gate.kind !== 'download') return false
+    const download = this._downloadForGate(ctx, gate.gateId)
+    return !download || download.owner === true
+  }
+
   /** The download a gate id asks or tells about, for this agent and person only. */
   _downloadForGate(ctx, gateId) {
     if (!gateId) return null
@@ -2490,7 +2513,8 @@ export class BrowserHostCore {
   _withDownloads(slot, result) {
     if (!result || !Array.isArray(result.content)) return result
     const started = slot?.downloads?.untold?.() ?? []
-    if (!started.length) return result
+    const given = this._givenLines(slot?.downloads?.store, slot?.downloads?.key)
+    if (!started.length && !given.length) return result
     const lines = started.map((d) => {
       if (d.state === 'asking') return `- ${d.fileName} (${d.handle}): your owner is asked before it is saved; if they do not answer it is kept for them when it fits the keep limits (otherwise deleted), and you are not given it. Do not start it again; hoai_browser_status shows its state.`
       if (d.state === 'saving' || d.state === 'saved') return `- ${d.fileName} (${d.handle}): allowed by your owner's rules; it is saved in your browser folder when it finishes, and hoai_browser_status gives its path.`
@@ -2498,16 +2522,43 @@ export class BrowserHostCore {
       if (d.state === 'held') return `- ${d.fileName} (${d.handle}): held on this machine for your owner until the browser host next starts; you are not given it.`
       return `- ${d.fileName} (${d.handle}): not saved; hoai_browser_status says why.`
     })
-    return { ...result, content: [...result.content, { type: 'text', text: `### Download\n${lines.join('\n')}` }] }
+    return { ...result, content: [...result.content, { type: 'text', text: `### Download\n${[...lines, ...given].join('\n')}` }] }
+  }
+
+  /** The owner's files the owner gave this agent with Allow once, each named here once (DownloadStore.takeGiven). */
+  _givenLines(store, key) {
+    try {
+      if (!store || typeof store.takeGiven !== 'function' || !key) return []
+      return store.takeGiven(key).map((row) => ownerGaveLine(row.savedPath ? basename(row.savedPath) : row.fileName, store.displayOutputDir(key)))
+    } catch {
+      return []
+    }
+  }
+
+  /** The same, for an answer with no session at hand: this agent and person's store. */
+  _givenLinesFor(ctx) {
+    try {
+      const store = typeof this._downloadStore === 'function' ? this._downloadStore(ctx.assistantId) : null
+      const key = typeof this.pool.pathsFor === 'function' ? this.pool.pathsFor(ctx).key : null
+      return this._givenLines(store, key)
+    } catch {
+      return []
+    }
   }
 
   /**
    * What an agent is told when the owner has not answered inside this call's
    * budget. It names the gate id, because the id is the only thing that lets
    * the agent come back to the SAME request rather than raising a second one
-   * the owner has to answer twice.
+   * the owner has to answer twice. A request that may be the owner's own
+   * download (_ownersRequest) is told as open, and until when: nothing else.
    */
-  _parkedResult(parked) {
+  _parkedResult(parked, ctx) {
+    if (this._ownersRequest(ctx, parked)) {
+      return parked.busy
+        ? errorResult('gate_parked', `${ownersRequestOpen(parked.expiresAt)} This action did not run, because it waits for that request: try it again after that.`)
+        : text(`${ownersRequestOpen(parked.expiresAt)} It is not an action of yours, so your own actions can go ahead.`)
+    }
     if (parked.busy) {
       return errorResult(
         'gate_parked',
@@ -2597,7 +2648,9 @@ export class BrowserHostCore {
         const latest = slot.engine.ownsToolTarget?.(name, engineArgs) ? { verdict: 'allow' } : policy.decide({ profile: 'signed-in', classification, grants: this._grantsFor(ctx, slot), settings: this._settingsFor(slot), preapproved: [] })
         if (latest.verdict === 'deny') throw new HostError('policy_denied', this._refusedMessage(latest, classification))
       }
-      slot.ownerHeldSinceAgent = false
+      // Only here does the agent act (SlotDownloads._mayBeOwners): a call refused or parked starts no download. A read
+      // (a snapshot, a screenshot, the tab list) starts none either, so a download Chrome raises after it stays the owner's.
+      if (classification.kind !== 'read') slot.ownerHeldSinceAgent = false
       const submitApproval = freshApproval && submitRequirement ? {} : null
       if (submitApproval) submitApprovals.set(submitApproval, submitRequirement)
       return engine.callTool(name, engineArgs, signal, approved, submitApproval)
@@ -2917,7 +2970,7 @@ export class BrowserHostCore {
       const slot = this.pool.peek(ctx)
       if (!slot) {
         // What is kept for the owner from an earlier session still reads as kept.
-        return text(['No browser session is open. Call hoai_browser_open_session to start one.', ...downloadLines(this._downloadRows(ctx))].join('\n'))
+        return text(['No browser session is open. Call hoai_browser_open_session to start one.', ...downloadLines(this._downloadRows(ctx)), ...this._givenLinesFor(ctx)].join('\n'))
       }
       const overview = await slot.engine.tabsOverview?.()
       const tabWords = overview?.content?.find(part => part.type === 'text')?.text
@@ -2939,6 +2992,7 @@ export class BrowserHostCore {
           `Tabs: ${tabs.length ? tabs.join(' | ') : '(none)'}`,
           this._pendingLine(ctx),
           ...downloadLines(this._downloadRows(ctx)),
+          ...this._givenLines(slot.downloads?.store, slot.downloads?.key),
         ].join('\n'),
       )
     }
@@ -2951,6 +3005,7 @@ export class BrowserHostCore {
         // an action of yours: never "ask again", never "do not retry".
         await this.gates.attach(gateId)
         const now = this._downloadForGate(ctx, gateId) ?? download
+        if (now.owner) return text("That request was your owner's, not an action of yours, so your own actions can go ahead.")
         return text([`That permission request was about the download ${now.fileName} (${now.handle}), which the page started; it was not an action of yours, so your own actions can go ahead.`, ...downloadLines([now])].join('\n'))
       }
       const waited = await this.gates.attach(gateId)
@@ -2960,7 +3015,7 @@ export class BrowserHostCore {
           `No permission request "${gateId}" is waiting or held: it was never raised here, or its result has already been collected and aged out.`,
         )
       }
-      if (waited.parked) return this._parkedResult(waited)
+      if (waited.parked) return this._parkedResult(waited, ctx)
       if (!waited.allowed) return errorResult('policy_denied', deniedMessage(waited.reason, 0))
       // The held action, run at most once however many waiters were queued.
       return this._runHeld(waited)
@@ -2977,7 +3032,7 @@ export class BrowserHostCore {
     if (name === 'browser_navigate' || name === 'browser_navigate_back' || name === 'browser_tabs') slot.lastSnapshotText = null
     // A call that cannot run while a dialog is up asks nobody.
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
-    if (verdict.parked) return this._parkedResult(verdict)
+    if (verdict.parked) return this._parkedResult(verdict, ctx)
     if (!verdict.allowed) return errorResult('policy_denied', verdict.message)
     // THE GATE OWNS THE RUN, always, even when it allowed without asking.
     // This used to run the engine here as well as handing the gate a held

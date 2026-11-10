@@ -20,9 +20,9 @@ function test(name: string, body: (context: TestContext) => void | Promise<void>
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
-import { BrowserHostCore, BrowserPool, DOWNLOAD_SENTENCE, hostInstructions, loadPlaywright } from '../bin/hoai-browser-host.mjs'
+import { BrowserHostCore, BrowserPool, DOWNLOAD_SENTENCE, hostInstructions, loadPlaywright, ownerGaveLine } from '../bin/hoai-browser-host.mjs'
 import { GATE_ATTACH_MS, GateKeeper } from '../lib/browser-gate.mjs'
 import { DownloadStore } from '../lib/browser-downloads.mjs'
 import { RemoteOwnerInput, runAgentBrowserWork } from '../lib/remote-input.mjs'
@@ -52,10 +52,10 @@ function server() {
 
 const readyGuard = { ready: true, reason: null, prepare: async () => true, verify: () => true }
 
-function fakeDownload(held: string, name: string) {
+function fakeDownload(held: string, name: string, body = 'PLUGDL-HOST-BYTES') {
   mkdirSync(held, { recursive: true })
   const final = join(held, randomUUID())
-  writeFileSync(`${final}.crdownload`, 'PLUGDL-HOST-BYTES')
+  writeFileSync(`${final}.crdownload`, body)
   renameSync(`${final}.crdownload`, final)
   return {
     suggestedFilename: () => name,
@@ -366,10 +366,45 @@ test("an owner's download Chrome raises after the hand-back names nothing to the
     const next = await s.call('browser_snapshot')
     assert.doesNotMatch(next.text, /tax-return|### Download/, 'the agent has not acted since the owner held the browser')
     await until(() => s.srv.cards.some((c) => c.kind === 'download'), () => 'the owner is still asked, as before')
+    // A read is not acting (the test below); the agent acts once the owner has answered their own ask.
+    s.srv.answer(String(s.srv.cards.find((c) => c.kind === 'download')!.gateId), 'deny')
+    await until(() => !s.gates.pending(s.pool.slotKey(s.ctx)), () => "the owner's ask is answered")
+    const acted = await s.call('browser_click', { element: 'Next' })
+    assert.equal(acted.isError, false, acted.text)
+    assert.doesNotMatch(acted.text, /tax-return/)
     s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'Late.p8'))
     const after = await s.call('browser_snapshot')
     assert.match(after.text, /### Download\n- Late\.p8 \(dl_[0-9a-f]+\): your owner is asked/, 'the agent has acted since')
     assert.doesNotMatch(after.text, /tax-return/)
+  } finally {
+    s.done()
+  }
+})
+
+test("the agent only reading the page after the hand-back does not make the owner's late download the agent's", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = s.pool.peek(s.ctx)
+    const input = new RemoteOwnerInput({ current: () => slot })
+    const view: any = { engine: slot.engine, cdp: { send: async () => ({}) } }
+    await input.acquire(view)
+    input.release(view)
+    // A read starts no download, so it is not the agent acting; Chrome raises the owner's download after it.
+    const read = await s.call('browser_snapshot')
+    assert.equal(read.isError, false, read.text)
+    const row = s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'tax-return-private.pdf', 'x'.repeat(4321)))
+    const key = s.pool.slotKey(s.ctx)
+    await until(() => !!row.askGateId && s.gates.pending(key)?.gateId === row.askGateId, () => 'the owner is asked')
+    assert.equal(row.owner, true, "the store holds it as the owner's")
+    const next = await s.call('browser_snapshot')
+    const status = await s.call('hoai_browser_status')
+    for (const [what, answer] of [['the next reply', next], ['status', status]] as const) {
+      assert.doesNotMatch(answer.text, /tax-return/, `${what} names the owner's file: ${answer.text}`)
+      assert.doesNotMatch(answer.text, new RegExp(`\\b${row.handle}\\b`), `${what} gives its handle: ${answer.text}`)
+      assert.doesNotMatch(answer.text, /4\.2 KB/, `${what} gives its size: ${answer.text}`)
+    }
+    assert.ok(status.text.includes(`Your owner has a request open until ${s.gates.pending(key).expiresAt}.`), status.text)
   } finally {
     s.done()
   }
@@ -504,4 +539,516 @@ test("the reply of a call whose download is held says held, not 'not saved'", ()
   const core: any = new BrowserHostCore({ pool: {} as any, browserTools: [], deviceLabel: 'box-1' })
   const result = core._withDownloads({ downloads: { untold: () => [{ fileName: 'x.p8', handle: 'dl_ab', state: 'held' }] } }, { content: [] })
   assert.match(result.content[0].text, /^### Download\n- x\.p8 \(dl_ab\): held on this machine for your owner until the browser host next starts; you are not given it\.$/)
+})
+
+// ── The owner's download stays the owner's in every answer ─────────────────────
+//
+// A download the page raises while the owner holds the browser, or after they hand it back and before the agent acts
+// again, may be the owner's (SlotDownloads._mayBeOwners). The agent may learn that the owner has a request open, and
+// until when; never the file's name, its size or its handle, on any path and in no later reply. The owner's card keeps
+// the name. The agent's own download reads as before.
+
+const OWNER_FILE = 'tax-return-private.pdf'
+/** 4321 bytes read as "4.2 KB": a size no other file in these tests has. */
+const OWNER_BODY = 'x'.repeat(4321)
+
+function ownerView(s: ReturnType<typeof setup>) {
+  const slot = s.pool.peek(s.ctx)
+  const input = new RemoteOwnerInput({ current: () => slot })
+  const view: any = { engine: slot.engine, cdp: { send: async () => ({}) } }
+  return { slot, input, view }
+}
+
+/** The owner holds the browser while the page raises their download: kept for them, with no ask. */
+async function ownerHeldDownload(s: ReturnType<typeof setup>) {
+  const { input, view } = ownerView(s)
+  await input.acquire(view)
+  const row = s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, OWNER_FILE, OWNER_BODY))
+  input.release(view)
+  await until(() => row.state === 'kept' && row.keptReady === true, () => `kept: ${row.state}`)
+  return row
+}
+
+/** The owner looks in and hands back; the page raises a download before the agent acts again: the owner is asked. */
+async function ownerAskAfterHandBack(s: ReturnType<typeof setup>) {
+  const { input, view } = ownerView(s)
+  await input.acquire(view)
+  input.release(view)
+  const row = s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, OWNER_FILE, OWNER_BODY))
+  const key = s.pool.slotKey(s.ctx)
+  await until(() => !!row.askGateId && s.gates.pending(key)?.gateId === row.askGateId, () => 'the owner is asked')
+  return { row, gate: s.gates.pending(key) }
+}
+
+function assertNamesNothing(text: string, row: any, what: string) {
+  assert.doesNotMatch(text, /tax-return/, `${what} names the owner's file: ${text}`)
+  assert.doesNotMatch(text, new RegExp(`\\b${row.handle}\\b`), `${what} gives the owner's file its handle ${row.handle}: ${text}`)
+  assert.doesNotMatch(text, /4\.2 KB/, `${what} gives the owner's file its size: ${text}`)
+}
+
+function ownerCardNamesIt(s: ReturnType<typeof setup>) {
+  assert.ok(s.srv.cards.some((c) => c.kind === 'download' && c.summary.includes(OWNER_FILE)), "the owner's card keeps the name")
+}
+
+test("the host's own words to the agent promise only its own downloads, and say what it hears of the owner's", () => {
+  assert.doesNotMatch(DOWNLOAD_SENTENCE, /every file still kept for the owner/)
+  assert.match(DOWNLOAD_SENTENCE, /you are told only that your owner has a request open, and until when/)
+  assert.match(DOWNLOAD_SENTENCE, /If your owner gives you one of theirs with Allow once, you are told its name once, when it is in your browser folder; it is not listed in hoai_browser_status\./)
+  assert.doesNotMatch(DOWNLOAD_SENTENCE, /[\u2013\u2014]/)
+})
+
+test("status never lists the owner's download, while the session runs or after it closes; the agent's own is still there", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    s.engines[0].downloadOnClick = 'AgentsOwn.p8'
+    await s.call('browser_click', { element: 'Download' })
+    s.engines[0].downloadOnClick = null
+    await until(() => s.srv.cards.some((c) => c.kind === 'download'), () => "the agent's download is asked")
+    s.srv.answer(String(s.srv.cards.find((c) => c.kind === 'download')!.gateId), 'allow_once')
+    await until(async () => /AgentsOwn\.p8, 17 B, saved in your browser folder/.test((await s.call('hoai_browser_status')).text), () => 'saved')
+    const owner = await ownerHeldDownload(s)
+    ownerCardNamesIt(s)
+    const open = await s.call('hoai_browser_status')
+    await s.call('hoai_browser_close_session')
+    const closed = await s.call('hoai_browser_status')
+    for (const [what, answer] of [['status, session open', open], ['status, session closed', closed]] as const) {
+      assertNamesNothing(answer.text, owner, what)
+      assert.match(answer.text, /AgentsOwn\.p8, 17 B, saved in your browser folder/, `${what}: the agent's own download reads as before`)
+      assert.doesNotMatch(answer.text, /Do not download/, `${what}: the agent fetched nothing that is kept`)
+    }
+  } finally {
+    s.done()
+  }
+})
+
+test("the owner's ask after the hand-back: status says only that the owner has a request open, and until when", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const { row, gate } = await ownerAskAfterHandBack(s)
+    ownerCardNamesIt(s)
+    const status = await s.call('hoai_browser_status')
+    assertNamesNothing(status.text, row, 'status')
+    assert.ok(status.text.includes(`Your owner has a request open until ${gate.expiresAt}.`), status.text)
+    assert.ok(!status.text.includes(String(gate.gateId)), 'nothing to wait on: the request is not the agent\'s')
+  } finally {
+    s.done()
+  }
+})
+
+test("an action of the agent's held behind the owner's ask is told only that the owner has a request open, and until when", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const { row, gate } = await ownerAskAfterHandBack(s)
+    // The call's wait behind the ask ran out of its budget (_behindDownloadAsk): the browser answers busy.
+    s.core._behindDownloadAsk = async () => true
+    const nav = await s.call('browser_navigate', { url: 'https://other.example.org/' })
+    assert.equal(nav.isError, true, nav.text)
+    assertNamesNothing(nav.text, row, 'the held action')
+    assert.ok(nav.text.includes(`Your owner has a request open until ${gate.expiresAt}`), nav.text)
+    assert.ok(!nav.text.includes(String(gate.gateId)), 'nothing to wait on: the request is not the agent\'s')
+  } finally {
+    s.done()
+  }
+})
+
+test("an action of the agent's held behind its OWN download's ask is still told which file it waits for", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    s.engines[0].downloadOnClick = 'AgentsOwn.p8'
+    await s.call('browser_click', { element: 'Download' })
+    s.engines[0].downloadOnClick = null
+    await until(() => !!s.gates.pending(s.pool.slotKey(s.ctx)), () => "the agent's download is asked")
+    s.core._behindDownloadAsk = async () => true
+    const nav = await s.call('browser_navigate', { url: 'https://other.example.org/' })
+    assert.equal(nav.isError, true, nav.text)
+    assert.match(nav.text, /Another permission request is already waiting for the owner \(download AgentsOwn\.p8 into /)
+  } finally {
+    s.done()
+  }
+})
+
+test("hoai_browser_wait_gate on the owner's ask names nothing, and says the agent's own actions can go ahead", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const { row, gate } = await ownerAskAfterHandBack(s)
+    s.srv.answer(String(gate.gateId), 'deny')
+    const waited = await s.call('hoai_browser_wait_gate', { gate_id: String(gate.gateId) })
+    assert.equal(waited.isError, false, waited.text)
+    assertNamesNothing(waited.text, row, 'wait_gate')
+    assert.match(waited.text, /your own actions can go ahead/)
+  } finally {
+    s.done()
+  }
+})
+
+/** Every line of these answers that names the owner's file, under its own name or a unique one ("... (1).pdf"). */
+function linesNaming(answers: Array<{ text: string }>) {
+  return answers.flatMap((a) => a.text.split('\n')).filter((line) => line.includes('tax-return-private'))
+}
+
+/** The agent's next answers: a status, a reply, a status again, a reply again. */
+async function nextAnswers(s: ReturnType<typeof setup>, extra: Array<() => Promise<{ text: string }>> = []) {
+  const out: Array<{ text: string }> = [await s.call('hoai_browser_status'), await s.call('browser_snapshot'), await s.call('hoai_browser_status')]
+  for (const more of extra) out.push(await more())
+  out.push(await s.call('browser_snapshot'))
+  return out
+}
+
+/** Named once, in exactly the host's one line, under the name it was saved as; no answer gives its handle or size. */
+function namedOnceInOneLine(answers: Array<{ text: string }>, row: any, s: ReturnType<typeof setup>) {
+  const named = linesNaming(answers)
+  assert.equal(named.length, 1, `named once, in one line: ${JSON.stringify(named)}`)
+  assert.ok(row.savedPath, 'it is in the agent folder')
+  assert.equal(named[0], ownerGaveLine(basename(row.savedPath), s.store.displayOutputDir(s.pool.pathsFor(s.ctx).key)))
+  for (const a of answers) {
+    assert.doesNotMatch(a.text, new RegExp(`\\b${row.handle}\\b`), `no answer gives the handle: ${a.text}`)
+    assert.doesNotMatch(a.text, /4\.2 KB/, `no answer gives the size: ${a.text}`)
+  }
+}
+
+test("the owner's Allow once on their kept file's card tells the agent its name in one line, once: never again, nor after a restart", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const owner = await ownerHeldDownload(s)
+    await until(() => owner.notice?.told === true, () => "the owner's notice is posted")
+    s.srv.answer(String(owner.notice.gateId), 'allow_once')
+    await until(() => owner.state === 'saved', () => `saved: ${owner.state}`)
+    const answers = await nextAnswers(s, [() => s.call('hoai_browser_wait_gate', { gate_id: String(owner.notice.gateId) })])
+    namedOnceInOneLine(answers, owner, s)
+    await s.call('hoai_browser_close_session')
+    // A new host process reads the same folder.
+    const fresh = new DownloadStore({ agentRoot: s.agentRoot, assistantId: 900, gates: s.gates, deviceLabel: 'box-1', home: s.home, guard: readyGuard, noticePollMs: 5 })
+    s.core._downloadStore = () => fresh
+    try {
+      const after = [await s.call('hoai_browser_status'), await s.call('browser_navigate', { url: 'https://files.example.com/' }), await s.call('hoai_browser_status')]
+      assert.deepEqual(linesNaming(after), [], 'never again after a restart')
+    } finally {
+      fresh.stop()
+    }
+  } finally {
+    s.done()
+  }
+})
+
+test("the owner's Allow once whose save fails names nothing; their Allow once on the card that keeps it then names it once", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const { row, gate } = await ownerAskAfterHandBack(s)
+    // The agent folder refuses the file once (a full disk): the owner said yes, so it is kept for them, with a card.
+    const store: any = s.store
+    const give = store.give.bind(store)
+    let refused = 0
+    store.give = (...args: any[]) => (refused++ === 0 ? Promise.reject(Object.assign(new Error('disk full'), { code: 'ENOSPC' })) : give(...args))
+    s.srv.answer(String(gate.gateId), 'allow_once')
+    await until(() => row.state === 'kept' && row.keptReady === true && row.notice?.told === true, () => `kept after the failed save: ${row.state}`)
+    const before = await nextAnswers(s)
+    assert.deepEqual(linesNaming(before), [], 'nothing is named while the file is not in the agent folder')
+    for (const a of before) assertNamesNothing(a.text, row, 'an answer after the failed save')
+    s.srv.answer(String(row.notice.gateId), 'allow_once')
+    await until(() => row.state === 'saved', () => `saved: ${row.state}`)
+    namedOnceInOneLine(await nextAnswers(s), row, s)
+  } finally {
+    s.done()
+  }
+})
+
+test("the owner's file saved under a unique name, because the agent folder has one of that name, is told by the name it has", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const dir = s.store.outputDir(s.pool.pathsFor(s.ctx).key)
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(dir, OWNER_FILE), 'the agent kept one of this name')
+    const { row, gate } = await ownerAskAfterHandBack(s)
+    s.srv.answer(String(gate.gateId), 'allow_once')
+    await until(() => row.state === 'saved', () => `saved: ${row.state}`)
+    assert.equal(basename(row.savedPath), 'tax-return-private (1).pdf')
+    namedOnceInOneLine(await nextAnswers(s), row, s)
+  } finally {
+    s.done()
+  }
+})
+
+test("a host that restarts after the owner's Allow once, before the agent's next answer, never names the file", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const { row, gate } = await ownerAskAfterHandBack(s)
+    s.srv.answer(String(gate.gateId), 'allow_once')
+    await until(() => row.state === 'saved', () => `saved: ${row.state}`)
+    const closed = await s.call('hoai_browser_close_session')
+    const fresh = new DownloadStore({ agentRoot: s.agentRoot, assistantId: 900, gates: s.gates, deviceLabel: 'box-1', home: s.home, guard: readyGuard, noticePollMs: 5 })
+    s.core._downloadStore = () => fresh
+    try {
+      const after = [closed, await s.call('hoai_browser_status'), await s.call('browser_navigate', { url: 'https://files.example.com/' }), await s.call('hoai_browser_status')]
+      assert.deepEqual(linesNaming(after), [], 'never named after a restart')
+      for (const a of after) assertNamesNothing(a.text, row, 'an answer after the restart')
+    } finally {
+      fresh.stop()
+    }
+  } finally {
+    s.done()
+  }
+})
+
+test('the store hands out a given file once, however often it is given', () => {
+  const s = setup()
+  try {
+    const row: any = { owner: true, fileName: OWNER_FILE }
+    s.store.given('a-key', row)
+    assert.deepEqual(s.store.takeGiven('a-key'), [row])
+    s.store.given('a-key', row)
+    assert.deepEqual(s.store.takeGiven('a-key'), [], 'already named once')
+  } finally {
+    s.done()
+  }
+})
+
+test("the owner's Deny on their kept file's card tells the agent nothing", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const owner = await ownerHeldDownload(s)
+    await until(() => owner.notice?.told === true, () => "the owner's notice is posted")
+    s.srv.answer(String(owner.notice.gateId), 'deny')
+    await until(() => owner.state === 'deleted', () => `deleted: ${owner.state}`)
+    const answers = await nextAnswers(s)
+    assert.deepEqual(linesNaming(answers), [], 'Deny names nothing')
+    for (const a of answers) assertNamesNothing(a.text, owner, 'an answer after Deny')
+  } finally {
+    s.done()
+  }
+})
+
+for (const choice of ['allow_once', 'deny'] as const) {
+  test(`the owner's ${choice === 'allow_once' ? 'Allow once' : 'Deny'} on their own download's ask ${choice === 'allow_once' ? 'tells the agent its name in one line, once' : 'tells the agent nothing'}`, async () => {
+    const s = setup()
+    try {
+      await s.call('browser_navigate', { url: 'https://files.example.com/' })
+      const { row, gate } = await ownerAskAfterHandBack(s)
+      s.srv.answer(String(gate.gateId), choice)
+      await until(() => row.state === (choice === 'deny' ? 'deleted' : 'saved'), () => `settled: ${row.state}`)
+      const answers = await nextAnswers(s, [() => s.call('hoai_browser_wait_gate', { gate_id: String(gate.gateId) })])
+      if (choice === 'allow_once') namedOnceInOneLine(answers, row, s)
+      else {
+        assert.deepEqual(linesNaming(answers), [], 'Deny names nothing')
+        for (const a of answers) assertNamesNothing(a.text, row, 'an answer after Deny')
+      }
+    } finally {
+      s.done()
+    }
+  })
+}
+
+// The owner's word is Allow once. Allow for this session and Trust this site stay on the owner's card and still give
+// the file to the agent's folder, but they do not name it.
+for (const choice of ['allow_session', 'trust_site'] as const) {
+  test(`the owner's ${choice} on their own download's ask gives the file and names nothing`, async () => {
+    const s = setup()
+    try {
+      await s.call('browser_navigate', { url: 'https://files.example.com/' })
+      const { row, gate } = await ownerAskAfterHandBack(s)
+      s.srv.answer(String(gate.gateId), choice)
+      await until(() => row.state === 'saved', () => `saved: ${row.state}`)
+      const answers = await nextAnswers(s)
+      assert.deepEqual(linesNaming(answers), [], `${choice} names nothing`)
+      for (const a of answers) assertNamesNothing(a.text, row, `an answer after ${choice}`)
+    } finally {
+      s.done()
+    }
+  })
+}
+
+test("after the host restarts, the owner's kept file is still not named; the agent's own kept file still is", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    s.engines[0].downloadOnClick = 'AgentsOwn.p8'
+    await s.call('browser_click', { element: 'Download' })
+    s.engines[0].downloadOnClick = null
+    await until(() => s.srv.cards.some((c) => c.kind === 'download'), () => "the agent's download is asked")
+    s.srv.answer(String(s.srv.cards.find((c) => c.kind === 'download')!.gateId), null, 'expired')
+    await until(async () => /AgentsOwn\.p8, 17 B, kept for your owner \(no answer\)/.test((await s.call('hoai_browser_status')).text), () => 'kept')
+    const owner = await ownerHeldDownload(s)
+    await s.call('hoai_browser_close_session')
+    // A new host process reads the same folder.
+    const fresh = new DownloadStore({ agentRoot: s.agentRoot, assistantId: 900, gates: s.gates, deviceLabel: 'box-1', home: s.home, guard: readyGuard, noticePollMs: 5 })
+    s.core._downloadStore = () => fresh
+    try {
+      const status = await s.call('hoai_browser_status')
+      assertNamesNothing(status.text, owner, 'status after a restart')
+      assert.match(status.text, /AgentsOwn\.p8, 17 B, kept for your owner \(no answer\)/)
+    } finally {
+      fresh.stop()
+    }
+  } finally {
+    s.done()
+  }
+})
+
+test("the owner's ask nobody answers is kept for them, and after the host restarts it is still not named", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const { row, gate } = await ownerAskAfterHandBack(s)
+    s.srv.answer(String(gate.gateId), null, 'expired')
+    await until(() => row.state === 'kept' && row.keptReady === true, () => `kept: ${row.state}`)
+    assert.notEqual(row.keptReason, 'owner_download', 'kept for no answer: only the index says whose it may be')
+    await s.call('hoai_browser_close_session')
+    const fresh = new DownloadStore({ agentRoot: s.agentRoot, assistantId: 900, gates: s.gates, deviceLabel: 'box-1', home: s.home, guard: readyGuard, noticePollMs: 5 })
+    s.core._downloadStore = () => fresh
+    try {
+      assertNamesNothing((await s.call('hoai_browser_status')).text, row, 'status after a restart')
+    } finally {
+      fresh.stop()
+    }
+  } finally {
+    s.done()
+  }
+})
+
+test("hoai_browser_wait_gate on a download ask no row explains, still open, names nothing", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const key = s.pool.slotKey(s.ctx)
+    void s.gates.raise({ key, assistantId: 900, kind: 'download', origin: 'https://files.example.com', summary: `download ${OWNER_FILE} into ~/x on box-1.`, choices: ['allow_once', 'deny'], waitSeconds: 60, attachMs: Infinity })
+    await until(() => !!s.gates.pending(key), () => 'asked')
+    const { gateId, expiresAt } = s.gates.pending(key)
+    // The call's own wait runs out at once: the request is still open when it answers.
+    const attach = s.gates.attach.bind(s.gates)
+    s.gates.attach = (id: string) => attach(id, { waitMs: 20 })
+    const waited = await s.call('hoai_browser_wait_gate', { gate_id: String(gateId) })
+    assert.doesNotMatch(waited.text, /tax-return/, waited.text)
+    assert.ok(waited.text.includes(`Your owner has a request open until ${expiresAt}`), waited.text)
+  } finally {
+    s.done()
+  }
+})
+
+test("a file an older host kept as the owner's own download is not named after the update", async () => {
+  const s = setup()
+  try {
+    const key = s.pool.pathsFor(s.ctx).key
+    const dir = join(s.agentRoot, '900', 'browser-downloads', key)
+    mkdirSync(join(dir, 'kept'), { recursive: true })
+    const id = randomUUID()
+    writeFileSync(join(dir, 'kept', id), OWNER_BODY)
+    // Written before the index carried who a file may belong to: only why it was kept.
+    const record = { id, handle: 'dl_0a1b', fileName: OWNER_FILE, origin: 'https://files.example.com', agentName: 'Data', startedAt: Date.now(), bytes: OWNER_BODY.length, state: 'kept', keptReason: 'owner_download', keptUntil: Date.now() + 60_000, notice: { told: true, gateId: null, expiresAt: null } }
+    writeFileSync(join(dir, 'downloads.json'), JSON.stringify({ v: 1, records: [record] }))
+    const status = await s.call('hoai_browser_status')
+    assertNamesNothing(status.text, record, 'status')
+  } finally {
+    s.done()
+  }
+})
+
+test('a download ask open on the browser that no row explains never shows its summary to the agent', async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const key = s.pool.slotKey(s.ctx)
+    void s.gates.raise({ key, assistantId: 900, kind: 'download', origin: 'https://files.example.com', summary: `download ${OWNER_FILE} into ~/x on box-1.`, choices: ['allow_once', 'deny'], waitSeconds: 60, attachMs: Infinity })
+    await until(() => !!s.gates.pending(key), () => 'asked')
+    const expiresAt = s.gates.pending(key).expiresAt
+    const status = await s.call('hoai_browser_status')
+    s.core._behindDownloadAsk = async () => true
+    const nav = await s.call('browser_navigate', { url: 'https://other.example.org/' })
+    for (const [what, answer] of [['status', status], ['the held action', nav]] as const) {
+      assert.doesNotMatch(answer.text, /tax-return/, `${what}: ${answer.text}`)
+      assert.ok(answer.text.includes(`Your owner has a request open until ${expiresAt}`), `${what}: ${answer.text}`)
+    }
+  } finally {
+    s.done()
+  }
+})
+
+test("a file first found while the owner held the browser stays the owner's, even when the agent acts before it is adopted", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const { slot, input, view } = ownerView(s)
+    await input.acquire(view)
+    const held = s.engines[0].heldDir
+    mkdirSync(held, { recursive: true })
+    writeFileSync(join(held, randomUUID()), OWNER_BODY)
+    // The watcher sees it while the owner holds the browser; no download event claims it.
+    slot.downloads._adoptUnclaimed(false)
+    input.release(view)
+    const acted = await s.call('browser_click', { element: 'Next' })
+    assert.equal(acted.isError, false, acted.text)
+    slot.downloads._adoptUnclaimed(true)
+    const row = slot.downloads.records.at(-1)
+    const next = await s.call('browser_snapshot')
+    const status = await s.call('hoai_browser_status')
+    assert.doesNotMatch(next.text, /### Download/, 'the next reply')
+    assertNamesNothing(status.text, row, 'status')
+  } finally {
+    s.done()
+  }
+})
+
+test("the owner's downloads never push the agent's own out of status", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    s.engines[0].downloadOnClick = 'AgentsOwn.p8'
+    await s.call('browser_click', { element: 'Download' })
+    s.engines[0].downloadOnClick = null
+    await until(() => s.srv.cards.some((c) => c.kind === 'download'), () => "the agent's download is asked")
+    s.srv.answer(String(s.srv.cards.find((c) => c.kind === 'download')!.gateId), 'allow_once')
+    await until(async () => /AgentsOwn\.p8, 17 B, saved in your browser folder/.test((await s.call('hoai_browser_status')).text), () => 'saved')
+    // 31 of the owner's own, each refused at the start (the folder check fails): none is kept, all are newer, and they
+    // are more than the 30 finished downloads the store remembers for one person.
+    const slot = s.pool.peek(s.ctx)
+    slot.ownerInputLease = { pending: false }
+    ;(s.store as any).guard = { ...readyGuard, verify: () => false }
+    for (let i = 0; i < 31; i++) s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, `tax-return-${i}.pdf`))
+    ;(s.store as any).guard = readyGuard
+    slot.ownerInputLease = null
+    // A row counts as finished once its bytes are gone, so wait for every delete.
+    const owners = () => slot.downloads.records.filter((r: any) => /^tax-return-/.test(r.fileName))
+    await until(() => owners().length === 31 && owners().every((r: any) => r.state === 'deleted' && !r.doomed), () => 'every one of them is deleted')
+    const status = await s.call('hoai_browser_status')
+    assert.match(status.text, /AgentsOwn\.p8, 17 B, saved in your browser folder/)
+    assert.doesNotMatch(status.text, /tax-return/)
+  } finally {
+    s.done()
+  }
+})
+
+test("a download that may be the owner's is never settled by the agent's site rules: the owner is asked", async () => {
+  const s = setup()
+  try {
+    const profileDir = join(s.agentRoot, '900', 'browser', 'owner')
+    mkdirSync(profileDir, { recursive: true })
+    // A remembered Trust this site, which covers the agent's own downloads from it without an ask (the trusted site
+    // test earlier in this file).
+    writeFileSync(join(profileDir, 'agent-browser.settings.json'), JSON.stringify({ v: 1, alwaysGrants: { 'https://files.example.com': { trust: 'allow' } } }))
+    await s.call('hoai_browser_open_session', { purpose: 'files' })
+    const { slot, input, view } = ownerView(s)
+    await input.acquire(view)
+    input.release(view)
+    const row = slot.downloads.onDownload(fakeDownload(s.engines[0].heldDir, OWNER_FILE, OWNER_BODY))
+    await until(() => s.srv.cards.some((c) => c.kind === 'download' && c.summary.includes(OWNER_FILE)), () => `the owner is asked: ${row.state}`)
+    assert.equal(row.owner, true)
+    assert.equal(row.state, 'asking', 'not saved by the rule')
+    let saved: string[] = []
+    try {
+      saved = readdirSync(join(s.agentRoot, '900', 'browser-output', 'owner'))
+    } catch {}
+    assert.ok(!saved.includes(OWNER_FILE), "nothing in the agent's folder")
+    const status = await s.call('hoai_browser_status')
+    assertNamesNothing(status.text, row, 'status')
+  } finally {
+    s.done()
+  }
 })
