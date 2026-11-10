@@ -40,7 +40,13 @@
  *  - Each result is ONE thread reply (`final` unless it ends asking a
  *    question), clipped to the server's 20,000 characters; a post that fails
  *    is retried with backoff, and one that still fails puts the thread back
- *    to Open with a short plain reply, never a thread stuck at Working.
+ *    to Open with a short plain reply, never a thread stuck at Working. A 403
+ *    is the server's decision, so it is never retried: the answer is saved
+ *    beside the lane state and the owner is told in the thread.
+ *  - A reply carries no client key. The server refuses an assistant write with
+ *    a key unless it proves that one assistant, and this daemon holds no such
+ *    proof for this route. The cost: a retry after a lost response can post an
+ *    answer more than once, which beats losing it.
  *  - A daemon crash leaves a lane finishing its turn (its stdin closed): its
  *    pid and start stamp are in the lane state, so the next start, a close or
  *    a delete stops it first (lib/lane-process.ts), never two lanes on one
@@ -109,6 +115,8 @@ const NO_WORKTREE = couldNotOpen('its working copy could not be made. Send your 
 const NO_COPY = couldNotOpen('the main conversation could not be copied for it. Send your reply again to retry.')
 const TIMED_OUT = 'This turn took longer than 30 minutes, so it was stopped. Send your reply again to retry.'
 const POST_FAILED = 'The answer to this turn could not be delivered, so send your reply again to retry.'
+const ANSWER_REFUSED_SAVED = "The server refused this answer, so it is saved on the agent's computer instead, and you can send your reply again to retry."
+const ANSWER_REFUSED = 'The server refused this answer, so it did not arrive, and you can send your reply again to retry.'
 const STOP_HOOK_LOOP =
   'This turn was stopped because a Stop hook (such as a /goal set in the main chat) kept blocking it from ending. Send your reply again to retry.'
 const ORPHAN_ALIVE = couldNotOpen('an earlier run of this thread is still stopping. Send your reply again in a minute.')
@@ -154,7 +162,7 @@ export interface ThreadLaneFs {
   mkdir(path: string): void
   readFile(path: string): string
   writeFile(path: string, data: string): void
-  appendFile(path: string, data: string): void
+  appendFile(path: string, data: string, mode?: number): void
   copyFile(from: string, to: string): void
   unlink(path: string): void
   rmrf(path: string): void
@@ -249,7 +257,7 @@ export interface ThreadLaneState {
    * is being posted, or when that post never landed: it never runs again.
    */
   lastReplyId: string
-  /** That turn's answer, summary or failure reply landed. False until it does (and in a state saved before this field). */
+  /** That turn's post is settled: its answer, summary or failure reply landed, or the server refused it. False until then (and in a state saved before this field). */
   lastDelivered: boolean
   /**
    * The lane's process while it runs, and its start stamp (finding 3): a
@@ -285,13 +293,14 @@ interface Lane {
   /** Posts queued or being tried for this lane (a reply retried with backoff counts until it settles). */
   postsInFlight: number
   closed: boolean
-  turnCount: number
 }
 
 export class ThreadLaneManager {
   private readonly deps: ThreadLaneDeps
   private readonly lanes = new Map<string, Lane>()
   private readonly running = new Set<string>()
+  /** rootId:replyId of a failure sentence a reconnect has out: a second reconnect does not queue another. */
+  private readonly noticing = new Set<string>()
   private waiting: string[] = []
   /** A closed lane still settling (its start, its exit, its removal): a reopen waits for it. */
   private readonly exiting = new Map<string, Promise<void>>()
@@ -536,8 +545,14 @@ export class ThreadLaneManager {
       // thread reply), so a landed one never reopens the thread.
       if ((lane && lane.postsInFlight > 0) || state.lastDelivered) return 0
       // Finished here, and its answer never landed: back to Open, never run again.
+      // Only one sentence per turn at a time: a lane built here is not registered, so its post count guards nothing.
+      const noticing = `${input.rootId}:${input.replyId}`
+      if (this.noticing.has(noticing)) return 0
+      this.noticing.add(noticing)
       this.deps.log(`threads: thread ${input.rootId} turn ${input.replyId} already finished, its answer is marked undelivered`)
-      this.postFailure(lane ?? this.newLane(saved!), input, POST_FAILED)
+      const target = lane ?? this.newLane(saved!)
+      this.postFailure(target, input, POST_FAILED)
+      void target.posts.catch(() => {}).finally(() => this.noticing.delete(noticing))
       return 0
     }
     try {
@@ -628,7 +643,6 @@ export class ThreadLaneManager {
       posts: Promise.resolve(),
       postsInFlight: 0,
       closed: false,
-      turnCount: 0,
     }
   }
 
@@ -636,7 +650,6 @@ export class ThreadLaneManager {
     const turn = lane.queue.shift()
     if (!turn) return
     lane.current = turn
-    lane.turnCount++
     this.running.add(lane.state.rootId)
     this.post(lane, 'integrations/threads/state', { chatId: turn.chatId, rootId: turn.rootId, state: 'working' })
     this.track(this.runTurn(lane, turn))
@@ -746,6 +759,7 @@ export class ThreadLaneManager {
     const raw = typeof frame.result === 'string' ? frame.result : ''
     const failed = frame.is_error === true || (frame.subtype !== undefined && frame.subtype !== 'success') || raw.trim() === ''
     const text = clipThreadText(raw)
+    const refused = () => this.answerRefused(lane, turn, text)
     if (failed) {
       this.postFailure(lane, turn, FAILED_TURN)
     } else if (turn.mode === 'summary') {
@@ -755,14 +769,16 @@ export class ThreadLaneManager {
         { chatId: turn.chatId, rootId: turn.rootId, summary: text },
         () => this.postFailure(lane, turn, POST_FAILED),
         () => this.landed(lane, turn),
+        refused,
       )
     } else {
       this.post(
         lane,
         'integrations/threads/reply',
-        { chatId: turn.chatId, rootId: turn.rootId, text, final: isFinalReply(raw), clientId: this.clientId(lane, turn) },
+        { chatId: turn.chatId, rootId: turn.rootId, text, final: isFinalReply(raw) },
         () => this.postFailure(lane, turn, POST_FAILED),
         () => this.landed(lane, turn),
+        refused,
       )
     }
     this.afterTurn(lane)
@@ -789,10 +805,31 @@ export class ThreadLaneManager {
     this.post(
       lane,
       'integrations/threads/reply',
-      { chatId: turn.chatId, rootId: turn.rootId, text: sentence, final: false, clientId: this.clientId(lane, turn) },
+      { chatId: turn.chatId, rootId: turn.rootId, text: sentence, final: false },
       undefined,
       () => this.landed(lane, turn),
+      // A refused sentence settles the turn too: a reconnect must not post it again.
+      () => this.landed(lane, turn),
     )
+  }
+
+  /** The server refused this turn's answer: keep it on this computer and say so once in the thread. */
+  private answerRefused(lane: Lane, turn: ThreadTurnInput, text: string): void {
+    this.deps.log(`threads: thread ${turn.rootId} turn ${turn.replyId} answer was refused by the server`)
+    this.postFailure(lane, turn, this.saveRefused(turn, text) ? ANSWER_REFUSED_SAVED : ANSWER_REFUSED)
+  }
+
+  private saveRefused(turn: ThreadTurnInput, text: string): boolean {
+    // A thread deleted while this post was out stays deleted: nothing would ever remove this file.
+    if (!this.deps.fs.exists(this.statePath(turn.rootId))) return false
+    try {
+      this.deps.fs.appendFile(this.undeliveredPath(turn.rootId), `--- reply ${turn.replyId} ---\n${text}\n`, 0o600)
+      this.deps.log(`threads: thread ${turn.rootId} refused answer is saved in ${turn.rootId}.undelivered.txt`)
+      return true
+    } catch (err) {
+      this.deps.log(`threads: thread ${turn.rootId} refused answer could not be saved (${err instanceof Error ? err.name : 'error'})`)
+      return false
+    }
   }
 
   /** The finished turn's answer (or its failure reply) landed: saved, so a restart knows. */
@@ -806,10 +843,6 @@ export class ThreadLaneManager {
     current.lastDelivered = true
     // Never recreate a state file a delete removed meanwhile.
     if (current.folder) this.persistState(current)
-  }
-
-  private clientId(lane: Lane, turn: ThreadTurnInput): string {
-    return `thread-${turn.rootId}-${turn.replyId || `turn${lane.turnCount}`}`
   }
 
   private async ensureChild(lane: Lane): Promise<void> {
@@ -1410,6 +1443,9 @@ export class ThreadLaneManager {
     try {
       fs.unlink(this.statePath(state.rootId))
     } catch {}
+    try {
+      fs.unlink(this.undeliveredPath(state.rootId))
+    } catch {}
     // A queued reopen may have loaded this fork before cleanup. Invalidate
     // that copy too, so a close or late delivery cannot save it again.
     const reopened = this.lanes.get(state.rootId)
@@ -1423,6 +1459,11 @@ export class ThreadLaneManager {
 
   private statePath(rootId: string): string {
     return join(this.deps.stateDir, `${rootId}.json`)
+  }
+
+  /** Every answer of this thread the server refused, oldest first. */
+  private undeliveredPath(rootId: string): string {
+    return join(this.deps.stateDir, `${rootId}.undelivered.txt`)
   }
 
   private persist(lane: Lane): void {
@@ -1469,15 +1510,18 @@ export class ThreadLaneManager {
    * each wait of THREAD_POST_RETRY_MS; when the last try fails too, onGiveUp
    * runs (a reply or a summary: the thread goes back to Open with a short
    * plain reply, so it never reads Working for good). onLanded runs once the
-   * post went through.
+   * post went through. A 403 is not retried: onRefused runs at once. A 409 is
+   * a thread the owner closed: the server says the answer is not kept, so it
+   * settles like a landed post, with nothing more to tell.
    */
-  private post(lane: Lane, path: string, body: Record<string, unknown>, onGiveUp?: () => void, onLanded?: () => void): void {
+  private post(lane: Lane, path: string, body: Record<string, unknown>, onGiveUp?: () => void, onLanded?: () => void, onRefused?: () => void): void {
     lane.postsInFlight++
     lane.posts = lane.posts
       .then(() => this.postWithRetry(path, body))
-      .then((ok) => {
+      .then((outcome) => {
         // A give up queues its own posts first, so the count never dips to 0 between.
-        if (ok) onLanded?.()
+        if (outcome === 'landed' || outcome === 'closed') onLanded?.()
+        else if (outcome === 'refused') onRefused?.()
         else onGiveUp?.()
       })
       .finally(() => {
@@ -1486,17 +1530,25 @@ export class ThreadLaneManager {
     this.track(lane.posts)
   }
 
-  private async postWithRetry(path: string, body: Record<string, unknown>): Promise<boolean> {
+  private async postWithRetry(path: string, body: Record<string, unknown>): Promise<'landed' | 'refused' | 'closed' | 'gave_up'> {
     const waits = this.deps.postRetryMs ?? THREAD_POST_RETRY_MS
     for (let attempt = 0; ; attempt++) {
       try {
         await this.deps.post(path, body)
-        return true
+        return 'landed'
       } catch (err) {
         const why = err instanceof Error ? err.name : 'error'
+        if ((err as { status?: unknown } | null)?.status === 403) {
+          this.deps.log(`threads: ${path} was refused (403), it is not tried again`)
+          return 'refused'
+        }
+        if ((err as { status?: unknown } | null)?.status === 409) {
+          this.deps.log(`threads: ${path} found the thread closed, it is not tried again`)
+          return 'closed'
+        }
         if (attempt >= waits.length) {
           this.deps.log(`threads: ${path} failed ${attempt + 1} times, giving up (${why})`)
-          return false
+          return 'gave_up'
         }
         this.deps.log(`threads: ${path} failed (${why}), trying again`)
         await new Promise<void>((done) => this.deps.setTimer(done, waits[attempt]!))

@@ -316,10 +316,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       managers.push(m)
       return m
     }
-    const replyFor = async (rootId: string, clientId = `thread-${rootId}-${rootId}0`) => {
+    const replyFor = async (rootId: string, nth = 0) => {
       const until = Date.now() + 60_000
       while (Date.now() < until) {
-        const reply = posts.find((p) => p.path === 'integrations/threads/reply' && p.body.rootId === rootId && p.body.clientId === clientId)
+        const reply = posts.filter((p) => p.path === 'integrations/threads/reply' && p.body.rootId === rootId)[nth]
         if (reply) return reply.body
         await new Promise((done) => setTimeout(done, 100))
       }
@@ -349,7 +349,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     assert.equal(api.log.main, 2, 'one harmless tool call followed by the answer')
     assert.equal(api.log.tools, 1)
     assertCanaries(guardRows())
-    assert.deepEqual(answer, { chatId: '55', rootId: '901', text: api.log.mainAnswers.at(-1), final: true, clientId: 'thread-901-9010' })
+    assert.deepEqual(answer, { chatId: '55', rootId: '901', text: api.log.mainAnswers.at(-1), final: true })
     assert.equal(feedbackRows(forkTranscript('901')).length, inherited, 'no new Stop hook feedback in the fork')
     const sent = forkTranscript('901').filter((r) => r.type === 'user' && JSON.stringify(r.message?.content ?? '').includes(QUESTION))
     assert.equal(sent.length, 1, 'the thread received its own message')
@@ -359,7 +359,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     api.reset()
     const resumed = manager(canaries)
     resumed.turn({ ...turn('901'), mode: 'reply', replyId: '9011', text: QUESTION })
-    const second = await replyFor('901', 'thread-901-9011')
+    const second = await replyFor('901', 1)
     assert.equal(second.final, true)
     assert.equal(api.log.judge, 0, 'no inherited goal on a later resumed process')
     assert.equal(api.log.main, 2)

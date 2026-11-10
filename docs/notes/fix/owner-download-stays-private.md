@@ -1,6 +1,6 @@
 # A file the owner downloads stays theirs
 
-Branch `fix/owner-download-stays-private`, version 0.87.2.
+Branch `fix/owner-download-stays-private`, version 0.87.3.
 
 ## What the browser host does now
 
@@ -65,6 +65,19 @@ Merged `origin/main` again (a merge, no rebase), after main released 0.87.0 and 
 | `test/posted-card-answer.test.ts` | Both sides kept: main's card answer tests and their `card` helpers, and this branch's download card test and `isBrowserDownloadCard`. |
 
 `server.ts` and `test/own-card-answer.test.ts` merged by themselves; both keep main's changes and this branch's lines.
+
+## Merge with main (0.87.2)
+
+Merged `origin/main` a third time (a merge, no rebase), after main released 0.87.2 (a thread answer reaches the app
+again).
+
+| File | Decision |
+|---|---|
+| `package.json`, `.claude-plugin/plugin.json`, `package-lock.json` | 0.87.3, the next number after main's 0.87.2. |
+| `CHANGELOG.md` | This change's paragraph moves under `## 0.87.3` above main's `## 0.87.2`; main's entries stay as they are. |
+
+Every other file merged by itself: main's thread lane files and tests, and `server.ts`, keep main's changes and this
+branch's lines.
 
 ## Every path that returns download facts to the agent
 

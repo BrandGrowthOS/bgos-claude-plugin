@@ -15151,7 +15151,7 @@ const threadLanes = new ThreadLaneManager({
     mkdir: (path) => { mkdirSync(path, { recursive: true }) },
     readFile: (path) => readFileSync(path, 'utf8'),
     writeFile: (path, data) => writeFileSync(path, data),
-    appendFile: (path, data) => appendFileSync(path, data),
+    appendFile: (path, data, mode) => appendFileSync(path, data, mode === undefined ? undefined : { mode }),
     copyFile: (from, to) => copyFileSync(from, to),
     unlink: (path) => unlinkSync(path),
     rmrf: (path) => rmSync(path, { recursive: true, force: true }),
