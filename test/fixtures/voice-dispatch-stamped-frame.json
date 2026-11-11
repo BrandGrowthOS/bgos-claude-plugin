@@ -1,22 +1,23 @@
 {
   "event_type": "voice_task_dispatch",
-  "timestamp": "2026-11-11T12:29:48.331Z",
-  "task_id": "41",
-  "assistant_id": 49,
-  "user_id": "user_qt_ask_71359_1794400188120_1",
-  "chat_id": 49,
+  "timestamp": "2026-11-11T19:01:21.373Z",
+  "task_id": "1164",
+  "assistant_id": 9236,
+  "user_id": "user_qt_ask_35219_1794423680868_1",
+  "chat_id": 11409,
   "question": "Add the invoice to my Today board.",
   "context": null,
-  "session_id": "43",
+  "session_id": "806",
   "confirmed": true,
   "eventMeta": {
     "source": "voice_dispatch",
     "payload": {
-      "actingUserId": "user_qt_ask_71359_1794400188120_1",
-      "taskId": "41",
-      "assistantId": "49",
-      "voiceSessionId": "43",
-      "expiresAt": "2026-11-11T12:49:48.332Z"
+      "actingUserId": "user_qt_ask_35219_1794423680868_1",
+      "taskId": "1164",
+      "assistantId": "9236",
+      "voiceSessionId": "806",
+      "ownerWords": "Add the invoice to my Today board.",
+      "expiresAt": "2026-11-11T19:21:21.373Z"
     }
   }
 }

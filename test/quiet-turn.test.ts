@@ -344,13 +344,14 @@ test('BGOS_QUIET_TURN: on unless it says off, 0, false or no', () => {
   for (const value of ['off', ' OFF ', '0', 'false', 'False', 'no']) assert.equal(quietTurnEnabled(value), false, value)
 })
 
-test('voice cards: a stamped consult or dispatch can open the owner\'s turn, a Stop passes, an unstamped one names nothing', () => {
+test('voice cards: a stamped consult or dispatch can open the owner\'s turn, a Stop passes, an unstamped consult never waits, an unstamped task names nothing', () => {
   const actor = { actingUserId: OWNER, deadline: 1 }
   assert.deepEqual(voiceQuietCard({ ownerUserId: OWNER, consult: { consultId: 'c', chatId: '10', actor }, meta: { event_type: 'voice_consult' } }), { opens: 'ask', chatId: '10' })
   assert.deepEqual(voiceQuietCard({ ownerUserId: OWNER, dispatch: { taskId: '41', chatId: '10', actor }, meta: { event_type: 'voice_task_dispatch' } }), { opens: 'ask', chatId: '10' })
-  assert.equal(voiceQuietCard({ ownerUserId: OWNER, consult: { consultId: 'c', chatId: '10', actor: null }, meta: {} }), null)
+  // An unstamped consult has seconds to be answered: it is never held (review F3). An unstamped task waits.
+  assert.deepEqual(voiceQuietCard({ ownerUserId: OWNER, consult: { consultId: 'c', chatId: '10', actor: null }, meta: {} }), { within: 0 })
   assert.equal(voiceQuietCard({ ownerUserId: OWNER, dispatch: { taskId: '41', chatId: '10', actor: null }, meta: {} }), null)
-  assert.equal(voiceQuietCard({ ownerUserId: OWNER, consult: { consultId: 'c', chatId: '10', actor: { actingUserId: 'user_other', deadline: 1 } } }), null)
+  assert.deepEqual(voiceQuietCard({ ownerUserId: OWNER, consult: { consultId: 'c', chatId: '10', actor: { actingUserId: 'user_other', deadline: 1 } } }), { within: 0 })
   assert.deepEqual(voiceQuietCard({ ownerUserId: OWNER, meta: { event_type: 'stop_turn' } }), { stop: true })
   assert.equal(voiceQuietCard({ ownerUserId: OWNER, meta: { event_type: 'voice_task_dispatch' } }), null)
   assert.equal(voiceQuietCard(), null)
@@ -369,10 +370,18 @@ test('server: the quiet turn hold sits outside the scheduled run hold (which bui
   assert.equal((chain.match(/resend: \(notification: [^)]*\) => mcp\.notification\(notification\)/g) ?? []).length, 2)
 })
 
-test('server: the hold reads the tracker\'s own bound turn, and is off without the hook, the lock or the switch', () => {
+test('server: the hold reads the tracker\'s own bound turn, and is off without the server\'s word, the hook, the lock or the switch', () => {
   assert.match(server, /const quietTurns = createQuietTurns\(\{\n\s*trusted: \(\) => privateTurns\.quiet\(\),\n\s*deliveryOf: \(card: unknown\) => privateTurns\.deliveryOf\(card\),\n\s*ownerUserId: USER_ID,/)
   assert.match(server, /idle: \(\) => !hookTurnLive,/)
-  assert.match(server, /enabled: \(\) => QUIET_TURN_ENABLED && lockHeld && PRIVATE_HOOK\.registered,/)
+  // Review F3: OFF unless the server said on (VOICE_ASK_STAMP, read from its capabilities reply), whatever else holds.
+  assert.match(server, /enabled: \(\) => QUIET_TURN_ENABLED && serverQuietTurn && lockHeld && PRIVATE_HOOK\.registered,/)
+  assert.match(server, /\nlet serverQuietTurn = false\n/)
+  assert.equal((server.match(/serverQuietTurn = /g) ?? []).length, 2, 'declared off, and set in one place only')
+  assert.match(server, /const next = serverQuietTurnOf\(data\)/)
+  // A fetch that failed, or the bundled copy, reads as off: the argument is the reply itself, null on any error.
+  assert.match(server, /noteServerQuietTurn\(data\)/)
+  // Review F2: with the switch on, a voice card the server did not stamp is one it refused to call the owner's.
+  assert.match(server, /voiceCardsUntrusted: \(\) => serverQuietTurn \}\)/)
   assert.match(server, /const QUIET_TURN_ENABLED = quietTurnEnabled\(process\.env\.BGOS_QUIET_TURN\)/)
 })
 
@@ -413,4 +422,70 @@ test('server: reporting a task ends its turn before the report is posted, and th
   assert.match(server, /const began = privateTurns\.begin\([^\n]*\n\s*scheduleGrantRuns\.noteBegin\(payload\.prompt\)\n[^\n]*\n\s*quietTurns\.noteBegin\(payload\.prompt\)/)
   assert.match(server, /privateTurns\.end\(hookLineAt === null[^\n]*\n[^\n]*\n\s*scheduleGrantRuns\.noteStop\(\)\n[^\n]*\n\s*quietTurns\.recheck\(\)/)
   assert.match(server, /if \(event\.name === 'SessionEnd'\) quietTurns\.recheck\(\)/)
+})
+
+test('server (review F1, F3): both lanes put the stamp\'s owner words on the card, and every meeting card names its own limit', () => {
+  const ws = server.slice(server.indexOf("realtimeSocket.on('voice_task_dispatch'"), server.indexOf('// One-click updates:'))
+  assert.match(ws, /buildVoiceTaskDispatchText\(\{ taskId, question, context, \.\.\.\(dispatchActor \? \{ ownerWords: dispatchActor\.ownerWords \} : \{\}\) \}\)/)
+  const rpc = readFileSync('lib/voice-rpc.ts', 'utf8')
+  assert.match(rpc, /buildVoiceTaskDispatchText\(\{ taskId, question, context, \.\.\.\(stamp \? \{ ownerWords: stamp\.ownerWords \} : \{\}\) \}\)/)
+  assert.match(rpc, /\.\.\.\(stamp\?\.ownerWords \? \{ ownerWords: stamp\.ownerWords \} : \{\}\),/)
+  // Five meeting cards (three message lanes, the turn change and the resync), each 150 s at most.
+  assert.equal((server.match(/\{ quiet: \{ within: 150_000 \} \}/g) ?? []).length, 5)
+})
+
+test('review F3: the hold waits the shorter of five minutes and the card\'s own limit', async () => {
+  const { clock, notify, card, sent, lines, bind } = rig()
+  bind(TYPED)
+  void notify(card('meeting line', { within: 150_000 }))
+  void notify(card('peer'))
+  void notify(card('consult', { within: 0 }))
+  void notify(card('never shorter than nothing', { within: -5 }))
+  void notify(card('never longer than five minutes', { within: 60 * 60_000 }))
+  await flush()
+  assert.deepEqual(sent, ['consult', 'never shorter than nothing'])
+  clock.advance(150_000 - 1)
+  await flush()
+  assert.equal(sent.length, 2)
+  clock.advance(1)
+  await flush()
+  assert.deepEqual(sent.slice(2), ['meeting line'])
+  clock.advance(150_000)
+  await flush()
+  assert.deepEqual(sent.slice(3), ['peer', 'never longer than five minutes'])
+  // A card let in at its own limit says so, apart from the five minute line.
+  assert.ok(lines.some((line) => /its own time limit/.test(line)))
+})
+
+test('review F4: a turn that ended while the CLI still runs keeps holding until the CLI is idle', async () => {
+  let idle = false
+  const { clock, quiet, notify, card, sent, bind, delivered } = rig({ idle: () => idle })
+  bind(ASK(Date.parse('2026-11-11T10:20:00.000Z')))
+  void notify(card('peer'))
+  void notify(card(`the owner's message ${tag(TOKEN)}`, { opens: 'message', chatId: '900' }))
+  await flush()
+  delivered(TOKEN)
+  // The ask is reported mid turn: the tracker's turn is gone, the CLI turn is not.
+  bind(null)
+  quiet.recheck()
+  await flush()
+  assert.deepEqual(sent, [], 'nothing goes into the running turn')
+  assert.equal(quiet.waiting(), 2)
+  // A card that arrives now waits as well, and a Stop still passes.
+  void notify(card('late peer'))
+  void notify(card('stop', { stop: true }))
+  await flush()
+  assert.deepEqual(sent, ['stop'])
+  // The CLI turn stops: the owner's own card first, alone.
+  idle = true
+  quiet.recheck()
+  await flush()
+  assert.deepEqual(sent.slice(1), [`the owner's message ${tag(TOKEN)}`])
+  assert.equal(quiet.waiting(), 2)
+  // With nothing ever bound, a busy CLI alone holds nothing.
+  const fresh = rig({ idle: () => false })
+  void fresh.notify(fresh.card('peer'))
+  await flush()
+  assert.deepEqual(fresh.sent, ['peer'])
+  void clock
 })

@@ -213,7 +213,7 @@ import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.j
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
-import { createQuietTurns, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
+import { createQuietTurns, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, serverQuietTurnOf, voiceQuietCard } from './lib/quiet-turn.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
@@ -1690,6 +1690,27 @@ const usageTracker = new UsageTracker(CLAUDE_PROJECT_CWD, CLAUDE_CONFIG_DIR)
 // `bgos_capabilities` tool. Falls back to the bundled copy on any fetch error,
 // so the plugin never hard-fails when the endpoint is unreachable.
 let cachedCapabilities: ServedCapabilities | null = null
+// The quiet turn's server switch (review round 2, F3 and F2): the backend says `quietTurn: true` in its Claude Code
+// capabilities reply only while its VOICE_ASK_STAMP is on. Until it does, this daemon holds no card outside the
+// owner's turn and treats an unstamped voice card as it always did. Off at boot, off when the fetch fails, and read
+// again on every socket connect, since the switch only changes with a backend restart.
+let serverQuietTurn = false
+/** Read the switch again, off on any failure. Never throws, never holds the caller. */
+function refreshServerQuietTurn(): void {
+  void (async () => {
+    let data: unknown = null
+    try {
+      data = await bgosGetCapped(capabilitiesFetchPath(RUNNING_VERSION ?? '0.0.0', []), CAPABILITIES_FETCH_MAX_BYTES, STARTUP_WARMUP_TIMEOUT_MS)
+    } catch { /* Off: a server that cannot be asked has not said on. */ }
+    noteServerQuietTurn(data)
+  })()
+}
+function noteServerQuietTurn(data: unknown): void {
+  const next = serverQuietTurnOf(data)
+  if (next === serverQuietTurn) return
+  serverQuietTurn = next
+  log(`quiet turn: the server says ${next ? 'on' : 'off'}; other cards ${next ? 'wait outside the owner\'s turn' : 'are not held'}`)
+}
 
 // SECURITY: the canon is injected into the agent's context, so cap the fetch.
 // The real canon is a few KB; reject a body that declares more than this so a
@@ -1922,6 +1943,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
       )
     }
     cachedCapabilities = pickCapabilities(data, declared)
+    noteServerQuietTurn(data)
     log(
       `Capability canon ready: v${cachedCapabilities.version} ` +
         `(${cachedCapabilities.text.length} chars) [source=${cachedCapabilities.source}]`,
@@ -2787,7 +2809,7 @@ type ChannelCardParams = { content: string; meta?: unknown } & Record<string, un
  */
 function channelNotify(
   build: () => ChannelCardParams | null,
-  options: { scheduleGrant?: ReturnType<typeof scheduleGrantOf>; quiet?: ReturnType<typeof quietCardOf> | { carried: true } | { stop: true } | null } = {},
+  options: { scheduleGrant?: ReturnType<typeof scheduleGrantOf>; quiet?: ReturnType<typeof quietCardOf> | { carried: true } | { stop: true } | { within: number } | null } = {},
 ): Promise<void> {
   return mcp.notification({
     method: 'notifications/claude/channel',
@@ -10873,12 +10895,13 @@ const turnChat = createTurnChatTracker()
 // message the same way, as owner:<message id>.
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
-const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn(); quietTurns.recheck() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)) })
+const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn(); quietTurns.recheck() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)), voiceCardsUntrusted: () => serverQuietTurn })
 // A trusted turn is quiet (lib/quiet-turn.mjs, 2026-11-11): while the owner's own turn is bound in the tracker above (a
 // stamped voice ask, the owner's typed message, the owner's scheduled wake), every other channel card waits in the
 // notification chain below, five minutes at most, so nobody else's words reach that turn and end its trust. It reads
 // the tracker's own bound turn and adds only the gap before a card's prompt begins. Off with no private turn hook (no
-// turn is ever admitted then), while this daemon does not hold the lock, and with BGOS_QUIET_TURN=off.
+// turn is ever admitted then), while this daemon does not hold the lock, with BGOS_QUIET_TURN=off, and until the
+// SERVER says on (serverQuietTurn above: its VOICE_ASK_STAMP switch).
 const QUIET_TURN_ENABLED = quietTurnEnabled(process.env.BGOS_QUIET_TURN)
 const quietTurns = createQuietTurns({
   trusted: () => privateTurns.quiet(),
@@ -10886,7 +10909,7 @@ const quietTurns = createQuietTurns({
   ownerUserId: USER_ID,
   // Between turns a card sent now starts a prompt of its own; mid turn it is injected or queued, and holds nothing yet.
   idle: () => !hookTurnLive,
-  enabled: () => QUIET_TURN_ENABLED && lockHeld && PRIVATE_HOOK.registered,
+  enabled: () => QUIET_TURN_ENABLED && serverQuietTurn && lockHeld && PRIVATE_HOOK.registered,
 })
 // At the four tap sites below, the owner's own tap (the tapper the server stamped is this agent's owner) names itself
 // `{ carried: true }`: it holds nobody's words but the owner's, so it passes the hold, and privateTapCard decides the rest.
@@ -13101,7 +13124,7 @@ async function pollChat(chatId: string): Promise<void> {
         const meetingHandoff = trackMessageOperation(() => channelNotify(() => {
           card.content += privateTurns.noteUntracked({ chatId })
           return card
-        }))
+        }, { quiet: { within: 150_000 } }))
         humanMessageEdits.rememberOriginal(
           viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
           meetingHandoff, card.meta,
@@ -18111,6 +18134,8 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
+    // The quiet turn's server switch changes only with a backend restart, which this connect follows (review F3).
+    refreshServerQuietTurn()
     // From here every chat is behind this connection until a read says otherwise.
     socketEpoch++
     // Threads phase 1: a turn the person sent while this daemon was away is
@@ -18350,7 +18375,7 @@ function connectWebsocket(): void {
       const dispatchActor = voiceDispatchActor({ meta: payload?.eventMeta, taskId, frameAssistantId: payload?.assistant_id, assistantId: ASSISTANT_ID, ownerUserId: USER_ID, now: Date.now() })
       log(`voice_task_dispatch received (task=${taskId}${dispatchActor ? ', the owner\'s own ask' : ''})`)
       void trackMessageOperation(() => channelNotify(() => {
-          const text = buildVoiceTaskDispatchText({ taskId, question, context })
+          const text = buildVoiceTaskDispatchText({ taskId, question, context, ...(dispatchActor ? { ownerWords: dispatchActor.ownerWords } : {}) })
           return {
             // A stamped task is a delivery like a consult: its own single use token, a turn that is that task's alone,
             // ended when the task is reported (complete_voice_task), when the CLI turn stops, or at its deadline. One
@@ -18785,7 +18810,7 @@ function connectWebsocket(): void {
         const meetingHandoff = trackMessageOperation(() => channelNotify(() => {
           card.content += privateTurns.noteUntracked({ chatId })
           return card
-        }))
+        }, { quiet: { within: 150_000 } }))
         humanMessageEdits.rememberOriginal(
           viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
           meetingHandoff, card.meta,
@@ -19249,7 +19274,7 @@ function connectWebsocket(): void {
         const meetingHandoff = trackMessageOperation(() => channelNotify(() => {
           card.content += privateTurns.noteUntracked({ chatId })
           return card
-        }))
+        }, { quiet: { within: 150_000 } }))
         if (senderId == null) humanMessageEdits.rememberOriginal(
           viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
           meetingHandoff, card.meta,
@@ -19312,7 +19337,7 @@ function connectWebsocket(): void {
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
           },
-        }))).catch(() => {})
+        }), { quiet: { within: 150_000 } })).catch(() => {})
     }
   }))
 
@@ -19383,7 +19408,7 @@ function connectWebsocket(): void {
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
           },
-        }))).catch(() => {})
+        }), { quiet: { within: 150_000 } })).catch(() => {})
     } catch (err) {
       log(`meeting_state_resync handler error: ${err}`)
     }
