@@ -308,3 +308,25 @@ test('a renewal cannot revive an expired lease', async () => {
   f.advance(10000)
   await assert.rejects(f.input.renew(f.view, { leaseId }), { code: 'owner_lease_expired' })
 })
+
+test("taking control alone is not using the page; every input after it is, before it is sent (the owner's download window)", async () => {
+  for (const use of ['pointer', 'focus', 'key', 'text', 'controlled', 'physical', 'renew'] as const) {
+    const f = fixture()
+    const { leaseId } = await f.input.acquire(f.view)
+    assert.equal(f.slot.ownerHeldSinceAgent, true)
+    assert.notEqual(f.slot.ownerUsedSinceAgent, true, 'the owner only looked in')
+    let markedBeforeSend: boolean | null = null
+    const send = f.view.cdp.send
+    f.view.cdp.send = async (method: string, params: any) => { markedBeforeSend ??= f.slot.ownerUsedSinceAgent === true; return send(method, params) }
+    if (use === 'pointer') await f.input.pointer(f.view, { leaseId, type: 'down', x: 1, y: 1 })
+    if (use === 'focus') await f.input.focus(f.view, { leaseId })
+    if (use === 'key') await f.input.key(f.view, { leaseId, focusToken: (await f.input.focus(f.view, { leaseId })).focusToken, key: 'K' })
+    if (use === 'text') await f.input.text(f.view, { leaseId, focusToken: (await f.input.focus(f.view, { leaseId })).focusToken, text: 'k' })
+    if (use === 'controlled') await f.input.controlled(f.view, leaseId, async () => {})
+    if (use === 'physical') await f.input.physical(f.view, leaseId, async () => {})
+    if (use === 'renew') await f.input.renew(f.view, { leaseId })
+    assert.equal(f.slot.ownerUsedSinceAgent, true, `${use} uses the page`)
+    if (markedBeforeSend !== null) assert.equal(markedBeforeSend, true, `${use} is marked before it reaches the browser`)
+    f.input.release(f.view, leaseId)
+  }
+})

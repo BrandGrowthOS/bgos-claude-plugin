@@ -83,11 +83,14 @@ function setup() {
         alive: false,
         heldDir,
         downloadOnClick: null as string | null,
+        /** Runs inside the engine's callTool, so a test can land a download while an action is in flight. */
+        during: null as null | ((name: string) => void | Promise<void>),
         async start() {
           this.alive = true
         },
         pages: () => [{ url: () => 'https://files.example.com/', title: async () => 'Files' }],
         async callTool(name: string) {
+          if (engine.during) await engine.during(name)
           if (name === 'browser_click' && engine.downloadOnClick) engine.onDownload(fakeDownload(heldDir, engine.downloadOnClick))
           return { content: [{ type: 'text', text: `${name} ran` }] }
         },
@@ -1048,6 +1051,161 @@ test("a download that may be the owner's is never settled by the agent's site ru
     assert.ok(!saved.includes(OWNER_FILE), "nothing in the agent's folder")
     const status = await s.call('hoai_browser_status')
     assertNamesNothing(status.text, row, 'status')
+  } finally {
+    s.done()
+  }
+})
+
+// ── The agent's action racing the owner's download (board row 0ce57b35) ─────────────────────────────────────────────
+//
+// The owner clicks a download link, hands the browser back, and the agent's allowed navigation goes out before Chrome
+// raises the owner's download. Chrome's event then lands while the navigation is in flight, or in the same tick as its
+// end. The host cannot tell that file from one the navigation started, so it stays the owner's: nothing the agent
+// receives names it, gives its handle or its size, or counts it. Each timing is injected through the fake engine, with
+// no sleep.
+
+/** The owner takes the browser, clicks once (a pointer down and up, as the remote view sends it) and hands it back. */
+async function ownerClicksAndHandsBack(s: ReturnType<typeof setup>) {
+  const { slot, input, view } = ownerView(s)
+  view.page = { evaluate: async () => ({ allowed: true, credential: false, editable: false }) }
+  const { leaseId } = await input.acquire(view)
+  await input.pointer(view, { leaseId, type: 'down', x: 10, y: 10, button: 'left' })
+  await input.pointer(view, { leaseId, type: 'up', x: 10, y: 10, button: 'left' })
+  input.release(view)
+  assert.equal(slot.ownerInputLease, null, 'the owner handed the browser back')
+  return slot
+}
+
+/** Everything the agent can read next: the navigation's own reply, status, a read's reply, and status once asked. */
+async function agentReadsAfter(s: ReturnType<typeof setup>, nav: { text: string }, row: any) {
+  const key = s.pool.slotKey(s.ctx)
+  const answers: Array<[string, { text: string }]> = [['the navigation reply', nav], ['status', await s.call('hoai_browser_status')], ['the next read', await s.call('browser_snapshot')]]
+  await until(() => !!row.askGateId && s.gates.pending(key)?.gateId === row.askGateId, () => `the owner is asked: ${row.state}`)
+  answers.push(['status while the owner is asked', await s.call('hoai_browser_status')])
+  answers.push(['the read after that', await s.call('browser_snapshot')])
+  for (const [what, answer] of answers) {
+    assertNamesNothing(answer.text, row, what)
+    assert.doesNotMatch(answer.text, /### Download|Downloads:|Do not download/, `${what} lists or counts a download: ${answer.text}`)
+  }
+  assert.ok(answers[3][1].text.includes(`Your owner has a request open until ${s.gates.pending(key).expiresAt}.`), answers[3][1].text)
+  ownerCardNamesIt(s)
+}
+
+const RACES: Array<[string, (land: () => void) => (name: string) => void | Promise<void>]> = [
+  // The navigation waits on the page; Chrome raises the owner's download before it ends.
+  ['while the navigation is in flight', (land) => async () => {
+    await Promise.resolve()
+    land()
+    await Promise.resolve()
+  }],
+  // Chrome raises it in the very tick the navigation starts.
+  ['in the tick the navigation starts', (land) => () => land()],
+  // Chrome raises it in the tick the navigation ends, after its reply is settled.
+  ['in the tick the navigation ends', (land) => () => { process.nextTick(land) }],
+]
+
+for (const [when, timing] of RACES) {
+  test(`an owner's download Chrome raises ${when} after the owner's click is never named to the agent`, async () => {
+    const s = setup()
+    try {
+      await s.call('browser_navigate', { url: 'https://files.example.com/' })
+      const slot = await ownerClicksAndHandsBack(s)
+      let row: any = null
+      const land = () => { row = slot.downloads.onDownload(fakeDownload(s.engines[0].heldDir, OWNER_FILE, OWNER_BODY)) }
+      s.engines[0].during = (name: string) => (name === 'browser_navigate' ? timing(land)(name) : undefined)
+      const nav = await s.call('browser_navigate', { url: 'https://files.example.com/reports' })
+      s.engines[0].during = null
+      assert.equal(nav.isError, false, nav.text)
+      await until(() => row !== null, () => 'the download landed')
+      await agentReadsAfter(s, nav, row)
+      assert.equal(row.owner, true, "the store holds it as the owner's")
+    } finally {
+      s.done()
+    }
+  })
+}
+
+test("after the owner's click, the agent's own download in its next action is not named either: the host cannot tell the two apart", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    await ownerClicksAndHandsBack(s)
+    s.engines[0].downloadOnClick = OWNER_FILE
+    const clicked = await s.call('browser_click', { element: 'Download' })
+    s.engines[0].downloadOnClick = null
+    assert.equal(clicked.isError, false, clicked.text)
+    const row = s.pool.peek(s.ctx).downloads.records.at(-1)
+    await agentReadsAfter(s, clicked, row)
+    assert.equal(row.owner, true, 'unknown, so the owner\'s')
+  } finally {
+    s.done()
+  }
+})
+
+test("agent actions alongside the first one after the owner's click keep the owner's window open until the last of them ends", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = await ownerClicksAndHandsBack(s)
+    // Each action waits in the engine until the test ends it: A and B run together, A ends, C starts beside B.
+    const running: Array<() => void> = []
+    s.engines[0].during = () => new Promise<void>((done) => { running.push(done) })
+    // One permission card at a time per browser: each action starts once the one before it is in the engine.
+    const a = s.call('browser_navigate', { url: 'https://files.example.com/a' })
+    await until(() => running.length === 1, () => 'A is in flight')
+    const b = s.call('browser_navigate', { url: 'https://files.example.com/b' })
+    await until(() => running.length === 2, () => 'A and B are in flight')
+    running[0]()
+    const replies = [await a]
+    const c = s.call('browser_navigate', { url: 'https://files.example.com/c' })
+    await until(() => running.length === 3, () => 'C is in flight beside B')
+    const row = slot.downloads.onDownload(fakeDownload(s.engines[0].heldDir, OWNER_FILE, OWNER_BODY))
+    running[1]()
+    running[2]()
+    replies.push(await b, await c)
+    s.engines[0].during = null
+    for (const [i, reply] of replies.entries()) assertNamesNothing(reply.text, row, `reply ${'ABC'[i]}`)
+    await agentReadsAfter(s, replies[2], row)
+    assert.equal(row.owner, true, "the store holds it as the owner's")
+    // All three ended and the owner has answered their own ask: the agent's next action is its own again.
+    s.srv.answer(String(row.askGateId), 'deny')
+    await until(() => !s.gates.pending(s.pool.slotKey(s.ctx)), () => "the owner's ask is answered")
+    s.engines[0].downloadOnClick = 'AgentsOwn.p8'
+    const clicked = await s.call('browser_click', { element: 'Download' })
+    assert.match(clicked.text, /### Download\n- AgentsOwn\.p8 \(dl_[0-9a-f]+\): your owner is asked/)
+  } finally {
+    s.done()
+  }
+})
+
+test("once the agent's first action after the owner's click has ended, its next action's download is its own again", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    await ownerClicksAndHandsBack(s)
+    const nav = await s.call('browser_navigate', { url: 'https://files.example.com/reports' })
+    assert.equal(nav.isError, false, nav.text)
+    s.engines[0].downloadOnClick = 'AgentsOwn.p8'
+    const clicked = await s.call('browser_click', { element: 'Download' })
+    assert.match(clicked.text, /### Download\n- AgentsOwn\.p8 \(dl_[0-9a-f]+\): your owner is asked/, 'the agent acted again after its first action ended')
+  } finally {
+    s.done()
+  }
+})
+
+test("a read after the owner's click does not end the owner's window, and neither does an action that never ran", async () => {
+  const s = setup()
+  try {
+    await s.call('browser_navigate', { url: 'https://files.example.com/' })
+    const slot = await ownerClicksAndHandsBack(s)
+    assert.equal((await s.call('browser_snapshot')).isError, false)
+    assert.equal((await s.call('browser_navigate', { url: 'file:///etc/passwd' })).isError, true)
+    let row: any = null
+    s.engines[0].during = (name: string) => { if (name === 'browser_navigate') row = slot.downloads.onDownload(fakeDownload(s.engines[0].heldDir, OWNER_FILE, OWNER_BODY)) }
+    const nav = await s.call('browser_navigate', { url: 'https://files.example.com/reports' })
+    s.engines[0].during = null
+    await agentReadsAfter(s, nav, row)
+    assert.equal(row.owner, true, "the store holds it as the owner's")
   } finally {
     s.done()
   }
