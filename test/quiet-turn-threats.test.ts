@@ -709,7 +709,7 @@ test('the consult card of a verified ask says tools may run before the answer; a
   const plain = buildConsultNotification(base)
   assert.match(plain, /Call the voice_consult_reply tool FIRST \u2014 before any other tool/)
   assert.doesNotMatch(plain, /Private tools/)
-  const verified = buildConsultNotification({ ...base, privateTurn: true, privateSeconds: 44 })
+  const verified = buildConsultNotification({ ...base, privateTurn: true, privateSeconds: 44, ownerWords: 'Can you check in with me tomorrow at 9?' })
   assert.doesNotMatch(verified, /voice_consult_reply tool FIRST \u2014 before any other tool/, 'answering first would end the trust before the tool ran')
   assert.match(verified, /Private tools \(schedule, boards, the browser\) act for your user only inside this consult, until its final answer/)
   // Review F1: the question is the voice assistant's wording, never called the user's own words.
@@ -766,10 +766,13 @@ test('F1: a verified consult\'s card quotes the owner\'s own words and never cal
   assert.match(verified, /Your user's own words on the call, as the server recorded them: "Can you check in with me tomorrow morning\?"/)
   assert.match(verified, /only for what those words ask/)
   assert.doesNotMatch(verified, /verified that these are your user's own words/)
-  // A stamp from a server with the ask rule off carries no words: the card says what was and was not verified.
-  const noWords = buildConsultNotification({ ...base, privateTurn: true, privateSeconds: 44 })
-  assert.match(noWords, /did not verify this wording, which is the voice assistant's/)
-  assert.doesNotMatch(noWords, /own words on the call, as the server recorded them/)
+  // A stamp from a server with the ask rule off carries no words: its card is byte for byte the one 0.87.2 sent for a
+  // stamped consult (found on the rig: a card that said "wording not verified" made the agent decline an ask that
+  // today's servers stamp).
+  const stampedBefore = buildConsultNotification({ ...base, privateTurn: true, privateSeconds: 44 })
+  assert.equal(stampedBefore, buildConsultNotification(base) + ' Private tools (schedule, boards, the browser) act for your user only inside this consult, until its final answer: run them before the final voice_consult_reply, or reply with final=false first.')
+  assert.doesNotMatch(stampedBefore, /own words|not verify/)
+  assert.equal(buildConsultNotification({ ...base, privateTurn: false, ownerWords: 'x' }), buildConsultNotification(base))
 })
 
 test('F2: an unstamped voice task let into the owner\'s typed turn ends that turn\'s trust', async (t) => {

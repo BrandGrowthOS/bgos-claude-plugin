@@ -429,7 +429,8 @@ test('server (review F1, F3): both lanes put the stamp\'s owner words on the car
   assert.match(ws, /buildVoiceTaskDispatchText\(\{ taskId, question, context, \.\.\.\(dispatchActor \? \{ ownerWords: dispatchActor\.ownerWords \} : \{\}\) \}\)/)
   const rpc = readFileSync('lib/voice-rpc.ts', 'utf8')
   assert.match(rpc, /buildVoiceTaskDispatchText\(\{ taskId, question, context, \.\.\.\(stamp \? \{ ownerWords: stamp\.ownerWords \} : \{\}\) \}\)/)
-  assert.match(rpc, /\.\.\.\(stamp\?\.ownerWords \? \{ ownerWords: stamp\.ownerWords \} : \{\}\),/)
+  // The consult's quoted words card only when the stamp carried the words; else the plain card of 0.87.2.
+  assert.match(rpc, /privateTurn: stamp !== null,\n\s*\.\.\.\(stamp\?\.ownerWords\n/)
   // Five meeting cards (three message lanes, the turn change and the resync), each 150 s at most.
   assert.equal((server.match(/\{ quiet: \{ within: 150_000 \} \}/g) ?? []).length, 5)
 })
