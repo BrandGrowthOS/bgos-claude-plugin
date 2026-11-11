@@ -39,6 +39,10 @@ export type HardFloorRuleId =
   | 'home_dotfile_write'
   | 'acts_on_owners_behalf'
   | 'adds_skill_or_plugin'
+  | 'file_delete'
+  | 'admin_rights'
+  | 'uses_secret_key'
+  | 'sends_data_off'
 
 export interface HardFloorRule {
   readonly id: HardFloorRuleId
@@ -81,6 +85,10 @@ export function hardFloorWords(ruleId: string): string | null {
 
 export function classifyFloor(input: HardFloorInput): HardFloorMatch | null {
   return core.classifyFloor(input) as HardFloorMatch | null
+}
+
+export function classifyFloorAll(input: HardFloorInput): HardFloorMatch[] {
+  return core.classifyFloorAll(input) as HardFloorMatch[]
 }
 
 export function classifyCommand(command: unknown): HardFloorRuleId | null {

@@ -1,6 +1,8 @@
 /**
- * Cross-repo LANE floor fixture, rules_version 4 (person lanes, shared agents
- * Phase 3; design 2026-10-15 section 7.2 item 8).
+ * Cross-repo LANE floor fixture, rules_version 5 (person lanes, shared agents
+ * Phase 3; design 2026-10-15 section 7.2 item 8; moved from 4 to 5 by slice 2a
+ * because the owner list it extends moved from 3 to 4 and the lane stays one
+ * above).
  *
  * The cases a person's lane floor must answer, written once. The backend's
  * classifier (src/services/hard-floor-lane.ts) runs them here from P2; the
@@ -11,12 +13,15 @@
  *
  * A case is a permission request as the CLI sends it (a tool name and its
  * input preview), the lane's person, and the rule id the lane answer must
- * carry, or null to proceed. Version 3's rule ids win where both lists match.
+ * carry, or null to proceed. Version 4's rule ids win where both lists match,
+ * so a shell read of a key now carries the owner's own `uses_secret_key`
+ * rather than the lane's `reads_a_secret` (the lane rule still covers the
+ * reads the owner list does not, such as a Read of a sign in folder).
  *
  * No imports. LF line endings. No em or en dashes.
  */
 
-export const HARD_FLOOR_LANE_FIXTURE_RULES_VERSION = 4;
+export const HARD_FLOOR_LANE_FIXTURE_RULES_VERSION = 5;
 
 export interface HardFloorLaneCase {
   readonly name: string;
@@ -145,7 +150,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
     toolName: 'Bash',
     inputPreview: '{"command":"cat ~/.ssh/id_rsa"}',
     actorUserId: ME,
-    expected: 'reads_a_secret',
+    expected: 'uses_secret_key',
   },
   {
     name: 'a relative climb to the home claude folder',

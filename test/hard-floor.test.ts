@@ -42,10 +42,11 @@ import {
 } from '../lib/hard-floor.ts'
 import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
 
-test('the seven rules, their ids and their words, exactly as spec section 1 writes them', () => {
+test('the eleven rules, their ids and their words, exactly as spec section 1 writes them', () => {
   // Rules version 2 (BGOS DSH parity item 10, 2026-10-02): adds_skill_or_plugin.
   // Rules version 3 (Data, 2026-10-13): the channel's own email_send acts on the owner's behalf.
-  assert.equal(HARD_FLOOR_RULES_VERSION, 3)
+  // Rules version 4: every risk a command carries is kept, plus file_delete, admin_rights, uses_secret_key, sends_data_off.
+  assert.equal(HARD_FLOOR_RULES_VERSION, 4)
   assert.deepEqual(
     HARD_FLOOR_RULES.map((r) => [r.id, r.words]),
     [
@@ -56,6 +57,10 @@ test('the seven rules, their ids and their words, exactly as spec section 1 writ
       ['home_dotfile_write', 'changing a settings file in your home folder'],
       ['acts_on_owners_behalf', 'sending, posting, paying or deleting on your behalf'],
       ['adds_skill_or_plugin', 'installing a new plugin or tool that stays after this chat'],
+      ['file_delete', 'deleting a file'],
+      ['admin_rights', 'using admin rights on this computer'],
+      ['uses_secret_key', 'using a secret key or a key file'],
+      ['sends_data_off', 'sending data off this computer'],
     ],
   )
   assert.deepEqual([...HARD_FLOOR_RULE_IDS], HARD_FLOOR_RULES.map((r) => r.id))
@@ -78,7 +83,7 @@ test('a match carries the rule, the version, the words and what matched', () => 
   const match = classifyToolCall('Bash', { command: 'cd app && rm -rf build', description: 'x' })
   assert.deepEqual(match, {
     ruleId: 'recursive_delete',
-    rulesVersion: 3,
+    rulesVersion: 4,
     words: 'deleting a folder and everything in it',
     evidence: 'rm -rf build',
   })
@@ -184,8 +189,8 @@ test('GNU long option prefixes (--r, --rec, --recur) are in the SHARED fixture n
     ['rm_long_prefix_r', 'rm --r build', 'recursive_delete'],
     ['rm_long_prefix_rec_with_force', 'rm --rec -f build', 'recursive_delete'],
     ['rm_long_prefix_recur', 'rm --recur build', 'recursive_delete'],
-    ['rm_long_force_is_not_recursive', 'rm --force build', null],
-    ['rm_double_dash_then_a_file_named_like_a_flag', 'rm -- --r', null],
+    ['rm_long_force_is_not_recursive', 'rm --force build', 'file_delete'],
+    ['rm_double_dash_then_a_file_named_like_a_flag', 'rm -- --r', 'file_delete'],
   ] as const) {
     const c = byName.get(name)
     assert.deepEqual(c?.input, { kind: 'command', command }, name)
@@ -516,6 +521,6 @@ test('a plugin install reads in a Claude Code permission request and names its w
     inputPreview: JSON.stringify({ command: 'claude plugin install page-checker@site-tools', description: 'Add it' }),
   })
   assert.equal(match?.ruleId, 'adds_skill_or_plugin')
-  assert.equal(match?.rulesVersion, 3)
+  assert.equal(match?.rulesVersion, 4)
   assert.equal(match?.words, 'installing a new plugin or tool that stays after this chat')
 })
