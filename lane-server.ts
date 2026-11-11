@@ -38,7 +38,13 @@
  *   7. (P7) watches the share's policy (`lane_policy_changed`, every heartbeat
  *      answer, and `lanes/me` at boot) against the policy its Claude was
  *      launched with: tighter restarts the lane at once (a turn in flight is
- *      told in one sentence), looser restarts it at its next idle moment.
+ *      told in one sentence), looser restarts it at its next idle moment;
+ *   8. runs this person's THREADS (lib/lane-thread-rpc.ts): `thread_turn`
+ *      and `thread_close` on `voice_rpc`, stamped for this lane, each thread
+ *      a read only fork of THIS lane's own session in a plain folder under
+ *      the lane's work folder, answered with the lane session; the turns it
+ *      missed are replayed on every connect, and its thread lanes stop with
+ *      the lane.
  *
  * NOTICE MODE (`HOAI_LANE_NOTICE` set, no Claude, not an MCP server): the
  * supervisor runs it when the lane cannot start at all (option b with no
@@ -48,7 +54,7 @@
  *
  * No em or en dashes in this file.
  */
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -67,6 +73,7 @@ import {
   LANE_LOGIN_OWN_TOKEN,
   LANE_MEMORY_RPC_TOKEN,
   LANE_TURN_STUCK_MS,
+  personLaneStamp,
 } from './lib/lane-core.mjs'
 import { heartbeatToolPolicy, laneMePolicy, readLaneChoices, readToolPolicy } from './lib/lane-policy.mjs'
 import {
@@ -78,6 +85,14 @@ import {
   type RestartAsk,
 } from './lib/lane-controls.ts'
 import { classifyMemoryFrame, LaneMemoryRpcHandler } from './lib/lane-memory-rpc.ts'
+import { laneThreadDeps, laneThreadLoginEnv, LaneThreadRpcHandler } from './lib/lane-thread-rpc.ts'
+import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
+import { clearActiveGoal, copyTranscriptClearingGoal } from './lib/thread-transcript.ts'
+import { ThreadsCliGate, threadsCliProblem } from './lib/threads-cli.ts'
+import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-process.ts'
+import { spawnStreamJson } from './lib/stream-json-child.ts'
+import { claudeCandidates } from './lib/claude-binary.mjs'
+import { findOnPath } from './lib/lane-cli-probe.mjs'
 import { routeLaneSlash } from './lib/lane-slash.ts'
 import { acquireLaneLock, defaultPidAlive, releaseLaneLock } from './lib/lane-registry.mjs'
 import {
@@ -135,8 +150,16 @@ if (!read.ok) {
 }
 const CFG = read.config
 const LANE = { userId: CFG.userId, assistantId: CFG.assistantId }
+// A thread of this lane is a fork of the lane's own Claude session, so its
+// `claude` runs on the lane's own Claude login and config dir. Read here,
+// before the scrub, and handed to that one process only
+// (lib/lane-thread-rpc.ts laneThreadLoginEnv).
+const LANE_THREAD_LOGIN_ENV = laneThreadLoginEnv(process.env)
+// The config dir the lane's own Claude keeps its transcripts in, '' for ~/.claude.
+const LANE_CLAUDE_CONFIG_DIR = LANE_THREAD_LOGIN_ENV.CLAUDE_CONFIG_DIR ?? ''
 // The person's own sign in (option b) reaches this process through Claude
-// Code's environment; the daemon needs none, so nothing it starts inherits it.
+// Code's environment; the daemon needs none, so nothing else it starts
+// inherits it.
 scrubLaneDaemonEnv(process.env)
 
 const LOG_PATH = join(CFG.laneDir, 'lane-daemon.log')
@@ -284,6 +307,9 @@ function endLane(reason: string): void {
   } catch { /* the supervisor still sees Claude exit */ }
   try { socket?.disconnect() } catch { /* closed */ }
   for (const t of timers) clearInterval(t)
+  // A revoke, a lost session or a refused login stops this person's threads
+  // at once (SIGTERM to each thread lane's process group).
+  void laneThreads.stopAll()
   setTimeout(() => shutdown(0), 500)
 }
 
@@ -367,8 +393,17 @@ function shutdown(code: number): void {
   shuttingDown = true
   for (const t of timers) clearInterval(t)
   try { socket?.disconnect() } catch { /* closed */ }
+  // Released at once, as before: a relaunched lane's daemon must never find
+  // this one still holding the lock while it waits for its thread lanes.
   releaseLaneLock(DAEMON_LOCK_PATH)
-  process.exit(code)
+  // This lane's thread lanes are its own processes and stop with it:
+  // SIGTERM now, a bounded wait, then SIGKILL for whatever is left.
+  const stopping = stopLaneThreadChildren()
+  if (!stopping) process.exit(code)
+  void stopping.then(() => {
+    laneThreads.killAll()
+    process.exit(code)
+  })
 }
 process.on('SIGTERM', () => shutdown(0))
 process.on('SIGINT', () => shutdown(0))
@@ -640,6 +675,128 @@ const laneMemory = new LaneMemoryRpcHandler({
   log: (line) => log(line),
 })
 
+// ── Threads: this person's own threads run in this lane ─────────────────────
+// lib/lane-thread-rpc.ts. A thread is a headless `claude -p` forked from THIS
+// lane's own session (its pin), in a plain read only folder under the lane's
+// own work folder, on the lane's own Claude login, with at most the lane's
+// own tools and never Bash. Nothing here knows the agent folder, the owner's
+// session or the pairing: every post goes out with the lane session.
+
+function laneClaudeBin(): string | null {
+  // The lookup the supervisor launched this lane's own Claude with (bin/hoai-lane.mjs).
+  const pathVar = process.env.PATH ?? ''
+  return claudeCandidates({ pathVar, home: HOME })[0] ?? findOnPath('claude', { pathVar })
+}
+
+const laneThreadsCli = new ThreadsCliGate({
+  claudePath: laneClaudeBin,
+  cachePath: join(CFG.stateDir, 'threads-cli-probe.json'),
+  onAnswer: (answer) => {
+    if (!answer.ok) log(`threads: this lane cannot run threads (${answer.reason ?? `claude ${answer.version ?? 'of unknown version'} lacks ${answer.missing.join(', ')}`})`)
+  },
+})
+
+const laneThreads = new ThreadLaneManager(laneThreadDeps({
+  lane: LANE,
+  home: HOME,
+  stateRoot: process.env.BGOS_PLUGIN_STATE_DIR,
+  configDir: LANE_CLAUDE_CONFIG_DIR,
+  launchPolicy: launchedFacts(LAUNCHED_ENV).policy,
+  floorHookPath: join(dirname(fileURLToPath(import.meta.url)), 'bin', 'hoai-lane-floor-hook.mjs'),
+  nodePath: findOnPath('node', { pathVar: process.env.PATH ?? '' }) ?? 'node',
+  loginEnv: LANE_THREAD_LOGIN_ENV,
+}, {
+  spawn: spawnStreamJson,
+  claudeBin: laneClaudeBin,
+  cliProblem: async () => threadsCliProblem(await laneThreadsCli.ready(), 'turn'),
+  // A thread lane left from before a daemon restart is found by pid and start stamp, and stopped first.
+  processes: {
+    stamp: (pid) => processStamp(pid),
+    runsIn: (pid, dir) => processRunsIn(pid, dir),
+    kill: (pid, signal) => killProcessGroup(pid, signal),
+  },
+  fs: {
+    exists: (path) => existsSync(path),
+    mkdir: (path) => { mkdirSync(path, { recursive: true, mode: 0o700 }) },
+    readFile: (path) => readFileSync(path, 'utf8'),
+    writeFile: (path, data) => writeFileSync(path, data, { mode: 0o600 }),
+    appendFile: (path, data, mode) => appendFileSync(path, data, { mode: mode ?? 0o600 }),
+    copyFile: (from, to) => copyFileSync(from, to),
+    unlink: (path) => unlinkSync(path),
+    rmrf: (path) => rmSync(path, { recursive: true, force: true }),
+    list: (dir) => readdirSync(dir),
+    createExclusive: (path, data) => writeFileSync(path, data, { flag: 'wx', mode: 0o600 }),
+    rename: (from, to) => renameSync(from, to),
+  },
+  // The lane's transcript is copied on disk in pieces, never read whole on the event loop.
+  transcripts: {
+    copyClearingGoal: (from, to) => copyTranscriptClearingGoal(from, to),
+    clearGoal: (path) => clearActiveGoal(path),
+  },
+  realpath: (path) => realpathSync(path),
+  post: (path, body) => laneFetch('POST', path, body),
+  now: () => Date.now(),
+  setTimer: (fn, ms) => {
+    const timer = setTimeout(fn, ms)
+    timer.unref?.()
+    return timer
+  },
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  log,
+}))
+
+const laneThreadRpc = new LaneThreadRpcHandler({
+  lane: LANE,
+  threads: {
+    turn: (input) => {
+      // A thread turn is this person's activity: the lane does not idle out under it.
+      lastActivityAtMs = Date.now()
+      writeLaneState()
+      return laneThreads.turn(input)
+    },
+    close: (input) => laneThreads.close(input),
+  },
+  postAck: (rpcId) => laneFetch('POST', `integrations/voice-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) => laneFetch('POST', `integrations/voice-rpc/${encodeURIComponent(rpcId)}/result`, body),
+  log: (line) => log(line),
+})
+
+/**
+ * A thread turn this person sent while the lane was down (or its socket
+ * away) runs now: GET integrations/threads/pending with the lane session,
+ * which the server answers with this lane's own threads only. On every
+ * connect.
+ */
+function reconcileLaneThreads(why: string): void {
+  if (ending) return
+  const assistantIds = [String(LANE.assistantId)]
+  void laneThreadsCli.ready()
+    .then((answer) => {
+      if (!answer.ok || ending) return 0
+      return laneThreads.reconcile(() => laneFetch('GET', threadsPendingPath(assistantIds)), { assistantIds, lane: personLaneStamp(LANE.userId) })
+    })
+    .then((started) => { if (started > 0) log(`threads: ${started} pending thread turn(s) started (${why})`) })
+    .catch((err) => log(`threads: pending reconcile failed (${why}): ${err instanceof LaneHttpError ? err.status : err instanceof Error ? err.name : 'error'}`))
+}
+
+const LANE_THREAD_STOP_WAIT_MS = 3_000
+/**
+ * Shutdown: SIGTERM to every thread lane (each its own process group) and at
+ * most LANE_THREAD_STOP_WAIT_MS for them to exit. Null when none runs, so a
+ * lane without threads stops at once as before.
+ */
+function stopLaneThreadChildren(): Promise<void> | null {
+  if (laneThreads.liveChildren() === 0) return null
+  const all = laneThreads.stopAll()
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, LANE_THREAD_STOP_WAIT_MS)
+    void all.then(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
 // ── P7: the share's policy against the one this Claude was launched with ────
 
 const policyWatch = new LanePolicyWatch({
@@ -803,6 +960,7 @@ function connectSocket(): void {
   socket.on('connect', () => {
     log('lane socket connected')
     void poll()
+    reconcileLaneThreads('connect')
   })
   socket.on('disconnect', (reason) => {
     log(`lane socket disconnected (${reason})`)
@@ -848,6 +1006,11 @@ function connectSocket(): void {
       return
     }
     void laneMemory.handle(sorted.frame).catch((err) => log(`memory_rpc failed: ${String(err)}`))
+  })
+  // This person's threads: only `thread_turn` and `thread_close` stamped
+  // exactly for this lane are taken; anything else gets no ack and no answer.
+  socket.on('voice_rpc', (payload: unknown) => {
+    void laneThreadRpc.handle(payload).catch((err) => log(`voice_rpc failed: ${String(err)}`))
   })
 }
 
@@ -950,6 +1113,12 @@ function tick(): void {
     inFlightSinceMs = null
     writeLaneState()
   }
+  // A thread at work is this person's activity too: the supervisor's idle
+  // stop would otherwise take the lane, and its thread with it, mid turn.
+  if (laneThreads.activeWork() > 0) {
+    lastActivityAtMs = Date.now()
+    writeLaneState()
+  }
   if (existsSync(STOP_REQUEST_PATH) && !ending) {
     // The supervisor or the owner's daemon asked; stop serving at once.
     ending = true
@@ -971,6 +1140,10 @@ function startLoops(): void {
   timers.push(setInterval(() => void heartbeat(), 60_000))
   timers.push(setInterval(checkLogin, 5_000))
   timers.push(setInterval(tick, 5_000))
+  // Threads closed more than 7 days ago lose their folder and session file.
+  const sweepThreads = (): void => { void laneThreads.sweepClosed(Date.now()).catch((err) => log(`threads: sweep failed: ${String(err)}`)) }
+  timers.push(setInterval(sweepThreads, 60 * 60_000))
+  sweepThreads()
   void heartbeat()
 }
 
