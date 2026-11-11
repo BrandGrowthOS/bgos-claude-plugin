@@ -461,7 +461,7 @@ export function servedBrowserTools(playwrightTools) {
 /** The one line an agent gets when its owner gives it one of their own downloads with Allow once: once, no handle, no size. */
 export const ownerGaveLine = (fileName, folder) => `- ${fileName}: your owner gave you this file; it is in your browser folder (${folder}).`
 
-export const DOWNLOAD_SENTENCE = `Downloads: a file the page starts downloading is asked for as its own card, for ${DOWNLOAD_ASK_WAIT_S} seconds whatever wait_seconds your action carried, and it does not hold your call; while that card is open your next gated action waits for it. Allowed, the file is saved in your browser folder and hoai_browser_status gives you its path. Denied, it is deleted. Not answered, it is kept for the owner on this machine (when it fits the keep limits; otherwise it is deleted) and you are not given it. hoai_browser_status lists your latest downloads and every one of them still kept for the owner under Downloads, each with its state. A download the page starts while your owner holds the browser, or after they hand it back and before you act again, may be theirs: you are told only that your owner has a request open, and until when. If your owner gives you one of theirs with Allow once, you are told its name once, when it is in your browser folder; it is not listed in hoai_browser_status. Do not download a kept file again, because a site may serve a file only once: ask the owner what to do with it.`
+export const DOWNLOAD_SENTENCE = `Downloads: a file the page starts downloading is asked for as its own card, for ${DOWNLOAD_ASK_WAIT_S} seconds whatever wait_seconds your action carried, and it does not hold your call; while that card is open your next gated action waits for it. Allowed, the file is saved in your browser folder and hoai_browser_status gives you its path. Denied, it is deleted. Not answered, it is kept for the owner on this machine (when it fits the keep limits; otherwise it is deleted) and you are not given it. hoai_browser_status lists your latest downloads and every one of them still kept for the owner under Downloads, each with its state. A download the page starts while your owner holds the browser, or after they hand it back and before you act again (when they used the page, before you act once more after that action), may be theirs: you are told only that your owner has a request open, and until when. If your owner gives you one of theirs with Allow once, you are told its name once, when it is in your browser folder; it is not listed in hoai_browser_status. Do not download a kept file again, because a site may serve a file only once: ask the owner what to do with it.`
 
 /**
  * All an agent learns of a download that may be its owner's (SlotDownloads._mayBeOwners): that a request is open, and
@@ -2650,10 +2650,21 @@ export class BrowserHostCore {
       }
       // Only here does the agent act (SlotDownloads._mayBeOwners): a call refused or parked starts no download. A read
       // (a snapshot, a screenshot, the tab list) starts none either, so a download Chrome raises after it stays the owner's.
-      if (classification.kind !== 'read') slot.ownerHeldSinceAgent = false
+      // Once the owner used the page, Chrome may raise their download while this action runs or as it ends, and nothing
+      // tells the two apart: the owner's window stays open through it (and any action alongside it), until the agent
+      // acts again after it (board row 0ce57b35).
+      const acting = classification.kind !== 'read'
+      const afterOwner = acting && slot.ownerUsedSinceAgent === true
+      if (acting && !afterOwner) slot.ownerHeldSinceAgent = false
       const submitApproval = freshApproval && submitRequirement ? {} : null
       if (submitApproval) submitApprovals.set(submitApproval, submitRequirement)
-      return engine.callTool(name, engineArgs, signal, approved, submitApproval)
+      if (!afterOwner) return engine.callTool(name, engineArgs, signal, approved, submitApproval)
+      slot.actionsAfterOwner = (slot.actionsAfterOwner || 0) + 1
+      try {
+        return await engine.callTool(name, engineArgs, signal, approved, submitApproval)
+      } finally {
+        if (--slot.actionsAfterOwner === 0) slot.ownerUsedSinceAgent = false
+      }
     })
     if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(() => run()) }
     if (decision.verdict === 'deny') {

@@ -136,6 +136,23 @@ Rows marked (main) are what main added since this branch was last merged.
     either card, told on Allow for this session or Trust this site (by the answer, or by the save), told at the
     answer before the file lands, and told by the name asked for rather than the name it was saved under.
 
+## The race with the agent's next action (0.87.4, board row 0ce57b35)
+
+The owner's window used to end when the agent's next action started. Chrome raises a download late, so after the
+owner clicked a download link and handed back, the owner's file could land while the agent's next (allowed) navigation
+was in flight, or in the tick it ended, and was named to the agent. Now:
+
+- Every owner input but taking control (`RemoteOwnerInput._lease`, the pointer, keys, text, focus, renew, tabs,
+  reload and the remote navigation controls) and a credential lease set `slot.ownerUsedSinceAgent`, before the input
+  reaches the browser.
+- The host's run (`BrowserHostCore._permit`): an acting call that starts while that mark is set leaves
+  `ownerHeldSinceAgent` set, so a download raised during it, or as it ends, is the owner's. A count of such calls keeps
+  the mark while any of them runs; once the last ends the mark clears, and the agent's next acting call ends the
+  owner's window as before.
+- Fails closed: the agent's own download in that one action is the owner's too (asked, never named), because nothing
+  tells the two apart. The owner's Allow once still names it once.
+- An owner who only took control and handed back used nothing, so #353's "looks in and hands back" rule holds.
+
 ## Deploy order
 
 The BGOS half ships first.
