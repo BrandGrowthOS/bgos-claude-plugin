@@ -306,6 +306,20 @@
  *                       beat. PAIRING CONNECTIONS ONLY (BGOS's gate requires a
  *                       pairing) and NEVER ON WINDOWS: the pane proof reads the
  *                       process tree and tmux, which a Windows host has not.
+ *   lane_threads        a person an agent is shared with can open a THREAD
+ *                       with it, and the thread runs in that person's own
+ *                       lane: the lane daemon (lane-server.ts) answers
+ *                       thread_turn and thread_close stamped for its person
+ *                       (lib/lane-thread-rpc.ts), the thread forks the LANE's
+ *                       own session in a folder under the lane's own work
+ *                       folder, read only, and its answers go out with the
+ *                       lane session. The owner's daemon drops such a frame
+ *                       (lib/thread-rpc.ts isPersonThreadFrame). Declared only
+ *                       where person_lanes AND the thread tokens are both
+ *                       declared: a pairing, not Windows. BGOS offers a share
+ *                       recipient a thread only when the pairing declares
+ *                       message_threads, thread_sessions and this
+ *                       (backend/src/common/share-threads.ts).
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -328,7 +342,9 @@ import { ASK_ANSWERED_TOKEN, ASK_MULTI_SELECT_TOKEN, HARD_FLOOR_RULES_2_TOKEN, H
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
 import { EMAIL_FILES, EMAIL_SEND, shipsEmailFilesTools, shipsEmailTools } from './agent-email-tools.ts'
-import { LANE_MEMORY_RPC_TOKEN, PERSON_LANES_TOKEN } from './lane-core.mjs'
+import { LANE_MEMORY_RPC_TOKEN, LANE_THREADS_TOKEN, PERSON_LANES_TOKEN } from './lane-core.mjs'
+
+export { LANE_THREADS_TOKEN }
 
 /** Declared wherever this plugin runs, on every host and every connection. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
@@ -500,6 +516,12 @@ export function declaredCapabilities(input: {
     ...(input.threads === true && (input.platform ?? process.platform) !== 'win32' ? THREAD_CAPABILITY_TOKENS : []),
     ...(input.authMode === 'pairing' && input.threads === true && (input.platform ?? process.platform) !== 'win32'
       ? [GROUP_THREADS_TOKEN, ...((input.groupLevels ?? groupLevelsEnabled(process.env)) ? [GROUP_LEVELS_TOKEN] : [])]
+      : []),
+    // A person's lane runs that person's threads (lib/lane-thread-rpc.ts):
+    // only where BOTH person lanes and threads are declared above, so the
+    // server never offers a share recipient a thread no lane could run.
+    ...(input.authMode === 'pairing' && input.personLanes === true && input.threads === true && (input.platform ?? process.platform) !== 'win32'
+      ? [LANE_THREADS_TOKEN]
       : []),
   ]
 }

@@ -56,6 +56,12 @@
  *    fork's session file and the state. Either waits for a start in flight,
  *    so a worktree being made while the person deletes is removed too.
  *
+ *  - A PERSON's lane (shared agents) runs that person's threads with a
+ *    manager of its own, built by lib/lane-thread-rpc.ts from the lane's own
+ *    facts: its `confine` has the last word on every lane's confinement
+ *    there, and its git never runs, so those threads are plain read only
+ *    folders under the lane's own work folder.
+ *
  * Every effect is an injected dependency, so the whole manager is unit tested
  * with fakes (test/thread-lanes.test.ts). Erasable TypeScript only.
  */
@@ -77,6 +83,7 @@ import {
 } from './thread-lane-args.ts'
 import { lineSplitter, userMessageLine, type SpawnStreamJson, type StreamJsonChild } from './stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
+import { OWNER_LANE_STAMP, readLaneStamp } from './lane-core.mjs'
 
 export const THREAD_LANE_MAX_RUNNING = 2
 export const THREAD_LANE_IDLE_MS = 20 * 60_000
@@ -204,6 +211,12 @@ export interface ThreadLaneDeps {
     runsIn(pid: number, dir: string): Promise<boolean | null>
     kill(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void
   }
+  /**
+   * A person's lane (lib/lane-thread-rpc.ts): the last word on a lane's
+   * confinement, applied to whatever this manager worked out. Absent (the
+   * owner's daemon), the confinement is this manager's own.
+   */
+  confine?(confinement: ThreadLaneConfinement): ThreadLaneConfinement
   /** This host can run the CLI's Bash sandbox (lib/lane-policy.mjs laneShellSandboxAvailable). */
   shellSandbox(): boolean
   /** process.platform: on Linux the sandbox protects only paths that exist (protectedPaths). */
@@ -478,7 +491,8 @@ export class ThreadLaneManager {
    * threads wait on this agent (GET integrations/threads/pending, answered
    * `{ turns: [{ chatId, rootId, replyId, mode, text, title, assistantId }] }`)
    * and run a reply turn for each that is not already running here. A row for
-   * an agent this daemon does not serve is skipped. Answers how many started.
+   * an agent this daemon does not serve is skipped, and so is a row stamped
+   * for a lane that is not this manager's. Answers how many started.
    *
    * The server lists every open thread whose newest row is the person's, so a
    * turn this lane already finished is listed while its answer is still being
@@ -488,14 +502,14 @@ export class ThreadLaneManager {
    * naming the lane's last finished reply only puts the thread back to Open
    * with a short plain reply when nothing is left to land.
    */
-  reconcile(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[] } = {}): Promise<number> {
+  reconcile(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[]; lane?: string } = {}): Promise<number> {
     // Tracked from its first step: a read still out may start a turn, so a restart waits for it (activeWork).
     const run = this.reconcileNow(fetchPending, opts)
     this.track(run)
     return run
   }
 
-  private async reconcileNow(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[] }): Promise<number> {
+  private async reconcileNow(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[]; lane?: string }): Promise<number> {
     const raw = await fetchPending()
     const body = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
     const rows: unknown[] = Array.isArray(body?.turns) ? (body!.turns as unknown[]) : []
@@ -506,6 +520,14 @@ export class ThreadLaneManager {
       if (!row || typeof row !== 'object') continue
       const r = row as Record<string, unknown>
       if (served && str(r.assistantId) !== '' && !served.has(str(r.assistantId))) continue
+      // The second lock (shared agents): a row that carries a lane stamp runs
+      // only in that lane. This manager's lane is `opts.lane` (a person's lane
+      // daemon names its own) or the owner's; a row with no stamp is today's.
+      const stamp = readLaneStamp(r)
+      if (stamp !== null && stamp !== (opts.lane ?? OWNER_LANE_STAMP)) {
+        this.deps.log('threads: a pending thread stamped for another lane was skipped')
+        continue
+      }
       const input: ThreadTurnInput = {
         chatId: str(r.chatId),
         rootId: str(r.rootId),
@@ -943,6 +965,11 @@ export class ThreadLaneManager {
 
   /** Where this lane may write and what it may run (lib/thread-lane-args.ts). */
   private async confinement(lane: Lane): Promise<ThreadLaneConfinement> {
+    const own = await this.ownConfinement(lane)
+    return this.deps.confine ? this.deps.confine(own) : own
+  }
+
+  private async ownConfinement(lane: Lane): Promise<ThreadLaneConfinement> {
     const { agentFolder } = this.deps
     const root = lane.state.folder
     if (lane.state.readOnly) {

@@ -91,6 +91,7 @@ import {
   asidePayload,
   groupThreadEndPayload,
   groupThreadLevelPayload,
+  isPersonThreadFrame,
   isThreadOp,
   threadClosePayload,
   threadRefusal,
@@ -149,6 +150,8 @@ export function normalizeVoiceRpc(raw: unknown): VoiceRpcFrame | null {
       ? r.op
       : null
   if (!rpcId || !op) return null
+  // A thread op stamped for a person's lane is that lane's (lib/lane-thread-rpc.ts), never this daemon's.
+  if (isPersonThreadFrame(r)) return null
   return {
     rpcId,
     op,
