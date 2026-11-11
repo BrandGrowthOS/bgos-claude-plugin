@@ -95,13 +95,15 @@ test('with no change in flight a card is sent at once; other methods are never h
 
 test('server.ts installs the hold OUTERMOST, after the private turn record, with the control\'s lock', () => {
   const assignments = [...server.matchAll(/^mcp\.notification = (.*)$/gm)]
-  // Three since 0.86.20: the private turn record, the scheduled run hold (which builds each card when it goes out),
-  // then this lock, last, so it runs first. Never stacked twice.
-  assert.equal(assignments.length, 3, 'the private turn record, the scheduled run hold and the lock, never stacked twice')
+  // Four since the quiet turn (2026-11-11): the private turn record, the scheduled run hold (which builds each card when it goes out), the
+  // quiet turn hold (lib/quiet-turn.mjs, which must see a card before it is built), then this lock, last, so it runs
+  // first. Never stacked twice.
+  assert.equal(assignments.length, 4, 'the private turn record, the scheduled run hold, the quiet turn hold and the lock, never stacked twice')
   assert.match(assignments[0]![1]!, /^\(\(notification/, 'the private turn record first')
   assert.match(assignments[1]![1]!, /^holdChannelCardsDuringGrantedRun\(scheduleGrantRuns, mcp\.notification\.bind\(mcp\)/, 'the scheduled run hold inside the lock')
-  assert.match(assignments[2]![1]!, /^holdChannelCardsWhileBusy\(modelEffortControl, mcp\.notification\.bind\(mcp\)/, 'the hold last, so it runs first')
-  assert.ok(server.indexOf('const modelEffortControl: ModelEffortControl = new ModelEffortControl(') < assignments[2]!.index!, 'the lock exists first')
+  assert.match(assignments[2]![1]!, /^holdChannelCardsDuringQuietTurn\(quietTurns, mcp\.notification\.bind\(mcp\)/, 'the quiet turn hold outside the scheduled run hold, inside the lock')
+  assert.match(assignments[3]![1]!, /^holdChannelCardsWhileBusy\(modelEffortControl, mcp\.notification\.bind\(mcp\)/, 'the hold last, so it runs first')
+  assert.ok(server.indexOf('const modelEffortControl: ModelEffortControl = new ModelEffortControl(') < assignments[3]!.index!, 'the lock exists first')
 })
 
 test('the hold reports when a channel card really goes out, not when it is queued', async () => {

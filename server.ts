@@ -213,7 +213,8 @@ import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.j
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
-import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
+import { createQuietTurns, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
+import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_OUTBOUND_FILES_PATH,
@@ -2781,15 +2782,18 @@ type ChannelCardParams = { content: string; meta?: unknown } & Record<string, un
  * so whatever it records in the private turn tracker (deliver, noteUntracked, a tap) happens when the card reaches the
  * session, never while it waits. A builder that returns null sends nothing. A granted wake names its grant. The method
  * is spelled here and nowhere else (test/schedule-grant-run.test.ts fails a card sent any other way).
+ * `quiet` names what the card is to the quiet turn hold (lib/quiet-turn.mjs, 2026-11-11): a card the server stamped for the
+ * owner, one that holds nobody's words, or a Stop. A card that names nothing waits while the owner's trusted turn runs.
  */
 function channelNotify(
   build: () => ChannelCardParams | null,
-  options: { scheduleGrant?: ReturnType<typeof scheduleGrantOf> } = {},
+  options: { scheduleGrant?: ReturnType<typeof scheduleGrantOf>; quiet?: ReturnType<typeof quietCardOf> | { carried: true } | { stop: true } | null } = {},
 ): Promise<void> {
   return mcp.notification({
     method: 'notifications/claude/channel',
     params: build,
     ...(options.scheduleGrant ? { scheduleGrant: options.scheduleGrant } : {}),
+    ...(options.quiet ? { quiet: options.quiet } : {}),
   } as unknown as Parameters<typeof mcp.notification>[0])
 }
 
@@ -7922,6 +7926,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const body = failed
         ? { ok: false, error: { code: 'DISPATCH_FAILED', message: resultText } }
         : { ok: true, payload: { text: resultText } }
+      // The task is reported, done or failed: the owner's trust for it ends here, before the report is even posted
+      // (lib/private-turn.mjs endDispatch, the quiet turn, 2026-11-11). Only this task's own turn; what waited outside it goes out.
+      privateTurns.endDispatch(taskId)
+      quietTurns.recheck()
+      publishBrowserPrivateTurn()
       await bgosPost(`integrations/voice-tasks/${encodeURIComponent(taskId)}/result`, body)
       return {
         content: [
@@ -10261,7 +10270,7 @@ function checkReplyOverdue(): void {
           ts: new Date(now).toISOString(),
           ...(p.ownerInbound ? { owner_inbound: 'true' } : {}),
         },
-      }))).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
+      }), { quiet: p.ownerInbound ? { carried: true } : null })).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
   }
 }
 /**
@@ -10761,7 +10770,7 @@ async function announceMissedPlanAnswers(): Promise<void> {
               assistantId: ASSISTANT_ID,
               ts: mm.answeredAt ?? '',
             }),
-          })),
+          }), { quiet: readTapperUserId(payload) === USER_ID ? { carried: true } : null }),
       ).catch((err) => {
         log(`Plan boot sweep: failed to deliver the answer to Claude: ${err}`)
       })
@@ -10864,7 +10873,23 @@ const turnChat = createTurnChatTracker()
 // message the same way, as owner:<message id>.
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
-const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)) })
+const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn(); quietTurns.recheck() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)) })
+// A trusted turn is quiet (lib/quiet-turn.mjs, 2026-11-11): while the owner's own turn is bound in the tracker above (a
+// stamped voice ask, the owner's typed message, the owner's scheduled wake), every other channel card waits in the
+// notification chain below, five minutes at most, so nobody else's words reach that turn and end its trust. It reads
+// the tracker's own bound turn and adds only the gap before a card's prompt begins. Off with no private turn hook (no
+// turn is ever admitted then), while this daemon does not hold the lock, and with BGOS_QUIET_TURN=off.
+const QUIET_TURN_ENABLED = quietTurnEnabled(process.env.BGOS_QUIET_TURN)
+const quietTurns = createQuietTurns({
+  trusted: () => privateTurns.quiet(),
+  deliveryOf: (card: unknown) => privateTurns.deliveryOf(card),
+  ownerUserId: USER_ID,
+  // Between turns a card sent now starts a prompt of its own; mid turn it is injected or queued, and holds nothing yet.
+  idle: () => !hookTurnLive,
+  enabled: () => QUIET_TURN_ENABLED && lockHeld && PRIVATE_HOOK.registered,
+})
+// At the four tap sites below, the owner's own tap (the tapper the server stamped is this agent's owner) names itself
+// `{ carried: true }`: it holds nobody's words but the owner's, so it passes the hold, and privateTapCard decides the rest.
 // A scheduled run keeps the permission of the person who scheduled it (lib/schedule-grant-run.mjs, 0.86.20). While a
 // granted run is live, every other channel card waits (the hold in the notification chain below) and the boards calls
 // of the wake's own turn carry the grant. Its end tells the server, which uses the grant up for good and lifts its
@@ -10942,6 +10967,13 @@ mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
 // the private turn tracker. Inside the lock, outside the raw card record. A released card goes back through the whole
 // chain (resend), so it waits for the lock again and the lock stamps when it really went out.
 mcp.notification = holdChannelCardsDuringGrantedRun(scheduleGrantRuns, mcp.notification.bind(mcp), {
+  log,
+  resend: (notification: Parameters<typeof mcp.notification>[0]) => mcp.notification(notification),
+}) as typeof mcp.notification
+// The quiet turn hold (lib/quiet-turn.mjs, 2026-11-11), outside the scheduled run hold (which builds a card) and inside the
+// lock: while the owner's trusted turn is live every other card waits here, unbuilt, five minutes at most. A released
+// card goes back through the whole chain too.
+mcp.notification = holdChannelCardsDuringQuietTurn(quietTurns, mcp.notification.bind(mcp), {
   log,
   resend: (notification: Parameters<typeof mcp.notification>[0]) => mcp.notification(notification),
 }) as typeof mcp.notification
@@ -11513,6 +11545,8 @@ function endHookTurn(keepCard: boolean): void {
   privateTurns.end(hookLineAt === null ? {} : { at: hookLineAt, startedAt: hookLineStartedAt })
   // A granted scheduled run whose turn began ends with it, and what waited is delivered.
   scheduleGrantRuns.noteStop()
+  // The owner's trusted turn ended with the CLI turn: what waited outside it goes out (lib/quiet-turn.mjs).
+  quietTurns.recheck()
   publishBrowserPrivateTurn()
 }
 
@@ -11643,12 +11677,15 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt, startedAt: line?.startedAt })
   // The session that ran a granted scheduled run is gone: the run is over, and what waited is delivered.
   if (event.name === 'SessionEnd') scheduleGrantRuns.end('session ended')
+  if (event.name === 'SessionEnd') quietTurns.recheck()
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
     // startedAt: when claude submitted it (the forwarder's own start), so a Stop line places it by that, wherever the
     // two lines land (lib/private-turn.mjs ranSinceStop, the final review of e7166041).
     const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id, startedAt: line?.startedAt })
     scheduleGrantRuns.noteBegin(payload.prompt)
+    // After the tracker's begin: a pending card's own prompt hands over to the tracker's bound turn.
+    quietTurns.noteBegin(payload.prompt)
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
@@ -12247,7 +12284,7 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
   void trackMessageOperation(() => channelNotify(() => ({
       content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
       meta: buildButtonClickedMeta({ chatId, messageId: mm.id, callbackData: planAnswer.callbackData ?? agentCallbackData, buttonText, customText, tapperUserId: readTapperUserId(payload), assistantId: ASSISTANT_ID, ts: mm.answeredAt, card: cardAnswer }),
-    }))).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
+    }), { quiet: readTapperUserId(payload) === USER_ID ? { carried: true } : null })).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
 }
 
 async function pollChat(chatId: string): Promise<void> {
@@ -12861,7 +12898,7 @@ async function pollChat(chatId: string): Promise<void> {
             ts: mm.answeredAt,
             card: cardAnswer,
           }),
-        }))).catch((err) => {
+        }), { quiet: readTapperUserId(payload) === USER_ID ? { carried: true } : null })).catch((err) => {
         log(`Failed to deliver button_clicked to Claude: ${err}`)
       })
     }
@@ -13258,7 +13295,7 @@ async function pollChat(chatId: string): Promise<void> {
             !isSlashCommand && !pollIsEmail ? pollEventMeta : null,
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
-        }), { scheduleGrant: pollGrant })))
+        }), { scheduleGrant: pollGrant, quiet: steerPlan ? { stop: true } : quietCardOf({ ownerUserId: USER_ID, actingUserId: pollActor, senderType: pollSenderType, chatId }) })))
       if (!isSlashCommand) humanMessageEdits.rememberOriginal(
         viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
         humanHandoff,
@@ -15539,12 +15576,16 @@ const voiceRpc = new VoiceRpcHandler({
       `integrations/voice-rpc/${encodeURIComponent(rpcId)}/result`,
       body as unknown as Record<string, unknown>,
     ),
-  notify: (content, meta, consult) =>
+  notify: (content, meta, consult, dispatch) =>
     channelNotify(() => ({
         // A voice consult card is a delivery like any message: its own
         // single use token, and the owner only when the backend's stamp
         // verified (lib/private-turn.mjs voiceConsultActor). Its turn is
         // that consult's alone and ends with it (onConsultEnded below).
+        // A paired dispatch card the same way when the backend stamped it
+        // (voiceDispatchActor, the quiet turn, 2026-11-11): its turn is that task's alone and
+        // ends when the task is reported (complete_voice_task). One with no
+        // stamp is pushed with no delivery, exactly as before.
         content: consult
           ? privateTurns.deliver({
             content,
@@ -15552,9 +15593,16 @@ const voiceRpc = new VoiceRpcHandler({
             chatId: consult.chatId,
             consult: { consultId: consult.consultId, deadline: consult.actor?.deadline ?? null },
           })
-          : content,
+          : dispatch?.actor
+            ? privateTurns.deliver({
+              content,
+              actingUserId: dispatch.actor.actingUserId,
+              chatId: dispatch.chatId,
+              dispatch: { taskId: dispatch.taskId, deadline: dispatch.actor.deadline },
+            })
+            : content,
         meta,
-      })),
+      }), { quiet: voiceQuietCard({ ownerUserId: USER_ID, consult, dispatch, meta }) }),
   onConsultEnded: (consultId) => {
     privateTurns.endConsult(consultId)
   },
@@ -15580,7 +15628,9 @@ const voiceRpc = new VoiceRpcHandler({
   // The owner's model and effort picker (lib/model-effort-rpc.ts).
   modelEffort: modelEffortPicker,
   // A dispatch card queued behind a change is accepted at once.
-  cardsHeld: () => modelEffortControl.busy,
+  // A model or effort change holds every card; the owner's trusted turn holds this one unless it is the owner's own
+  // stamped ask in that turn's chat (lib/quiet-turn.mjs).
+  cardsHeld: (card) => modelEffortControl.busy || quietTurns.holds(card?.stamped ? { opens: 'ask', chatId: card.chatId } : null),
   // Threads phase 1 (lib/thread-rpc.ts): thread_turn, thread_close, aside.
   // Not on Windows in phase 1: the ops answer unsupported there.
   ...(process.platform !== 'win32'
@@ -16712,7 +16762,7 @@ async function forwardHumanEdit(view: StreamMessageView, transport: 'poll' | 'ws
       await trackMessageOperation(() => channelNotify(() => ({
           content: privateTurns.deliver({ content, chatId: edited.chatId, emailBasis: emailSendBasis({ senderType: 'user', messageId: edited.messageId, backlog: false }), fireKey: null, actingUserId: privateActor({ senderType: 'user', senderUserId: privateSenderUserId(edited.raw) }) }),
           meta,
-        })))
+        }), { quiet: quietCardOf({ ownerUserId: USER_ID, actingUserId: privateActor({ senderType: 'user', senderUserId: privateSenderUserId(edited.raw) }), senderType: 'user', chatId: edited.chatId }) }))
     }
     if (humanMessageEdits.isDeleted(edited)) return
     lastInboundAtMs = Date.now()
@@ -17121,7 +17171,7 @@ async function forwardStreamInbound(
               streamEventMeta,
               interrupted ? STEER_INTERRUPTED_META : null,
             ),
-          }), { scheduleGrant: streamGrant })),
+          }), { scheduleGrant: streamGrant, quiet: steerPlan ? { stop: true } : quietCardOf({ ownerUserId: USER_ID, actingUserId: streamActor, senderType: isSystem ? 'system' : view.senderKind, chatId }) })),
       )
       if (!isSlash) humanMessageEdits.rememberOriginal(view, humanHandoff)
       await humanHandoff
@@ -17413,7 +17463,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
           assistantId: String(ASSISTANT_ID),
           card: cardAnswer,
         }),
-      })),
+      }), { quiet: answer.tapperUserId === USER_ID ? { carried: true } : null }),
   )
     .then(() =>
       // Handoff to the MCP transport, NOT the moment the agent's turn applies
@@ -18294,20 +18344,38 @@ function connectWebsocket(): void {
         return
       }
       const { taskId, question, context, chatId } = parsed.task
-      log(`voice_task_dispatch received (task=${taskId})`)
-      void trackMessageOperation(() => channelNotify(() => ({
-          content: buildVoiceTaskDispatchText({ taskId, question, context }),
-          meta: channelMeta(
-            {
-              event_type: 'voice_task_dispatch',
-              chat_id: chatId,
-              user_id: USER_ID,
-              assistant_id: ASSISTANT_ID,
-              transport: 'ws',
-            },
-            { task_id: taskId },
-          ),
-        }))).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
+      // The owner, only when the backend proved that this task answers the owner's own words on a live call and the
+      // stamp is for this agent, this owner and this very task (lib/private-turn.mjs voiceDispatchActor, the quiet turn, 2026-11-11).
+      // Read from the event's own eventMeta, never from its question, context or user_id.
+      const dispatchActor = voiceDispatchActor({ meta: payload?.eventMeta, taskId, frameAssistantId: payload?.assistant_id, assistantId: ASSISTANT_ID, ownerUserId: USER_ID, now: Date.now() })
+      log(`voice_task_dispatch received (task=${taskId}${dispatchActor ? ', the owner\'s own ask' : ''})`)
+      void trackMessageOperation(() => channelNotify(() => {
+          const text = buildVoiceTaskDispatchText({ taskId, question, context })
+          return {
+            // A stamped task is a delivery like a consult: its own single use token, a turn that is that task's alone,
+            // ended when the task is reported (complete_voice_task), when the CLI turn stops, or at its deadline. One
+            // with no stamp is pushed with no delivery, exactly as before.
+            // No emailBasis, like a consult's card: a voice ask is never a reason to send email.
+            content: dispatchActor
+              ? privateTurns.deliver({
+                content: text,
+                actingUserId: dispatchActor.actingUserId,
+                chatId,
+                dispatch: { taskId: dispatchActor.taskId, deadline: dispatchActor.deadline },
+              })
+              : text,
+            meta: channelMeta(
+              {
+                event_type: 'voice_task_dispatch',
+                chat_id: chatId,
+                user_id: USER_ID,
+                assistant_id: ASSISTANT_ID,
+                transport: 'ws',
+              },
+              { task_id: taskId },
+            ),
+          }
+        }, { quiet: quietCardOf({ ownerUserId: USER_ID, actingUserId: dispatchActor?.actingUserId ?? null, senderType: 'user', chatId, ask: true }) })).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
     } catch (err) {
       log(`voice_task_dispatch handler error: ${err}`)
     }
@@ -18843,7 +18911,7 @@ function connectWebsocket(): void {
             !isWsSlashCommand && !wsIsEmail ? wsEventMeta : null,
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
-        }), { scheduleGrant: wsGrant })))
+        }), { scheduleGrant: wsGrant, quiet: steerPlan ? { stop: true } : quietCardOf({ ownerUserId: USER_ID, actingUserId: wsActor, senderType: wsSenderType, chatId }) })))
       if (!isWsSlashCommand) humanMessageEdits.rememberOriginal(
         viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
         humanHandoff,
@@ -18906,7 +18974,7 @@ function connectWebsocket(): void {
           assistant_id: ASSISTANT_ID,
           transport: 'ws',
         },
-      }))).catch(() => {})
+      }), { quiet: { carried: true } })).catch(() => {})
   }))
 
   realtimeSocket.on('peer_turn_yielded', whenArmed('peer_turn_yielded', (payload: any) => {

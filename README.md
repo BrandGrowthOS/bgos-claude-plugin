@@ -1303,6 +1303,7 @@ What the flag turns on, when the backend serves the feature:
 | `BGOS_USAGE_REPORT` | No | `"off"` disables the per-turn usage self-report (Fleet Pulse). Default: on |
 | `BGOS_USAGE_BILLING_MODE` | No | `"api"` for API-key-billed sessions (reports as api billing). Default: `subscription` (Claude Max: token usage only, never dollars) |
 | `BGOS_REQUIRE_CONFIRMED_DISPATCH` | No | `"true"` to reject voice dispatches lacking `confirmed:true` (the Iris G5 confirm-gate belt; the backend already withholds unconfirmed proposals, this adds daemon-side defense in depth). Default: off |
+| `BGOS_QUIET_TURN` | No | `"off"` (or `0`, `false`, `no`) switches off the quiet turn wait: while the owner's own turn runs (a stamped voice ask, a typed message, a scheduled wake) every other channel card waits outside it, five minutes at most, so nobody else's words end that turn's trust. Off, every card goes out at once as before 0.88.0; the scheduled run wait is not affected. Default: on |
 | `BGOS_UPDATE_STREAM` | No | `"true"` opts into the Agent Update Stream (sequenced pushes + session-token catch-up; see the section above). Anything else, including unset, keeps the daemon byte-for-byte on the legacy paths. Default: off |
 
 ### Permission Modes

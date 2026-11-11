@@ -80,7 +80,7 @@ import {
   type SessionOp,
   type SessionRow,
 } from './session-controls-contract.ts'
-import { voiceConsultActor } from './private-turn.mjs'
+import { voiceConsultActor, voiceDispatchActor } from './private-turn.mjs'
 import { isModelEffortOp, rpcLogTag, type ModelEffortOp, type PickerAnswer, type PickerFrame } from './model-effort-rpc.ts'
 import {
   ASIDE,
@@ -403,6 +403,10 @@ export interface VoiceRpcDeps {
     content: string,
     meta: Record<string, unknown>,
     consult?: VoiceConsultDelivery,
+    /** A paired dispatch card names its task and the owner the backend's
+     *  stamp verified (voiceDispatchActor), or null (the quiet turn, 2026-11-11): the daemon
+     *  delivers a stamped one through privateTurns.deliver. */
+    dispatch?: VoiceDispatchDelivery,
   ): Promise<unknown>
   /** Told once when a consult is over: answered (final), the final word on a
    *  continuation, timed out, or never delivered. The daemon ends that
@@ -431,10 +435,12 @@ export interface VoiceRpcDeps {
     query?: string
     limit: number
   }): { sessions: SessionRow[]; truncated: boolean }
-  /** True while a model or effort change holds every channel card
-   *  (lib/model-effort-control.ts holdChannelCardsWhileBusy): a card sent now
-   *  is queued and goes out when the change ends. */
-  cardsHeld?(): boolean
+  /** True while a card sent now would wait: a model or effort change holds
+   *  every channel card (lib/model-effort-control.ts holdChannelCardsWhileBusy),
+   *  or the owner's trusted turn holds this one (lib/quiet-turn.mjs, 2026-11-11).
+   *  Asked BEFORE the card is sent, with what the card is, so a card going
+   *  out never counts as its own hold. */
+  cardsHeld?(card?: { chatId: string; stamped: boolean }): boolean
   /** The owner's model and effort picker (lib/model-effort-rpc.ts
    *  ModelEffortPickerHandler). Absent, both ops answer not_allowed. */
   modelEffort?: {
@@ -456,6 +462,13 @@ export interface VoiceRpcDeps {
 /** What a consult card carries to the daemon's private turn tracker. */
 export interface VoiceConsultDelivery {
   consultId: string
+  chatId: string
+  actor: { actingUserId: string; deadline: number } | null
+}
+
+/** What a dispatch card carries to the daemon's private turn tracker. */
+export interface VoiceDispatchDelivery {
+  taskId: string
   chatId: string
   actor: { actingUserId: string; deadline: number } | null
 }
@@ -657,13 +670,39 @@ export function buildConsultNotification(args: {
   budgetSeconds: number
   /** The backend's stamp verified: this consult opens a private turn. */
   privateTurn?: boolean
+  /** How long that private turn can last from now, in whole seconds. */
+  privateSeconds?: number
 }): string {
-  return (
+  const head =
     `[voice_consult] Your user is asking you LIVE on a voice call ` +
     `(consult_id="${args.consultId}"):\n\n${args.question}` +
     (args.context ? `\n\nCall context: ${args.context}` : '') +
     (args.responseStyle ? `\n\nAnswer style: ${args.responseStyle}` : '') +
-    `\n\n${CONTINUATION_BRIEF}` +
+    `\n\n${CONTINUATION_BRIEF}`
+  if (args.privateTurn) {
+    // A verified ask (the quiet turn, 2026-11-11, G2): the trusted turn closes on the final
+    // answer, so a tool the ask needs runs BEFORE it, never after.
+    const window = Math.max(1, Math.floor(args.privateSeconds ?? 45))
+    return (
+      head +
+      `\n\nYou have ~${args.budgetSeconds} seconds to answer. The server ` +
+      `verified that these are your user's own words. Private tools ` +
+      `(schedule, boards, the browser) act for your user only inside this ` +
+      `consult, until its final answer and for about ${window} seconds at ` +
+      `most. If the ask needs one, run it BEFORE your final ` +
+      `voice_consult_reply, then call voice_consult_reply with ` +
+      `consult_id="${args.consultId}" and a short, SPEAKABLE answer (1-3 ` +
+      `sentences) saying what you did. If that will not fit the budget, ` +
+      `reply IMMEDIATELY with final=false (say you are on it), keep ` +
+      `working, then call voice_consult_reply AGAIN with the same ` +
+      `consult_id and the result: it is announced in the call when it ` +
+      `lands. For a plain question, answer at once. Never leave a ` +
+      `final=false consult without a second reply. Sending email is not ` +
+      `part of a voice ask.`
+    )
+  }
+  return (
+    head +
     `\n\nYou have ~${args.budgetSeconds} seconds. Call the ` +
     `voice_consult_reply tool FIRST — before any other tool — with ` +
     `consult_id="${args.consultId}" and a short, SPEAKABLE answer (1-3 ` +
@@ -673,12 +712,7 @@ export function buildConsultNotification(args: {
     `final=false (say it is your last known reading), keep working, then ` +
     `call voice_consult_reply AGAIN with the same consult_id and the fresh ` +
     `answer: it is announced in the call when it lands. Never leave a ` +
-    `final=false consult without a second reply.` +
-    (args.privateTurn
-      ? ` Private tools (schedule, boards, the browser) act for your user ` +
-        `only inside this consult, until its final answer: run them before ` +
-        `the final voice_consult_reply, or reply with final=false first.`
-      : '')
+    `final=false consult without a second reply.`
   )
 }
 
@@ -1304,6 +1338,32 @@ export class VoiceRpcHandler {
     })
     if (!parsed.ok) throw new VoiceRpcError('BAD_DISPATCH', parsed.reason)
     const { taskId, question, context } = parsed.task
+    // The owner only when the backend proved that this task answers the
+    // owner's own words on a live call, and the stamp is for this agent,
+    // this owner and this very task (the quiet turn, 2026-11-11). Read from the
+    // frame's own payload.eventMeta, never from the model's args.
+    const stamp = voiceDispatchActor({
+      meta: p.eventMeta,
+      taskId,
+      frameAssistantId: frame.assistantId,
+      assistantId: this.deps.config.assistantId,
+      ownerUserId: this.deps.config.userId,
+      now: Date.now(),
+    })
+    const delivery: VoiceDispatchDelivery = {
+      taskId,
+      chatId: parsed.task.chatId,
+      actor: stamp
+        ? { actingUserId: stamp.actingUserId, deadline: stamp.deadline }
+        : null,
+    }
+    // Asked before the card is sent: a card that goes out and opens its own
+    // trusted turn must not read as held by it.
+    const held =
+      this.deps.cardsHeld?.({
+        chatId: parsed.task.chatId,
+        stamped: stamp !== null,
+      }) === true
     const card = this.deps.notify(
       buildVoiceTaskDispatchText({ taskId, question, context }),
       channelMeta(
@@ -1316,11 +1376,14 @@ export class VoiceRpcHandler {
         },
         { task_id: taskId },
       ),
+      undefined,
+      delivery,
     )
-    if (this.deps.cardsHeld?.()) {
-      // Queued behind a model or effort change, which sends it when it ends.
+    if (held) {
+      // Queued behind a model or effort change, or behind the owner's trusted
+      // turn, which sends it when it ends.
       // BGOS waits 10 s for this accept (voice-task.service.ts
-      // DISPATCH_ACCEPT_TIMEOUT_MS) and a change can hold longer, so a late
+      // DISPATCH_ACCEPT_TIMEOUT_MS) and a hold can last longer, so a late
       // answer would read as staged and the task could run twice.
       void Promise.resolve(card).catch((err) => {
         this.deps.log(`voice dispatch card failed after the hold: ${err instanceof Error ? err.name : 'error'}`)
@@ -1388,6 +1451,9 @@ export class VoiceRpcHandler {
         Math.floor((this.timing.consultTimeoutMs - 8_000) / 1000),
       ),
       privateTurn: stamp !== null,
+      ...(stamp !== null
+        ? { privateSeconds: (stamp.deadline - Date.now()) / 1000 }
+        : {}),
     })
 
     const settled = await new Promise<{ text: string; pending?: boolean }>((resolve, reject) => {
