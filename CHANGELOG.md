@@ -10,6 +10,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.87.3 (2026-11-06)
+
+**The reply tool reports where the message went** An agent's reply result now names the chat it actually reached and says delivered when the server stored it, instead of a side conversation that was never used.
+
 ## 0.87.2 (2026-11-09)
 
 **A thread answer reaches the app again.** The server refuses an assistant write that carries a client key unless it proves that one assistant, and this daemon holds no such proof for a thread reply, so every reply was answered 403. Thread replies now carry no key and are authorized by the pairing, as a keyless write always was. Without a key the server cannot drop a repeat, so a retry after a lost response can post an answer more than once. A 403 is no longer retried: the thread goes back to Open, the owner is told in one sentence, and the refused answer is saved, readable only by this user, beside the lane state until the thread is deleted. An answer to a thread the owner closed stops at once.

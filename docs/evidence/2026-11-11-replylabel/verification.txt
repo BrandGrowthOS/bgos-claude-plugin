@@ -1,0 +1,93 @@
+Reply delivery result verification
+Date: 2026-11-11
+Base commit: 01a6284e34a641a046df5505bb0026b1756771ea
+
+Change
+The reply result uses the chat id returned with the stored message, including
+when an older session handle no longer has a local reverse mapping. An unknown
+chat refreshes the inbox before classification. Stored main chat replies say
+delivered to the main chat; confirmed peer replies name their side thread.
+Missing or null stored message ids report delivery unconfirmed.
+
+Routing, peer refusal, closed conversation and reopen decisions remain with
+the existing code and backend. Known side threads still require peer handoff
+confirmation. If discovery still gives no chat kind, the existing conservative
+handoff check remains, but its result names only the chat, not an invented side
+conversation. The Sent (message_id: N) prefix remains for session binding.
+
+Red first
+Command: node --import tsx --test --test-concurrency=4
+  --test-name-pattern='reply result:' test/peer-closed-reply.test.ts
+Result before implementation: 8 tests, 0 passed, 8 failed, exit 1.
+The uncached main chat and mapped handle cases incorrectly said:
+  Delivery unconfirmed: HOAI saved this reply in the side conversation ...
+The missing and null id cases incorrectly said:
+  Sent ()
+The same eight regressions then passed after implementation, exit 0.
+
+Review found that an older authorized handle must use the server's actual chat
+id, and that removing uncertainty for unidentified chats lost a closed thread
+safeguard. Four older handle regressions and the restored omitted-kind closed
+thread test failed on that intermediate implementation: 0 passed, 5 failed.
+Both findings were fixed. The reviewer found no remaining issues on re-review.
+
+Focused verification
+Command: node --import tsx --test --test-concurrency=4
+  test/peer-closed-reply.test.ts test/reply-card-nudge.test.ts
+  test/peer-403-loop.test.ts test/session-binding.test.ts
+  test/bgos-doctor.test.ts
+Result: 333 passed, 0 failed, 0 skipped, exit 0.
+Covers three consecutive main chat replies, refreshed main chat classification,
+resolved and older session handles, real side threads, groups, missing and null
+ids, closed and reopened threads, refusals, card nudges and session binding.
+
+Command: npm run build
+Result: tsc --noEmit passed, exit 0.
+
+Full plugin suite
+Dependencies: npm ci --cache .lane-npm-cache --no-audit --no-fund
+Command: RUN_TESTS_WORKERS=4 TMPDIR="$PWD/.lane-tmp" npm test
+Result: 495 files; 493 passed and 2 failed; exit 1.
+Test tally: 10914 passed, 1 failed, 62 skipped; the timed out file had no tally.
+All 20 real Chromium files passed. Both Node and Bun families ran. File workers
+were capped at 4; runner, Chromium and daemon groups ran one file at a time.
+
+The full run was not green:
+1. own-card-fast-tap.e2e.test.ts failed the plan case's assertion that a fresh
+   full read followed an in-flight delta. Its tap delivery assertions passed.
+   An isolated case rerun passed on the final code and on the original commit.
+   The complete final-code file then passed: 12 passed, 0 failed, exit 0.
+2. canary-delivery.daemon.test.ts timed out without completing a test.
+   The complete final-code file then passed: 11 passed, 0 failed, exit 0.
+3. The working tree audit reported 1961 new paths, all under .lane-tmp:
+   local compile caches and scratch, including the timed out daemon fixture.
+   Scratch was kept inside this folder as requested. No runner rules changed.
+
+Both failed files were rerun with the suite's actual worker entry point:
+  TMPDIR="$PWD/node_modules/.cache/replylabel-isolated-tmp"
+  node --import tsx --import ./scripts/test-progress.mjs --test-reporter=tap
+    --test-timeout=120000 scripts/test-file-entry.mjs <test file>
+Each rerun exited 0 and ran the entire file. No code or assertions were changed
+to make these reruns pass. These reruns do not turn the original suite exit
+into a green result; they show that both failures were intermittent.
+
+An earlier full-suite attempt was stopped after a scratch placement issue:
+putting TMPDIR under node_modules made an installer topology fixture resemble
+a package runner. Moving TMPDIR to .lane-tmp fixed that test; its complete
+111-test file passed in focused verification and in the full suite.
+
+Local raw logs, intentionally excluded from the commit:
+  .lane-evidence/red.log
+  .lane-evidence/regressions-green.log
+  .lane-evidence/review-red.log
+  .lane-evidence/focused-green.log
+  .lane-evidence/build.log
+  .lane-evidence/final-suite.log
+  .lane-evidence/fast-tap-rerun.log
+  .lane-evidence/canary-rerun.log
+
+Repository checks
+git diff --check passed. The staged paths were checked against the forbidden
+BRIEF*.md, REPORT-*.md and .lane-* patterns. Only implementation, tests and this
+evidence are included. The commit uses the SeraphKc public noreply identity.
+No push was run.
