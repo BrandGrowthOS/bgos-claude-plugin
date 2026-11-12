@@ -46,7 +46,7 @@ const run = promisify(execFile)
 const repoFile = (rel: string) => fileURLToPath(new URL(`../${rel}`, import.meta.url))
 
 test('real CLI: an owner\'s thread is a full fork (Bash, network, the owner\'s mode, hooks and MCP servers) and a recipient\'s thread is confined as before', {
-  skip: !claude || process.platform === 'win32', timeout: 600_000,
+  skip: !claude || process.platform === 'win32', timeout: 200_000,
 }, async () => {
   const dir = realpathSync(mkdtempSync(join(homedir(), '.thread-full-probe-')))
   const home = join(dir, 'home')
