@@ -175,6 +175,54 @@ test('a worktree that is not on the thread\'s own branch is kept: a commit there
   assert.equal(r.kept.length, 1)
 })
 
+test('a kept working copy is told once: later sweeps leave it alone and say nothing, a delete removes it, and a reply works in it again', POSIX, async () => {
+  const r = rig()
+  await confinedThread(r)
+  r.git.head.set(wt('101'), '')
+  await r.manager.close({ rootId: '101', removeWorktree: false })
+  await r.manager.idle()
+  assert.equal(r.kept.length, 1)
+  const state = r.state('101')!
+  assert.deepEqual([state.kept, state.forkSessionId, state.folder, state.worktree, state.closedAt !== null], [true, null, wt('101'), true, true], 'its state stays, marked kept, so the folder is nobody\'s orphan')
+  const line = r.logs.find((l) => /thread 101 closed/.test(l))!
+  assert.match(line, /its working copy is kept/)
+  assert.doesNotMatch(line, /its files on this computer are removed/)
+  // Every later sweep, however old the folder: not removed, not counted, not told again.
+  r.clock.now += 60 * 60_000
+  assert.deepEqual(await r.manager.sweepLeftovers(), [])
+  assert.deepEqual(await r.manager.sweepClosed(r.clock.now), [])
+  assert.deepEqual(await r.manager.sweepLeftovers(), [])
+  assert.equal(r.kept.length, 1, 'the owner is told once')
+  assert.ok(r.files.has(join(wt('101'), 'checkout.bin')))
+  // A reply opens the thread again in that same working copy, as a new fork.
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1015', text: 'Back.' }))
+  await r.manager.idle()
+  const s = r.spawned.at(-1)!
+  assert.equal(s.cwd, wt('101'))
+  assert.deepEqual(s.args.slice(6, 9), ['--resume', MAIN, '--fork-session'])
+  assert.deepEqual([r.state('101')!.kept, r.state('101')!.closedAt], [false, null])
+  s.child.exit(0)
+  await flush()
+  // Deleting the thread removes it whatever it holds.
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  await r.manager.idle()
+  assert.deepEqual(r.left(wt('101')), [])
+  assert.equal(r.files.has(join(STATE, '101.json')), false)
+})
+
+test('an orphan working copy that has to be kept is told once too', async () => {
+  const r = rig()
+  r.dirs.add(wt('777'))
+  r.files.set(join(wt('777'), '.git'), 'gitdir: x\n')
+  r.files.set(join(wt('777'), 'work.bin'), 'x'.repeat(100))
+  r.git.head.set(wt('777'), 'refs/heads/elsewhere')
+  assert.deepEqual(await r.manager.sweepLeftovers(), [], 'nothing was removed, so nothing is counted')
+  assert.deepEqual(await r.manager.sweepLeftovers(), [])
+  assert.equal(r.kept.length, 1)
+  assert.ok(r.files.has(join(wt('777'), 'work.bin')))
+  assert.equal(r.state('777')!.kept, true)
+})
+
 test('a plain folder that could not be removed is not counted as freed', async () => {
   const r = rig({ repo: false })
   r.manager.turn(turn('101'))

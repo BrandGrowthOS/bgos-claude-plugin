@@ -351,6 +351,13 @@ export interface ThreadLaneState {
    * beside the main session's own.
    */
   tempCopy: string | null
+  /**
+   * The thread is closed and its working copy had to stay (its changes could
+   * not be saved, or it is not on the thread's own branch). The owner was
+   * told once; no sweep touches it again. A reply reopens the thread in it,
+   * and a delete removes it.
+   */
+  kept?: boolean
   closedAt: number | null
   /**
    * The reply id of the last turn this lane finished (answered or failed), ''
@@ -484,6 +491,7 @@ export class ThreadLaneManager {
     if (lane.state.closedAt !== null) {
       // A turn on a closed thread means it was reopened.
       lane.state.closedAt = null
+      if (lane.state.kept) lane.state.kept = false
       if (this.hasState(lane.state)) this.persist(lane)
     }
     lane.closed = false
@@ -588,6 +596,8 @@ export class ThreadLaneManager {
       if (this.lanes.has(rootId) || this.exiting.has(rootId)) continue
       const state = this.load(rootId)
       if (!state || state.closedAt === null) continue
+      // Its working copy had to stay and the owner knows: only a reply or a delete changes that.
+      if (state.kept === true) continue
       if (keep > 0 && now - state.closedAt <= keep) continue
       // Reserve the root before removal yields, just like explicit deletion.
       // A reopening turn may queue, but ensureChild waits for this owner.
@@ -1199,23 +1209,39 @@ export class ThreadLaneManager {
     const cameFrom = lane.state.access === 'full' ? lane.state.cwd : ''
     if (lane.state.access === 'full') {
       const { folder, cwd } = lane.state
-      lane.state.access = 'confined'
-      lane.state.folder = ''
-      lane.state.cwd = ''
-      try {
-        await this.prepareFolder(lane)
-      } catch (err) {
-        // No folder of its own could be made: the state still says where its session is.
-        lane.state.access = 'full'
-        lane.state.folder = folder
-        lane.state.cwd = cwd
-        throw err
+      const own = this.ownFolder(lane.state)
+      if (own !== null && !lane.state.worktree && this.deps.fs.exists(own)) {
+        // It ran read only in a plain folder of its own before it had full access (a repository too large to
+        // copy, or no repository): read only there again, never taken for a worktree.
+        lane.state.access = 'confined'
+        lane.state.cwd = own
+        lane.state.readOnly = true
+        this.persist(lane)
+      } else {
+        lane.state.access = 'confined'
+        lane.state.folder = ''
+        lane.state.cwd = ''
+        try {
+          await this.prepareFolder(lane)
+        } catch (err) {
+          // No folder of its own could be made: the state still says where its session is.
+          lane.state.access = 'full'
+          lane.state.folder = folder
+          lane.state.cwd = cwd
+          throw err
+        }
       }
     } else {
       await this.prepareFolder(lane)
     }
     if (cameFrom && lane.state.forkSessionId) {
-      if (!(await this.moveFork(lane.state.forkSessionId, cameFrom, lane.state.cwd))) lane.state.forkSessionId = null
+      const fork = lane.state.forkSessionId
+      if (!(await this.moveFork(fork, cameFrom, lane.state.cwd))) {
+        // It starts as a new fork. The session it could not take along is the thread's own and nobody would
+        // name it again: it goes, never left beside the main session's.
+        lane.state.forkSessionId = null
+        this.dropFork(fork, cameFrom)
+      }
       this.persist(lane)
     }
     if (lane.closed) return
@@ -1361,6 +1387,19 @@ export class ThreadLaneManager {
       if (from.endsWith('.jsonl') && fs.exists(dir)) fs.rename(dir, to.slice(0, -'.jsonl'.length))
     } catch {}
     return true
+  }
+
+  /** Remove a thread's own session transcript and the folder beside it from one working folder's project folder. Never the main session's. */
+  private dropFork(forkId: string, cwd: string): void {
+    const { fs, home, configDir } = this.deps
+    if (!isSessionId(forkId) || this.isMainSession(forkId) || !cwd) return
+    const transcript = sessionTranscriptPath(home, cwd, forkId, configDir)
+    if (!transcript.endsWith(`${forkId}.jsonl`)) return
+    for (const path of [transcript, transcript.slice(0, -'.jsonl'.length)]) {
+      try {
+        fs.rmrf(path)
+      } catch {}
+    }
   }
 
   /**
@@ -1992,9 +2031,16 @@ export class ThreadLaneManager {
       } catch {}
     }
     this.removeTempCopy(state)
-    try {
-      fs.unlink(this.statePath(state.rootId))
-    } catch {}
+    if (keptFolder) {
+      // The working copy stays, so its state stays too, marked: the folder is nobody's orphan, the owner is
+      // told once, a reply finds it again and a delete removes it. Its session is gone, so it has no fork.
+      const kept: ThreadLaneState = { ...state, forkSessionId: null, pid: null, pidStamp: null, tempCopy: null, closedAt: state.closedAt ?? this.deps.now(), kept: true }
+      this.persistState(kept)
+    } else {
+      try {
+        fs.unlink(this.statePath(state.rootId))
+      } catch {}
+    }
     try {
       fs.unlink(this.undeliveredPath(state.rootId))
     } catch {}
@@ -2006,8 +2052,10 @@ export class ThreadLaneManager {
       reopened.state.pid = null
       reopened.state.pidStamp = null
     }
-    this.deps.log(`threads: thread ${state.rootId} ${opts.why}, its files on this computer are removed: freed ${freed.bytes} bytes (${formatBytes(freed.bytes)})${notes.map((n) => `; ${n}`).join('')}`)
-    return true
+    const what = keptFolder ? 'its working copy is kept and its other files on this computer are removed' : 'its files on this computer are removed'
+    this.deps.log(`threads: thread ${state.rootId} ${opts.why}, ${what}: freed ${freed.bytes} bytes (${formatBytes(freed.bytes)})${notes.map((n) => `; ${n}`).join('')}`)
+    // False while something of the thread is still here: a sweep does not count it as removed.
+    return !keptFolder
   }
 
   /** The bytes a path holds, for the close log line; 0 where the daemon cannot measure. */
@@ -2203,6 +2251,7 @@ export class ThreadLaneManager {
       readOnly: r.readOnly === true,
       access: r.access === 'full' ? 'full' : 'confined',
       tempCopy: typeof r.tempCopy === 'string' && r.tempCopy !== '' ? r.tempCopy : null,
+      ...(r.kept === true ? { kept: true } : {}),
       closedAt: typeof r.closedAt === 'number' && Number.isFinite(r.closedAt) ? r.closedAt : null,
       lastReplyId: str(r.lastReplyId),
       lastDelivered: r.lastDelivered === true,

@@ -339,6 +339,8 @@ test('close keeps a worktree whose HEAD is detached, with whatever it holds', as
     await r.manager.close({ rootId: '305', removeWorktree: false })
     await r.manager.idle()
     assert.ok(existsSync(join(folder, 'loose.txt')), 'the only copy of that commit\'s checkout stays')
+    assert.deepEqual(await r.manager.sweepLeftovers(), [], 'and no later sweep takes it for an orphan')
+    assert.ok(existsSync(join(folder, 'loose.txt')))
     assert.equal(r.kept.length, 1)
     assert.equal(r.kept[0]!.folder, folder)
     assert.match(r.kept[0]!.reason, /not on the thread's own branch/)

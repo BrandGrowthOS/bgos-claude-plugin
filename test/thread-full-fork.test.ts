@@ -570,6 +570,58 @@ test('a thread that moved to full access goes back to its own worktree, in that 
   assert.deepEqual([state.access, state.cwd, state.folder, state.worktree], ['confined', wt('101'), wt('101'), true])
 })
 
+test('a read only thread that moved to full access is read only again, in its own plain folder, when the setting is turned off', async () => {
+  let on = true
+  const r = rig({ fullAccess: () => on })
+  // A thread 0.87.4 opened on a repository above the copy limit: a plain folder, no worktree, read only.
+  r.dirs.add(wt('101'))
+  r.files.set(transcript(wt('101'), FORK_A), '{"fork":"memory"}\n')
+  r.files.set(join(STATE, '101.json'), JSON.stringify({
+    rootId: '101', chatId: '55', title: 'T101', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: false, readOnly: true, closedAt: null, lastReplyId: '1010', lastDelivered: true, pid: null, pidStamp: null,
+  }))
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1011', text: 'Full now.' }))
+  await r.manager.idle()
+  assert.equal(r.spawned[0]!.cwd, AGENT)
+  assert.doesNotMatch(r.spawned[0]!.child.said(), /Your earlier work in this thread is in/, 'a read only thread left no work to point at')
+  r.spawned[0]!.child.init(FORK_A)
+  r.spawned[0]!.child.result('Done.')
+  await r.manager.idle()
+  r.spawned[0]!.child.exit(0)
+  on = false
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1012', text: 'Confined again.' }))
+  await r.manager.idle()
+  const s = r.spawned[1]!
+  assert.equal(s.cwd, wt('101'))
+  assert.equal(flag(s.args, '--tools'), 'Read,Glob,Grep,WebFetch,WebSearch', 'read only, as it was')
+  assert.equal(flag(s.args, '--resume'), FORK_A)
+  assert.equal(r.gitCalls.some((c) => c.includes('worktree') && c.includes('add')), false, 'a plain folder is never taken for a worktree')
+  const state = r.state('101')!
+  assert.deepEqual([state.access, state.cwd, state.folder, state.worktree, state.readOnly], ['confined', wt('101'), wt('101'), false, true])
+  assert.equal(r.files.get(transcript(wt('101'), FORK_A)), '{"fork":"memory"}\n')
+})
+
+test('a session that cannot be moved back to the thread\'s own folder is not left beside the main session\'s', POSIX, async () => {
+  let on = true
+  const r = rig({ fullAccess: () => on })
+  r.manager.turn(owner('101'))
+  await r.manager.idle()
+  r.spawned[0]!.child.init(FORK_A)
+  r.sessionFiles(AGENT, FORK_A)
+  r.spawned[0]!.child.result('Done.')
+  await r.manager.idle()
+  r.spawned[0]!.child.exit(0)
+  on = false
+  const copy = r.deps.transcripts!.copyClearingGoal
+  r.deps.transcripts!.copyClearingGoal = async (from, to) => { if (from === transcript(AGENT, FORK_A)) throw new Error('ENOSPC'); return copy(from, to) }
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1011', text: 'Confined now.' }))
+  await r.manager.idle()
+  const s = r.spawned[1]!
+  assert.deepEqual(s.args.slice(6, 9), ['--resume', MAIN, '--fork-session'], 'it starts as a new fork')
+  assert.equal(r.files.has(transcript(AGENT, FORK_A)), false, 'the session it could not take along is removed, not orphaned in the agent\'s project folder')
+  assert.deepEqual(r.left(join(projectDir(AGENT), FORK_A)), [])
+  assert.ok(r.files.has(r.mainPath))
+})
+
 test('a pending row read after a reconnect carries its opener the same way: the owner\'s is full, a person\'s is confined', async () => {
   const r = rig({ fullAccess: true, tooLarge: 'it holds more than 1.0 GB of files' })
   const rows = [
