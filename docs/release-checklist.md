@@ -35,6 +35,10 @@ the plugin's hooks), or the thread wiring in `server.ts`.
    appends an active goal to the main transcript's last uuid and checks that
    its thread makes no goal check: exactly two API requests in all, neither
    naming the condition. It must fail if the daemon's goal clear is unwired.
+   The last case makes its main session with a `sleep` still running in the
+   background and checks that the thread posts its answer and never the
+   failure sentence (0.87.4: the CLI closes its notice about that task with an
+   empty result before it reads the thread's message).
    `HOAI_LIVE_THREAD=1` makes a missing Claude Code a failure instead of a
    skip; `HOAI_LIVE_CLAUDE=<path>` picks a specific `claude` binary.
 
