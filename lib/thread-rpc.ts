@@ -20,7 +20,10 @@
 import { AsideError, type AsideInput } from './aside-fork.ts'
 import { ThreadLaneError, type ThreadTurnInput } from './thread-lanes.ts'
 import { GroupLaneError } from './group-lanes.ts'
-import type { AsideExchange, ThreadTurnMode } from './thread-lane-args.ts'
+import { threadOpener, type AsideExchange, type ThreadOpener, type ThreadTurnMode } from './thread-lane-args.ts'
+
+// Who opened a thread, read from the frame's own lane stamp (lib/thread-lane-args.ts).
+export { threadOpener }
 
 export const THREAD_TURN = 'thread_turn'
 export const THREAD_CLOSE = 'thread_close'
@@ -60,7 +63,7 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : ''
 }
 
-export function threadTurnPayload(payload: Record<string, unknown>, frameChatId: string | number | null): ThreadTurnInput {
+export function threadTurnPayload(payload: Record<string, unknown>, frameChatId: string | number | null, opener?: ThreadOpener): ThreadTurnInput {
   const chatId = str(payload.chatId) || str(frameChatId)
   const rootId = str(payload.rootId)
   const mode = str(payload.mode)
@@ -76,6 +79,8 @@ export function threadTurnPayload(payload: Record<string, unknown>, frameChatId:
     text: str(payload.text),
     title: str(payload.title),
     rootText: str(payload.rootText),
+    // Only the frame's own top level says who opened the thread (threadOpener), never its payload.
+    ...(opener === 'owner' || opener === 'recipient' ? { opener } : {}),
   }
 }
 

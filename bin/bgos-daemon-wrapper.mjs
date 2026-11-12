@@ -903,10 +903,30 @@ export async function superviseDaemon(opts) {
   return childExitCode(result.code, result.signal)
 }
 
+/**
+ * True when this wrapper was started by an owner's full access thread: the
+ * lane state file HOAI_THREAD_LANE names holds this process's parent. The
+ * twin of startedByThreadLane in lib/thread-lane-marker.mjs, written out here
+ * because this file is copied out of the plugin and imports nothing from it
+ * (test/thread-lane-marker.test.ts holds the two to the same answers).
+ */
+export function startedByThreadLane(env = process.env, ppid = process.ppid, readFile = (path) => readFileSync(path, 'utf8')) {
+  const path = typeof env?.HOAI_THREAD_LANE === 'string' ? env.HOAI_THREAD_LANE.trim() : ''
+  if (path === '') return false
+  try {
+    const state = JSON.parse(readFile(path))
+    return Number.isInteger(state?.pid) && state.pid > 0 && state.pid === ppid
+  } catch {
+    return false
+  }
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const parsed = parseWrapperArgs(argv)
   const thisFile = fileURLToPath(import.meta.url)
   if (parsed.kind === 'validate') return 0
+  // A thread never starts a second copy of this plugin: nothing is read, written or started here.
+  if (parsed.kind === 'run' && startedByThreadLane()) return 0
   if (parsed.kind === 'install') {
     if (!isAbsolute(parsed.targetPath)) {
       process.stderr.write('[bgos-wrapper] install target must be an absolute path\n')

@@ -94,6 +94,7 @@ import {
   isThreadOp,
   threadClosePayload,
   threadRefusal,
+  threadOpener,
   threadTurnPayload,
   type ThreadOp,
   type ThreadRpcDeps,
@@ -116,6 +117,8 @@ export interface VoiceRpcFrame {
   agentRoute: string
   chatId: string | number | null
   payload: Record<string, unknown>
+  /** Thread ops only: who opened the thread, read from the frame's own lane stamp (lib/thread-rpc.ts threadOpener). */
+  opener?: 'owner' | 'recipient'
 }
 
 export interface VoiceRpcResultBody {
@@ -165,6 +168,7 @@ export function normalizeVoiceRpc(raw: unknown): VoiceRpcFrame | null {
       r.payload && typeof r.payload === 'object'
         ? (r.payload as Record<string, unknown>)
         : {},
+    ...(isThreadOp(op) ? { opener: threadOpener(r) } : {}),
   }
 }
 
@@ -951,7 +955,7 @@ export class VoiceRpcHandler {
     }
     try {
       if (frame.op === THREAD_TURN) {
-        const answer = await threads.turn(threadTurnPayload(frame.payload, frame.chatId))
+        const answer = await threads.turn(threadTurnPayload(frame.payload, frame.chatId, frame.opener))
         return { accepted: true, state: answer.state }
       }
       if (frame.op === THREAD_CLOSE) {

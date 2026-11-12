@@ -29,7 +29,12 @@ function reconcileStartup() {
   let answer: { ok: boolean } | null = null
   const probe = new Promise<{ ok: boolean }>((resolve) => { resolveProbe = resolve })
   const requests: Array<{ path: string; options: unknown; assistantIds: string[] }> = []
+  /** What ran, in order: the start sweep (0.88.0) and each pending read. */
+  const order: string[] = []
+  const sweep = { fails: false }
   const scope = {
+    // The start sweep ran in this daemon life (declared beside the function in server.ts).
+    threadLeftoversSwept: false,
     channelArmed: true,
     updateDrainMode: false,
     threadsDeclared: () => answer?.ok === true,
@@ -39,8 +44,14 @@ function reconcileStartup() {
     bgosGet: async (path: string, options: unknown) => ({ path, options }),
     threadLanes: {
       reconcile: async (fetch: () => Promise<{ path: string; options: unknown }>, options: { assistantIds: string[] }) => {
+        order.push('pending')
         requests.push({ ...await fetch(), assistantIds: options.assistantIds })
         return 1
+      },
+      sweepLeftovers: async () => {
+        order.push('sweep')
+        if (sweep.fails) throw new Error('EACCES')
+        return []
       },
     },
     log: () => {},
@@ -49,11 +60,73 @@ function reconcileStartup() {
   const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
   const reconcile = new Function('scope', `with (scope) { ${js}; return reconcilePendingThreads }`)(scope) as (why: string) => void
   return {
-    scope, requests, reconcile,
+    scope, requests, reconcile, order, sweep,
     ready(ok: boolean) { answer = { ok }; resolveProbe(answer) },
-    settle: () => new Promise<void>((resolve) => setImmediate(resolve)),
+    settle: async () => { for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve)) },
   }
 }
+
+test('the start sweep runs once per daemon life, before the first pending thread is read, and never again on a reconnect', async () => {
+  assert.match(server, /\/\*\* The start sweep ran in this daemon life[^\n]*\*\/\nlet threadLeftoversSwept = false\nfunction reconcilePendingThreads\(why: string\): void \{/)
+  const r = reconcileStartup()
+  r.reconcile('armed')
+  r.ready(true)
+  await r.settle()
+  assert.deepEqual(r.order, ['sweep', 'pending'], 'leftovers of closed threads go before any pending turn runs')
+  r.reconcile('reconnected')
+  await r.settle()
+  assert.deepEqual(r.order, ['sweep', 'pending', 'pending'], 'a reconnect reads pending turns again and sweeps nothing')
+})
+
+test('a start sweep that fails still lets the pending threads run, and one that lost the lock meanwhile starts nothing', async () => {
+  const failing = reconcileStartup()
+  failing.sweep.fails = true
+  failing.reconcile('armed')
+  failing.ready(true)
+  await failing.settle()
+  assert.deepEqual(failing.order, ['sweep', 'pending'])
+  const lost = reconcileStartup()
+  ;(lost.scope.threadLanes as any).sweepLeftovers = async () => { lost.order.push('sweep'); lost.scope.channelArmed = false; return [] }
+  lost.reconcile('armed')
+  lost.ready(true)
+  await lost.settle()
+  assert.deepEqual(lost.order, ['sweep'])
+  assert.deepEqual(lost.requests, [])
+})
+
+test('a probe that failed, or a daemon without the lock, never sweeps', async () => {
+  for (const ok of [false, true]) {
+    const r = reconcileStartup()
+    r.reconcile('armed')
+    if (ok) r.scope.channelArmed = false
+    r.ready(ok)
+    await r.settle()
+    assert.deepEqual(r.order, [], 'only the lock holder removes anything')
+  }
+})
+
+test('the lane manager is wired for the owner\'s full access fork: the setting, the main session\'s mode, the owner\'s approval path, the cleanup', () => {
+  const manager = block('const threadLanes = new ThreadLaneManager({', '\n})\n')
+  assert.match(manager, /fullAccess: \(\) => threadFullAccessOn\(\),/)
+  // The same reading feeds the declaration: thread_full_access is declared only while the setting is on.
+  const on = block('function threadFullAccessOn(): boolean {', '\n}\n')
+  assert.match(on, /const stateDir = agentStateDir\(homedir\(\), ASSISTANT_ID\) \?\? pathJoin\(homedir\(\), '\.bgos-agent', 'unknown'\)/)
+  assert.match(on, /return threadsFullAccess\(\{ env: process\.env, readSettings: \(\) => readFileSync\(agentSettingsPath\(stateDir\), 'utf8'\) \}\)/)
+  const calls = server.match(/declaredCapabilities\(\{[^}]*\}\)/g) ?? []
+  assert.ok(calls.length >= 4)
+  for (const call of calls) assert.match(call, /threads: threadsDeclared\(\), threadFullAccess: threadFullAccessOn\(\),/)
+  assert.match(manager, /mainPermissionMode: async \(\) => \{\n\s*const path = sessionBinder\.provenTranscriptPath\(\)\n\s*return path \? latestPermissionMode\(path\) : null/)
+  assert.match(manager, /approve: \(input\) => approveThreadTool\(input\),/)
+  assert.match(manager, /hasActiveGoal: async \(path\) => \(await findActiveGoalRow\(path\)\) !== null,/)
+  assert.match(manager, /diskUsage: \(path\) => diskUsage\(path\),/)
+  assert.match(manager, /tempRoots: \[\.\.\.new Set\(\[`\/tmp\/claude-\$\{process\.getuid\?\.\(\) \?\? ''\}`/)
+  assert.match(manager, /onBranchKept: \(info\) => tellOwnerThreadWorkKept\(info\),/)
+  // A thread's prompt goes through the very handler the owner's own chat's prompts go through, else the card; refused when neither answers.
+  const approve = block('function approveThreadTool(input: ThreadApprovalInput): Promise<{ allow: boolean }> {', '\n}\n')
+  assert.match(approve, /const ownHandler = permissionRequestHandler\(\)\n\s*const run = ownHandler\n\s*\? ownHandler\(\{ method: 'notifications\/claude\/channel\/permission_request', params \}\)\n\s*: relayPermissionToOwner\(params\)/)
+  assert.match(approve, /\.finally\(\(\) => settle\(false\)\)/)
+  assert.match(approve, /groupPermissionVerdicts\.set\(params\.request_id, \(behavior\) => settle\(behavior === 'allow'\)\)/)
+})
 
 test('arming before the CLI probe finishes reconciles pending threads once the answer arrives', async () => {
   const r = reconcileStartup()

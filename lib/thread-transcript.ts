@@ -161,3 +161,58 @@ export async function clearActiveGoal(path: string, chunkBytes: number = CHUNK_B
   await spliceRow(path, edit, chunkBytes)
   return true
 }
+
+const MODE_MARKER = Buffer.from('permission-mode')
+
+/**
+ * The permission mode the session at `path` is in now: its LATEST
+ * `{"type":"permission-mode","permissionMode":...}` row (the CLI writes one at
+ * start and at every change of mode; measured on 2.1.322). Null when the
+ * transcript holds none (a headless run writes none) or cannot be read. Read
+ * backwards in chunks like findActiveGoalRow, parsing only lines that name
+ * the row type, so a transcript of hundreds of megabytes costs one chunk.
+ * An owner's full access thread starts in this mode
+ * (lib/thread-lane-args.ts threadFullPermissionMode).
+ */
+export async function latestPermissionMode(path: string, chunkBytes: number = CHUNK_BYTES): Promise<string | null> {
+  const modeOf = (line: Buffer): string | null => {
+    if (line.indexOf(MODE_MARKER) < 0) return null
+    try {
+      const row = JSON.parse(line.toString('utf8')) as { type?: unknown; permissionMode?: unknown } | null
+      return row?.type === 'permission-mode' && typeof row.permissionMode === 'string' && row.permissionMode !== '' ? row.permissionMode : null
+    } catch {
+      return null
+    }
+  }
+  let fh: FileHandle
+  try {
+    fh = await open(path, 'r')
+  } catch {
+    return null
+  }
+  try {
+    const { size } = await fh.stat()
+    let pos = size
+    let carry = Buffer.alloc(0)
+    while (pos > 0) {
+      const len = Math.min(chunkBytes, pos)
+      pos -= len
+      const chunk = Buffer.alloc(len)
+      await readFully(fh, chunk, pos)
+      const buf = carry.length > 0 ? Buffer.concat([chunk, carry]) : chunk
+      let lineEnd = buf.length
+      for (let i = buf.length - 1; i >= 0; i--) {
+        if (buf[i] !== NEWLINE) continue
+        const mode = modeOf(buf.subarray(i + 1, lineEnd))
+        if (mode !== null) return mode
+        lineEnd = i
+      }
+      carry = Buffer.from(buf.subarray(0, lineEnd))
+    }
+    return carry.length > 0 ? modeOf(carry) : null
+  } catch {
+    return null
+  } finally {
+    await fh.close()
+  }
+}

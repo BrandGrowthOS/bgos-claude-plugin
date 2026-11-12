@@ -21,7 +21,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -87,7 +87,41 @@ test(`a thread on a real Claude Code agent (${CLAUDE_VERSION || 'no claude'}) ge
     // The lane really forked the main session: the fake API saw the main turn's word in the thread's request.
     const threadRequest = h.api.requests.find((r) => JSON.stringify(r.messages ?? '').includes('THREAD-QUESTION'))
     assert.ok(threadRequest && JSON.stringify(threadRequest.messages).includes('PELICAN'), 'the thread knows the main conversation')
-    assert.ok(existsSync(join(h.folder, '.hoai', 'threads', 'R1', '.git')), 'a small repository gets its worktree')
+    // 0.88.0: the owner's own thread is a true fork in the agent's own folder: no worktree, no copy.
+    assert.equal(existsSync(join(h.folder, '.hoai', 'threads', 'R1')), false, 'the owner\'s thread gets no worktree')
+    const state = JSON.parse(readFileSync(join(h.stateDir, 'R1.json'), 'utf8'))
+    assert.equal(state.access, 'full')
+    assert.equal(realpathSync(state.cwd), realpathSync(h.folder), 'it runs in the agent\'s own folder')
+    // It was told the folder is shared with the main session.
+    assert.match(JSON.stringify(threadRequest!.messages), /the main session is still running here and may be editing files right now/)
+    // The fork carries the main session's permission mode and is not confined.
+    const system = JSON.stringify(threadRequest!.tools ?? [])
+    assert.match(system, /"name":"Bash"/, 'Bash is among its tools')
+    assert.match(system, /"name":"Edit"/)
+
+    // Closing it leaves nothing of it on this computer, and the close line says how much it freed.
+    const forkId = state.forkSessionId as string
+    assert.match(forkId, /^[0-9a-f-]{36}$/)
+    h.threadClose({ rpcId: 'rpc-live-1-close', chatId: '7', rootId: 'R1' })
+    await waitFor(() => !existsSync(join(h.stateDir, 'R1.json')) || h.exited !== null, 30_000)
+    assert.equal(existsSync(join(h.stateDir, 'R1.json')), false, `its lane state is gone${h.tail()}`)
+    await waitFor(() => h.stderr.some((l) => /threads: thread R1 closed/.test(l)), 15_000)
+    assert.match(h.stderr.find((l) => /threads: thread R1 closed/.test(l)) ?? '', /freed [1-9]\d* bytes \(\d+ (KB|MB)\)/, h.tail())
+    const leftOfFork = spawnSync('find', [h.home, '-name', `${forkId}*`], { encoding: 'utf8' }).stdout.trim()
+    assert.equal(leftOfFork, '', 'no file or folder named by the fork\'s session id is left under the home folder')
+
+    // A thread a person the agent is shared with opens is confined as before: its own worktree.
+    h.threadTurn({ rpcId: 'rpc-live-1b', chatId: '7', rootId: 'R1b', replyId: 'p1b', text: 'THREAD-QUESTION and for a person?', person: 'user_2person' })
+    await waitFor(() => replies(h).some((r) => r.rootId === 'R1b') || h.exited !== null, 120_000)
+    assert.match(String(replies(h).find((r) => r.rootId === 'R1b')?.text), /^THREAD-ANSWER-\d+$/, `the person's thread answered${h.tail()}`)
+    assert.ok(existsSync(join(h.folder, '.hoai', 'threads', 'R1b', '.git')), 'a recipient\'s thread gets its own worktree')
+    assert.equal(JSON.parse(readFileSync(join(h.stateDir, 'R1b.json'), 'utf8')).access, 'confined')
+    // And closing that one removes its worktree.
+    h.threadClose({ rpcId: 'rpc-live-1b-close', chatId: '7', rootId: 'R1b' })
+    await waitFor(() => !existsSync(join(h.folder, '.hoai', 'threads', 'R1b')) || h.exited !== null, 30_000)
+    assert.equal(existsSync(join(h.folder, '.hoai', 'threads', 'R1b')), false, `its worktree is removed at close${h.tail()}`)
+    assert.equal(spawnSync('git', ['worktree', 'list'], { cwd: h.folder, encoding: 'utf8' }).stdout.trim().split('\n').length, 1, 'and pruned')
+    assert.equal(h.exited, null, `the daemon went away${h.tail()}`)
   } finally {
     await h.close()
   }
@@ -141,7 +175,8 @@ test('a thread that cannot open says so in its own thread, and the daemon and th
     // A file where the threads folder must go: no worktree can be made.
     mkdirSync(join(h.folder, '.hoai'), { recursive: true })
     writeFileSync(join(h.folder, '.hoai', 'threads'), 'not a folder\n')
-    h.threadTurn({ rpcId: 'rpc-live-3', chatId: '7', rootId: 'R3', replyId: 'p3', text: 'THREAD-QUESTION hello?' })
+    // 0.88.0: a confined thread (a person's) needs that folder; the owner's own full access thread does not (below).
+    h.threadTurn({ rpcId: 'rpc-live-3', chatId: '7', rootId: 'R3', replyId: 'p3', text: 'THREAD-QUESTION hello?', person: 'user_2person' })
     await waitFor(() => replies(h).length > 0 || h.exited !== null, 60_000)
     assert.equal(h.exited, null, `the daemon went away${h.tail()}`)
     assert.match(String(replies(h)[0]?.text), /^I could not open this thread: /, `a plain failure in the thread${h.tail()}`)
@@ -151,19 +186,23 @@ test('a thread that cannot open says so in its own thread, and the daemon and th
     const id = h.pushChatMessage('main chat after a failed thread')
     await waitFor(() => h.channelCards.some((c) => c.messageId === id), 30_000)
     assert.ok(h.channelCards.some((c) => c.messageId === id), `the main chat still works${h.tail()}`)
+    // The owner's own thread opens all the same: it needs no folder of its own.
+    h.threadTurn({ rpcId: 'rpc-live-3o', chatId: '7', rootId: 'R3o', replyId: 'p3o', text: 'THREAD-QUESTION and the owner?' })
+    await waitFor(() => replies(h).some((r) => r.rootId === 'R3o') || h.exited !== null, 120_000)
+    assert.match(String(replies(h).find((r) => r.rootId === 'R3o')?.text), /^THREAD-ANSWER-\d+$/, `the owner's thread answered${h.tail()}`)
   } finally {
     await h.close()
   }
 })
 
-test('a repository too large to copy runs its thread read only in place, with no worktree, and it answers', OPTS, async () => {
+test('a repository too large to copy: a recipient\'s thread runs read only in place with no worktree, and the owner\'s thread is a full fork all the same', OPTS, async () => {
   const h = await startDaemonHarness({
     claude: CLAUDE,
     repoFiles: { 'data/blob.bin': 3 * 1024 * 1024 },
     env: { HOAI_THREAD_COPY_LIMIT_BYTES: String(1024 * 1024) },
   })
   try {
-    h.threadTurn({ rpcId: 'rpc-live-4', chatId: '7', rootId: 'R4', replyId: 'p4', text: 'THREAD-QUESTION read only?' })
+    h.threadTurn({ rpcId: 'rpc-live-4', chatId: '7', rootId: 'R4', replyId: 'p4', text: 'THREAD-QUESTION read only?', person: 'user_2person' })
     await waitFor(() => replies(h).length > 0 || h.exited !== null, 120_000)
     assert.equal(h.exited, null, `the daemon went away${h.tail()}`)
     assert.match(String(replies(h)[0]?.text), /^THREAD-ANSWER-\d+$/, `the thread answered${h.tail()}`)
@@ -172,6 +211,22 @@ test('a repository too large to copy runs its thread read only in place, with no
     assert.equal(existsSync(join(h.folder, '.hoai', 'threads', 'R4', 'data', 'blob.bin')), false, 'nothing copied')
     const worktrees = spawnSync('git', ['worktree', 'list'], { cwd: h.folder, encoding: 'utf8' }).stdout
     assert.equal(worktrees.trim().split('\n').length, 1, `only the agent folder itself: ${worktrees}`)
+    // The recipient's thread was offered no Bash and no editing tool.
+    const recipientRequest = h.api.requests.find((r) => JSON.stringify(r.messages ?? '').includes('THREAD-QUESTION read only?'))!
+    const recipientTools = ((recipientRequest.tools ?? []) as Array<{ name: string }>).map((t) => t.name)
+    for (const tool of ['Bash', 'Edit', 'Write', 'NotebookEdit']) assert.equal(recipientTools.includes(tool), false, `${tool} is not offered to a read only thread`)
+    assert.ok(recipientTools.includes('Read'))
+
+    // 0.88.0: the owner, same repository, same limit: a full fork with every tool, nothing copied, not read only.
+    h.threadTurn({ rpcId: 'rpc-live-4o', chatId: '7', rootId: 'R4o', replyId: 'p4o', text: 'THREAD-QUESTION full access?' })
+    await waitFor(() => replies(h).some((r) => r.rootId === 'R4o') || h.exited !== null, 120_000)
+    assert.match(String(replies(h).find((r) => r.rootId === 'R4o')?.text), /^THREAD-ANSWER-\d+$/, `the owner's thread answered${h.tail()}`)
+    assert.equal(h.stderr.some((l) => l.includes('threads: thread R4o runs read only')), false, 'the owner\'s thread is never read only')
+    assert.equal(existsSync(join(h.folder, '.hoai', 'threads', 'R4o')), false, 'and nothing is copied for it')
+    const ownerRequest = h.api.requests.find((r) => JSON.stringify(r.messages ?? '').includes('THREAD-QUESTION full access?'))!
+    const ownerTools = ((ownerRequest.tools ?? []) as Array<{ name: string }>).map((t) => t.name)
+    for (const tool of ['Bash', 'Edit', 'Write', 'Read']) assert.ok(ownerTools.includes(tool), `${tool} is offered to the owner's thread`)
+    assert.doesNotMatch(JSON.stringify(ownerRequest.messages), /This thread is read only/)
   } finally {
     await h.close()
   }

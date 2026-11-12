@@ -38,6 +38,25 @@
  * Other hook events remain enabled, including the private prompt boundary,
  * tool floor and private tool guard. Never disable all hooks in a thread.
  *
+ * FULL ACCESS (0.88.0): a thread the agent's OWNER opens is a true fork with
+ * the agent's own access (threadFullArgs), unless the owner turned the
+ * setting `threads.fullAccess` off: `--resume <main> --fork-session` in the
+ * agent's own folder, the main session's permission mode, and no
+ * `--restricted`, no tool list and no `--settings` that replaces the owner's,
+ * so the owner's settings, hooks, plugins and MCP servers load as they do in
+ * the main session, on a repository of any size. It is the fork Claude Code
+ * itself makes, and that fork is not read only. Everything above
+ * (CONFINEMENT, SELECTIVE HOOKS, the empty MCP config) is still the whole
+ * rule for every other thread: one a share recipient opens, one with no
+ * known opener, and the owner's own when the setting is off (threadAccess).
+ *
+ * The empty MCP config is NOT loaded by a full access thread: with
+ * --strict-mcp-config it would lose every MCP server the owner has. The rule
+ * it stands for, never a second copy of this channel plugin, is kept for
+ * this plugin alone by the mark the daemon puts in the thread's environment
+ * (lib/thread-lane-marker.mjs): under it the plugin's two servers exit at
+ * start and its Stop hooks do nothing.
+ *
  * Erasable TypeScript only (no enums, no parameter properties).
  */
 
@@ -45,7 +64,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 
-import { permissionRulePath } from './lane-core.mjs'
+import { ownerLaneVerdict, permissionRulePath } from './lane-core.mjs'
 
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -279,6 +298,139 @@ export function assertConfined(args: readonly string[]): void {
   }
 }
 
+/** Who opened a thread: the agent's owner, or a person the agent is shared with. */
+export type ThreadOpener = 'owner' | 'recipient'
+
+/** How a thread runs: the owner's true fork, or confined (everything above). */
+export type ThreadAccess = 'full' | 'confined'
+
+/**
+ * WHO OPENED A THREAD, read from a `thread_turn` frame or a pending row as
+ * the server sent it. The owner's own frame carries no lane stamp and
+ * names no person (BGOS agent-lanes/own-lane-wire.ts: "An owner's frame
+ * carries neither, byte for byte as it did before lanes"); a frame for a
+ * person the agent is shared with carries both. So the owner is the frame
+ * with no stamp (or exactly the owner's) AND no person named. A person's
+ * stamp, a stamp that cannot be read, a person named at the top, and anything
+ * that is not a frame at all read as a recipient: that thread runs confined
+ * (lib/thread-lane-args.ts threadAccess).
+ */
+export function threadOpener(raw: unknown): ThreadOpener {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'recipient'
+  const r = raw as Record<string, unknown>
+  if (!ownerLaneVerdict(r).deliver) return 'recipient'
+  if (r.actorUserId !== undefined && r.actorUserId !== null) return 'recipient'
+  if (r.actor_user_id !== undefined && r.actor_user_id !== null) return 'recipient'
+  return 'owner'
+}
+
+/**
+ * THE SPLIT. Full access only when the thread's opener is positively the
+ * owner AND the owner's setting `threads.fullAccess` is on. A recipient, an
+ * opener that is missing or cannot be read, and a setting that is off or
+ * unreadable all run confined, exactly as before 0.88.0.
+ */
+export function threadAccess(input: { opener: unknown; fullAccess: unknown }): ThreadAccess {
+  return input.opener === 'owner' && input.fullAccess === true ? 'full' : 'confined'
+}
+
+/** The permission modes a full access thread may be started in. */
+export const THREAD_FULL_PERMISSION_MODES: readonly string[] = Object.freeze(['default', 'acceptEdits', 'auto', 'dontAsk', 'bypassPermissions'])
+
+/**
+ * The main session's permission mode as a thread may carry it. `plan` is a
+ * state of the main conversation's own turn, not an access level, and a mode
+ * that is missing or unknown says nothing: each reads as `default`, where
+ * every prompt goes to the owner's own approval path (never a wider mode than
+ * the main session is known to have).
+ */
+export function threadFullPermissionMode(raw: unknown): string {
+  return typeof raw === 'string' && THREAD_FULL_PERMISSION_MODES.includes(raw) ? raw : 'default'
+}
+
+/**
+ * Two sessions share the agent folder: a full access thread and the main
+ * session. Refused to the thread's Bash outright (a deny rule holds in every
+ * permission mode, bypass included: measured on CLI 2.1.322, also for
+ * `cd . && git reset --hard`): the git commands that move the folder's branch
+ * or throw away uncommitted changes, which would pull the files out from
+ * under the main session.
+ */
+export const THREAD_SHARED_FOLDER_DENY: readonly string[] = Object.freeze([
+  'Bash(git checkout:*)',
+  'Bash(git switch:*)',
+  'Bash(git reset:*)',
+  'Bash(git restore:*)',
+  'Bash(git stash:*)',
+  'Bash(git clean:*)',
+])
+
+/**
+ * What a full access thread adds ON TOP of the owner's own settings (a
+ * `--settings` flag adds, it never replaces a user, project or local file):
+ * the shared folder's deny rules, and no Remote Control session of its own.
+ */
+export function threadFullSettings(): Record<string, unknown> {
+  return { permissions: { deny: [...THREAD_SHARED_FOLDER_DENY] }, remoteControlAtStartup: false }
+}
+
+/**
+ * Throws unless `args` are a full access thread command: a fork (never the
+ * main session's next turn), its prompts answered by the daemon on stdio,
+ * the shared folder's deny rules and no Remote Control. A confined flag in
+ * it is a builder bug, refused too.
+ */
+export function assertFullFork(args: readonly string[], mainSessionId: string | null | undefined): void {
+  if (isSessionId(mainSessionId)) assertForksMain(args, mainSessionId)
+  const prompt = args.indexOf('--permission-prompt-tool')
+  if (prompt < 0 || args[prompt + 1] !== 'stdio') {
+    throw new Error('refusing a full access thread whose prompts would reach nobody')
+  }
+  let settings: unknown = null
+  try {
+    settings = JSON.parse(args[args.indexOf('--settings') + 1] ?? '')
+  } catch {}
+  if (!args.includes('--settings') || !isDeepStrictEqual(settings, threadFullSettings())) {
+    throw new Error('refusing a full access thread without the shared folder rules')
+  }
+  for (const flag of ['--restricted', '--tools', '--strict-mcp-config', '--add-dir', '--continue', '-c']) {
+    if (args.includes(flag)) throw new Error(`refusing a full access thread with ${flag}`)
+  }
+}
+
+/**
+ * An OWNER's thread: a true fork with the agent's full access (file header).
+ * First start: `--resume <main> --fork-session`, or the same of `forkFrom`,
+ * a copy of the main transcript the daemon made beside it with the main
+ * chat's active goal cleared (a goal comes along in a fork and its Stop hook
+ * then holds the thread's first turn; measured on 2.1.322, as was a fork of
+ * such a copy under a new id). Later starts resume the thread's own session.
+ * `permissionMode` is the main session's own (threadFullPermissionMode).
+ */
+export function threadFullArgs(input: {
+  mainSessionId: string | null | undefined
+  forkSessionId: string | null | undefined
+  /** A goal cleared copy of the main transcript, by its own session id. */
+  forkFrom?: string | null
+  permissionMode: unknown
+}): string[] {
+  const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']
+  if (input.forkSessionId != null) {
+    args.push('--resume', requireSessionId(input.forkSessionId, 'the lane\'s own'))
+  } else {
+    const from = input.forkFrom != null ? requireSessionId(input.forkFrom, 'the copy\'s') : requireSessionId(input.mainSessionId, 'the main')
+    args.push('--resume', from, '--fork-session')
+  }
+  const mode = threadFullPermissionMode(input.permissionMode)
+  if (mode === 'bypassPermissions') args.push('--dangerously-skip-permissions')
+  else args.push('--permission-mode', mode)
+  // What still asks (a rule of the owner's, a hook such as "Always ask") reaches the daemon, which answers as the main chat does.
+  args.push('--permission-prompt-tool', 'stdio')
+  args.push('--settings', JSON.stringify(threadFullSettings()))
+  assertFullFork(args, input.mainSessionId)
+  return args
+}
+
 /**
  * A thread lane. First start (no fork id yet): fork the main session. Later
  * starts: resume the lane's own session, which is not the main one, so no
@@ -480,6 +632,16 @@ export function asidePrompt(question: string, quote: string, history: readonly A
   return parts.join('\n\n')
 }
 
+/**
+ * What a full access thread is told in its first turn: the main session
+ * works in this same folder at the same moment.
+ */
+export const SHARED_FOLDER_INSTRUCTION =
+  'You have the same access as the main conversation and you work in the same folder, at the same time as it: the main session is still running here and may be editing files right now. ' +
+  'Before you edit a file, check whether it has changes you did not make (git status and git diff for that file); if it does, the main session may be working on it, so say so in your answer before or instead of changing it. ' +
+  'Never run git checkout, git switch, git reset, git restore, git stash or git clean in this folder, and do not move its branch any other way: they are refused here, because they would pull the files out from under the main session. ' +
+  'If you need another branch or a clean tree, make your own worktree outside this folder (git worktree add) and work there.'
+
 /** The user message a thread lane gets for one turn. */
 export function threadTurnPrompt(input: {
   mode: ThreadTurnMode
@@ -488,21 +650,42 @@ export function threadTurnPrompt(input: {
   rootText: string
   readOnly?: boolean
   agentFolder?: string
+  /** `full`: the owner's true fork, in the agent's own folder beside the main session. */
+  access?: ThreadAccess
+  /** The thread's session is new although the thread is not (it was closed and cleaned up, then reopened). */
+  fresh?: boolean
+  /** A thread that ran confined before and has full access from this turn on (said once). */
+  upgraded?: boolean
+  /** A thread that ran confined before: where its earlier work is. */
+  earlierWork?: { folder: string; branch: string } | null
 }): string {
   if (input.mode === 'summary') return SUMMARY_INSTRUCTION
-  if (input.mode === 'reply') return input.text
-  const folderInstruction = input.readOnly === true
-    ? input.agentFolder
-      ? `This thread is read only: read files in the agent folder ${JSON.stringify(input.agentFolder)} and do not edit files.`
-      : 'This folder is not a git repository, so this thread is read only: do not edit files.'
-    : 'Work on it in this folder only.'
+  const earlier = input.earlierWork
+    ? ` Your earlier work in this thread is in ${JSON.stringify(input.earlierWork.folder)}, on the branch ${input.earlierWork.branch}.`
+    : ''
+  if (input.mode === 'reply' && input.fresh !== true) {
+    // Its session moved to the agent's own folder: said once, with the reply.
+    return input.upgraded === true ? `[This thread now runs with full access. ${SHARED_FOLDER_INSTRUCTION}${earlier}]\n\n${input.text}` : input.text
+  }
+  const folderInstruction = input.access === 'full'
+    ? SHARED_FOLDER_INSTRUCTION
+    : input.readOnly === true
+      ? input.agentFolder
+        ? `This thread is read only: read files in the agent folder ${JSON.stringify(input.agentFolder)} and do not edit files.`
+        : 'This folder is not a git repository, so this thread is read only: do not edit files.'
+      : 'Work on it in this folder only.'
   // The root's own full stop is kept, never doubled.
   const root = input.rootText.trim()
   const rootSentence = /[.!?]$/.test(root) ? root : `${root}.`
+  // A start names its root exactly as before 0.88.0; only a reopened reply may have none to name.
+  const about = input.mode === 'reply' && root === '' ? 'It is a separate conversation.' : `It is a separate conversation about this message: ${rootSentence}`
+  const reopened = input.mode === 'reply'
+    ? ' This thread has no working session on this computer any more (the files of a closed thread are cleaned up), so what was said in it earlier is not in your memory: if you need it, ask.'
+    : ''
   return (
     `[You are now working in a thread of this chat titled "${input.title}". ` +
-    `It is a separate conversation about this message: ${rootSentence} ` +
-    `${folderInstruction} The main conversation continues without you. ` +
+    `${about}${reopened} ` +
+    `${folderInstruction}${earlier} The main conversation continues without you. ` +
     'Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\n' +
     input.text
   )

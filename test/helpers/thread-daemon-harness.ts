@@ -71,7 +71,13 @@ export interface DaemonHarness {
   /** Pending threads the fake backend lists (GET integrations/threads/pending). */
   pending: Array<Record<string, unknown>>
   emit(event: string, payload: unknown): void
-  threadTurn(input: { rpcId: string; chatId: string; rootId: string; replyId: string; text: string; mode?: string }): void
+  /**
+   * `person`: stamp the frame for a person the agent is shared with (`lane` and `actorUserId` at its top level, as
+   * the server stamps a person's frame). Without it the frame is the owner's own: no stamp, no person.
+   */
+  threadTurn(input: { rpcId: string; chatId: string; rootId: string; replyId: string; text: string; mode?: string; person?: string }): void
+  /** The owner closes (or, with removeWorktree, deletes) a thread. */
+  threadClose(input: { rpcId: string; chatId: string; rootId: string; removeWorktree?: boolean }): void
   /** The owner writes in the main chat: stored, and pushed on the socket like the backend does. Answers its id. */
   pushChatMessage(text: string): number
   /** The channel notifications the daemon sent Claude Code (main chat messages handed to the session). */
@@ -349,7 +355,17 @@ export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHa
         op: 'thread_turn',
         assistantId: ASSISTANT_ID,
         chatId: t.chatId,
+        ...(t.person ? { actorUserId: t.person, lane: `person:${t.person}` } : {}),
         payload: { chatId: t.chatId, rootId: t.rootId, replyId: t.replyId, mode: t.mode ?? 'start', text: t.text, title: 'A thread', rootText: 'The root message' },
+      })
+    },
+    threadClose: (t) => {
+      io.emit('voice_rpc', {
+        rpcId: t.rpcId,
+        op: 'thread_close',
+        assistantId: ASSISTANT_ID,
+        chatId: t.chatId,
+        payload: { chatId: t.chatId, rootId: t.rootId, removeWorktree: t.removeWorktree === true },
       })
     },
     pushChatMessage: (text) => {

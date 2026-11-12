@@ -39,6 +39,7 @@ import { win32 as win32Path, posix as posixPath } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 import { nodeFloorNotice } from '../lib/browser-profile-node-runtime.mjs'
+import { startedByThreadLane } from '../lib/thread-lane-marker.mjs'
 
 /** POSIX convention for "command not found"; scripts and humans both read it. */
 export const LAUNCH_EXIT_NOT_FOUND = 127
@@ -354,7 +355,11 @@ export function isRunAsMain(argv1 = process.argv[1], moduleUrl = import.meta.url
   }
 }
 
-if (isRunAsMain()) {
+// Started by an owner's full access thread, this plugin never starts a second
+// copy of itself (lib/thread-lane-marker.mjs): exit at once, before bun is looked for.
+if (isRunAsMain() && startedByThreadLane()) {
+  process.exitCode = 0
+} else if (isRunAsMain()) {
   main()
     .then((code) => {
       process.exitCode = code

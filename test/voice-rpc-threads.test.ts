@@ -60,9 +60,19 @@ test('the three thread ops pass the normalizer and are guarded locally', () => {
 test('thread_turn is acked, handed to the lanes, and answered with accepted and the state at once', async () => {
   const r = rig()
   await r.handler.handle(frame(THREAD_TURN, turnPayload))
-  assert.deepEqual(r.turns, [{ chatId: '55', rootId: '101', replyId: '1010', mode: 'start', text: 'look', title: 'T', rootText: 'root' }])
+  // 0.88.0: the owner's own frame (no lane stamp, no person named) says the owner opened the thread.
+  assert.deepEqual(r.turns, [{ chatId: '55', rootId: '101', replyId: '1010', mode: 'start', text: 'look', title: 'T', rootText: 'root', opener: 'owner' }])
   assert.deepEqual(r.timeline, ['ack rpc-1', 'result rpc-1'])
   assert.deepEqual(r.results[0]!.body, { ok: true, payload: { accepted: true, state: 'waiting' } })
+})
+
+test('a thread_turn stamped for a person reaches the lanes as a recipient\'s, whatever its payload claims', async () => {
+  const r = rig()
+  await r.handler.handle(frame(THREAD_TURN, { ...turnPayload, opener: 'owner' }, { lane: 'person:user_2abc', actorUserId: 'user_2abc' }))
+  assert.equal(r.turns[0]!.opener, 'recipient')
+  const unreadable = rig()
+  await unreadable.handler.handle(frame(THREAD_TURN, turnPayload, { lane: { person: 'user_2abc' } }))
+  assert.equal(unreadable.turns[0]!.opener, 'recipient', 'a stamp that cannot be read is never the owner\'s')
 })
 
 test('thread_turn takes the chat from the frame when the payload has none', async () => {
