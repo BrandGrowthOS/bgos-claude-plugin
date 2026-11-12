@@ -100,10 +100,19 @@ export function laneChildEnv(env: Record<string, string | undefined>): Record<st
  */
 export const OWNER_LANE_ENV_DROPPED: readonly RegExp[] = Object.freeze([/^BGOS_/, /^HOAI_/, /^CLAUDE_PLUGIN_/, /^CLAUDE_PROJECT_DIR$/])
 
+/**
+ * The one variable of the plugin's own a thread keeps: where the plugin's
+ * state lives. Its hooks look there for the daemon the session belongs to,
+ * and without it "Always ask" would not find the daemon in a thread on an
+ * install that moved the state folder. It is a path, not a secret.
+ */
+export const OWNER_LANE_ENV_KEPT: readonly string[] = Object.freeze(['BGOS_PLUGIN_STATE_DIR'])
+
 export function ownerLaneEnv(env: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(env)) {
-    if (value === undefined || OWNER_LANE_ENV_DROPPED.some((re) => re.test(key))) continue
+    if (value === undefined) continue
+    if (!OWNER_LANE_ENV_KEPT.includes(key) && OWNER_LANE_ENV_DROPPED.some((re) => re.test(key))) continue
     out[key] = value
   }
   return out

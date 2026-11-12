@@ -99,7 +99,17 @@ export function rig(opts: RigOptions = {}) {
     commitFails: false,
     pruned: 0,
     commits: [] as Array<{ folder: string; message: string }>,
+    /** What a worktree's HEAD names when it is not the thread's own branch ('' for a detached HEAD). */
+    head: new Map<string, string>(),
+    /** `git worktree add` fails. */
+    addFails: false,
   }
+  /** When a path was last changed (ms); a path not named here is old. */
+  const mtimes = new Map<string, number>()
+  /** Paths that are symbolic links. */
+  const links = new Set<string>()
+  /** Held open by a test: the fork's goal clear waits for it. */
+  const gates: { clearGoal: Promise<void> | null } = { clearGoal: null }
   const mainPath = transcript(AGENT, MAIN)
   files.set(mainPath, '{"main":true}\n')
   const under = (p: string, parent: string) => p === parent || p.startsWith(parent + sep)
@@ -143,7 +153,7 @@ export function rig(opts: RigOptions = {}) {
         if (v === undefined) throw new Error(`ENOENT ${from}`)
         files.set(to, v.replace('"goal":"active"', '"goal":"cleared"'))
       },
-      clearGoal: async () => false,
+      clearGoal: async () => { if (gates.clearGoal) await gates.clearGoal; return false },
       hasActiveGoal: async (p) => (files.get(p) ?? '').includes('"goal":"active"'),
     },
     git: async (args) => {
@@ -167,6 +177,11 @@ export function rig(opts: RigOptions = {}) {
         return { ok: true, stdout: [...own, ...(git.shared.has(tip) ? ['refs/remotes/origin/main'] : [])].join('\n') + '\n' }
       }
       if (sub[0] === 'for-each-ref') return { ok: true, stdout: [...git.branches.keys()].map((n) => `refs/heads/${n}`).join('\n') + '\n' }
+      if (sub[0] === 'symbolic-ref') {
+        const named = git.head.get(folder)
+        if (named === '') return { ok: false, stdout: '' }
+        return { ok: true, stdout: `${named ?? `refs/heads/hoai/thread-${folder.split(sep).pop()!}`}\n` }
+      }
       if (sub[0] === 'status') return { ok: true, stdout: git.dirty.has(folder) ? ' M src/a.ts\n?? notes.txt\n' : '' }
       if (sub[0] === 'add') return { ok: true, stdout: '' }
       if (sub.includes('commit')) {
@@ -178,6 +193,7 @@ export function rig(opts: RigOptions = {}) {
         return { ok: true, stdout: '' }
       }
       if (sub[0] === 'branch' && sub[1] === '-D') return { ok: git.branches.delete(sub[2]!), stdout: '' }
+      if (sub[0] === 'worktree' && sub[1] === 'add' && git.addFails) return { ok: false, stdout: '' }
       if (sub[0] === 'worktree' && sub[1] === 'add') {
         const made = join(AGENT, sub[2]!)
         dirs.add(made)
@@ -202,6 +218,7 @@ export function rig(opts: RigOptions = {}) {
       rmrf,
       createExclusive: (p, s) => { if (files.has(p)) throw new Error(`EEXIST ${p}`); files.set(p, s) },
       rename: (a, b) => { const v = files.get(a); if (v === undefined) throw new Error(`ENOENT ${a}`); files.delete(a); files.set(b, v) },
+      stat: (p) => (exists(p) ? { kind: links.has(p) ? 'link' as const : files.has(p) ? 'file' as const : 'dir' as const, modifiedMs: mtimes.get(p) ?? 0 } : null),
       list: (d) => {
         const names = new Set<string>()
         for (const k of [...files.keys(), ...dirs]) if (under(k, d) && k !== d) names.add(k.slice(d.length + 1).split(sep)[0]!)
@@ -229,7 +246,7 @@ export function rig(opts: RigOptions = {}) {
     files.set(join(tempDir(cwd, id), 'tasks', 'b1.output'), 'o'.repeat(400))
     files.set(join(PLUGIN_STATE, 'hooks', id, 'events.jsonl'), 'v'.repeat(90))
   }
-  return { manager, deps, files, dirs, spawned, posts, gitCalls, logs, kept, approvals, sized, timers, clock, git, mainPath, left, state, sessionFiles, exists }
+  return { manager, deps, files, dirs, spawned, posts, gitCalls, logs, kept, approvals, sized, timers, clock, git, mainPath, left, state, sessionFiles, exists, mtimes, links, gates }
 }
 
 export const turn = (rootId: string, over: Partial<ThreadTurnInput> = {}): ThreadTurnInput => ({

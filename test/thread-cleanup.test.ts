@@ -149,6 +149,116 @@ test('uncommitted changes that cannot be saved keep the worktree and the branch,
   assert.equal(r.kept[0]!.folder, wt('101'))
 })
 
+test('a worktree that is not on the thread\'s own branch is kept: a commit there would be thrown away with the checkout', POSIX, async () => {
+  for (const head of ['', 'refs/heads/experiment']) {
+    const r = rig()
+    await confinedThread(r)
+    // The thread detached its HEAD, or made itself another branch, inside its own worktree.
+    r.git.head.set(wt('101'), head)
+    r.git.dirty.add(wt('101'))
+    await r.manager.close({ rootId: '101', removeWorktree: false })
+    await r.manager.idle()
+    assert.ok(r.files.has(join(wt('101'), 'checkout.bin')), `HEAD ${head || 'detached'}: the worktree stays`)
+    assert.equal(r.git.commits.length, 0, 'nothing is committed onto a HEAD that is not the thread\'s branch')
+    assert.equal(r.kept.length, 1)
+    assert.equal(r.kept[0]!.folder, wt('101'))
+    assert.match(String(r.kept[0]!.reason), /not on the thread's own branch/)
+    assert.equal(r.files.has(transcript(wt('101'), FORK_A)), false, 'its session files still go')
+  }
+  // Clean, but on a detached HEAD that may hold commits: kept too.
+  const r = rig()
+  await confinedThread(r)
+  r.git.head.set(wt('101'), '')
+  await r.manager.close({ rootId: '101', removeWorktree: false })
+  await r.manager.idle()
+  assert.ok(r.files.has(join(wt('101'), 'checkout.bin')))
+  assert.equal(r.kept.length, 1)
+})
+
+test('a plain folder that could not be removed is not counted as freed', async () => {
+  const r = rig({ repo: false })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  r.spawned[0]!.child.init(FORK_A)
+  r.files.set(join(wt('101'), 'notes.txt'), 'n'.repeat(4000))
+  r.spawned[0]!.child.result('Done.')
+  await r.manager.idle()
+  r.spawned[0]!.child.exit(0)
+  await flush()
+  const rmrf = r.deps.fs.rmrf
+  r.deps.fs.rmrf = (p) => { if (p === wt('101')) throw new Error('EBUSY'); rmrf(p) }
+  await r.manager.close({ rootId: '101', removeWorktree: false })
+  await r.manager.idle()
+  const line = r.logs.find((l) => /thread 101 closed/.test(l))!
+  const freed = Number(/freed (\d+) bytes/.exec(line)![1])
+  assert.ok(freed < 4000, `the folder that stayed is not in the count: ${line}`)
+})
+
+test('a close that arrives while a full access thread is being resumed starts no process, and the removal still happens', async () => {
+  const r = rig({ fullAccess: true })
+  await fullThread(r)
+  let release: () => void = () => {}
+  r.gates.clearGoal = new Promise<void>((done) => { release = done })
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1011', text: 'More.' }))
+  await flush()
+  assert.equal(r.spawned.length, 1, 'the resume waits on its own transcript')
+  const closing = r.manager.close({ rootId: '101', removeWorktree: false })
+  release()
+  await closing
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 1, 'no process is started for a thread that was closed meanwhile')
+  assert.deepEqual(leftovers(r, '101', FORK_A), [], 'and everything of it is removed')
+})
+
+test('the same for a confined thread: closed while it is being resumed, nothing starts', POSIX, async () => {
+  const r = rig()
+  await confinedThread(r)
+  let release: () => void = () => {}
+  r.gates.clearGoal = new Promise<void>((done) => { release = done })
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'More.' }))
+  await flush()
+  const closing = r.manager.close({ rootId: '101', removeWorktree: false })
+  release()
+  await closing
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 1)
+  assert.deepEqual(leftovers(r, '101', FORK_A), [])
+})
+
+test('a thread whose move back to confinement failed still has its session cleaned up when it closes', POSIX, async () => {
+  let on = true
+  const r = rig({ fullAccess: () => on })
+  await fullThread(r)
+  on = false
+  r.git.addFails = true
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1011', text: 'Confined now.' }))
+  await r.manager.idle()
+  assert.match(String(r.posts.filter((p) => p.path === 'integrations/threads/reply').at(-1)!.body.text), /^I could not open this thread: /)
+  const state = r.state('101')!
+  assert.deepEqual([state.access, state.cwd, state.forkSessionId], ['full', AGENT, FORK_A], 'its state still says where its session is')
+  assert.ok(r.files.has(transcript(AGENT, FORK_A)))
+  // The retry, once git works again, moves the session with the thread.
+  r.git.addFails = false
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1012', text: 'Again.' }))
+  await r.manager.idle()
+  assert.equal(r.spawned.at(-1)!.cwd, wt('101'))
+  assert.ok(r.files.has(transcript(wt('101'), FORK_A)), 'the session followed it')
+  r.spawned.at(-1)!.child.exit(0)
+  await flush()
+  await r.manager.close({ rootId: '101', removeWorktree: false })
+  await r.manager.idle()
+  assert.deepEqual(leftovers(r, '101', FORK_A), [])
+})
+
+test('a lane state that lost its working folder still gets its session files removed', async () => {
+  const r = rig({ fullAccess: true })
+  r.sessionFiles(AGENT, FORK_A)
+  r.files.set(join(STATE, '101.json'), JSON.stringify({ rootId: '101', chatId: '55', title: 'T', forkSessionId: FORK_A, folder: '', cwd: '', worktree: false, readOnly: false, access: 'confined', closedAt: 5, lastReplyId: '', lastDelivered: true, pid: null, pidStamp: null }))
+  assert.deepEqual(await r.manager.sweepLeftovers(), ['101'])
+  assert.deepEqual(leftovers(r, '101', FORK_A), [])
+  assert.ok(r.files.has(r.mainPath))
+})
+
 test('deleting a thread removes its branch whatever it holds, as before', POSIX, async () => {
   const r = rig()
   await confinedThread(r)
@@ -245,6 +355,40 @@ test('the start sweep removes an orphan: a thread folder with no lane state at a
   assert.ok(r.git.pruned >= 1)
 })
 
+test('a thread folder that changed in the last ten minutes is left alone: another daemon may be making it right now', async () => {
+  const r = rig()
+  r.clock.now = 50 * 60_000
+  r.dirs.add(wt('777'))
+  r.files.set(join(wt('777'), '.git'), 'gitdir: x\n')
+  r.files.set(join(wt('777'), 'half.bin'), 'x'.repeat(100))
+  r.mtimes.set(wt('777'), r.clock.now - 9 * 60_000)
+  assert.deepEqual(await r.manager.sweepLeftovers(), [])
+  assert.ok(r.files.has(join(wt('777'), 'half.bin')))
+  r.mtimes.set(wt('777'), r.clock.now - 11 * 60_000)
+  assert.deepEqual(await r.manager.sweepLeftovers(), ['777'], 'older than that, it is an orphan')
+})
+
+test('a link in the threads folder is never followed or removed by the sweep', async () => {
+  const r = rig()
+  r.dirs.add(wt('777'))
+  r.links.add(wt('777'))
+  r.files.set(join(wt('777'), '.git'), 'gitdir: x\n')
+  assert.deepEqual(await r.manager.sweepLeftovers(), [])
+  assert.equal(r.gitCalls.some((c) => c.includes('add') || c.includes('commit') || c.includes('remove')), false, 'no git command runs in what it points to')
+})
+
+test('a thread folder another agent in the same folder still knows is not an orphan', async () => {
+  const r = rig()
+  r.dirs.add(wt('888'))
+  r.files.set(join(wt('888'), '.git'), 'gitdir: x\n')
+  r.files.set(join(wt('888'), 'work.txt'), 'another agent\'s open thread')
+  // The other agent's own state folder: <state root>/<its id>/threads/888.json.
+  r.files.set(join(STATE, '..', '..', '9', 'threads', '888.json'), '{"rootId":"888","closedAt":null}')
+  assert.deepEqual(await r.manager.sweepLeftovers(), [])
+  assert.ok(r.files.has(join(wt('888'), 'work.txt')))
+  assert.equal(r.gitCalls.some((c) => c.slice(2, 4).join(' ') === 'worktree remove'), false)
+})
+
 test('the start sweep removes a main transcript copy a crash left behind, and leaves that open thread alone', async () => {
   const r = rig({ fullAccess: true })
   const copy = transcript(AGENT, COPY_ID)
@@ -302,8 +446,11 @@ test('stopping the daemon keeps an open thread\'s session (it resumes after the 
   assert.ok(r.files.has(copy))
   const child = r.spawned[0]!.child
   const stopped = r.manager.stopAll()
+  // At once, not when its process has exited: a daemon that is stopping may not live to see that exit.
+  assert.equal(r.files.has(copy), false, 'the copy made for the start is gone as soon as the stop begins')
+  assert.equal(r.state('101')!.tempCopy, null)
   child.exit(null)
   await stopped
-  assert.equal(r.files.has(copy), false, 'the copy made for the start is gone')
+  assert.equal(r.files.has(copy), false)
   assert.ok(r.files.has(join(STATE, '101.json')), 'the open thread\'s state stays: it is not closed')
 })

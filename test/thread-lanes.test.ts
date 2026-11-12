@@ -134,6 +134,8 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       if (sub[0] === 'rev-parse' && sub[2] === '--git-common-dir') return { ok: true, stdout: `${join(AGENT, '.git')}\n` }
       if (sub[0] === 'rev-parse' && sub[2] === '--git-dir') return { ok: true, stdout: `${join(AGENT, '.git', 'worktrees', basename(args[1]!))}\n` }
       if (sub[0] === 'for-each-ref') return { ok: true, stdout: `refs/heads/main\nrefs/heads/hoai/thread-${'101'}\n` }
+      // 0.88.0: a close asks which branch the worktree is on before it saves anything there.
+      if (sub[0] === 'symbolic-ref') return { ok: true, stdout: `refs/heads/hoai/thread-${basename(args[1]!)}\n` }
       if (sub[0] === 'branch' && sub[1] === '-D') { branchesDeleted.push(sub[2]!); return { ok: true, stdout: '' } }
       if (sub[0] === 'worktree' && sub[1] === 'add') { dirs.add(join(AGENT, sub[2]!)); return { ok: true, stdout: '' } }
       if (sub[0] === 'worktree' && sub[1] === 'remove') { removed.push(sub[3]!); dirs.delete(sub[3]!); return { ok: true, stdout: '' } }

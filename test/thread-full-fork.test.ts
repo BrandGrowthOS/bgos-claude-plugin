@@ -69,15 +69,40 @@ test('threads.fullAccess is on by default, and only an explicit off turns it off
   const { threadsFullAccess, THREADS_FULL_ACCESS_ENV } = access
   const read = (text: string | null) => () => text
   assert.equal(threadsFullAccess({ env: {}, readSettings: read(null) }), true, 'no settings file')
-  assert.equal(threadsFullAccess({ env: {}, readSettings: () => { throw new Error('ENOENT') } }), true)
+  assert.equal(threadsFullAccess({ env: {}, readSettings: () => { throw Object.assign(new Error('no such file'), { code: 'ENOENT' }) } }), true, 'a file that is not there')
+  assert.equal(threadsFullAccess({ env: {}, readSettings: read('') }), true)
   assert.equal(threadsFullAccess({ env: {}, readSettings: read('{}') }), true)
+  assert.equal(threadsFullAccess({ env: {}, readSettings: read('{"threads":{}}') }), true)
   assert.equal(threadsFullAccess({ env: {}, readSettings: read('{"threads":{"fullAccess":true}}') }), true)
   assert.equal(threadsFullAccess({ env: {}, readSettings: read('{"threads":{"fullAccess":false}}') }), false)
-  assert.equal(threadsFullAccess({ env: {}, readSettings: read('not json') }), true)
+})
+
+test('a setting that cannot be read is never read as on: the owner may have meant off', () => {
+  const { threadsFullAccess, THREADS_FULL_ACCESS_ENV } = access
+  const read = (text: string | null) => () => text
+  // A typo in the file the owner wrote to turn it off.
+  assert.equal(threadsFullAccess({ env: {}, readSettings: read('{"threads":{"fullAccess":false') }), false, 'JSON cut short')
+  assert.equal(threadsFullAccess({ env: {}, readSettings: read('not json') }), false)
+  assert.equal(threadsFullAccess({ env: {}, readSettings: read('[]') }), false, 'not a settings object')
+  assert.equal(threadsFullAccess({ env: {}, readSettings: () => { throw Object.assign(new Error('permission denied'), { code: 'EACCES' }) } }), false, 'a file that is there and cannot be read')
+  assert.equal(threadsFullAccess({ env: {}, readSettings: () => { throw new Error('unknown') } }), false)
+  for (const value of ['"false"', '0', 'null', '"off"', '{}']) {
+    assert.equal(threadsFullAccess({ env: {}, readSettings: read(`{"threads":{"fullAccess":${value}}}`) }), false, `fullAccess ${value}: anything but true, once written, is off`)
+  }
+  assert.equal(threadsFullAccess({ env: {}, readSettings: read('{"threads":"off"}') }), false)
+  for (const value of ['disabled', 'none', 'maybe', 'nope']) {
+    assert.equal(threadsFullAccess({ env: { [THREADS_FULL_ACCESS_ENV]: value }, readSettings: read('{"threads":{"fullAccess":true}}') }), false, `HOAI_THREADS_FULL_ACCESS=${value} is not a yes`)
+  }
+})
+
+test('the variable, when it says yes or no, wins over the file', () => {
+  const { threadsFullAccess, THREADS_FULL_ACCESS_ENV } = access
+  const read = (text: string | null) => () => text
   assert.equal(threadsFullAccess({ env: { [THREADS_FULL_ACCESS_ENV]: 'false' }, readSettings: read('{"threads":{"fullAccess":true}}') }), false, 'the variable wins')
   assert.equal(threadsFullAccess({ env: { [THREADS_FULL_ACCESS_ENV]: ' OFF ' }, readSettings: read(null) }), false)
   assert.equal(threadsFullAccess({ env: { [THREADS_FULL_ACCESS_ENV]: 'true' }, readSettings: read('{"threads":{"fullAccess":false}}') }), true)
-  assert.equal(threadsFullAccess({ env: { [THREADS_FULL_ACCESS_ENV]: 'maybe' }, readSettings: read('{"threads":{"fullAccess":false}}') }), false, 'an unknown value says nothing')
+  assert.equal(threadsFullAccess({ env: { [THREADS_FULL_ACCESS_ENV]: '  ' }, readSettings: read('{"threads":{"fullAccess":false}}') }), false, 'an empty variable says nothing: the file decides')
+  assert.equal(threadsFullAccess({ env: { [THREADS_FULL_ACCESS_ENV]: '' }, readSettings: read(null) }), true)
 })
 
 // -- the owner's command ------------------------------------------------------
@@ -156,6 +181,8 @@ test('a full access thread gets the main session\'s environment, without this pl
     CLAUDE_PLUGIN_ROOT: '/plugin', CLAUDE_PLUGIN_DATA: '/data', CLAUDE_PROJECT_DIR: '/work/atlas', CLAUDE_CONFIG_DIR: '/cfg', GONE: undefined,
   })
   assert.deepEqual(env, { PATH: '/bin', HOME: '/home/u', SSH_AUTH_SOCK: '/tmp/agent.sock', AWS_PROFILE: 'work', GH_TOKEN: 'g', ANTHROPIC_MODEL: 'm', CLAUDE_CONFIG_DIR: '/cfg' })
+  // The one plugin variable a thread keeps: where the plugin's hooks look for the daemon, so "Always ask" still finds it in a thread.
+  assert.deepEqual(streamChild.ownerLaneEnv({ BGOS_PLUGIN_STATE_DIR: '/state', BGOS_API_KEY: 'k', BGOS_PLUGIN_STATE_DIRX: 'no' }), { BGOS_PLUGIN_STATE_DIR: '/state' })
   // The confined list is what it was: none of the owner's own credentials.
   assert.equal(streamChild.laneChildEnv({ SSH_AUTH_SOCK: '/tmp/agent.sock', GH_TOKEN: 'g', PATH: '/bin' }).SSH_AUTH_SOCK, undefined)
 })
@@ -418,6 +445,129 @@ test('a thread opened confined before 0.88.0 gets full access on its owner\'s ne
   assert.equal(state.access, 'full')
   assert.equal(state.folder, wt('101'), 'the worktree is still the thread\'s own, removed when the thread closes')
   assert.equal(state.worktree, true)
+})
+
+test('a full access process that is still alive is stopped, not reused, once the setting is off: the next message runs confined', POSIX, async () => {
+  let on = true
+  const r = rig({ fullAccess: () => on })
+  r.manager.turn(owner('101'))
+  await r.manager.idle()
+  const first = r.spawned[0]!.child
+  first.init(FORK_A)
+  r.files.set(transcript(AGENT, FORK_A), '{"fork":"memory"}\n')
+  first.result('Done.')
+  await r.manager.idle()
+  // The process idles (20 minutes) with the owner's access. The owner turns the setting off and writes again.
+  on = false
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1011', text: 'Still full?' }))
+  await flush()
+  assert.deepEqual(first.killed, ['SIGTERM'], 'the full access process is stopped')
+  assert.equal(first.stdin.some((l) => l.includes('Still full?')), false, 'and the message is never written to it')
+  assert.equal(r.spawned.length, 1, 'nothing starts while it is still exiting')
+  first.exit(0)
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 2)
+  assert.ok(r.spawned[1]!.args.includes('--restricted'))
+  assert.equal(r.spawned[1]!.cwd, wt('101'))
+  assert.equal(r.spawned[1]!.child.said(), 'Still full?')
+  assert.equal(r.posts.some((p) => p.path === 'integrations/threads/reply' && /failed/.test(String(p.body.text))), false, 'the stop is no failure of the turn')
+})
+
+test('a turn that is not the owner\'s never runs on a full access process that is still alive', POSIX, async () => {
+  const r = rig({ fullAccess: true })
+  r.manager.turn(owner('101'))
+  await r.manager.idle()
+  const first = r.spawned[0]!.child
+  first.init(FORK_A)
+  r.files.set(transcript(AGENT, FORK_A), '{"fork":"memory"}\n')
+  first.result('Done.')
+  await r.manager.idle()
+  r.manager.turn(recipient('101', { mode: 'reply', replyId: '1011', text: 'From a person.' }))
+  await flush()
+  assert.deepEqual(first.killed, ['SIGTERM'])
+  assert.equal(first.stdin.some((l) => l.includes('From a person.')), false)
+  first.exit(0)
+  await r.manager.idle()
+  assert.ok(r.spawned[1]!.args.includes('--restricted'))
+  assert.equal(r.spawned[1]!.ownerEnv, undefined)
+})
+
+test('and the other way: a confined process that is still alive gives way to the full fork once the setting is on', POSIX, async () => {
+  let on = false
+  const r = rig({ fullAccess: () => on })
+  r.manager.turn(owner('101'))
+  await r.manager.idle()
+  const first = r.spawned[0]!.child
+  first.init(FORK_A)
+  r.files.set(transcript(wt('101'), FORK_A), '{"fork":"memory"}\n')
+  first.result('Done.')
+  await r.manager.idle()
+  on = true
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1011', text: 'Full now?' }))
+  await flush()
+  assert.deepEqual(first.killed, ['SIGTERM'])
+  first.exit(0)
+  await r.manager.idle()
+  assert.equal(r.spawned[1]!.cwd, AGENT)
+  assert.ok(r.spawned[1]!.args.includes('--dangerously-skip-permissions'))
+  assert.match(r.spawned[1]!.child.said(), /This thread now runs with full access/)
+})
+
+test('a process whose access still fits is reused as before: no stop, no second process', async () => {
+  const r = rig({ fullAccess: true })
+  r.manager.turn(owner('101'))
+  await r.manager.idle()
+  const first = r.spawned[0]!.child
+  first.init(FORK_A)
+  first.result('Done.')
+  await r.manager.idle()
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1011', text: 'Again.' }))
+  await r.manager.idle()
+  assert.deepEqual(first.killed, [])
+  assert.equal(r.spawned.length, 1)
+  assert.equal(first.said(1), 'Again.')
+})
+
+test('an approval path that answers nonsense refuses the prompt, never leaves it unanswered', async () => {
+  const r = rig({ fullAccess: true, approve: (async () => null) as never })
+  r.manager.turn(owner('101'))
+  await r.manager.idle()
+  const child = r.spawned[0]!.child
+  child.init(FORK_A)
+  child.frame({ type: 'control_request', request_id: 'q1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' } } })
+  await flush()
+  assert.equal(child.answers().length, 1)
+  assert.equal(child.answers()[0]!.response.response.behavior, 'deny')
+})
+
+test('a thread that moved to full access goes back to its own worktree, in that worktree, when the setting is turned off', POSIX, async () => {
+  let on = true
+  const r = rig({ fullAccess: () => on })
+  r.dirs.add(wt('101'))
+  r.files.set(join(wt('101'), '.git'), 'gitdir: x\n')
+  r.files.set(transcript(wt('101'), FORK_A), '{"fork":"memory"}\n')
+  r.files.set(join(STATE, '101.json'), JSON.stringify({
+    rootId: '101', chatId: '55', title: 'T101', forkSessionId: FORK_A, folder: wt('101'), cwd: wt('101'), worktree: true, readOnly: false, closedAt: null, lastReplyId: '1010', lastDelivered: true, pid: null, pidStamp: null,
+  }))
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1011', text: 'Full now.' }))
+  await r.manager.idle()
+  assert.equal(r.spawned[0]!.cwd, AGENT)
+  r.spawned[0]!.child.init(FORK_A)
+  r.spawned[0]!.child.result('Done.')
+  await r.manager.idle()
+  r.spawned[0]!.child.exit(0)
+  on = false
+  r.manager.turn(owner('101', { mode: 'reply', replyId: '1012', text: 'Confined again.' }))
+  await r.manager.idle()
+  const s = r.spawned[1]!
+  assert.equal(s.cwd, wt('101'), 'the confined command runs in the thread\'s own worktree, never in the agent folder')
+  assert.ok(s.args.includes('--restricted'))
+  assert.equal(flag(s.args, '--resume'), FORK_A)
+  assert.equal(settingsOf(s.args).permissions.additionalDirectories[0], wt('101'))
+  assert.equal(r.files.get(transcript(wt('101'), FORK_A)), '{"fork":"memory"}\n')
+  assert.equal(r.files.has(transcript(AGENT, FORK_A)), false)
+  const state = r.state('101')!
+  assert.deepEqual([state.access, state.cwd, state.folder, state.worktree], ['confined', wt('101'), wt('101'), true])
 })
 
 test('a pending row read after a reconnect carries its opener the same way: the owner\'s is full, a person\'s is confined', async () => {

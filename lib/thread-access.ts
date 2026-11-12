@@ -12,10 +12,14 @@
  * or for one daemon with HOAI_THREADS_FULL_ACCESS=false in its environment
  * (the variable wins over the file). Off, the owner's threads run confined
  * as before 0.88.0. It is read at every thread start, so a change needs no
- * restart. A file that is missing, not JSON, or silent about the setting
- * reads as on: it is the owner's own agent on the owner's own computer, and
- * only an explicit `false` takes the access away. A thread a share recipient
- * opens is confined whatever this says (threadAccess).
+ * restart. On is the default, so a file that is not there, is empty, or says
+ * nothing about the setting reads as on. But a setting somebody WROTE and
+ * this code cannot read is never read as on, because the owner may have
+ * meant off: a file that is there and cannot be read or is not a JSON object,
+ * a `fullAccess` that is anything but `true`, and a variable with a value
+ * that is neither a yes nor a no all read as off, and the owner's threads
+ * run confined. A thread a share recipient opens is confined whatever this
+ * says (threadAccess).
  *
  * Erasable TypeScript only. No em or en dashes in this file.
  */
@@ -31,7 +35,7 @@ export function agentSettingsPath(agentStateDir: string): string {
   return join(agentStateDir, AGENT_SETTINGS_FILE)
 }
 
-const OFF = ['false', '0', 'off', 'no']
+/** The values of the variable that say yes. Any other value written there, `false` and `0` included, is a no. */
 const ON = ['true', '1', 'on', 'yes']
 
 /** `threads.fullAccess`: the environment first, then the agent's settings file, else on. */
@@ -41,21 +45,31 @@ export function threadsFullAccess(input: {
   readSettings(): string | null
 }): boolean {
   const raw = input.env[THREADS_FULL_ACCESS_ENV]?.trim().toLowerCase() ?? ''
-  if (OFF.includes(raw)) return false
   if (ON.includes(raw)) return true
+  // A no, and anything else that was written there: never a yes.
+  if (raw !== '') return false
   let text: string | null = null
   try {
     text = input.readSettings()
-  } catch {
-    return true
+  } catch (err) {
+    // No such file is the default; a file that is there and cannot be read is not.
+    return (err as { code?: unknown } | null)?.code === 'ENOENT'
   }
-  if (typeof text !== 'string' || text.trim() === '') return true
+  if (text === null || text === undefined) return true
+  if (typeof text !== 'string') return false
+  if (text.trim() === '') return true
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(text) as { threads?: { fullAccess?: unknown } } | null
-    return parsed?.threads?.fullAccess !== false
+    parsed = JSON.parse(text)
   } catch {
-    return true
+    return false
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+  const threads = (parsed as { threads?: unknown }).threads
+  if (threads === undefined) return true
+  if (!threads || typeof threads !== 'object' || Array.isArray(threads)) return false
+  const value = (threads as { fullAccess?: unknown }).fullAccess
+  return value === undefined || value === true
 }
 
 /**

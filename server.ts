@@ -15215,6 +15215,15 @@ const threadLanes = new ThreadLaneManager({
     list: (dir) => readdirSync(dir),
     createExclusive: (path, data) => writeFileSync(path, data, { flag: 'wx' }),
     rename: (from, to) => renameSync(from, to),
+    // The start sweep leaves a link alone, and a folder another daemon may still be making.
+    stat: (path) => {
+      try {
+        const info = lstatSync(path)
+        return { kind: info.isSymbolicLink() ? 'link' : info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other', modifiedMs: info.mtimeMs }
+      } catch {
+        return null
+      }
+    },
   },
   post: (path, body) => bgosPost(path, body),
   now: () => Date.now(),
