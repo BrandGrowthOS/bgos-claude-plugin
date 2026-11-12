@@ -212,6 +212,7 @@ import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
+import { ensureAutoHost } from './lib/vault-host-auto.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
@@ -6891,6 +6892,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       pairingToken: AUTH.mode === 'pairing' ? AUTH.pairingToken : '',
       stateDir: vaultHostDir(stateDir),
       log,
+      autoHost: () => runVaultAutoHost('tool'),
     })
   }
 
@@ -9591,6 +9593,39 @@ const whenArmed =
     }
     handle(payload)
   }
+
+// The agent vault with no setup (lib/vault-host-auto.mjs, HOAI CORE-CONTRACTS
+// 18.8). Only the daemon that holds the pairing lock makes or offers this
+// machine's vault keys: when it arms, on the server's vault_host_setup frame
+// and on a vault tool's first use. One run at a time; the result is codes only.
+// A server that does not take offers answers `off`, remembered for ten minutes
+// so a vault tool call does not ask again each time.
+let vaultAutoHostRun: Promise<{ status: string; code?: string }> | null = null
+let vaultAutoHostOffUntil = 0
+function runVaultAutoHost(reason: string): Promise<{ status: string; code?: string }> {
+  if (AUTH.mode !== 'pairing' || !channelArmed) return Promise.resolve({ status: 'unavailable' })
+  if (vaultAutoHostRun) return vaultAutoHostRun
+  if (reason !== 'frame' && Date.now() < vaultAutoHostOffUntil) return Promise.resolve({ status: 'off' })
+  const stateDir = agentStateDir(homedir(), ASSISTANT_ID)
+  if (!stateDir) return Promise.resolve({ status: 'unavailable' })
+  const run = ensureAutoHost({
+    stateDir: vaultHostDir(stateDir),
+    assistantId: ASSISTANT_ID,
+    ownerId: USER_ID,
+    apiBase: API_BASE,
+    pairingToken: AUTH.pairingToken,
+    log,
+  })
+    .catch(() => ({ status: 'unavailable' }))
+    .then((result: { status: string; code?: string }) => {
+      vaultAutoHostRun = null
+      vaultAutoHostOffUntil = result.status === 'off' ? Date.now() + 10 * 60_000 : 0
+      if (result.status !== 'off' && result.status !== 'disabled') log(`vault: host setup (${reason}) is ${result.status}`)
+      return result
+    })
+  vaultAutoHostRun = run
+  return run
+}
 
 // The holder's home step has run (lib/agent-credentials.ts
 // homeStepWhileHolding): a pinned start confirms its folder once; nothing
@@ -18154,6 +18189,14 @@ function connectWebsocket(): void {
   // normalizeVoiceRpc (malformed frames drop; well-formed frames ALWAYS get
   // a result or descriptive error — the G2 silent-drop lesson). Duplicate
   // re-emits are deduped by rpcId inside the handler.
+  // The agent vault with no setup: the owner's app asked this machine to offer
+  // its vault key, or accepted it. Ids and a status only; nothing from the
+  // frame goes into a key or a request, and it is never shown to the model.
+  realtimeSocket.on('vault_host_setup', whenArmed('vault_host_setup', (frame: any) => {
+    if (Number(frame?.assistantId) !== Number(ASSISTANT_ID)) return
+    void runVaultAutoHost('frame')
+  }))
+
   realtimeSocket.on('voice_rpc', whenArmed('voice_rpc', (payload: any) => {
     if (updateDrainMode) return
     try {
@@ -20697,6 +20740,7 @@ async function main(): Promise<void> {
       startHookIntakeIfHolder()
       handleUnboundBeforeArm()
       reconcilePendingThreads('re-armed')
+      void runVaultAutoHost('armed')
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -21564,6 +21608,8 @@ async function main(): Promise<void> {
     handleUnboundBeforeArm()
     // The first connect after a boot came before this arm: run what waits.
     reconcilePendingThreads('armed')
+    // Zero setup: this machine offers its vault key by itself (no terminal).
+    void runVaultAutoHost('armed')
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself

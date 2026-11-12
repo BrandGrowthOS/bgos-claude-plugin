@@ -22,7 +22,43 @@ Every call goes to `/api/v1/vault/agent/<id>/...` with the pairing credential
 turn admitted for anyone but the owner is refused before any request. Failures
 are fixed `VAULT_*` codes that never echo a response body.
 
-## Setting up the host: `hoai vault-host`
+## Setting up the host: nothing to do (0.88.0)
+
+Where the HOAI server takes host offers (`VAULT_ZERO_SETUP_ENABLED`), this
+machine sets itself up. Nobody opens a terminal, pastes a key, compares a
+fingerprint or types anything.
+
+1. **Keys.** When the daemon arms, when HOAI sends `vault_host_setup`, and on a
+   vault tool's first use, `lib/vault-host-auto.mjs` makes the host key (as in
+   step 1 below) and this machine's OWN Ed25519 agent identity, both in the
+   owner only file. No private key crosses the server.
+2. **Offer.** It posts `{identityPublic, publicKey, keySignature}` to
+   `/api/v1/vault/agent/<id>/host-offer` with the pairing credential only.
+   `keySignature` is the host key proof of step 3 below.
+3. **HOAI finishes it.** The owner's app verifies the proof, accepts the offer
+   from the owner's own session and pins the key, in the background. The answer
+   to the next offer reads `installed` and names the installed keys; this
+   machine records its registration and pin only when they are its own.
+4. **A changed key.** A new key on a machine the owner already set up answers
+   `change_offered`. The owner sees "this computer changed" in HOAI and taps
+   Use the new computer; until then the vault tools stay blocked and say so.
+
+`hoai vault-host auto` shows the state from a command line (no terminal
+needed). `HOAI_VAULT_AUTO_HOST=0` switches this off on a machine. A server
+without the flag answers 404 to the first request: no key is made and the
+older steps below are the way.
+
+A key file another account could read is never used: it is removed, a fresh
+key is made, and the owner sees a changed computer. A folder that cannot be
+made private makes no key; HOAI tells the owner why with a fixed code.
+
+What this trades: the owner's app trusts the FIRST key it sees for an agent.
+A server already hostile at that minute could substitute its own key and read
+what is shared with this agent. Values stay end to end encrypted and a later
+change is never trusted without the owner. HOAI's design note
+(`docs/superpowers/specs/2026-11-12-vault-zero-setup-design.md`) says so in full.
+
+## Setting up the host by hand: `hoai vault-host` (servers without zero setup)
 
 Run it in a terminal on the agent machine, from the agent's folder. It refuses
 to run without a terminal, because the fingerprint must not reach a pipe, a log

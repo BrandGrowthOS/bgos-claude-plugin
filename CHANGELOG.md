@@ -10,6 +10,26 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.88.0 (2026-11-12)
+
+**The agent vault needs no setup on this machine (HOAI board row f375d4f2f621).** Until now the only way to let an agent use its HOAI vault was `hoai vault-host` in a terminal on the agent's computer: paste a private signing key the owner minted on the server, compare a twenty digit fingerprint, type `PINNED`. An owner who was not sitting at that computer could not finish it, and the vault tools answered `VAULT_HOST_SETUP_REQUIRED` for good.
+
+Where the HOAI server takes host offers (its flag `VAULT_ZERO_SETUP_ENABLED`), the daemon now does all of it by itself, with no terminal and no question:
+
+- **It makes its own keys.** The existing host key, and its own Ed25519 agent identity, generated on this machine and kept in the same owner only file (0600 in a 0700 folder; on Windows a protected access list owned by the account, written and read back before any key is). Nobody mints a private key on the server and pastes it any more: no private key crosses the server at all.
+- **It offers the public halves.** `POST /api/v1/vault/agent/<id>/host-offer {identityPublic, publicKey, keySignature}` under the pairing credential, with the unchanged host key proof. It offers when the daemon arms, when the server sends `vault_host_setup` to its pairing room, and on a vault tool's first use. The same keys are offered every time; a second key is never made while the key file is good.
+- **HOAI finishes it.** The owner's app verifies the proof, accepts the offer from the owner's own session and pins the key in the background. The machine records its registration and pin only when the server names ITS OWN keys as the installed host; a server that says "installed" for other keys changes nothing here.
+- **A changed key is the owner's call.** A machine with a new key (the agent was reinstalled or moved) is told `change_offered`: the owner sees "this computer changed" in HOAI and decides there. Until then the vault tools say so once and stay blocked.
+- **A key another account could read is never used.** The file is removed and a fresh key made, which the owner then sees as a changed computer. A folder that cannot be made private makes no key, and the owner's app is told why with a fixed code (`key_exposed`, `key_invalid`, `storage_failed`), never a path.
+- **The vault tools no longer send anyone to a terminal.** While the setup is finishing they answer `VAULT_HOST_SETUP_PENDING`; for a changed computer `VAULT_HOST_CHANGE_PENDING`. Neither names a command, a key or a fingerprint.
+- `hoai vault-host auto` shows the state from a command line and needs no terminal. Plain `hoai vault-host` with no signing key now tries this first and only falls back to the pasted key where the server does not take offers.
+
+Nothing changes on a server without the flag: the first request answers 404, no key is made and the older flow stands. `HOAI_VAULT_AUTO_HOST=0` keeps a machine out of it.
+
+The trade, stated in HOAI's design note (`docs/superpowers/specs/2026-11-12-vault-zero-setup-design.md`): the owner's app trusts the first key it sees for an agent, so a server that is already hostile at the minute of first setup could substitute its own. Item values stay end to end encrypted, and a later change is never trusted without the owner.
+
+**Tests:** `test/vault-host-auto.test.ts` (21): keys made with no terminal and only public halves on the wire, the file modes, the pin only for this machine's own keys, a lying server, the 404 and kill switch paths, a damaged and an exposed key file, the Windows access list written before any key (with the injected reader on every OS, and for real in the Windows CI job), the three tool answers, and the daemon wiring. `test/pairing-lock-standdown.test.ts` lists `vault_host_setup` as a frame only the lock holder acts on.
+
 ## 0.87.4 (2026-11-11)
 
 **A thread answers when the main session has a background task running.** A thread starts as a copy of the agent's main session. When that session still had a background task running (a shell command left in the background), Claude Code first told the copy that the task was gone, and closed that notice with an empty result before it read the thread's message. The daemon took the empty result for the thread's answer: the thread said `This turn failed before the agent could answer`, went back to Open, and the real answer, which came a second or two later, was dropped without a log line. A result that cannot be the answer to the thread's message is now skipped: an empty one with no model turn behind it, and any result that comes before Claude Code has said anything since the message went in. The turn keeps waiting for its own result.
