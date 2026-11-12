@@ -50,6 +50,8 @@ interface Backend {
   mode: Mode
   /** Side thread chat id to its conversation, as HOAI holds it. */
   threads: Map<string, Thread>
+  mainChats: Set<string>
+  sessionChats: Map<string, string>
   /** What the peer agent actually received. */
   peerGot: Array<{ chatId: string; text: string; replyToId?: number }>
   /** Every request, in order, with its parsed body. */
@@ -61,6 +63,8 @@ interface Backend {
   /** HOAI's word on the next reply only (`reports` mode): it saves it and passes nothing on. */
   nextDelivery?: unknown
   reportConversationId?: boolean
+  /** Override the stored id, including a missing or null id in a successful answer. */
+  replyMessageId?: number | null
   sendStatus?: number
   sendErrorCode?: string
   /** HOAI revives a closed conversation on a participant's write, and forwards (Kc's rule, BGOS #1265). */
@@ -80,6 +84,8 @@ async function startBackend(mode: Mode = 'reports'): Promise<Backend> {
     url: '',
     mode,
     threads: new Map(),
+    mainChats: new Set([MAIN]),
+    sessionChats: new Map(),
     peerGot: [],
     posts: [],
     nextSideThread: SIDE_B,
@@ -101,10 +107,17 @@ async function startBackend(mode: Mode = 'reports'): Promise<Backend> {
       if (route === 'POST /api/v1/send-message') {
         backend.onSendMessage?.()
         if (backend.sendStatus) return send(backend.sendStatus, { message: backend.sendErrorCode ?? 'fixture send failed', code: backend.sendErrorCode })
-        const chatId = String(body.chatId)
+        const chatId = backend.sessionChats.get(String(body.sessionHandle)) ?? String(body.chatId)
         const thread = backend.threads.get(chatId)
-        if (!thread) return send(201, { message: { id, chatId: Number(chatId) } })
-        const message = { id, chatId: Number(chatId), ...(backend.reportConversationId ? { peerConversationId: thread.conv } : {}) }
+        const message = {
+          id: 'replyMessageId' in backend ? backend.replyMessageId : id,
+          chatId: Number(chatId),
+          ...(thread && backend.reportConversationId ? { peerConversationId: thread.conv } : {}),
+        }
+        if (!thread) {
+          backend.mainChats.add(chatId)
+          return send(201, { message })
+        }
         const overridesDelivery = 'nextDelivery' in backend
         const delivery = backend.nextDelivery
         delete backend.nextDelivery
@@ -223,6 +236,7 @@ interface HarnessOptions {
   sideChats?: string[]
   closedChats?: string[]
   sessionHandle?: string
+  unmappedHandle?: string
   fileError?: boolean
 }
 
@@ -287,10 +301,13 @@ function harness(backend: Backend, opts: HarnessOptions = {}): Harness {
     groupChatIds: new Set<string>(opts.groupChats),
     chatFirstListedAtMs: new Map<string, number>(),
     monitoredChatSet,
-    knownSessionHandles: new Set<string>(opts.sessionHandle ? [opts.sessionHandle] : []),
+    knownSessionHandles: new Set<string>([opts.sessionHandle, opts.unmappedHandle].filter((h): h is string => h != null)),
     sessionHandleByChat: new Map<string, string>(opts.sessionHandle ? [[SIDE_B, opts.sessionHandle]] : []),
     chatOwnership: { noteRow: () => undefined },
-    bgosPeerGet: async () => ({ chats: [...backend.threads.keys()].map((id) => ({ id: Number(id), assistantId: SELF, ...(inboxKind === null ? {} : { kind: inboxKind }) })) }),
+    bgosPeerGet: async () => ({ chats: [
+      ...[...backend.mainChats].map((id) => ({ id: Number(id), assistantId: SELF, kind: 'main' })),
+      ...[...backend.threads.keys()].map((id) => ({ id: Number(id), assistantId: SELF, ...(inboxKind === null ? {} : { kind: inboxKind }) })),
+    ] }),
     CLOSED_PEER_CHATS_MAX: 500,
     a2aRouteRefusedChats: { has: () => false },
     updateDrainMode: false,
@@ -524,6 +541,10 @@ for (const kind of [null, 'a2a'] as const) {
       assert.equal(result.isError, true, result.content[0]?.text)
       assert.doesNotMatch(result.content[0]!.text, /^Sent\b/)
       assert.match(result.content[0]!.text, /^Delivery unconfirmed:.*send_to_peer/)
+      if (kind === null) {
+        assert.match(result.content[0]!.text, /saved this reply in chat 33017\b/)
+        assert.doesNotMatch(result.content[0]!.text, /side conversation|main chat/)
+      }
     }
   })
 }
@@ -594,11 +615,11 @@ const DELIVERY_VERDICTS = [
   { name: 'malformed', report: 'forwarded', prefix: /^Delivery unconfirmed:/ },
   { name: 'ended', report: { state: 'not_forwarded', reason: 'conversation_not_open' }, prefix: /^Not delivered:.*has ended/ },
   { name: 'not passed on', report: { state: 'not_forwarded', reason: 'peer_offline' }, prefix: /^Not delivered:.*not connected/ },
-  { name: 'forwarded', report: { state: 'forwarded' }, prefix: /^Sent \(message_id: \d+\)$/ },
+  { name: 'forwarded', report: { state: 'forwarded' }, prefix: /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/ },
 ]
 for (const identity of SIDE_IDENTITIES) {
   for (const verdict of DELIVERY_VERDICTS) {
-    test(`side reply path table: ${identity.name} / ${verdict.name}`, async () => {
+    test(`reply delivery table: ${identity.name} / ${verdict.name}`, async () => {
       const backend = await startBackend('reports')
       const h = harness(backend, { ...identity.options, sessionHandle: identity.handle })
       const discovered = 'discovered' in identity
@@ -687,7 +708,7 @@ for (const mode of ['saves-silently', 'reports'] as const) {
       const result = await h.reply(SIDE, text)
       if (mode === 'reports') {
         assert.equal(result.isError, undefined, result.content[0]?.text)
-        assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\)$/)
+        assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/)
       } else {
         assert.equal(result.isError, true, result.content[0]?.text)
         assert.match(result.content[0]!.text, /^Delivery unconfirmed:/)
@@ -706,7 +727,7 @@ test('reopen rule, case 2: two replies after the timeout close, before the peer 
   const texts = ['First follow up: the index is rebuilt.', 'Second follow up: the backfill is done too.']
   for (const text of texts) {
     const result = await h.reply(SIDE, text)
-    assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\)$/, text)
+    assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/, text)
   }
   assert.equal(sendMessagePosts(backend, SIDE), 3)
   assert.deepEqual(
@@ -725,10 +746,10 @@ test('reopen rule: a close that lands while the reply is on the wire leaves the 
   }
   const result = await h.reply(SIDE, text)
   assert.equal(result.isError, undefined)
-  assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\)$/, 'no line added after the Sent')
+  assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/, 'delivery is reported on the same line')
   assert.ok(backend.peerGot.some((m) => m.text === text))
   const next = await h.reply(SIDE, 'And a follow up.')
-  assert.match(next.content[0]!.text, /^Sent \(message_id: \d+\)$/, 'the next reply goes to HOAI as always')
+  assert.match(next.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/, 'the next reply goes to HOAI as always')
   assert.equal(sendMessagePosts(backend, SIDE), 3)
 })
 
@@ -765,7 +786,7 @@ test('with #3420: a reply HOAI says it forwarded is the plain Sent', async () =>
   const { backend, h } = await talking('reports')
   const result = await h.reply(SIDE, 'Forwarded as usual.')
   assert.equal(result.isError, undefined)
-  assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\)$/)
+  assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/)
   assert.ok(backend.peerGot.some((m) => m.text === 'Forwarded as usual.'))
 })
 
@@ -777,7 +798,7 @@ for (const reason of ['conversation_not_open', 'no_conversation']) {
     assert.match(said, /has ended/)
     assert.match(said, /If they still need it, send it with send_to_peer\.$/)
     const next = await h.reply(SIDE, 'And this one?')
-    assert.match(next.content[0]!.text, /^Sent \(message_id: \d+\)$/, 'HOAI answers each reply; nothing is refused here')
+    assert.match(next.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/, 'HOAI answers each reply; nothing is refused here')
     assert.equal(sendMessagePosts(backend, SIDE), 3)
   })
 }
@@ -791,7 +812,7 @@ for (const reason of ['bridge_failed', 'not_participant', 'cross_account_refused
     assert.match(said, /did not pass it on to the other agent/)
     assert.match(said, /\bsend_to_peer\b/)
     const next = await h.reply(SIDE, 'And this one?')
-    assert.match(next.content[0]!.text, /^Sent \(message_id: \d+\)$/)
+    assert.match(next.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/)
     assert.ok(backend.peerGot.some((m) => m.text === 'And this one?'))
   })
 }
@@ -813,7 +834,7 @@ for (const [reason, says, remedy] of [
     if (remedy) assert.match(said, remedy)
     else assert.doesNotMatch(said, /\bsend_to_peer\b/, 'send_to_peer is refused while the link is not active')
     const next = await h.reply(SIDE, 'And this one?')
-    assert.match(next.content[0]!.text, /^Sent \(message_id: \d+\)$/)
+    assert.match(next.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/)
   })
 }
 
@@ -897,6 +918,94 @@ test('peerDelivery is read narrowly: only the two exact states count as a delive
 
 // ── every other reply path, on the wire ──────────────────────────────────────
 
+for (const cached of [true, false]) {
+  test(`reply result: three stored main chat replies report delivered (main chat cached: ${cached})`, async () => {
+    const backend = await startBackend()
+    const h = harness(backend, { mainChats: cached ? [MAIN] : [] })
+    for (const text of ['The report is ready.', 'The chart is ready too.', 'Here is the summary.']) {
+      const result = await h.reply(MAIN, text)
+      const said = result.content[0]!.text
+      assert.equal(result.isError, undefined, said)
+      assert.match(said, /^Sent \(message_id: \d+\)/)
+      assert.match(said, /delivered to the main chat 33001\b/i)
+      assert.doesNotMatch(said, /side|unconfirmed|send_to_peer/i)
+    }
+    assert.equal(sendMessagePosts(backend, MAIN), 3)
+    assert.ok(backend.posts.every((p) => p.body.chatId === Number(MAIN)))
+    assert.deepEqual(backend.peerGot, [])
+  })
+}
+
+test('reply result: an opaque handle for a stored main chat reply reports the resolved main chat', async () => {
+  const backend = await startBackend()
+  const h = harness(backend, { mainChats: [], sessionHandle: 'fixture_session' })
+  const result = await h.reply('fixture_session', 'A main chat reply through its handle.')
+  assert.equal(result.isError, undefined, result.content[0]!.text)
+  assert.match(result.content[0]!.text, /delivered to the main chat 33018\b/i)
+  assert.doesNotMatch(result.content[0]!.text, /side|unconfirmed/i)
+  assert.equal(backend.posts[0]!.body.chatId, Number(SIDE_B))
+  assert.equal(backend.posts[0]!.body.sessionHandle, 'fixture_session')
+})
+
+test('reply result: a stored and forwarded side thread reply reports its side thread', async () => {
+  const backend = await startBackend()
+  const h = harness(backend)
+  h.peerSays(SIDE, CONV, 501)
+  const result = await h.reply(SIDE, 'A real side thread reply.')
+  assert.equal(result.isError, undefined, result.content[0]!.text)
+  assert.match(result.content[0]!.text, /delivered to the side thread 33017\b/i)
+  assert.doesNotMatch(result.content[0]!.text, /main chat|unconfirmed/i)
+  assert.equal(backend.posts[0]!.body.chatId, Number(SIDE))
+  assert.deepEqual(backend.peerGot, [{ chatId: SIDE, text: 'A real side thread reply.' }])
+})
+
+for (const chat of ['main', 'side', 'closed side', 'group'] as const) {
+  test(`reply result: an older handle reports the server's actual ${chat} chat`, async () => {
+    const backend = await startBackend()
+    const chatId = chat === 'main' ? MAIN : SIDE_B
+    backend.sessionChats.set('older_session', chatId)
+    const h = harness(backend, {
+      unmappedHandle: 'older_session',
+      peerChats: chat.includes('side') ? [chatId] : [],
+      closedChats: chat === 'closed side' ? [chatId] : [],
+      groupChats: chat === 'group' ? [chatId] : [],
+    })
+    if (chat.includes('side')) backend.threads.set(chatId, { conv: CONV, open: chat === 'side' })
+    const result = await h.reply('older_session', 'Reply using an older authorized handle.')
+    const said = result.content[0]!.text
+    assert.doesNotMatch(said, /older_session/)
+    if (chat === 'closed side') {
+      assert.equal(result.isError, true, said)
+      assert.match(said, /Not delivered:.*side conversation in chat 33018.*has ended/)
+      assert.deepEqual(backend.peerGot, [])
+    } else {
+      assert.equal(result.isError, undefined, said)
+      assert.match(said, chat === 'main' ? /Delivered to the main chat 33001\b/ : chat === 'group' ? /Delivered to the group chat 33018\b/ : /Delivered to the side thread 33018\b/)
+    }
+    assert.equal(backend.posts[0]!.body.sessionHandle, 'older_session')
+    assert.equal(backend.posts[0]!.body.chatId, null, 'the server resolves the handle; routing is unchanged')
+  })
+}
+
+for (const chat of ['main', 'side'] as const) {
+  for (const id of [undefined, null]) {
+    test(`reply result: ${chat} chat reply without a server id (${id}) reports unconfirmed`, async () => {
+      const backend = await startBackend()
+      backend.replyMessageId = id
+      const h = harness(backend)
+      if (chat === 'side') h.peerSays(SIDE, CONV, 501)
+      const chatId = chat === 'side' ? SIDE : MAIN
+      const result = await h.reply(chatId, 'The server gave no stored id.')
+      const said = result.content[0]!.text
+      assert.equal(result.isError, true, said)
+      assert.match(said, /^Delivery unconfirmed:/)
+      assert.match(said, chat === 'side' ? /side thread 33017\b/ : /main chat 33001\b/)
+      assert.doesNotMatch(said, /\bSent\b|\bDelivered\b|\bsaved\b|message_id:/i)
+      assert.equal(sendMessagePosts(backend, chatId), 1)
+    })
+  }
+}
+
 test('unchanged: the owner chat', async () => {
   const backend = await startBackend()
   const h = harness(backend)
@@ -926,7 +1035,7 @@ test('unchanged: an open side thread', async () => {
   h.peerSays(SIDE, CONV, 501)
   const result = await h.reply(SIDE, 'Answer in an open thread.')
   assert.equal(result.isError, undefined)
-  assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\)$/)
+  assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/)
   assert.equal(sendMessagePosts(backend, SIDE), 1)
   assert.deepEqual(backend.peerGot, [{ chatId: SIDE, text: 'Answer in an open thread.' }])
 })
@@ -937,7 +1046,7 @@ test('unchanged: a side thread answer with reply_to_id', async () => {
   h.peerSays(SIDE, CONV, 501)
   const result = await h.reply(SIDE, 'Answering exactly that question.', { reply_to_id: 501 })
   assert.equal(result.isError, undefined)
-  assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\)$/)
+  assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/)
   assert.equal(backend.posts[0]!.body.replyToId, 501)
   assert.deepEqual(backend.peerGot, [{ chatId: SIDE, text: 'Answering exactly that question.', replyToId: 501 }])
 })
@@ -947,6 +1056,6 @@ test('a close in one side thread leaves another open side thread alone', async (
   h.peerSays(SIDE_B, CONV + 9, 601)
   h.timeoutClose(SIDE)
   const result = await h.reply(SIDE_B, 'The other thread is still live.')
-  assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\)$/)
+  assert.match(result.content[0]!.text, /^Sent \(message_id: \d+\) Delivered to the side thread \d+\.$/)
   assert.ok(backend.peerGot.some((m) => m.text === 'The other thread is still live.'))
 })

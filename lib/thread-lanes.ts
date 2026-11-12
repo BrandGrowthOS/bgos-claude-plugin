@@ -282,6 +282,18 @@ interface Lane {
   turnTimer: unknown
   /** Times a Stop hook blocked the current child turn from ending. */
   stopHookBlocks: number
+  /**
+   * The child sent an assistant frame since the current turn was written to it.
+   * A result before that answers something else: the CLI's notice for a
+   * background task the forked main session left behind ends in a result of
+   * its own, empty and with no model turn, before the thread's message is read.
+   */
+  turnSawAssistant: boolean
+  /**
+   * The turn this child last failed with the generic sentence, until the next
+   * turn is written to it or it exits: a result that still comes is its answer.
+   */
+  failedTurn: ThreadTurnInput | null
   /** The current child sent its init frame: an exit before it means the thread never opened. */
   sawInit: boolean
   /** A start in flight (worktree, confinement, spawn): close and delete wait for it. */
@@ -636,6 +648,8 @@ export class ThreadLaneManager {
       childTurn: null,
       turnTimer: null,
       stopHookBlocks: 0,
+      turnSawAssistant: false,
+      failedTurn: null,
       sawInit: false,
       starting: null,
       idleSince: 0,
@@ -667,6 +681,8 @@ export class ThreadLaneManager {
       if (lane.current !== turn || !lane.child || lane.closed) return
       lane.childTurn = turn
       lane.stopHookBlocks = 0
+      lane.turnSawAssistant = false
+      lane.failedTurn = null
       this.armTurnTimer(lane, turn)
       lane.child.write(userMessageLine(threadTurnPrompt({ ...turn, readOnly: lane.state.readOnly, agentFolder: this.deps.agentFolder })))
     } catch (err) {
@@ -753,16 +769,55 @@ export class ThreadLaneManager {
 
   private onResult(lane: Lane, frame: Record<string, unknown>): void {
     const turn = lane.childTurn
-    if (!turn || lane.current !== turn) return
+    const raw = typeof frame.result === 'string' ? frame.result : ''
+    const empty = raw.trim() === ''
+    const failed = frame.is_error === true || (frame.subtype !== undefined && frame.subtype !== 'success') || empty
+    if (!turn || lane.current !== turn) {
+      this.onStrayResult(lane, frame, raw, failed)
+      return
+    }
+    // Not this turn's answer: the empty result of a notice (no model turn), or
+    // any result before the CLI said anything since the message was written.
+    const noModelTurn = frame.num_turns === 0 && empty && frame.is_error !== true
+    if (noModelTurn || !lane.turnSawAssistant) {
+      const why = noModelTurn ? 'it is empty and ran no model turn' : 'it came before the first assistant frame'
+      this.deps.log(`threads: thread ${turn.rootId} turn ${turn.replyId} skipped a result that is not its answer, ${why} (${describeResult(frame, raw)})`)
+      return
+    }
     this.endTurn(lane)
     this.finished(lane, turn)
-    const raw = typeof frame.result === 'string' ? frame.result : ''
-    const failed = frame.is_error === true || (frame.subtype !== undefined && frame.subtype !== 'success') || raw.trim() === ''
+    if (failed) {
+      // The process lives on: an answer it still sends is this turn's (onStrayResult).
+      lane.failedTurn = turn
+      this.postFailure(lane, turn, FAILED_TURN)
+    } else {
+      this.postAnswer(lane, turn, raw)
+    }
+    this.afterTurn(lane)
+  }
+
+  /**
+   * A result with no turn waiting for it. After a turn failed with the generic
+   * sentence, the first good one from the same process is that turn's answer
+   * and is posted as a reply in the thread, whatever the turn's mode. Every
+   * other one is dropped, with one log line.
+   */
+  private onStrayResult(lane: Lane, frame: Record<string, unknown>, raw: string, failed: boolean): void {
+    const late = lane.failedTurn
+    if (late && !failed && !lane.closed) {
+      lane.failedTurn = null
+      this.deps.log(`threads: thread ${late.rootId} turn ${late.replyId} answered after it was reported failed, its answer is posted (${describeResult(frame, raw)})`)
+      this.postAnswer(lane, late, raw, true)
+      return
+    }
+    this.deps.log(`threads: lane ${lane.state.rootId} dropped a result that belongs to no turn (${describeResult(frame, raw)})`)
+  }
+
+  /** Post a turn's answer where its mode sends it: the summary route, or a reply in the thread (`asReply`: always a reply). */
+  private postAnswer(lane: Lane, turn: ThreadTurnInput, raw: string, asReply = false): void {
     const text = clipThreadText(raw)
     const refused = () => this.answerRefused(lane, turn, text)
-    if (failed) {
-      this.postFailure(lane, turn, FAILED_TURN)
-    } else if (turn.mode === 'summary') {
+    if (turn.mode === 'summary' && !asReply) {
       this.post(
         lane,
         'integrations/threads/summary',
@@ -781,7 +836,6 @@ export class ThreadLaneManager {
         refused,
       )
     }
-    this.afterTurn(lane)
   }
 
   private failTurn(lane: Lane, turn: ThreadTurnInput, sentence: string): void {
@@ -1104,7 +1158,12 @@ export class ThreadLaneManager {
 
   private onFrame(lane: Lane, child: StreamJsonChild, frame: Record<string, unknown>): void {
     // A stopping child (closed, timed out, idle) speaks for no turn any more.
-    if (lane.child !== child || lane.stopping) return
+    if (lane.child !== child || lane.stopping) {
+      if (frame.type === 'result') {
+        this.deps.log(`threads: lane ${lane.state.rootId} dropped a result from a process that is stopping or was replaced (${describeResult(frame, typeof frame.result === 'string' ? frame.result : '')})`)
+      }
+      return
+    }
     if (frame.type === 'system' && frame.subtype === 'init') {
       lane.sawInit = true
       const id = frame.session_id
@@ -1118,6 +1177,7 @@ export class ThreadLaneManager {
       if (lane.state.pidStamp === null) this.readStamp(lane, child)
       return
     }
+    if (frame.type === 'assistant') lane.turnSawAssistant = true
     if (frame.type === 'user' && isStopHookFeedback(frame)) this.onStopHookBlock(lane)
     if (frame.type === 'result') this.onResult(lane, frame)
   }
@@ -1161,6 +1221,7 @@ export class ThreadLaneManager {
     // it was stopping waits in ensureChild and runs on the next child.
     const ran = lane.childTurn
     lane.childTurn = null
+    lane.failedTurn = null
     if (ran && lane.current === ran) {
       if (neverStarted) {
         this.deps.log(`threads: lane ${lane.state.rootId} exited before it started (exit code ${code === null ? 'none' : code})`)
@@ -1586,6 +1647,13 @@ function describeError(err: unknown): string {
   if (err instanceof ThreadLaneError) return err.code
   const message = err instanceof Error ? err.message : String(err)
   return `${errorName(err)}: ${message.replace(/\s+/g, ' ').slice(0, 300)}`
+}
+
+/** A result frame for this machine's own log: its shape, never what it says. */
+function describeResult(frame: Record<string, unknown>, raw: string): string {
+  const subtype = typeof frame.subtype === 'string' && /^[a-z_]{1,40}$/.test(frame.subtype) ? frame.subtype : 'unknown'
+  const turns = typeof frame.num_turns === 'number' && Number.isFinite(frame.num_turns) ? String(frame.num_turns) : 'unknown'
+  return `subtype ${subtype}, is_error ${frame.is_error === true}, num_turns ${turns}, ${raw.length} characters`
 }
 
 function str(v: unknown): string {

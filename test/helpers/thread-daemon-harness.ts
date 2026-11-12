@@ -13,7 +13,7 @@
  * session through CLAUDE_CODE_SESSION_ID (how Claude Code launches it), so a
  * thread forks a real transcript with the real CLI.
  */
-import { execFile, spawnSync } from 'node:child_process'
+import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -94,6 +94,53 @@ export interface HarnessOptions {
   env?: Record<string, string>
   /** A wrapper the daemon runs as claude (CLAUDE_CODE_EXECPATH); default the real one. */
   execPath?: string
+  /** The main session starts a background `sleep` and keeps running, so a thread forks a session with a live background task. */
+  mainBackgroundTask?: boolean
+}
+
+/** Long enough to outlive any one test, short enough that a copy the cleanup missed ends by itself. */
+const BACKGROUND_COMMAND = 'sleep 600'
+
+/**
+ * The main session as a long lived stream json process whose one turn started a
+ * background task that is still running. Answers its session id and the process.
+ */
+async function mainWithBackgroundTask(claude: string, cwd: string, env: Record<string, string>, root: string): Promise<{ sessionId: string; child: ChildProcess }> {
+  const child = spawn(claude, ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--allowedTools', 'Bash'], {
+    cwd,
+    env,
+    stdio: ['pipe', 'pipe', 'ignore'],
+    detached: true,
+  })
+  child.stdin!.on('error', () => {})
+  let out = ''
+  let exited = false
+  child.stdout!.setEncoding('utf8')
+  child.stdout!.on('data', (chunk: string) => { out += chunk })
+  child.on('exit', () => { exited = true })
+  child.on('error', () => { exited = true })
+  child.stdin!.write(`${JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Remember the word PELICAN.' }] } })}\n`)
+  const frames = (): Array<Record<string, unknown>> => out.split('\n').flatMap((line) => {
+    try { return [JSON.parse(line) as Record<string, unknown>] } catch { return [] }
+  })
+  await waitFor(() => exited || frames().some((f) => f.type === 'result'), 90_000)
+  const sessionId = String(frames().find((f) => f.type === 'system' && f.subtype === 'init')?.session_id ?? '')
+  const started = frames().some((f) => f.type === 'system' && f.subtype === 'task_started')
+  if (exited || !started || !/^[0-9a-f-]{36}$/.test(sessionId)) {
+    stopTree(child, root)
+    throw new Error(`the main session with a background task could not be made: ${out.slice(-2000)}`)
+  }
+  return { sessionId, child }
+}
+
+/** Stop a process group, and whatever still runs with `marker` (the test's temp folder) in its command line: the CLI gives a background shell its own group. */
+function stopTree(child: ChildProcess, marker: string): void {
+  try { if (child.pid) process.kill(-child.pid, 'SIGKILL') } catch {}
+  const pids = (spawnSync('pgrep', ['-f', marker], { encoding: 'utf8' }).stdout ?? '').split('\n').map((l) => Number(l.trim())).filter((n) => n > 0 && n !== process.pid)
+  for (const pid of pids) {
+    spawnSync('pkill', ['-KILL', '-P', String(pid)])
+    try { process.kill(pid, 'SIGKILL') } catch {}
+  }
 }
 
 /** Valid transcript rows of filler, the shape a long agent session carries (big tool results). */
@@ -174,6 +221,11 @@ export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHa
   const api = await startFakeAnthropicApi((body, n) => {
     const text = JSON.stringify(body.messages ?? '')
     if (text.includes('THREAD-QUESTION')) return `THREAD-ANSWER-${n}`
+    // The main turn asks twice: its first request starts the background task, its second (after the tool result) answers.
+    const offersBash = Array.isArray(body.tools) && body.tools.some((t) => (t as { name?: unknown } | null)?.name === 'Bash')
+    if (opts.mainBackgroundTask && offersBash && !text.includes('tool_result')) {
+      return { toolUse: { name: 'Bash', input: { command: BACKGROUND_COMMAND, description: 'A background task', run_in_background: true } } }
+    }
     return `MAIN-ANSWER-${n}`
   })
 
@@ -216,20 +268,30 @@ export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHa
   }
 
   // The main session: one real turn in the agent folder.
-  const made = await promisify(execFile)(opts.claude, ['-p', 'Remember the word PELICAN.', '--output-format', 'json'], {
-    cwd: folder,
-    env: cliEnv,
-    timeout: 90_000,
-    encoding: 'utf8',
-  }).catch((err: unknown) => ({ stdout: '', stderr: String(err) }))
   let mainSessionId = ''
-  try {
-    mainSessionId = String((JSON.parse(made.stdout) as { session_id?: unknown }).session_id ?? '')
-  } catch {}
-  if (!/^[0-9a-f-]{36}$/.test(mainSessionId)) throw new Error(`the main session could not be made: ${made.stdout} ${made.stderr}`)
+  let mainProcess: ChildProcess | null = null
+  if (opts.mainBackgroundTask) {
+    const main = await mainWithBackgroundTask(opts.claude, folder, cliEnv, root)
+    mainSessionId = main.sessionId
+    mainProcess = main.child
+  } else {
+    const made = await promisify(execFile)(opts.claude, ['-p', 'Remember the word PELICAN.', '--output-format', 'json'], {
+      cwd: folder,
+      env: cliEnv,
+      timeout: 90_000,
+      encoding: 'utf8',
+    }).catch((err: unknown) => ({ stdout: '', stderr: String(err) }))
+    try {
+      mainSessionId = String((JSON.parse(made.stdout) as { session_id?: unknown }).session_id ?? '')
+    } catch {}
+    if (!/^[0-9a-f-]{36}$/.test(mainSessionId)) throw new Error(`the main session could not be made: ${made.stdout} ${made.stderr}`)
+  }
   const projects = join(configDir, 'projects')
   const projectDir = readdirSync(projects).map((d) => join(projects, d)).find((d) => existsSync(join(d, `${mainSessionId}.jsonl`)))
-  if (!projectDir) throw new Error('the main transcript is not where the CLI keeps it')
+  if (!projectDir) {
+    if (mainProcess) stopTree(mainProcess, root)
+    throw new Error('the main transcript is not where the CLI keeps it')
+  }
   const mainTranscript = join(projectDir, `${mainSessionId}.jsonl`)
   if (opts.padMainTranscriptBytes) padTranscript(mainTranscript, opts.padMainTranscriptBytes, mainSessionId, folder)
 
@@ -302,6 +364,7 @@ export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHa
       await client.close().catch(() => {})
       await new Promise<void>((resolve) => io.close(() => resolve()))
       await api.close()
+      if (mainProcess) stopTree(mainProcess, root)
       // A lane worktree is a folder git knows; the temp root goes as a whole.
       rmSync(root, { recursive: true, force: true })
     },

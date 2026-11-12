@@ -81,22 +81,24 @@ export function peerReplyNotForwardedResult(
   }
 }
 
-/** A side thread write was saved, but the backend gave no usable delivery report. */
+/** A known or possible side thread write has no usable peer delivery report. */
 export function peerReplyUnconfirmedResult(
   chatId: string,
   messageId: unknown,
   withFiles: boolean,
+  isSideThread = true,
 ): {
   content: Array<{ type: 'text'; text: string }>
   isError: true
 } {
   const saved = messageId != null ? ` (message ${String(messageId)})` : ''
+  const destination = isSideThread ? `the side conversation in chat ${chatId}` : `chat ${chatId}`
   return {
     content: [
       {
         type: 'text',
         text:
-          `Delivery unconfirmed: HOAI saved this reply in the side conversation in chat ${chatId}${saved}, ` +
+          `Delivery unconfirmed: HOAI saved this reply in ${destination}${saved}, ` +
           `but did not confirm delivery to the other agent. ${sendToPeerInstead(withFiles)}`,
       },
     ],

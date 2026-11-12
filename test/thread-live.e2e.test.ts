@@ -202,3 +202,24 @@ test('THREADGOAL: a thread clears the active main goal through the real daemon w
     await h.close()
   }
 })
+
+test('THREADFIX: a thread on an agent whose main session has a live background task gets its answer, never the failure sentence', OPTS, async () => {
+  const h = await startDaemonHarness({ claude: CLAUDE, mainBackgroundTask: true })
+  try {
+    h.threadTurn({ rpcId: 'rpc-live-6', chatId: '7', rootId: 'R6', replyId: 'p6', text: 'THREAD-QUESTION are you there?' })
+    await waitFor(() => replies(h).length > 0 || h.exited !== null, 120_000)
+    // Before the fix the failure sentence came first and the answer was dropped: give a second reply time to show.
+    await waitFor(() => replies(h).some((r) => /^THREAD-ANSWER/.test(String(r.text))), 20_000)
+    await sleep(1_000)
+    assert.equal(h.exited, null, `the daemon went away${h.tail()}`)
+    assert.deepEqual(replies(h).map((r) => String(r.text).replace(/\d+$/, 'N')), ['THREAD-ANSWER-N'], `one reply, the lane's own answer${h.tail()}`)
+    assert.equal(states(h).includes('R6:open'), false, `never reported as failed${h.tail()}`)
+    // The fork really was of a session with a background task: the thread's request carries the main turn that started it.
+    const threadRequest = h.api.requests.find((r) => JSON.stringify(r.messages ?? '').includes('THREAD-QUESTION'))
+    assert.ok(threadRequest && JSON.stringify(threadRequest.messages).includes('run_in_background'), 'the thread forked the session that started the background task')
+    // Not asserted: a CLI that stops sending the empty result for the notice is fine too.
+    console.log(`THREADFIX live: ${CLAUDE_VERSION}, results skipped as not the turn's answer: ${h.stderr.filter((l) => l.includes('skipped a result')).length}`)
+  } finally {
+    await h.close()
+  }
+})
