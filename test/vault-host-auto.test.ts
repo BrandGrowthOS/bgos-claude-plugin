@@ -2,13 +2,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { VAULT_HOST_FILE_NAME, hostFingerprint, hostPinStatus, readHostRecord, testSecurity } from './helpers/vault-host.mjs'
 import { ensureAutoHost, vaultAutoHostDisabled } from '../lib/vault-host-auto.mjs'
 import { handleVaultTool } from '../lib/vault-tools.ts'
 import { checkHostKeyProof, checkSignedRequest } from './fixtures/vault-server-contract.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 // The agent vault with no setup (HOAI design 2026-11-12, CORE-CONTRACTS 18.8).
 // The machine makes its own keys with no terminal, offers only public halves
@@ -25,7 +25,7 @@ const posix = process.platform !== 'win32'
 const PREFIX = `/api/v1/vault/agent/${ASSISTANT}`
 
 function tempDir(): string {
-  return join(fs.mkdtempSync(join(tmpdir(), 'vault-auto-')), 'vault')
+  return join(scratchDir('vault-auto-'), 'vault')
 }
 
 interface Call { method: string; path: string; headers: Record<string, string>; body: string }
@@ -501,7 +501,7 @@ test('wiring: the armed daemon offers at start and on the server frame, and the 
 })
 
 test('wiring: hoai vault-host auto needs no terminal', () => {
-  const home = fs.mkdtempSync(join(tmpdir(), 'vault-auto-home-'))
+  const home = scratchDir('vault-auto-home-')
   const out = spawnSync(process.execPath, [join(ROOT, 'bin', 'hoai-vault-host.mjs'), 'auto'], {
     encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home, BGOS_ASSISTANT_ID: '', BGOS_PAIRING_TOKEN: '', BGOS_CREDENTIALS_PATH: join(home, 'none.json') }, stdio: ['ignore', 'pipe', 'pipe'],
   })
