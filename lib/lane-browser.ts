@@ -25,8 +25,11 @@
  *   vault_fill   POST vault/lane/items/<itemId>/fill {sessionId, tabId,
  *                origin}. `ready` carries a one use ticket; `waiting` means
  *                the owner was asked: the person is told once, in one plain
- *                sentence, and the lane polls GET vault/lane/fills/<requestId>
- *                every few seconds up to the request's expiry. With a ticket
+ *                sentence, once per request, and the lane polls GET
+ *                vault/lane/fills/<requestId> every few seconds, for at most
+ *                LANE_VAULT_CALL_WAIT_MS in one call; still waiting, the call
+ *                answers so with the requestId, and a call with that
+ *                requestId resumes the same request. With a ticket
  *                the lane calls the relay tool hoai_vault_fill {ticket,
  *                sessionId, tabId, origin}; the agent's own host redeems it,
  *                fills and answers a receipt.
@@ -69,6 +72,13 @@ const RELAY_TOTAL_MS = 180_000
 export const LANE_VAULT_POLL_MS = 3_000
 /** The longest a fill waits for the owner, whatever the server says (its requests live 10 minutes). */
 export const LANE_VAULT_WAIT_MAX_MS = 10 * 60_000 + 5_000
+/**
+ * The longest ONE vault_fill call waits for the owner (about 50 s with the
+ * last poll): Claude Code's MCP tool timeout may cut a longer call, and the
+ * turn is blocked meanwhile. Still waiting, the call answers so, with the
+ * requestId to call again with.
+ */
+export const LANE_VAULT_CALL_WAIT_MS = 48_000
 
 /** What the person reads, once, when a fill waits for the owner. One sentence. */
 export const LANE_VAULT_WAITING_SENTENCE =
@@ -94,7 +104,7 @@ export const LANE_VAULT_TOOLS: readonly McpTool[] = Object.freeze([
   {
     name: 'vault_fill',
     description:
-      'Sign in with a saved login from vault_items on the page open in your browser. Give the login id, the sessionId and tabId that hoai_browser_status shows for the tab, and the exact HTTPS origin of that tab, which must be the login\'s website. When the owner asks to approve each use, the person is told and this waits for the owner. Answers {filled: true} or {filled: false, reason}. ' +
+      'Sign in with a saved login from vault_items on the page open in your browser. Give the login id, the sessionId and tabId that hoai_browser_status shows for the tab, and the exact HTTPS origin of that tab, which must be the login\'s website. When the owner asks to approve each use, the person is told and this waits for the owner for up to about 50 seconds; if the owner has not answered by then it answers {filled: false, waiting: true, requestId}: call vault_fill again with the same arguments and that requestId to keep waiting. Otherwise it answers {filled: true} or {filled: false, reason}. ' +
       NO_SECRET.replace('It never takes or returns', 'This tool never takes or returns'),
     inputSchema: {
       type: 'object',
@@ -103,6 +113,7 @@ export const LANE_VAULT_TOOLS: readonly McpTool[] = Object.freeze([
         sessionId: { type: 'string', description: 'The browser session id from hoai_browser_status.' },
         tabId: { type: 'string', description: 'The tab id from hoai_browser_status.' },
         origin: { type: 'string', description: 'The exact HTTPS origin of that tab, for example https://example.com.' },
+        requestId: { type: 'string', description: 'Only to keep waiting for the owner: the requestId an earlier vault_fill answered with waiting: true.' },
       },
       required: ['itemId', 'sessionId', 'tabId', 'origin'],
       additionalProperties: false,
@@ -293,6 +304,8 @@ export class LaneBrowserTools {
   private offlineText: string = RELAY_TEXT.host_offline!
   private vaultOffered = false
   private lastKey: string | null = null
+  /** Fill requests this lane opened that still wait for the owner: what each was for, and until when. */
+  private readonly waiting = new Map<string, { itemId: string; sessionId: string; tabId: string; origin: string; until: number }>()
 
   constructor(deps: LaneBrowserToolsDeps) {
     this.deps = deps
@@ -395,22 +408,45 @@ export class LaneBrowserTools {
   }
 
   private async vaultFill(a: Record<string, unknown>): Promise<ToolResult> {
-    const allowed = new Set(['itemId', 'sessionId', 'tabId', 'origin'])
+    const allowed = new Set(['itemId', 'sessionId', 'tabId', 'origin', 'requestId'])
     const origin = exactHttpsOrigin(a.origin)
-    if (Object.keys(a).some((k) => !allowed.has(k)) || !ID_RE.test(String(a.itemId ?? '')) || !ID_RE.test(String(a.sessionId ?? '')) || !ID_RE.test(String(a.tabId ?? '')) || !origin) {
-      return json({ error: 'vault_input_invalid', message: 'Give itemId from vault_items, sessionId and tabId from hoai_browser_status, and the exact HTTPS origin of the tab. Never a password.' }, true)
+    if (Object.keys(a).some((k) => !allowed.has(k)) || !ID_RE.test(String(a.itemId ?? '')) || !ID_RE.test(String(a.sessionId ?? '')) || !ID_RE.test(String(a.tabId ?? '')) || !origin ||
+        (a.requestId !== undefined && !ID_RE.test(String(a.requestId)))) {
+      return json({ error: 'vault_input_invalid', message: 'Give itemId from vault_items, sessionId and tabId from hoai_browser_status, the exact HTTPS origin of the tab, and requestId only to keep waiting. Never a password.' }, true)
     }
     const itemId = String(a.itemId)
     const target = { sessionId: String(a.sessionId), tabId: String(a.tabId), origin }
     let ticket: string | null = null
     try {
-      const asked = (await this.deps.http.post(`vault/lane/items/${encodeURIComponent(itemId)}/fill`, target)) as Record<string, unknown> | null
-      if (asked?.status === 'ready' && typeof asked.ticket === 'string') ticket = asked.ticket
-      else if (asked?.status === 'waiting' && typeof asked.requestId === 'string' && ID_RE.test(asked.requestId)) {
-        const waited = await this.waitForOwner(asked.requestId, asked.expiresAt)
-        if (!waited.ok) return json({ filled: false, reason: waited.reason, message: waited.message })
-        ticket = waited.ticket
-      } else return json({ filled: false, reason: 'vault_unavailable', message: 'The vault did not give a fill for this login.' })
+      let requestId: string | null = null
+      if (a.requestId !== undefined) {
+        // Keep waiting on a request this lane opened, for exactly what it was for.
+        requestId = String(a.requestId)
+        const open = this.waiting.get(requestId)
+        if (!open || open.itemId !== itemId || open.sessionId !== target.sessionId || open.tabId !== target.tabId || open.origin !== target.origin) {
+          return json({ error: 'vault_request_unknown', message: 'That requestId is not a fill this lane is waiting on for this login and tab. Call vault_fill without requestId to ask again.' }, true)
+        }
+      } else {
+        const asked = (await this.deps.http.post(`vault/lane/items/${encodeURIComponent(itemId)}/fill`, target)) as Record<string, unknown> | null
+        if (asked?.status === 'ready' && typeof asked.ticket === 'string') ticket = asked.ticket
+        else if (asked?.status === 'waiting' && typeof asked.requestId === 'string' && ID_RE.test(asked.requestId)) {
+          requestId = asked.requestId
+          const started = this.deps.now()
+          const parsed = typeof asked.expiresAt === 'string' ? Date.parse(asked.expiresAt) : typeof asked.expiresAt === 'number' ? asked.expiresAt : NaN
+          const until = Math.min(Number.isFinite(parsed) ? parsed : started + LANE_VAULT_WAIT_MAX_MS, started + LANE_VAULT_WAIT_MAX_MS)
+          this.waiting.set(requestId, { itemId, ...target, until })
+          // The person is told once per request, here, where it was opened.
+          try { await this.deps.tellPerson(LANE_VAULT_WAITING_SENTENCE) } catch { this.deps.log('vault: the person could not be told that the owner was asked') }
+          this.deps.log(`vault: fill ${requestId} waits for the owner`)
+        } else return json({ filled: false, reason: 'vault_unavailable', message: 'The vault did not give a fill for this login.' })
+      }
+      if (requestId !== null && ticket === null) {
+        const waited = await this.waitForOwner(requestId)
+        if (waited.ok) ticket = waited.ticket
+        else if (waited.waiting) {
+          return json({ filled: false, waiting: true, requestId, message: `Waiting for the owner to approve; call vault_fill again with requestId ${requestId} to continue.` })
+        } else return json({ filled: false, reason: waited.reason, message: waited.message })
+      }
     } catch (err) {
       const f = failure(err)
       this.deps.log(`vault: fill refused (${f.status ?? 'network'})`)
@@ -435,34 +471,38 @@ export class LaneBrowserTools {
     return json({ filled: false, reason: 'host_refused', message: said.slice(0, 300) || 'The browser did not fill the login.' }, done.isError === true)
   }
 
-  private async waitForOwner(requestId: string, expiresAt: unknown): Promise<{ ok: true; ticket: string } | { ok: false; reason: string; message: string }> {
-    const { http, sleep, now, tellPerson, log } = this.deps
-    const started = now()
-    const parsed = typeof expiresAt === 'string' ? Date.parse(expiresAt) : typeof expiresAt === 'number' ? expiresAt : NaN
-    const until = Math.min(Number.isFinite(parsed) ? parsed : started + LANE_VAULT_WAIT_MAX_MS, started + LANE_VAULT_WAIT_MAX_MS)
-    try { await tellPerson(LANE_VAULT_WAITING_SENTENCE) } catch { log('vault: the person could not be told that the owner was asked') }
-    log(`vault: fill ${requestId} waits for the owner`)
+  /**
+   * Poll one request for at most LANE_VAULT_CALL_WAIT_MS (and never past its
+   * expiry). `waiting` means ask again with its requestId; any other end
+   * forgets the request.
+   */
+  private async waitForOwner(requestId: string): Promise<{ ok: true; ticket: string } | { ok: false; waiting: true } | { ok: false; waiting?: false; reason: string; message: string }> {
+    const { http, sleep, now } = this.deps
+    const open = this.waiting.get(requestId)
+    const until = open?.until ?? now()
+    const callEnds = Math.min(until, now() + LANE_VAULT_CALL_WAIT_MS)
+    const done = <T,>(answer: T): T => { this.waiting.delete(requestId); return answer }
     const ownerSilent = { ok: false as const, reason: 'owner_did_not_answer', message: 'The owner did not answer in time, so nothing was filled.' }
-    while (now() < until) {
+    while (now() < callEnds) {
       await sleep(LANE_VAULT_POLL_MS)
       let answer: Record<string, unknown> | null = null
       try {
         answer = (await http.get(`vault/lane/fills/${encodeURIComponent(requestId)}`)) as Record<string, unknown> | null
       } catch (err) {
         const f = failure(err)
-        if (f.status === 403 || f.status === 404) return { ok: false, reason: 'vault_unavailable', message: f.message ?? 'This fill is no longer available.' }
+        if (f.status === 403 || f.status === 404) return done({ ok: false as const, reason: 'vault_unavailable', message: f.message ?? 'This fill is no longer available.' })
         continue
       }
       const status = answer?.status
       if (status === 'waiting') continue
       if (status === 'ready') {
-        return typeof answer?.ticket === 'string'
-          ? { ok: true, ticket: answer.ticket }
-          : { ok: false, reason: 'already_used', message: 'This approval was already used. Ask again with vault_fill.' }
+        return done(typeof answer?.ticket === 'string'
+          ? { ok: true as const, ticket: answer.ticket }
+          : { ok: false as const, reason: 'already_used', message: 'This approval was already used. Ask again with vault_fill.' })
       }
-      if (status === 'denied') return { ok: false, reason: 'owner_denied', message: 'The owner said no, so nothing was filled.' }
-      if (status === 'expired') return ownerSilent
+      if (status === 'denied') return done({ ok: false as const, reason: 'owner_denied', message: 'The owner said no, so nothing was filled.' })
+      if (status === 'expired') return done(ownerSilent)
     }
-    return ownerSilent
+    return now() < until ? { ok: false, waiting: true } : done(ownerSilent)
   }
 }
