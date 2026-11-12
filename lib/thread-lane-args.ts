@@ -46,6 +46,7 @@ import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 
 import { permissionRulePath } from './lane-core.mjs'
+import { buildSenderGuardrailMarker } from './inbound-channel.ts'
 
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -521,9 +522,20 @@ export function threadTurnPrompt(input: {
   rootText: string
   readOnly?: boolean
   agentFolder?: string
+  /**
+   * The owner's standing instruction about the person writing (a person's
+   * lane only, BGOS review F5, CORE-CONTRACTS 7.6), as the server built it.
+   * It goes in front of the person's turn with the main chat's own marker
+   * (lib/inbound-channel.ts buildSenderGuardrailMarker), never inside their
+   * words. The summary is the agent's own turn and carries none.
+   */
+  senderGuardrail?: string
 }): string {
   if (input.mode === 'summary') return SUMMARY_INSTRUCTION
-  if (input.mode === 'reply') return input.text
+  const guard = typeof input.senderGuardrail === 'string' && input.senderGuardrail.trim() !== ''
+    ? `${buildSenderGuardrailMarker(input.senderGuardrail)}\n\n`
+    : ''
+  if (input.mode === 'reply') return `${guard}${input.text}`
   const folderInstruction = input.readOnly === true
     ? input.agentFolder
       ? `This thread is read only: read files in the agent folder ${JSON.stringify(input.agentFolder)} and do not edit files.`
@@ -533,6 +545,7 @@ export function threadTurnPrompt(input: {
   const root = input.rootText.trim()
   const rootSentence = /[.!?]$/.test(root) ? root : `${root}.`
   return (
+    guard +
     `[You are now working in a thread of this chat titled "${input.title}". ` +
     `It is a separate conversation about this message: ${rootSentence} ` +
     `${folderInstruction} The main conversation continues without you. ` +

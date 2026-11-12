@@ -84,6 +84,7 @@ import {
 import { lineSplitter, userMessageLine, type SpawnStreamJson, type StreamJsonChild } from './stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 import { OWNER_LANE_STAMP, readLaneStamp } from './lane-core.mjs'
+import { readSenderGuardrailField } from './inbound-channel.ts'
 
 export const THREAD_LANE_MAX_RUNNING = 2
 export const THREAD_LANE_IDLE_MS = 20 * 60_000
@@ -162,6 +163,8 @@ export interface ThreadTurnInput {
   text: string
   title: string
   rootText: string
+  /** A person's lane only: the owner's guardrail for them, put in front of their turn (lib/thread-lane-args.ts threadTurnPrompt). */
+  senderGuardrail?: string
 }
 
 export interface ThreadLaneFs {
@@ -537,6 +540,10 @@ export class ThreadLaneManager {
         title: str(r.title),
         rootText: str(r.rootText),
       }
+      // The owner's guardrail for a person rides their replayed turn too (review
+      // F5): read only in a person's lane, never by the owner's daemon.
+      const guardrail = opts.lane && opts.lane !== OWNER_LANE_STAMP ? readSenderGuardrailField(r) : null
+      if (guardrail) input.senderGuardrail = guardrail
       const lane = this.lanes.get(input.rootId)
       if (lane && (lane.current || lane.queue.length > 0)) continue
       if (lane && lane.postsInFlight > 0) {
