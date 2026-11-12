@@ -39,6 +39,13 @@
  *      answer, and `lanes/me` at boot) against the policy its Claude was
  *      launched with: tighter restarts the lane at once (a turn in flight is
  *      told in one sentence), looser restarts it at its next idle moment;
+ *   9. (0.90.0) serves the Agent Browser and the shared vault when this
+ *      launch's policy has `browser` (lib/lane-browser.ts): every browser
+ *      call goes to the relay with the lane session, vault_items and
+ *      vault_fill to the lane vault routes, and the agent's own browser host
+ *      fills a login through the relay; nothing of it takes or returns a
+ *      secret. On a revoked share it deletes the person's browser profile on
+ *      this computer (lib/person-browser-profile.mjs);
  *   8. runs this person's THREADS (lib/lane-thread-rpc.ts): `thread_turn`
  *      and `thread_close` on `voice_rpc`, stamped for this lane, each thread
  *      a read only fork of THIS lane's own session in a plain folder under
@@ -56,6 +63,7 @@
  */
 import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -76,6 +84,7 @@ import {
   personLaneStamp,
 } from './lib/lane-core.mjs'
 import { heartbeatToolPolicy, laneMePolicy, readLaneChoices, readToolPolicy } from './lib/lane-policy.mjs'
+import { LaneBrowserRelay, LaneBrowserTools, type LaneHttp } from './lib/lane-browser.ts'
 import {
   laneChoiceQuestionFor,
   launchedFacts,
@@ -449,7 +458,8 @@ const claims = new LaneDeliveryClaims(inbox)
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
   capabilities: {
-    tools: {},
+    // listChanged: the browser tools appear when a host comes online (0.90.0).
+    tools: { listChanged: true },
     // The channel only. NO 'claude/channel/permission': a lane never relays a
     // permission request, and never approves one.
     experimental: { 'claude/channel': {} },
@@ -463,12 +473,78 @@ const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
 // nobody sees.
 const claudeReady = new LaneClaudeReady({ ping: () => mcp.ping(), setTimer: (fn, ms) => setTimeout(fn, ms), log })
 
+// ── 0.90.0: the Agent Browser and the shared vault (lib/lane-browser.ts) ─────
+// Served only when THIS launch's policy has `browser` (the settings allow the
+// tools by name only then, lib/lane-policy.mjs laneBrowserAllowAdditions).
+// Every call goes out with the lane session (laneFetch), never the pairing.
+
+/** The chat of the last turn handed to Claude: where a fill that waits tells the person. */
+let lastTurnChatId: string | null = null
+
+const laneHttp: LaneHttp = {
+  get: async (path, timeoutMs) => {
+    if (!(await ensureSession())) throw new LaneHttpError(401, 'no lane session')
+    return laneFetch('GET', path, undefined, { timeoutMs })
+  },
+  post: async (path, body, timeoutMs) => {
+    if (!(await ensureSession())) throw new LaneHttpError(401, 'no lane session')
+    return laneFetch('POST', path, body, { timeoutMs })
+  },
+}
+
+const laneBrowser = new LaneBrowserTools({
+  enabled: launchedFacts(LAUNCHED_ENV).policy.browser === true,
+  relay: new LaneBrowserRelay({
+    http: laneHttp,
+    assistantId: LANE.assistantId,
+    // The relay's MCP session key for this lane process: never the owner's.
+    relaySessionKey: `lane-${createHash('sha256').update(`${LANE.userId}:${process.pid}:${randomUUID()}`).digest('hex').slice(0, 40)}`,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+  }),
+  http: laneHttp,
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  now: () => Date.now(),
+  log,
+  tellPerson: async (sentence) => {
+    if (!lastTurnChatId) return
+    await laneFetch('POST', 'send-message', {
+      chatId: Number(lastTurnChatId),
+      assistantId: Number(LANE.assistantId),
+      text: sentence,
+      sender: 'assistant',
+      sentDate: new Date().toISOString(),
+      hasAttachment: false,
+      files: [],
+      options: [],
+    })
+  },
+  onListChanged: () => { void mcp.sendToolListChanged().catch(() => {}) },
+})
+
+/** The list waits at most this long for the relay; a slow relay is caught up by the next refresh. */
+const LANE_BROWSER_LIST_WAIT_MS = 15_000
+
 mcp.setRequestHandler(ListToolsRequestSchema, async () => {
   claudeReady.noteToolsListed()
-  return { tools: LANE_TOOLS.map((t) => ({ ...t })) }
+  const browser = await Promise.race([
+    laneBrowser.list().catch((err) => { log(`browser tools unreadable: ${err instanceof Error ? err.message : String(err)}`); return laneBrowser.current() }),
+    new Promise<ReturnType<typeof laneBrowser.current>>((resolve) => { setTimeout(() => resolve(laneBrowser.current()), LANE_BROWSER_LIST_WAIT_MS).unref?.() }),
+  ])
+  return { tools: [...LANE_TOOLS.map((t) => ({ ...t })), ...browser] }
 })
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+  if (laneBrowser.handles(req.params.name)) {
+    lastActivityAtMs = Date.now()
+    writeLaneState()
+    try {
+      return await laneBrowser.call(req.params.name, req.params.arguments)
+    } finally {
+      lastActivityAtMs = Date.now()
+      writeLaneState()
+    }
+  }
   if (req.params.name !== 'reply') {
     return { content: [{ type: 'text' as const, text: `Unknown tool: ${req.params.name}` }], isError: true }
   }
@@ -597,6 +673,7 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
   await claudeReady.whenReady()
   // Only now is the chat one `reply` may write to: the turn is Claude's.
   deliveredChats.add(d.chatId)
+  lastTurnChatId = d.chatId
   await mcp.notification({ method: 'notifications/claude/channel', params: { content: event.content, meta: event.meta } })
   inFlightChats.add(d.chatId)
   if (!inFlight) inFlightSinceMs = Date.now()
@@ -998,6 +1075,7 @@ function connectSocket(): void {
     if (!frameIsMine(frame)) return
     log('lane policy changed; reading the share\'s policy')
     void readPolicyNow('lane_policy_changed')
+    void laneBrowser.refresh().catch(() => {})
   })
   socket.on('memory_rpc', (payload: unknown) => {
     const sorted = classifyMemoryFrame(payload)
@@ -1022,6 +1100,8 @@ async function heartbeat(): Promise<void> {
     // answer (a database error on the server) means keep the launch flags.
     const policy = heartbeatToolPolicy(answer)
     if (policy) onPolicy(policy, 'heartbeat')
+    // A browser host that came online, or a vault the owner shared since.
+    void laneBrowser.refresh().catch(() => {})
   } catch (err) {
     if (err instanceof LaneHttpError && (err.status === 401 || err.status === 403)) await sessionRefused('lanes/heartbeat')
   }

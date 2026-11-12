@@ -7,12 +7,13 @@
  *     and any option that is not literally true, launches the locked base.
  *   - DENY, per option: with an option off its tools, its allow rules and its
  *     folder are absent; on, exactly its own additions appear, nothing more.
- *     `browser` is never loaded (the relay refuses a lane credential).
+ *     `browser` adds no built in tool and no rule here: its `bgos` tools
+ *     are allowed by laneBrowserAllowAdditions (test/lane-browser-policy.test.ts).
  *   - readAgentFolder is refused for the home folder, any folder that holds
  *     or sits inside the agent state folders, a relative or missing folder.
  *   - ownerMcpServers never copies this channel's server, the browser shim,
  *     or a definition that carries the pairing.
- *   - A change: tighter beats looser, browser alone changes no launch.
+ *   - A change: tighter beats looser; browser is a launch option (0.90.0).
  *   - K7: only models and effort levels on the owner's list, or `default`;
  *     a list narrowed later drops the pinned choice at the next start.
  *   - Restart requests: `now` beats `idle`, a fresh pin is never lost, idle
@@ -145,12 +146,12 @@ test('DENY ownerMcpServers: no grant allows an owner server', () => {
   assert.deepEqual(laneAllowAdditions(only('ownerMcpServers'), { ownerServerNames: ['mail', 'drive'], platform: 'darwin' }), [])
 })
 
-test('DENY browser: never loaded and never allowed, whatever the policy says', () => {
+test('browser adds no built in tool and no rule a thread takes; it is a launch option (0.90.0)', () => {
   for (const policy of [only('browser'), ALL_ON]) {
     const extras = [...laneToolsFor(policy, LANE_BUILTIN_TOOLS), ...laneAllowAdditions(policy, { agentFolder: AGENT, ownerServerNames: ['mail'], platform: 'darwin' })]
     assert.ok(!extras.some((t: string) => /browser/i.test(t)), 'no browser tool or rule')
   }
-  assert.equal(compareToolPolicy(LOCKED_TOOL_POLICY, only('browser')), 'same', 'browser alone changes no launch')
+  assert.equal(compareToolPolicy(LOCKED_TOOL_POLICY, only('browser')), 'looser', 'browser on reaches the lane at its next idle moment')
 })
 
 test('a change: tighter when anything launched is now off (even if another came on), looser when only additions', () => {
