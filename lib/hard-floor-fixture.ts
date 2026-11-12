@@ -2300,6 +2300,105 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     },
     ruleId: null,
   },
+  // scp or rsync with an option, and its value, after the destination: the
+  // destination is also read as the last word that is neither an option nor
+  // an option's value.
+  {
+    name: "send_rsync_option_value_after_destination",
+    input: {
+      kind: "command",
+      command: "rsync -avz ./dist/ deploy@web01:/var/www/app/ --exclude node_modules",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_rsync_remote_shell_after_destination",
+    input: {
+      kind: "command",
+      command: "rsync -av ./site/ user@host:/srv/site/ -e \"ssh -p 2222\"",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_rsync_cluster_ending_in_a_value_letter_after_destination",
+    input: {
+      kind: "command",
+      command: "rsync -a ./ host:/srv/app/ -zT /var/tmp/rsync",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_rsync_daemon_url_with_option_after",
+    input: {
+      kind: "command",
+      command: "rsync -az ./logs/ rsync://backup@nas/logs/ --bwlimit 5000",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_rsync_option_file_after_destination",
+    input: {
+      kind: "command",
+      command: "rsync -a ./data/ host:/backups/data/ --exclude-from .rsyncignore",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_scp_port_after_destination",
+    input: {
+      kind: "command",
+      command: "scp backup.zip user@host:/srv/ -P 2222",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_scp_ssh_option_after_destination",
+    input: {
+      kind: "command",
+      command: "scp -r ./site user@host:/srv/ -o ConnectTimeout=5",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_scp_limit_after_destination",
+    input: {
+      kind: "command",
+      command: "scp backup.zip host:/srv/ -l 8000",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_scp_download_with_port_after_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "scp host:/var/log/app.log . -P 2222",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_rsync_download_with_option_after_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "rsync -av user@host:/srv/app/ ./backup/ --exclude node_modules",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_local_rsync_with_remote_shell_after_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "rsync -a ./src/ ./dst/ -e ssh",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_local_rsync_with_option_file_after_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "rsync -a ./src/ /mnt/backup/ --exclude-from .rsyncignore",
+    },
+    ruleId: null,
+  },
   {
     name: "send_scp_ipv6_literal_host",
     input: {
@@ -2653,7 +2752,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "7e6873a541725fc404f4bf219c3db74ef9999898e3ad9104fd4cfde3a49b9d7d";
+  "f758cc9ec8e7a6c37ea17c31c049727bad0cb8397d88e6698075319a463af6d6";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
