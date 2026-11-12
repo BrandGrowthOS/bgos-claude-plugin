@@ -25,7 +25,7 @@ import { LANE_USER_ID_RE } from '../lib/lane-core.mjs'
 const ROOT = join(import.meta.dirname, '..')
 
 /** The same literal the backend's hard-floor-lane.spec.ts pins. */
-const LANE_FIXTURE_FILE_SHA256 = '5fc1231ac73754071367ca1229c36246eb000b22830db06e1c55e0219a097d51'
+const LANE_FIXTURE_FILE_SHA256 = '7e8cced1e7fb2cb81b778e38a53ef56d779e70c06143d3c9eb0b15fbd658add4'
 
 test('version 5, one above the owner list it extends, which is 4', () => {
   assert.equal(HARD_FLOOR_LANE_RULES_VERSION, 5)

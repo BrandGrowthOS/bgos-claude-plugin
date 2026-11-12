@@ -76,8 +76,8 @@ test('this plugin carries exactly the fixture rule ids and words, in order', () 
  * and PINNED_RULES_DIGEST. Change these only together with a fixture copied
  * afresh from the backend.
  */
-const PINNED_FIXTURE_DIGEST = 'aa5135631caad7cd8097680c526f3aa4f8e65c8174e3656a235f3401c6d73533'
-const PINNED_CARD_FIXTURE_DIGEST = '1c63158c3307547ece6acfeeaaa15abe17bbdcf2594e9c23dd9a08b246a2cf63'
+const PINNED_FIXTURE_DIGEST = 'aac013bf3768eae5316c974aa5a6f6bb9382dcafdf927291fac18a6e15e62155'
+const PINNED_CARD_FIXTURE_DIGEST = '854ceb97cc68bbe28be7f87b81e2c4238a87e1dc8942212d7804f52f8ce05bd6'
 const PINNED_RULES_DIGEST = '1129586f99287d66f67a3154eff4614c47d8a5799f057a10f9a766fb379b98c5'
 /**
  * sha256 of lib/hard-floor-fixture.ts's BYTES, equal to the backend spec's
@@ -85,7 +85,7 @@ const PINNED_RULES_DIGEST = '1129586f99287d66f67a3154eff4614c47d8a5799f057a10f9a
  * above let a comment, a type or the header drift in one copy while both
  * suites stay green; this does not.
  */
-const PINNED_FIXTURE_FILE_SHA256 = '7fc9d8b24b96384b808b3bd2177eda2783f031b88da2364feb4d8fdadbcf0312'
+const PINNED_FIXTURE_FILE_SHA256 = '9c7d7f9b7346a9fe610904790446f06f177c026b0252556dc968d6beb6336179'
 
 test('pins the fixture data and the rules against the file AND a literal here (regenerate BOTH repos together)', () => {
   const fixture = sha256(JSON.stringify(HARD_FLOOR_FIXTURE))

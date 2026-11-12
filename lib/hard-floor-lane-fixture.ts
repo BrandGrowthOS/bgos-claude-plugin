@@ -37,7 +37,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
   {
     name: 'read an ssh key',
     toolName: 'Read',
-    inputPreview: '{"file_path":"/Users/kc/.ssh/id_ed25519"}',
+    inputPreview: '{"file_path":"/Users/user/.ssh/id_ed25519"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
@@ -51,7 +51,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
   {
     name: 'gcloud credentials',
     toolName: 'Read',
-    inputPreview: '{"file_path":"/home/kc/.config/gcloud/credentials.db"}',
+    inputPreview: '{"file_path":"/home/user/.config/gcloud/credentials.db"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
@@ -65,7 +65,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
   {
     name: 'the home claude folder',
     toolName: 'Read',
-    inputPreview: '{"file_path":"/Users/kc/.claude/.credentials.json"}',
+    inputPreview: '{"file_path":"/Users/user/.claude/.credentials.json"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
@@ -79,14 +79,14 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
   {
     name: 'an env file anywhere',
     toolName: 'Read',
-    inputPreview: '{"file_path":"/Users/kc/project/.env.local"}',
+    inputPreview: '{"file_path":"/Users/user/project/.env.local"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
   {
     name: 'a windows env file',
     toolName: 'Read',
-    inputPreview: '{"file_path":"C:\\\\Users\\\\kc\\\\app\\\\.env"}',
+    inputPreview: '{"file_path":"C:\\\\Users\\\\user\\\\app\\\\.env"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
@@ -94,7 +94,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
     name: "the agent's browser profile",
     toolName: 'Read',
     inputPreview:
-      '{"file_path":"/Users/kc/.bgos-agent/1076/browser/owner/Cookies"}',
+      '{"file_path":"/Users/user/.bgos-agent/1076/browser/owner/Cookies"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
@@ -102,14 +102,14 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
     name: "another person's lane",
     toolName: 'Read',
     inputPreview:
-      '{"file_path":"/Users/kc/.bgos-agent/1076/people/user_other/work/notes.md"}',
+      '{"file_path":"/Users/user/.bgos-agent/1076/people/user_other/work/notes.md"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
   {
     name: 'the people folder itself',
     toolName: 'Glob',
-    inputPreview: '{"pattern":"*","path":"/Users/kc/.bgos-agent/1076/people"}',
+    inputPreview: '{"pattern":"*","path":"/Users/user/.bgos-agent/1076/people"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
@@ -117,7 +117,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
     name: "the owner's saved email files",
     toolName: 'Read',
     inputPreview:
-      '{"file_path":"/Users/kc/.bgos-agent/email-files/1076/0f8e2c1a-5b6d-4e7f-9a0b-1c2d3e4f5a6b/attachment-1.pdf"}',
+      '{"file_path":"/Users/user/.bgos-agent/email-files/1076/0f8e2c1a-5b6d-4e7f-9a0b-1c2d3e4f5a6b/attachment-1.pdf"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
@@ -125,14 +125,14 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
     name: 'the plugin state',
     toolName: 'Read',
     inputPreview:
-      '{"file_path":"/Users/kc/.bgos-plugin-state/1076/chat-cursors.json"}',
+      '{"file_path":"/Users/user/.bgos-plugin-state/1076/chat-cursors.json"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
   {
     name: 'a credentials file',
     toolName: 'Read',
-    inputPreview: '{"file_path":"/Users/kc/.bgos-agent/credentials-1076.json"}',
+    inputPreview: '{"file_path":"/Users/user/.bgos-agent/credentials-1076.json"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
@@ -140,7 +140,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
     name: 'a macOS keychain',
     toolName: 'Read',
     inputPreview:
-      '{"file_path":"/Users/kc/Library/Keychains/login.keychain-db"}',
+      '{"file_path":"/Users/user/Library/Keychains/login.keychain-db"}',
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
@@ -164,21 +164,21 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
   {
     name: "a climb out of my own lane into another person's",
     toolName: 'Read',
-    inputPreview: `{"file_path":"/Users/kc/.bgos-agent/1076/people/${ME}/../user_other/work/notes.md"}`,
+    inputPreview: `{"file_path":"/Users/user/.bgos-agent/1076/people/${ME}/../user_other/work/notes.md"}`,
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
   {
     name: "a climb out of my own lane to the agent's browser profile",
     toolName: 'Read',
-    inputPreview: `{"file_path":"/Users/kc/.bgos-agent/1076/people/${ME}/work/../../../browser/Default/Cookies"}`,
+    inputPreview: `{"file_path":"/Users/user/.bgos-agent/1076/people/${ME}/work/../../../browser/Default/Cookies"}`,
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
   {
     name: 'a climb out of my own lane to the home claude folder',
     toolName: 'Read',
-    inputPreview: `{"file_path":"/Users/kc/.bgos-agent/1076/people/${ME}/work/../../../../../.claude/settings.json"}`,
+    inputPreview: `{"file_path":"/Users/user/.bgos-agent/1076/people/${ME}/work/../../../../../.claude/settings.json"}`,
     actorUserId: ME,
     expected: 'reads_a_secret',
   },
@@ -200,7 +200,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
   {
     name: 'a step down and back up, inside my own lane',
     toolName: 'Read',
-    inputPreview: `{"file_path":"/Users/kc/.bgos-agent/1076/people/${ME}/work/drafts/../notes.md"}`,
+    inputPreview: `{"file_path":"/Users/user/.bgos-agent/1076/people/${ME}/work/drafts/../notes.md"}`,
     actorUserId: ME,
     expected: null,
   },
@@ -214,7 +214,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
   {
     name: 'my own lane folder',
     toolName: 'Read',
-    inputPreview: `{"file_path":"/Users/kc/.bgos-agent/1076/people/${ME}/work/notes.md"}`,
+    inputPreview: `{"file_path":"/Users/user/.bgos-agent/1076/people/${ME}/work/notes.md"}`,
     actorUserId: ME,
     expected: null,
   },
@@ -228,7 +228,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
   {
     name: 'my own skills, inside my lane',
     toolName: 'Read',
-    inputPreview: `{"file_path":"/Users/kc/.bgos-agent/1076/people/${ME}/work/.claude/skills/x/SKILL.md"}`,
+    inputPreview: `{"file_path":"/Users/user/.bgos-agent/1076/people/${ME}/work/.claude/skills/x/SKILL.md"}`,
     actorUserId: ME,
     expected: null,
   },
@@ -264,7 +264,7 @@ export const HARD_FLOOR_LANE_FIXTURE: readonly HardFloorLaneCase[] = [
   {
     name: 'writing an env file is version 3',
     toolName: 'Write',
-    inputPreview: '{"file_path":"/Users/kc/app/.env","content":"A=1"}',
+    inputPreview: '{"file_path":"/Users/user/app/.env","content":"A=1"}',
     actorUserId: ME,
     expected: 'env_file_write',
   },
