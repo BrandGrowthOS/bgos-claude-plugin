@@ -1598,23 +1598,37 @@ function mcpBlockValues(raw, key, env) {
  * there is no shared one; else several per-assistant files refuse; else the
  * shared credentials.json.
  */
-function selectCredentials({ path, id, pin, agentDir, defaultPath, exists, listDir }) {
+function selectCredentials({ path, id, pin, agentDir, defaultPath, exists, listDir, readFile }) {
   if (path) return { via: 'env-path', path }
+  // A named agent whose own file is missing: the shared file only when it is that same agent's,
+  // else its own missing file (helperwedge finding 4: never another agent's pairing).
+  const legacyIs = (want) => {
+    try {
+      return exists(defaultPath) && String(JSON.parse(String(readFile(defaultPath) ?? ''))?.assistantId ?? '').trim() === want
+    } catch {
+      return false
+    }
+  }
   if (id) {
     const perAssistant = join(agentDir, `credentials-${id}.json`)
     if (exists(perAssistant)) return { via: 'env-assistant', path: perAssistant, id }
-    return { via: 'legacy', path: defaultPath, id, fellBackFrom: perAssistant }
+    if (legacyIs(id)) return { via: 'legacy', path: defaultPath, id, fellBackFrom: perAssistant }
+    return { via: 'env-assistant', path: perAssistant, id, missing: true }
   }
   let stalePin = ''
-  if (pin) {
-    const pinned = join(agentDir, `credentials-${pin}.json`)
-    if (exists(pinned)) return { via: 'folder-pin', path: pinned, id: pin }
-    stalePin = pin
-  }
   const ids = listDir(agentDir)
     .map((name) => /^credentials-(\d+)\.json$/.exec(name)?.[1])
     .filter(Boolean)
     .sort((a, b) => Number(a) - Number(b))
+  if (pin) {
+    const pinned = join(agentDir, `credentials-${pin}.json`)
+    if (exists(pinned)) return { via: 'folder-pin', path: pinned, id: pin }
+    stalePin = pin
+    if (ids.length <= 1) {
+      if (legacyIs(pin)) return { via: 'legacy', path: defaultPath, id: pin, fellBackFrom: pinned, stalePin }
+      return { via: 'folder-pin', path: pinned, id: pin, missing: true }
+    }
+  }
   const hasLegacy = exists(defaultPath)
   if (ids.length === 1 && !hasLegacy) {
     return { via: 'sole-per-assistant', path: join(agentDir, `credentials-${ids[0]}.json`), id: ids[0], stalePin }
@@ -1627,6 +1641,7 @@ function selectCredentials({ path, id, pin, agentDir, defaultPath, exists, listD
  * @typedef {{
  *   via: 'env-path' | 'env-assistant' | 'folder-pin' | 'sole-per-assistant' | 'legacy' | 'refuse' | 'unreadable',
  *   sessionVia: string,
+ *   sessionMissing: boolean,
  *   path: string,
  *   assistantId: string,
  *   expectedAssistantId: string,
@@ -1735,7 +1750,7 @@ export function resolveDoctorIdentity({
   const sessionPath = blockSetsPath ? blockPath : shellPath
   const pinText = pinFile ? String(readFile(pinFile) ?? '').trim() : ''
   const pin = /^\d+$/.test(pinText) ? pinText : ''
-  const select = (id) => selectCredentials({ path: sessionPath, id, pin, agentDir, defaultPath, exists, listDir })
+  const select = (id) => selectCredentials({ path: sessionPath, id, pin, agentDir, defaultPath, exists, listDir, readFile })
 
   const flag = String(assistantIdFlag ?? '').trim()
   const session = select(sessionId)
@@ -1754,6 +1769,7 @@ export function resolveDoctorIdentity({
   const base = {
     via: chosen.via,
     sessionVia: session.via,
+    sessionMissing: session.missing === true,
     path: chosen.path ?? '',
     assistantId,
     expectedAssistantId,
@@ -1772,7 +1788,7 @@ export function resolveDoctorIdentity({
         `BGOS_ASSISTANT_ID=${shellId}, so the daemon is handed no id`,
     )
   }
-  if (chosen.stalePin) {
+  if (chosen.stalePin && chosen.via !== 'legacy') {
     notes.push(`the ${FOLDER_PIN_FILE_NAME} pin here names ${chosen.stalePin}, but credentials-${chosen.stalePin}.json does not exist, so the daemon ignores it`)
   }
   if (chosen.via === 'refuse') {
@@ -1797,7 +1813,7 @@ export function resolveDoctorIdentity({
     source = blockPath
       ? `BGOS_CREDENTIALS_PATH in the env block of ${mcpFile}`
       : 'BGOS_CREDENTIALS_PATH in the environment the doctor runs in'
-  } else if (chosen.via === 'env-assistant' || (chosen.via === 'legacy' && chosen.id)) {
+  } else if (chosen.via === 'env-assistant' || (chosen.via === 'legacy' && chosen.id && !chosen.stalePin)) {
     const where = flag
       ? '--assistant-id'
       : blockId
@@ -1805,10 +1821,17 @@ export function resolveDoctorIdentity({
         : 'the environment the doctor runs in'
     source = flag ? `--assistant-id ${chosen.id}` : `BGOS_ASSISTANT_ID=${chosen.id} in ${where}`
     if (chosen.via === 'legacy') {
-      notes.push(`${chosen.fellBackFrom} does not exist, so the daemon falls back to the shared credentials.json`)
+      notes.push(`${chosen.fellBackFrom} does not exist; the shared credentials.json is this agent's own pairing, so the daemon reads it`)
+    } else if (chosen.missing) {
+      notes.push(`${chosen.path} does not exist, so the daemon has no pairing (it never reads another agent's)`)
     }
-  } else if (chosen.via === 'folder-pin') {
+  } else if (chosen.via === 'folder-pin' || (chosen.via === 'legacy' && chosen.stalePin)) {
     source = `the ${FOLDER_PIN_FILE_NAME} pin in ${dir} (${chosen.id})`
+    if (chosen.via === 'legacy') {
+      notes.push(`${chosen.fellBackFrom} does not exist; the shared credentials.json is this agent's own pairing, so the daemon reads it`)
+    } else if (chosen.missing) {
+      notes.push(`${chosen.path} does not exist, so the daemon has no pairing (it never reads another agent's)`)
+    }
   } else if (chosen.via === 'sole-per-assistant') {
     source = 'the only paired agent on this host, found by elimination (no env pin, no folder pin)'
   } else {
@@ -1930,15 +1953,15 @@ export function probeCredentials({
   const dir = String(workdir ?? '').trim()
   if (dir) {
     result.workdir = dir
-    // As the daemon reads them: a pin or an env id is a route only when that
-    // agent's credentials file exists (a stale pin is ignored, an env id with
-    // no file falls back to the shared file by elimination). `sessionVia`, not
-    // `via`: the operator's --assistant-id is not how a session started in this
-    // folder would resolve.
+    // As the daemon reads them: a pin or an env id naming an agent whose
+    // credentials file is missing gives that session no pairing at all, never
+    // this agent's (helperwedge finding 4); otherwise only an elimination start
+    // outside the home is refused. `sessionVia`, not `via`: the operator's
+    // --assistant-id is not how a session started in this folder would resolve.
     result.workdirRefused = Boolean(
       result.homeDir &&
-        !EXPLICIT_VIA.has(found.sessionVia) &&
-        normalizeHomeForCompare(dir) !== normalizeHomeForCompare(result.homeDir),
+        (found.sessionMissing === true ||
+          (!EXPLICIT_VIA.has(found.sessionVia) && normalizeHomeForCompare(dir) !== normalizeHomeForCompare(result.homeDir))),
     )
   }
   return result
