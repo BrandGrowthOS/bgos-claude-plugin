@@ -1,8 +1,7 @@
 /**
  * Cross-repo LANE floor fixture, rules_version 5 (person lanes, shared agents
- * Phase 3; design 2026-10-15 section 7.2 item 8; moved from 4 to 5 by slice 2a
- * because the owner list it extends moved from 3 to 4 and the lane stays one
- * above).
+ * Phase 3; design 2026-10-15 section 7.2 item 8; moved from 4 to 5 because
+ * the owner list it extends moved from 3 to 4 and the lane stays one above).
  *
  * The cases a person's lane floor must answer, written once. The backend's
  * classifier (src/services/hard-floor-lane.ts) runs them here from P2; the
