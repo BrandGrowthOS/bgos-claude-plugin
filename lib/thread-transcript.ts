@@ -63,37 +63,55 @@ export async function findActiveGoalRow(path: string, chunkBytes: number = CHUNK
   const fh = await open(path, 'r')
   try {
     const { size } = await fh.stat()
-    let pos = size
-    // Bytes after the last newline seen so far that belong to the line in progress (read backwards).
-    let carry = Buffer.alloc(0)
-    let carryEnd = size
-    while (pos > 0) {
-      const len = Math.min(chunkBytes, pos)
-      pos -= len
-      const chunk = Buffer.alloc(len)
-      await readFully(fh, chunk, pos)
-      let buf = carry.length > 0 ? Buffer.concat([chunk, carry]) : chunk
-      const bufStart = pos
-      let lineEnd = buf.length
-      for (let i = buf.length - 1; i >= 0; i--) {
-        if (buf[i] !== NEWLINE) continue
-        const line = buf.subarray(i + 1, lineEnd)
-        const edit = goalEdit(line)
-        if (edit.done) return edit.replacement ? { start: bufStart + i + 1, end: bufStart + lineEnd, replacement: edit.replacement } : null
-        lineEnd = i
-      }
-      carry = Buffer.from(buf.subarray(0, lineEnd))
-      carryEnd = bufStart + lineEnd
-      buf = Buffer.alloc(0)
-    }
-    if (carry.length > 0) {
-      const edit = goalEdit(carry)
-      if (edit.done && edit.replacement) return { start: 0, end: carryEnd, replacement: edit.replacement }
-    }
-    return null
+    let found: GoalRowEdit | null | undefined
+    await scanLinesBackwards(fh, size, chunkBytes, (line, start, end) => {
+      const edit = goalEdit(line)
+      if (!edit.done) return false
+      found = edit.replacement ? { start, end, replacement: edit.replacement } : null
+      return true
+    })
+    return found ?? null
   } finally {
     await fh.close()
   }
+}
+
+/**
+ * Every line of the file, last first, with its byte range, until `onLine`
+ * answers true. Linear in the file's size at any chunk size: the part of a
+ * line that runs over several chunks is kept as a list of pieces and joined
+ * once, when the line is complete (0.88.0; joining the growing piece on every
+ * chunk made a 270 KB line read one byte at a time take over a minute).
+ */
+async function scanLinesBackwards(
+  fh: FileHandle,
+  size: number,
+  chunkBytes: number,
+  onLine: (line: Buffer, start: number, end: number) => boolean,
+): Promise<void> {
+  let pos = size
+  // The pieces of the line in progress that lie after the current chunk, last piece first.
+  let tail: Buffer[] = []
+  // Where the line in progress ends in the file.
+  let lineEndAt = size
+  while (pos > 0) {
+    const len = Math.min(chunkBytes, pos)
+    pos -= len
+    const chunk = Buffer.alloc(len)
+    await readFully(fh, chunk, pos)
+    let lineEnd = len
+    for (let i = len - 1; i >= 0; i--) {
+      if (chunk[i] !== NEWLINE) continue
+      const head = chunk.subarray(i + 1, lineEnd)
+      const line = tail.length === 0 ? head : Buffer.concat([head, ...tail.reverse()])
+      if (onLine(line, pos + i + 1, lineEndAt)) return
+      tail = []
+      lineEnd = i
+      lineEndAt = pos + i
+    }
+    if (lineEnd > 0) tail.push(Buffer.from(chunk.subarray(0, lineEnd)))
+  }
+  if (tail.length > 0) onLine(Buffer.concat(tail.reverse()), 0, lineEndAt)
 }
 
 async function readFully(fh: FileHandle, into: Buffer, position: number): Promise<void> {
@@ -117,8 +135,14 @@ async function copyRange(src: FileHandle, dst: FileHandle, from: number, to: num
   }
 }
 
-/** Write `path` again with one row replaced, through a temporary file renamed over it. */
-async function spliceRow(path: string, edit: GoalRowEdit, chunkBytes: number): Promise<void> {
+/**
+ * Write `path` again with one row replaced, through a temporary file renamed
+ * over it. The bytes around the row are copied CHUNK_BYTES at a time whatever
+ * chunk the search used (0.88.0): the search's chunk size is there to test
+ * line boundaries, and a copy one byte at a time made a test of a 270 KB line
+ * take over a minute.
+ */
+async function spliceRow(path: string, edit: GoalRowEdit): Promise<void> {
   const temporary = `${path}.thread-goal.tmp`
   try {
     const src = await open(path, 'r')
@@ -126,9 +150,9 @@ async function spliceRow(path: string, edit: GoalRowEdit, chunkBytes: number): P
       const { size } = await src.stat()
       const dst = await open(temporary, 'w')
       try {
-        await copyRange(src, dst, 0, edit.start, chunkBytes)
+        await copyRange(src, dst, 0, edit.start, CHUNK_BYTES)
         await dst.write(edit.replacement)
-        await copyRange(src, dst, edit.end, size, chunkBytes)
+        await copyRange(src, dst, edit.end, size, CHUNK_BYTES)
         await dst.sync()
       } finally {
         await dst.close()
@@ -158,7 +182,7 @@ export async function copyTranscriptClearingGoal(from: string, to: string, chunk
 export async function clearActiveGoal(path: string, chunkBytes: number = CHUNK_BYTES): Promise<boolean> {
   const edit = await findActiveGoalRow(path, chunkBytes)
   if (!edit) return false
-  await spliceRow(path, edit, chunkBytes)
+  await spliceRow(path, edit)
   return true
 }
 
@@ -192,24 +216,12 @@ export async function latestPermissionMode(path: string, chunkBytes: number = CH
   }
   try {
     const { size } = await fh.stat()
-    let pos = size
-    let carry = Buffer.alloc(0)
-    while (pos > 0) {
-      const len = Math.min(chunkBytes, pos)
-      pos -= len
-      const chunk = Buffer.alloc(len)
-      await readFully(fh, chunk, pos)
-      const buf = carry.length > 0 ? Buffer.concat([chunk, carry]) : chunk
-      let lineEnd = buf.length
-      for (let i = buf.length - 1; i >= 0; i--) {
-        if (buf[i] !== NEWLINE) continue
-        const mode = modeOf(buf.subarray(i + 1, lineEnd))
-        if (mode !== null) return mode
-        lineEnd = i
-      }
-      carry = Buffer.from(buf.subarray(0, lineEnd))
-    }
-    return carry.length > 0 ? modeOf(carry) : null
+    let mode: string | null = null
+    await scanLinesBackwards(fh, size, chunkBytes, (line) => {
+      mode = modeOf(line)
+      return mode !== null
+    })
+    return mode
   } catch {
     return null
   } finally {
