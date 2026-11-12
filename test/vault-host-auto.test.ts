@@ -509,3 +509,106 @@ test('wiring: hoai vault-host auto needs no terminal', () => {
   assert.match(out.stderr, /not paired|agent folder/i)
   assert.equal(out.status, 1)
 })
+
+// -- Found on a real Windows 11 PC (2026-11-12) ------------------------------------------------
+// The first run on Windows ended in "key_exposed" with a perfectly private key file: each PowerShell access list
+// call took 4 to 6 seconds there, one passed the time limit, and a call that could not run was read as "exposed".
+
+/** A PC whose PowerShell stops answering once the host key file exists, for `misses` reads (Infinity: for good). */
+function slowPowerShellAfterTheHostKey(dir: string, misses: number) {
+  const w = windows()
+  let slow = false
+  let missed = 0
+  const disk = { ...fs, existsSync(path: fs.PathLike) {
+    const there = fs.existsSync(path)
+    if (there && String(path) === join(dir, VAULT_HOST_FILE_NAME)) slow = true
+    return there
+  } } as typeof fs
+  const security = { ...w.security, async readWindowsAcl(path: string) {
+    if (slow && missed < misses) { missed++; throw new Error('powershell timed out') }
+    return w.security.readWindowsAcl(path)
+  } }
+  return { disk, security, heal() { missed = misses = 0 } }
+}
+
+test('real Windows: a PowerShell too slow to answer while the identity is stored is not an exposed key', async () => {
+  const dir = tempDir()
+  const s = server()
+  const pc = slowPowerShellAfterTheHostKey(dir, Infinity)
+  const { result, logs } = await run(dir, s.fetch, { security: pc.security, fs: pc.disk, sleep: async () => {} })
+  assert.deepEqual(result, { status: 'unavailable', retry: true }, 'not a problem: try again later')
+  assert.deepEqual(s.state.problems, [], 'the owner is not told a key was exposed')
+  assert.ok(!logs.join('\n').includes('key_exposed'))
+  const kept = fs.readFileSync(join(dir, VAULT_HOST_FILE_NAME), 'utf8')
+  // PowerShell answers again: the next run finishes with the SAME host key.
+  pc.heal()
+  const again = await run(dir, s.fetch, { security: pc.security, fs: pc.disk, sleep: async () => {} })
+  assert.equal(again.result.status, 'offered')
+  assert.equal(JSON.parse(fs.readFileSync(join(dir, VAULT_HOST_FILE_NAME), 'utf8')).hostSeed, JSON.parse(kept).hostSeed)
+})
+
+test('real Windows: one slow PowerShell answer does not fail the setup; the same run tries again and finishes', async () => {
+  const dir = tempDir()
+  const s = server()
+  const pc = slowPowerShellAfterTheHostKey(dir, 1)
+  const waits: number[] = []
+  const { result } = await run(dir, s.fetch, { security: pc.security, fs: pc.disk, sleep: async (ms: number) => { waits.push(ms) } })
+  assert.equal(result.status, 'offered')
+  assert.deepEqual(s.state.problems, [])
+  assert.equal(waits.length, 1, 'it paused once and tried again')
+})
+
+test('real Windows: a setup slower than the lock is old keeps its lock, so a second run cannot start beside it', async () => {
+  const dir = tempDir()
+  const s = server()
+  // Every access list read takes 25 ms, so one setup takes far longer than the 60 ms after which a lock counts as abandoned.
+  const lock = { staleMs: 60, beatMs: 10, waitMs: 5 }
+  const first = run(dir, s.fetch, { security: slowDisk(25), lock })
+  await new Promise((r) => setTimeout(r, 150))
+  const second = await run(dir, s.fetch, { security: slowDisk(25), lock })
+  assert.equal(second.result.status, 'unavailable', 'the second run stands back: the first one is alive')
+  assert.equal((await first).result.status, 'offered')
+  const record = (await readHostRecord(dir, fs, slowDisk(0)))!
+  const offered = s.calls.filter((c) => c.method === 'POST' && c.path === `${PREFIX}/host-offer`).map((c) => JSON.parse(c.body).identityPublic)
+  assert.deepEqual([...new Set(offered)], [record.identityPublic], 'one identity, the one on disk')
+})
+
+test('real Windows: the access list command waits 30 seconds, tries once more when PowerShell was cut off, and not when it answered no', async () => {
+  const { createWindowsVaultSecurity } = await import('../lib/vault-host.mjs')
+  const acl = JSON.stringify(safeAcl())
+  const seen: number[] = []
+  let calls = 0
+  // First call: killed at the time limit, as execFile reports it. Second call: answers.
+  const cutOffOnce = (_file: string, _args: string[], options: { timeout: number }, done: (error: unknown, stdout: string) => void) => {
+    seen.push(options.timeout)
+    calls++
+    if (calls === 1) done(Object.assign(new Error('timed out'), { killed: true, code: null, signal: 'SIGTERM' }), '')
+    else done(null, acl)
+  }
+  assert.deepEqual(await createWindowsVaultSecurity({ execFileImpl: cutOffOnce as any }).readWindowsAcl('C:\\x'), safeAcl())
+  assert.equal(calls, 2)
+  assert.deepEqual(seen, [30_000, 30_000])
+  // PowerShell ran and refused (exit code 1): that is an answer, and asking again would only double the wait.
+  let refused = 0
+  const refuses = (_file: string, _args: string[], _options: unknown, done: (error: unknown, stdout: string) => void) => { refused++; done(Object.assign(new Error('exit 1'), { killed: false, code: 1 }), '') }
+  await assert.rejects(createWindowsVaultSecurity({ execFileImpl: refuses as any }).readWindowsAcl('C:\\x'))
+  assert.equal(refused, 1)
+})
+
+test('real Windows: protecting a path and reading it back is ONE PowerShell start, and a first host key costs four', async () => {
+  const { createWindowsVaultSecurity, loadOrCreateHostKey } = await import('../lib/vault-host.mjs')
+  const dir = tempDir()
+  let starts = 0
+  // A PowerShell that always answers with a private access list, as a healthy PC does.
+  const healthy = (_file: string, _args: string[], _options: unknown, done: (error: unknown, stdout: string) => void) => { starts++; done(null, JSON.stringify(safeAcl())) }
+  const security = createWindowsVaultSecurity({ execFileImpl: healthy as any })
+  await loadOrCreateHostKey(dir, ASSISTANT, fs, security)
+  // The folder (protect and read back: 1), the empty file (1), then the folder and the key file checked once more (2).
+  assert.equal(starts, 4)
+})
+
+test('wiring: the daemon tries again by itself when this computer could not check its key file', () => {
+  const source = fs.readFileSync(join(ROOT, 'server.ts'), 'utf8')
+  assert.match(source, /result\.status === 'unavailable' && result\.retry === true && vaultAutoHostRetries < VAULT_AUTO_HOST_RETRIES/)
+  assert.match(source, /setTimeout\(\(\) => \{ void runVaultAutoHost\('retry'\) \}/)
+})

@@ -28,7 +28,8 @@ test('Windows ACL subprocess yields to timers and passes paths as data with boun
   const security = create({ execFileImpl(command: string, args: string[], options: any, callback: any) {
     assert.equal(command, 'powershell.exe')
     assert.equal(options.shell, false)
-    assert.equal(options.timeout, 10_000)
+    // Bounded, and long enough for a real PC: 30 s since 2026-11-12, when 10 s was measured too short on a new Windows 11 install.
+    assert.equal(options.timeout, 30_000)
     assert.equal(options.maxBuffer, 1024 * 1024)
     assert.equal(options.windowsHide, true)
     assert.equal(options.env.HOAI_VAULT_ACL_PATH, path)

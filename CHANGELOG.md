@@ -28,6 +28,14 @@ Where the HOAI server takes host offers (its flag `VAULT_ZERO_SETUP_ENABLED`), t
 - **A key file is removed only when it is known to be unusable.** Damaged, or read as readable by another account. A file whose protection could not be read (a slow or blocked PowerShell on Windows), one another account owns, a link, or another agent's file is left exactly as it is and the run answers `unavailable`.
 - **While HOAI cannot be reached** the vault tools answer `VAULT_HOST_SETUP_RETRY` (try later, nothing to type), make no key and name no command.
 
+**Found by running it on a real Windows 11 PC (2026-11-12), and fixed before release.** The first run there ended in `key_exposed` after 57 seconds, with a perfectly private key file: each PowerShell access list call took 4 to 6 seconds on that machine, one passed the 10 second limit while the identity was being stored, and a check that could not run was read as "exposed".
+
+- **A check that could not run is not an exposed key.** Only a protection that was read and names someone else is reported as `key_exposed`. Anything else leaves the key file as it is, reports nothing, and is tried again: twice more in the same run, then by the daemon by itself (30 seconds later, then further apart, five times).
+- **The Windows access list command waits 30 seconds, not 10,** and a run that was cut off at the limit or never started is tried once more. A PowerShell that answered "no" is not asked again.
+- **Protecting a path and reading it back is one PowerShell start, not two.** A first host key now costs four starts instead of seven.
+- **A live setup keeps its lock.** It touches the lock every 10 seconds, because a setup slower than the minute after which a lock counts as abandoned would have it taken from under it, and two runs would again each make an identity.
+- Still true on a slow Windows PC: every vault tool call reads the key file's access list first, which is two PowerShell starts. That was so before this version and is not changed here.
+
 Nothing changes on a server without the flag: the first request answers 404, no key is made and the older flow stands. `HOAI_VAULT_AUTO_HOST=0` keeps a machine out of it.
 
 The trade, stated in HOAI's design note (`docs/superpowers/specs/2026-11-12-vault-zero-setup-design.md`): the owner's app trusts the first key it sees for an agent, so a server that is already hostile at the minute of first setup could substitute its own. Item values stay end to end encrypted, and a later change is never trusted without the owner.

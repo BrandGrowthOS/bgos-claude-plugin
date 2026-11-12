@@ -9600,9 +9600,14 @@ const whenArmed =
 // and on a vault tool's first use. One run at a time; the result is codes only.
 // A server that does not take offers answers `off`, remembered for ten minutes
 // so a vault tool call does not ask again each time.
-let vaultAutoHostRun: Promise<{ status: string; code?: string }> | null = null
+let vaultAutoHostRun: Promise<{ status: string; code?: string; retry?: true }> | null = null
 let vaultAutoHostOffUntil = 0
-function runVaultAutoHost(reason: string): Promise<{ status: string; code?: string }> {
+// Found on a real Windows PC (2026-11-12): PowerShell can be too slow to answer while the computer is busy, and
+// the setup then ends "unavailable, retry". Nobody should have to do anything: try again, a few times, further apart.
+const VAULT_AUTO_HOST_RETRIES = 5
+const VAULT_AUTO_HOST_RETRY_MS = 30_000
+let vaultAutoHostRetries = 0
+function runVaultAutoHost(reason: string): Promise<{ status: string; code?: string; retry?: true }> {
   if (AUTH.mode !== 'pairing' || !channelArmed) return Promise.resolve({ status: 'unavailable' })
   if (vaultAutoHostRun) return vaultAutoHostRun
   if (reason !== 'frame' && Date.now() < vaultAutoHostOffUntil) return Promise.resolve({ status: 'off' })
@@ -9617,10 +9622,15 @@ function runVaultAutoHost(reason: string): Promise<{ status: string; code?: stri
     log,
   })
     .catch(() => ({ status: 'unavailable' }))
-    .then((result: { status: string; code?: string }) => {
+    .then((result: { status: string; code?: string; retry?: true }) => {
       vaultAutoHostRun = null
       vaultAutoHostOffUntil = result.status === 'off' ? Date.now() + 10 * 60_000 : 0
       if (result.status !== 'off' && result.status !== 'disabled') log(`vault: host setup (${reason}) is ${result.status}`)
+      if (result.status === 'unavailable' && result.retry === true && vaultAutoHostRetries < VAULT_AUTO_HOST_RETRIES) {
+        const wait = VAULT_AUTO_HOST_RETRY_MS * 2 ** vaultAutoHostRetries++
+        const timer = setTimeout(() => { void runVaultAutoHost('retry') }, wait)
+        timer.unref?.()
+      } else if (result.retry !== true) vaultAutoHostRetries = 0
       return result
     })
   vaultAutoHostRun = run
