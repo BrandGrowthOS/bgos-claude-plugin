@@ -337,7 +337,7 @@ test('a released card keeps its descriptor through the inner hold\'s resend', as
 // ── The switch, the voice cards, and the real server.ts wiring ────────────────
 
 import { readFileSync } from 'node:fs'
-import { quietTurnEnabled, voiceQuietCard } from '../lib/quiet-turn.mjs'
+import { createServerQuietSwitch, quietTurnEnabled, voiceQuietCard } from '../lib/quiet-turn.mjs'
 
 test('BGOS_QUIET_TURN: on unless it says off, 0, false or no', () => {
   for (const value of [undefined, '', 'on', 'true', '1', 'yes', 'anything']) assert.equal(quietTurnEnabled(value), true, String(value))
@@ -346,7 +346,8 @@ test('BGOS_QUIET_TURN: on unless it says off, 0, false or no', () => {
 
 test('voice cards: a stamped consult or dispatch can open the owner\'s turn, a Stop passes, an unstamped consult never waits, an unstamped task names nothing', () => {
   const actor = { actingUserId: OWNER, deadline: 1 }
-  assert.deepEqual(voiceQuietCard({ ownerUserId: OWNER, consult: { consultId: 'c', chatId: '10', actor }, meta: { event_type: 'voice_consult' } }), { opens: 'ask', chatId: '10' })
+  // A consult has about 38 s to be answered, so it is never held, stamped or not (review round 2, N4).
+  assert.deepEqual(voiceQuietCard({ ownerUserId: OWNER, consult: { consultId: 'c', chatId: '10', actor }, meta: { event_type: 'voice_consult' } }), { opens: 'ask', chatId: '10', within: 0 })
   assert.deepEqual(voiceQuietCard({ ownerUserId: OWNER, dispatch: { taskId: '41', chatId: '10', actor }, meta: { event_type: 'voice_task_dispatch' } }), { opens: 'ask', chatId: '10' })
   // An unstamped consult has seconds to be answered: it is never held (review F3). An unstamped task waits.
   assert.deepEqual(voiceQuietCard({ ownerUserId: OWNER, consult: { consultId: 'c', chatId: '10', actor: null }, meta: {} }), { within: 0 })
@@ -374,14 +375,17 @@ test('server: the hold reads the tracker\'s own bound turn, and is off without t
   assert.match(server, /const quietTurns = createQuietTurns\(\{\n\s*trusted: \(\) => privateTurns\.quiet\(\),\n\s*deliveryOf: \(card: unknown\) => privateTurns\.deliveryOf\(card\),\n\s*ownerUserId: USER_ID,/)
   assert.match(server, /idle: \(\) => !hookTurnLive,/)
   // Review F3: OFF unless the server said on (VOICE_ASK_STAMP, read from its capabilities reply), whatever else holds.
-  assert.match(server, /enabled: \(\) => QUIET_TURN_ENABLED && serverQuietTurn && lockHeld && PRIVATE_HOOK\.registered,/)
-  assert.match(server, /\nlet serverQuietTurn = false\n/)
-  assert.equal((server.match(/serverQuietTurn = /g) ?? []).length, 2, 'declared off, and set in one place only')
-  assert.match(server, /const next = serverQuietTurnOf\(data\)/)
-  // A fetch that failed, or the bundled copy, reads as off: the argument is the reply itself, null on any error.
-  assert.match(server, /noteServerQuietTurn\(data\)/)
+  assert.match(server, /enabled: \(\) => QUIET_TURN_ENABLED && serverQuiet\.on\(\) && lockHeld && PRIVATE_HOOK\.registered,/)
+  assert.match(server, /\nconst serverQuiet = createServerQuietSwitch\(\{ log \}\)\n/)
+  // The switch is written in two places only, each with the reply itself, which is null when the fetch failed.
+  assert.equal((server.match(/serverQuiet\.note\(/g) ?? []).length, 2)
+  assert.match(server, /cachedCapabilities = pickCapabilities\(data, declared\)\n\s*serverQuiet\.note\(data\)/)
+  assert.match(server, /let data: unknown = null\n\s*try \{\n\s*data = await bgosGetCapped\(capabilitiesFetchPath\(RUNNING_VERSION \?\? '0\.0\.0', \[\]\), CAPABILITIES_FETCH_MAX_BYTES, STARTUP_WARMUP_TIMEOUT_MS\)\n\s*\} catch \{[^}]*\}\n\s*serverQuiet\.note\(data\)/)
+  // Review round 2, N5 (P19): read again on every socket connect, since the switch changes with a backend restart.
+  const connect = server.slice(server.indexOf("realtimeSocket.on('connect', () => {"), server.indexOf("realtimeSocket.on('connect', () => {") + 600)
+  assert.match(connect, /refreshServerQuietTurn\(\)/)
   // Review F2: with the switch on, a voice card the server did not stamp is one it refused to call the owner's.
-  assert.match(server, /voiceCardsUntrusted: \(\) => serverQuietTurn \}\)/)
+  assert.match(server, /voiceCardsUntrusted: \(\) => serverQuiet\.on\(\) \}\)/)
   assert.match(server, /const QUIET_TURN_ENABLED = quietTurnEnabled\(process\.env\.BGOS_QUIET_TURN\)/)
 })
 
@@ -489,4 +493,22 @@ test('review F4: a turn that ended while the CLI still runs keeps holding until 
   await flush()
   assert.deepEqual(fresh.sent, ['peer'])
   void clock
+})
+
+test('review round 2, N5 (P25): the server switch goes off on a failed read, and says each change once', () => {
+  const lines: string[] = []
+  const sw = createServerQuietSwitch({ log: (line: string) => { lines.push(line) } })
+  assert.equal(sw.on(), false, 'off until the server says on')
+  assert.equal(sw.note({ quietTurn: true }), true)
+  assert.equal(sw.on(), true)
+  assert.equal(sw.note({ quietTurn: true }), true)
+  // The fetch failed (null), the bundled copy, or a reply without the field: off.
+  assert.equal(sw.note(null), false)
+  assert.equal(sw.on(), false)
+  sw.note({ quietTurn: true })
+  assert.equal(sw.note({ text: 'canon', version: 'v' }), false)
+  assert.equal(sw.on(), false)
+  assert.equal(lines.length, 4)
+  assert.match(lines[0]!, /the server says on/)
+  assert.match(lines[1]!, /the server says off/)
 })

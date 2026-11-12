@@ -213,7 +213,7 @@ import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.j
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
-import { createQuietTurns, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, serverQuietTurnOf, voiceQuietCard } from './lib/quiet-turn.mjs'
+import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
@@ -1694,7 +1694,7 @@ let cachedCapabilities: ServedCapabilities | null = null
 // capabilities reply only while its VOICE_ASK_STAMP is on. Until it does, this daemon holds no card outside the
 // owner's turn and treats an unstamped voice card as it always did. Off at boot, off when the fetch fails, and read
 // again on every socket connect, since the switch only changes with a backend restart.
-let serverQuietTurn = false
+const serverQuiet = createServerQuietSwitch({ log })
 /** Read the switch again, off on any failure. Never throws, never holds the caller. */
 function refreshServerQuietTurn(): void {
   void (async () => {
@@ -1702,14 +1702,8 @@ function refreshServerQuietTurn(): void {
     try {
       data = await bgosGetCapped(capabilitiesFetchPath(RUNNING_VERSION ?? '0.0.0', []), CAPABILITIES_FETCH_MAX_BYTES, STARTUP_WARMUP_TIMEOUT_MS)
     } catch { /* Off: a server that cannot be asked has not said on. */ }
-    noteServerQuietTurn(data)
+    serverQuiet.note(data)
   })()
-}
-function noteServerQuietTurn(data: unknown): void {
-  const next = serverQuietTurnOf(data)
-  if (next === serverQuietTurn) return
-  serverQuietTurn = next
-  log(`quiet turn: the server says ${next ? 'on' : 'off'}; other cards ${next ? 'wait outside the owner\'s turn' : 'are not held'}`)
 }
 
 // SECURITY: the canon is injected into the agent's context, so cap the fetch.
@@ -1943,7 +1937,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
       )
     }
     cachedCapabilities = pickCapabilities(data, declared)
-    noteServerQuietTurn(data)
+    serverQuiet.note(data)
     log(
       `Capability canon ready: v${cachedCapabilities.version} ` +
         `(${cachedCapabilities.text.length} chars) [source=${cachedCapabilities.source}]`,
@@ -10895,13 +10889,13 @@ const turnChat = createTurnChatTracker()
 // message the same way, as owner:<message id>.
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
-const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn(); quietTurns.recheck() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)), voiceCardsUntrusted: () => serverQuietTurn })
+const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn(); quietTurns.recheck() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)), voiceCardsUntrusted: () => serverQuiet.on() })
 // A trusted turn is quiet (lib/quiet-turn.mjs, 2026-11-11): while the owner's own turn is bound in the tracker above (a
 // stamped voice ask, the owner's typed message, the owner's scheduled wake), every other channel card waits in the
 // notification chain below, five minutes at most, so nobody else's words reach that turn and end its trust. It reads
 // the tracker's own bound turn and adds only the gap before a card's prompt begins. Off with no private turn hook (no
 // turn is ever admitted then), while this daemon does not hold the lock, with BGOS_QUIET_TURN=off, and until the
-// SERVER says on (serverQuietTurn above: its VOICE_ASK_STAMP switch).
+// SERVER says on (serverQuiet above: its VOICE_ASK_STAMP switch).
 const QUIET_TURN_ENABLED = quietTurnEnabled(process.env.BGOS_QUIET_TURN)
 const quietTurns = createQuietTurns({
   trusted: () => privateTurns.quiet(),
@@ -10909,7 +10903,7 @@ const quietTurns = createQuietTurns({
   ownerUserId: USER_ID,
   // Between turns a card sent now starts a prompt of its own; mid turn it is injected or queued, and holds nothing yet.
   idle: () => !hookTurnLive,
-  enabled: () => QUIET_TURN_ENABLED && serverQuietTurn && lockHeld && PRIVATE_HOOK.registered,
+  enabled: () => QUIET_TURN_ENABLED && serverQuiet.on() && lockHeld && PRIVATE_HOOK.registered,
 })
 // At the four tap sites below, the owner's own tap (the tapper the server stamped is this agent's owner) names itself
 // `{ carried: true }`: it holds nobody's words but the owner's, so it passes the hold, and privateTapCard decides the rest.
