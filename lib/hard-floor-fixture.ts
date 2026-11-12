@@ -1099,6 +1099,7 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
       command: "wsl -d Ubuntu -u root -- rm -rf build",
     },
     ruleId: "recursive_delete",
+    ruleIds: ["recursive_delete", "admin_rights"],
   },
   {
     name: "wsl_list_is_not_a_command",
@@ -1972,6 +1973,146 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
   {
     name: "admin_in_a_script_name_is_not_admin",
     input: { kind: "command", command: "npm run sudo-check" },
+    ruleId: null,
+  },
+  // Admin rights through PowerShell's own elevation: Start-Process and its
+  // aliases with the RunAs verb, another user's credential, or an elevator as
+  // the program it starts. Also an elevator behind find's exec family, after
+  // time with an option, and WSL run as root.
+  {
+    name: "admin_start_process_verb_runas",
+    input: { kind: "command", command: "Start-Process powershell -Verb RunAs" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_in_lower_case",
+    input: { kind: "command", command: "start-process wt -verb runas" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_alias_with_a_colon_value",
+    input: { kind: "command", command: "saps cmd -Verb:RunAs" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_alias_verb_runas",
+    input: { kind: "command", command: "start powershell -Verb RunAs" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_verb_runas_user",
+    input: { kind: "command", command: "Start-Process pwsh -Verb RunAsUser" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_inside_a_powershell_command",
+    input: {
+      kind: "command",
+      command: "powershell -NoProfile -Command \"Start-Process cmd -Verb RunAs\"",
+    },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_of_an_elevator",
+    input: {
+      kind: "command",
+      command: "Start-Process gsudo -ArgumentList 'choco install git -y' -Wait",
+    },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_with_a_credential",
+    input: {
+      kind: "command",
+      command: "Start-Process cmd -Credential (Get-Credential)",
+    },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_with_a_long_dash",
+    input: {
+      kind: "command",
+      command: "Start-Process powershell \u2013Verb RunAs",
+    },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_by_find_ok",
+    input: {
+      kind: "command",
+      command: "find /srv/app -ok sudo chown www-data {} \\;",
+    },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_after_time_with_an_option",
+    input: { kind: "command", command: "time -p sudo apt-get update" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "folder_delete_after_time_with_an_option",
+    input: { kind: "command", command: "time -p rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "admin_wsl_as_root",
+    input: { kind: "command", command: "wsl -u root apt-get install -y jq" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_wsl_as_root_long_option",
+    input: { kind: "command", command: "wsl --user=root apt-get update" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_verb_open_is_not_admin",
+    input: { kind: "command", command: "Start-Process notepad -Verb Open" },
+    ruleId: null,
+  },
+  {
+    name: "admin_start_process_verb_print_is_not_admin",
+    input: { kind: "command", command: "Start-Process report.pdf -Verb Print" },
+    ruleId: null,
+  },
+  {
+    name: "admin_start_process_runas_inside_arguments_is_not_admin",
+    input: {
+      kind: "command",
+      command: "Start-Process cmd -ArgumentList '-Verb RunAs'",
+    },
+    ruleId: null,
+  },
+  {
+    name: "admin_start_process_verbose_is_not_admin",
+    input: { kind: "command", command: "Start-Process cmd -Verbose" },
+    ruleId: null,
+  },
+  {
+    name: "admin_start_process_in_quotes_is_not_admin",
+    input: { kind: "command", command: "echo \"Start-Process cmd -Verb RunAs\"" },
+    ruleId: null,
+  },
+  {
+    name: "admin_find_exec_without_an_elevator_is_not_admin",
+    input: {
+      kind: "command",
+      command: "find . -name '*sudo*' -exec ls -l {} +",
+    },
+    ruleId: null,
+  },
+  {
+    name: "admin_time_without_an_elevator_is_not_admin",
+    input: { kind: "command", command: "time -p make" },
+    ruleId: null,
+  },
+  {
+    name: "admin_wsl_as_another_user_is_not_admin",
+    input: { kind: "command", command: "wsl -u dev ls" },
+    ruleId: null,
+  },
+  {
+    name: "admin_wsl_user_option_of_the_inner_command_is_not_admin",
+    input: { kind: "command", command: "wsl ls -u root" },
     ruleId: null,
   },
   {
@@ -2927,7 +3068,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "ee4ff927216f7fcafe0ca078afe91c81f10f68935a8a379c51179724d6a6f131";
+  "d3ed0e412c1f324db40727cf00a8575ab6ed48d2eeeb8c9528eea20ea623a21f";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
