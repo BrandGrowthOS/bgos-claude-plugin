@@ -53,7 +53,7 @@ function memoryTrust() {
   return {
     pins, floors, used,
     read: async (userId: string) => ({ accountPublic: pins.get(userId) ?? null, revisionFloor: floors.get(userId) ?? 0, approvalUsed: (id: string) => used.has(id) }),
-    commit: async (c: { userId: string; accountPublic: string; revision: number; requestId?: string }) => {
+    commit: async (c: { userId: string; accountPublic: string; revision: number; requestId?: string; approvalUntil?: number }) => {
       if (pins.has(c.userId) && pins.get(c.userId) !== c.accountPublic) throw Object.assign(new Error('x'), { code: 'vault_account_key_changed' })
       pins.set(c.userId, c.accountPublic)
       floors.set(c.userId, Math.max(floors.get(c.userId) ?? 0, c.revision))
@@ -160,8 +160,11 @@ test('review finding 1: an approval is used once and only before it expires', as
   const yes = approve(r.acct, r.phone.id, fields)
   assert.equal(await code(openPersonFill({ ...r.redeemed, approval: yes }, r.ctx)), 'ok')
   assert.equal(await code(openPersonFill({ ...r.redeemed, approval: yes }, r.ctx)), 'vault_approval_used', 'a replayed approval')
-  const old = approve(r.acct, r.phone.id, { ...fields, requestId: 'req-10', expiresAt: '2026-11-13T09:59:00.000Z' })
-  assert.equal(await code(openPersonFill({ ...r.redeemed, approval: old }, r.ctx)), 'vault_approval_expired')
+  const old = approve(r.acct, r.phone.id, { ...fields, requestId: 'req-10', expiresAt: '2026-11-13T09:58:50.000Z' })
+  assert.equal(await code(openPersonFill({ ...r.redeemed, approval: old }, r.ctx)), 'vault_approval_expired', 'past its expiry and the ticket life after it')
+  // Answered in the request's last seconds: the ticket it made lives 60 s more, and is still good.
+  const late = approve(r.acct, r.phone.id, { ...fields, requestId: 'req-13', expiresAt: '2026-11-13T09:59:30.000Z' })
+  assert.equal(await code(openPersonFill({ ...r.redeemed, approval: late }, r.ctx)), 'ok')
   const odd = approve(r.acct, r.phone.id, { ...fields, requestId: 'req-11', expiresAt: 'tomorrow' })
   assert.equal(await code(openPersonFill({ ...r.redeemed, approval: odd }, r.ctx)), 'vault_approval_expired')
   const ms = approve(r.acct, r.phone.id, { ...fields, requestId: 'req-12', expiresAt: Date.parse('2026-11-13T10:05:00.000Z') })
@@ -206,12 +209,16 @@ test('the fill trust file: first use pins, the same key passes, another key is r
     await loadOrCreateHostKey(dir, AGENT)
     const A = 'A'.repeat(43)
     assert.deepEqual(await readFillTrustPlain(dir, OWNER), { accountPublic: null, revisionFloor: 0, used: false })
-    await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 7, requestId: 'req-1' }, undefined, testSecurity)
+    await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 7, requestId: 'req-1', approvalUntil: Date.now() + 60_000 }, undefined, testSecurity)
     assert.deepEqual(await readFillTrustPlain(dir, OWNER), { accountPublic: A, revisionFloor: 7, used: true })
     await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 5 }, undefined, testSecurity)
     assert.equal((await readFillTrustPlain(dir, OWNER)).revisionFloor, 7, 'never lowered')
     await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: 'B'.repeat(43), revision: 8 }, undefined, testSecurity), (e: any) => e.code === 'vault_account_key_changed')
-    await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 8, requestId: 'req-1' }, undefined, testSecurity), (e: any) => e.code === 'vault_approval_used')
+    await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 8, requestId: 'req-1', approvalUntil: Date.now() + 60_000 }, undefined, testSecurity), (e: any) => e.code === 'vault_approval_used')
+    // A used approval is kept until it could no longer be accepted anyway, then let go.
+    await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 8, requestId: 'req-old', approvalUntil: Date.now() - 1 }, undefined, testSecurity)
+    const kept = JSON.parse(readFileSync(join(dir, 'vault-host.json'), 'utf8')).fillTrust[OWNER].usedApprovals.map((u: any) => u.requestId)
+    assert.deepEqual(kept, ['req-1'], 'the expired one is not kept')
     await commitFillTrust(dir, { userId: LEO, accountPublic: 'C'.repeat(43), revision: 1 }, undefined, testSecurity)
     await assert.rejects(commitFillTrust(dir, { userId: 'bad id', accountPublic: A, revision: 1 }, undefined, testSecurity))
     await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: 'not a key!', revision: 1 }, undefined, testSecurity))

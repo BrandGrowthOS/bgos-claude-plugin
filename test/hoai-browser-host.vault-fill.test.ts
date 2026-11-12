@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { BrowserHostCore, BrowserPool, browserPathsFor, runPersonVaultFill, sweepEndedShares } from '../bin/hoai-browser-host.mjs'
+import { BrowserHostCore, BrowserPool, browserPathsFor, fillIdsOf, fillTabIdOf, runPersonVaultFill, sweepEndedShares } from '../bin/hoai-browser-host.mjs'
 import { RemoteBrowserViews } from '../lib/remote-view.mjs'
 import { vaultHostDir } from '../lib/vault-host.mjs'
 import { confirmHostPin, loadOrCreateHostKey, provisionSigningIdentity, registerHostKey, testSecurity } from './helpers/vault-host.mjs'
@@ -135,6 +135,29 @@ test('refused before anything is redeemed: the owner\'s turn, stale ids, another
     assert.equal(await reason(PERSON, { ticket: 'short', sessionId, tabId, origin: ORIGIN }), 'bad_input')
     assert.equal(await reason(PERSON, { ticket: TICKET, sessionId, tabId, origin: 'http://bank.example.com' }), 'bad_input')
     assert.equal(called, 0)
+  } finally { r.done() }
+})
+
+test('the target is the acting person\'s own browser: the owner\'s or another person\'s session and tab ids are refused', async () => {
+  let called = 0
+  const ownerPages = [fakePage()]
+  const r = core({ vaultFill: async () => { called += 1; return { filled: true } } })
+  try {
+    await r.pool.acquire(PERSON)
+    const ownerSlot = await r.pool.acquire(OWNER_CTX)
+    const ben = { ...PERSON, principal: 'user-user_Ben1' }
+    const benSlot = await r.pool.acquire(ben)
+    const reason = async (args: any) => JSON.parse(textOf(await r.core.callTool(PERSON, 'hoai_vault_fill', args))).reason
+    for (const slot of [ownerSlot, benSlot]) {
+      const ids = fillIdsOf(slot.engine)
+      const tab = fillTabIdOf(slot.engine, slot.engine.pages()[0])
+      assert.equal(await reason({ ticket: TICKET, sessionId: ids.sessionId, tabId: tab, origin: ORIGIN }), 'stale_target')
+      // Leo's own session id with another browser's tab id: refused too.
+      const leo = await idsFor(r.core, PERSON)
+      assert.equal(await reason({ ticket: TICKET, sessionId: leo.sessionId, tabId: tab, origin: ORIGIN }), 'stale_target')
+    }
+    assert.equal(called, 0)
+    void ownerPages
   } finally { r.done() }
 })
 
