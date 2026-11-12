@@ -83,7 +83,7 @@ import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault
 import { deletePersonBrowserProfile, personShareEnded, principalDirName } from '../lib/person-browser-profile.mjs'
 import { HostFillError, openPersonFill } from '../lib/agent-host-vault-fill.mjs'
 import { fillLoginInPage } from '../lib/agent-host-page-fill.mjs'
-import { hostPinStatus, pinAccountKey, readHostRecord, vaultHostDir } from '../lib/vault-host.mjs'
+import { commitFillTrust, hostPinStatus, readFillTrust, readHostRecord, vaultHostDir } from '../lib/vault-host.mjs'
 import { ensureBrowser, bundledChromium, browserBootstrapReadiness, browserInstallActivity, cancelBrowserInstallations, whenBrowserInstallationsDrained } from '../lib/browser-bootstrap.mjs'
 import { terminateBrowserDaemon } from '../lib/browser-profile-daemon-stop.mjs'
 import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../lib/agent-inventory.mjs'
@@ -2367,6 +2367,8 @@ export function toolResult(result) {
 export const VAULT_FILL_RUNNING = 'A saved login is being filled into this page right now, so nothing can read or drive the browser until it is done. Try again in a few seconds.'
 /** How long a fill waits for a browser call already running. */
 export const VAULT_FILL_DRAIN_MS = 5_000
+/** The longest one fill may hold a browser: the redeem (30 s at most) and the sign in wait (15 s), with room. */
+export const VAULT_FILL_DEADLINE_MS = 75_000
 
 const fillIdentities = new WeakMap()
 
@@ -2447,7 +2449,10 @@ export async function runPersonVaultFill({ pairing, agentRoot, assistantId, acti
   try {
     values = await openPersonFill(redeemed, {
       assistantId, ownerUserId: pairing.ownerUserId, actingUserId, origin, hostSeed: record.hostSeed,
-      pinFor: (userId, accountPublic) => pinAccountKey(dir, userId, accountPublic, undefined, security),
+      trust: {
+        read: (userId) => readFillTrust(dir, userId, undefined, security),
+        commit: (c) => commitFillTrust(dir, c, undefined, security),
+      },
     })
   } catch (err) {
     return { filled: false, reason: typeof err?.code === 'string' && /^[a-z_]{1,64}$/.test(err.code) ? err.code : 'vault_unverified' }
@@ -2476,27 +2481,36 @@ export async function runPersonVaultFill({ pairing, agentRoot, assistantId, acti
  * daemon kept in their lane's revoke marker) and delete their folders. The
  * owner is never one. Returns the people swept.
  */
-export async function sweepEndedShares({ pool, agentRoot, isOwnerPrincipal = /** @type {(ctx: any) => boolean} */ (() => false), log = /** @type {(line: string) => void} */ (() => {}) }) {
-  const swept = []
+export async function sweepEndedShares({ pool, agentRoot, isOwnerPrincipal = /** @type {(ctx: any) => boolean} */ (() => false), log = /** @type {(line: string) => void} */ (() => {}), listDir = defaultListDir }) {
+  const swept = new Set()
+  const ended = (assistantId, userId) => !isOwnerPrincipal({ assistantId, principal: `user-${userId}` }) && personShareEnded({ agentRoot, assistantId, userId })
+  // A browser still open for such a person closes first.
   for (const slot of [...(pool._slots?.values?.() ?? [])]) {
     const m = /^user-(user_[A-Za-z0-9_-]{1,240})$/.exec(String(slot.principal ?? ''))
-    if (!m || !slot.assistantId) continue
+    if (!m || !slot.assistantId || !ended(slot.assistantId, m[1])) continue
     const ctx = { assistantId: slot.assistantId, principal: slot.principal }
-    if (isOwnerPrincipal(ctx)) continue
-    if (!personShareEnded({ agentRoot, assistantId: slot.assistantId, userId: m[1] })) continue
     try {
       await pool.release(ctx)
     } catch {
-      log(`a browser of a person whose share ended did not close cleanly`)
+      log('a browser of a person whose share ended did not close cleanly')
     }
-    try {
-      deletePersonBrowserProfile({ agentRoot, assistantId: slot.assistantId, userId: m[1] })
-    } catch {}
     pool._slots?.delete?.(pool.slotKey(ctx))
-    log(`the share of a person on agent ${slot.assistantId} ended: their browser was closed and its folders deleted`)
-    swept.push(m[1])
   }
-  return swept
+  // Then the folders of every person whose share ended, open or not: a close
+  // can write a folder again after the owner's daemon removed it.
+  for (const id of listDir(agentRoot).filter((name) => /^[1-9][0-9]{0,15}$/.test(name))) {
+    for (const userId of listDir(join(agentRoot, id, 'people')).filter((name) => /^user_[A-Za-z0-9_-]{1,240}$/.test(name))) {
+      if (!ended(Number(id), userId)) continue
+      let removed = []
+      try {
+        removed = deletePersonBrowserProfile({ agentRoot, assistantId: id, userId })
+      } catch {}
+      if (removed.length === 0) continue
+      log(`the share of a person on agent ${id} ended: their browser folders were deleted`)
+      swept.add(userId)
+    }
+  }
+  return [...swept]
 }
 
 export class BrowserHostCore {
@@ -2510,6 +2524,8 @@ export class BrowserHostCore {
     this.postSessionCard = postSessionCard
     /** A person's saved login fill (runPersonVaultFill through BrowserHost), or null: hoai_vault_fill answers not_available. */
     this.vaultFill = vaultFill
+    /** The longest a fill may hold a browser (VAULT_FILL_DEADLINE_MS); then that browser is closed. */
+    this.vaultFillDeadlineMs = VAULT_FILL_DEADLINE_MS
     /** A browsing card is the owner's: another person's or a room's browsing is not told in the owner's chat. */
     this.isOwnerPrincipal = isOwnerPrincipal
     this.intentCheck = intentCheck
@@ -3069,7 +3085,21 @@ export class BrowserHostCore {
         new Promise((resolve) => { timer = setTimeout(() => resolve(false), VAULT_FILL_DRAIN_MS); timer.unref?.() }),
       ]).finally(() => clearTimeout(timer))
       if (!settled) return receipt(false, 'browser_busy')
-      const done = await this.vaultFill({ assistantId: ctx.assistantId, actingUserId: person[1], ticket: a.ticket, sessionId: a.sessionId, tabId: a.tabId, origin, page, engine: slot.engine })
+      // A page that never lets go (an alert, a busy loop) must not hold the
+      // browser forever: at the deadline the browser that may hold the value
+      // is closed, and only then is the hold let go.
+      let deadline
+      const fill = Promise.resolve().then(() => this.vaultFill({ assistantId: ctx.assistantId, actingUserId: person[1], ticket: a.ticket, sessionId: a.sessionId, tabId: a.tabId, origin, page, engine: slot.engine }))
+      const done = await Promise.race([
+        fill,
+        new Promise((resolve) => { deadline = setTimeout(() => resolve({ timedOut: true }), this.vaultFillDeadlineMs); deadline.unref?.() }),
+      ]).finally(() => clearTimeout(deadline))
+      if (done?.timedOut) {
+        void fill.catch(() => {})
+        this._log(`vault fill for agent ${ctx.assistantId}: the page did not finish in time; closing that browser`)
+        await this.pool.release(ctx).catch(() => this._log('vault fill: the browser did not close cleanly'))
+        return receipt(false, 'timed_out')
+      }
       return done?.filled === true ? receipt(true) : receipt(false, typeof done?.reason === 'string' && /^[a-z_]{1,64}$/.test(done.reason) ? done.reason : 'not_filled')
     } catch (err) {
       this._log(`vault fill for agent ${ctx.assistantId}: refused (${err instanceof HostFillError ? err.code : 'error'})`)

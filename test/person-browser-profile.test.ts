@@ -35,7 +35,7 @@ function home() {
   const agentRoot = join(dir, '.bgos-agent')
   const make = (principal: string) => {
     const p = browserPathsFor({ agentRoot, assistantId: 1076, principal })
-    for (const d of [p.profileDir, p.outputDir]) { mkdirSync(d, { recursive: true }); writeFileSync(join(d, 'Cookies'), 'made-up') }
+    for (const d of [p.profileDir, p.outputDir, p.heldDir]) { mkdirSync(d, { recursive: true }); writeFileSync(join(d, 'Cookies'), 'made-up') }
     return p
   }
   return { dir, agentRoot, make, done: () => rmSync(dir, { recursive: true, force: true }) }
@@ -45,7 +45,8 @@ test('the person\'s folders are exactly the host\'s for user-<id>', () => {
   const h = home()
   try {
     const p = browserPathsFor({ agentRoot: h.agentRoot, assistantId: 1076, principal: 'user-user_Ana1' })
-    assert.deepEqual(personBrowserDirs({ agentRoot: h.agentRoot, assistantId: 1076, userId: 'user_Ana1' }), [p.profileDir, p.outputDir])
+    // The profile, its page output and its downloads (review finding 5: held/ sits inside the downloads folder).
+    assert.deepEqual(personBrowserDirs({ agentRoot: h.agentRoot, assistantId: 1076, userId: 'user_Ana1' }), [p.profileDir, p.outputDir, join(p.heldDir, '..')])
     assert.equal(typeof principalDirName, 'function', 'the host still exports it')
   } finally { h.done() }
 })
@@ -57,9 +58,9 @@ test('delete removes that person\'s profile only', () => {
     const ben = h.make('user-user_Ben1')
     const owner = h.make('owner')
     const removed = deletePersonBrowserProfile({ agentRoot: h.agentRoot, assistantId: 1076, userId: 'user_Ana1' })
-    assert.deepEqual(removed, [ana.profileDir, ana.outputDir])
-    assert.ok(!existsSync(ana.profileDir) && !existsSync(ana.outputDir))
-    for (const kept of [ben.profileDir, owner.profileDir, owner.outputDir]) assert.ok(existsSync(kept), kept)
+    assert.deepEqual(removed, [ana.profileDir, ana.outputDir, join(ana.heldDir, '..')])
+    assert.ok(!existsSync(ana.profileDir) && !existsSync(ana.outputDir) && !existsSync(ana.heldDir))
+    for (const kept of [ben.profileDir, ben.heldDir, owner.profileDir, owner.outputDir, owner.heldDir]) assert.ok(existsSync(kept), kept)
     assert.deepEqual(deletePersonBrowserProfile({ agentRoot: h.agentRoot, assistantId: 1076, userId: 'user_Ana1' }), [], 'nothing left')
     assert.throws(() => deletePersonBrowserProfile({ agentRoot: h.agentRoot, assistantId: 1076, userId: 'user_Own1', ownerUserId: 'user_Own1' }), 'never the owner')
     for (const bad of ['../owner', '', 'user_x/../../y']) {
@@ -124,6 +125,6 @@ test('the lane daemon deletes on its own lane_revoked only when the share ended,
     assert.deepEqual(laneRevokedProfileCleanup({ assistantId: 1076, actorUserId: 'user_Ben1', reason: 'share_revoked' }, lane, h.agentRoot), [])
     assert.deepEqual(laneRevokedProfileCleanup({ assistantId: 9, actorUserId: 'user_Ana1', reason: 'share_revoked' }, lane, h.agentRoot), [])
     assert.ok(existsSync(ana.profileDir))
-    assert.deepEqual(laneRevokedProfileCleanup({ assistantId: 1076, actorUserId: 'user_Ana1', reason: 'view_removed' }, lane, h.agentRoot), [ana.profileDir, ana.outputDir])
+    assert.deepEqual(laneRevokedProfileCleanup({ assistantId: 1076, actorUserId: 'user_Ana1', reason: 'view_removed' }, lane, h.agentRoot), [ana.profileDir, ana.outputDir, join(ana.heldDir, '..')])
   } finally { h.done() }
 })

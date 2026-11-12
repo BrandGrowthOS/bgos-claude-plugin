@@ -50,7 +50,7 @@ export function account() {
 /**
  * @param {{ ownerId: string, assistantId: number, hostSeed: string, acct: ReturnType<typeof account>,
  *   items?: Array<{ id?: string, website: string, username: string, password: string, kind?: string, source?: string, hostAssistantId?: number }>,
- *   people?: any[], enabled?: boolean, revision?: number }} o
+ *   people?: any[], enabled?: boolean, revision?: number, retiredDeviceIds?: string[] }} o
  */
 export function signedState(o) {
   const signer = o.acct.devices[0] ?? o.acct.addDevice()
@@ -67,7 +67,9 @@ export function signedState(o) {
       hosts: [{ assistantId: hostId, publicKey: u(hostPub), key: wrapTo(hostPub, itemKey, vaultContext(base, 'host', `${id}:${hostId}`)) }],
     }
   })
-  const body = { ...base, enabled: o.enabled ?? true, items, grants: [], retiredDeviceIds: [], devices: [], signerDeviceId: signer.id, action: 'people', ...(o.people ? { people: o.people } : {}) }
+  // The owner's signed device list: every device of the account when the state is signed.
+  const signedDevices = o.acct.devices.map((d) => ({ deviceId: d.id, key: { nonce: 'x', ciphertext: 'x', ephemeralPublic: 'x' } }))
+  const body = { ...base, enabled: o.enabled ?? true, items, grants: [], retiredDeviceIds: o.retiredDeviceIds ?? [], devices: signedDevices, signerDeviceId: signer.id, action: 'people', ...(o.people ? { people: o.people } : {}) }
   const signature = u(sign(null, Buffer.from('hoai-vault-state-v2\n' + canonical(body)), o.acct.keys.get(signer.id)))
   return { ...body, signature }
 }

@@ -24,6 +24,9 @@ import {
   LANE_VAULT_WAITING_SENTENCE,
 } from '../lib/lane-browser.ts'
 import { LANE_BROWSER_TOOL_NAMES } from '../lib/lane-policy.mjs'
+import { LANE_ANSWER_NOT_SENTENCES, LANE_NOTICE_SENTENCES, singleFlight } from '../lib/lane-daemon.ts'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 class HttpError extends Error {
   constructor(readonly status: number, readonly body: string) { super(`HTTP ${status}`) }
@@ -257,4 +260,35 @@ test('refresh tells Claude Code when the served list changed', async () => {
   await t.refresh()
   assert.equal(changed.length, 1)
   assert.ok((await t.list()).some((tool: any) => tool.name === 'browser_navigate'))
+})
+
+/**
+ * The browser tool list asks for the lane session as the boot does, at the
+ * same moment (Claude lists the tools right after the daemon connects). Two
+ * callers must share one mint: the ticket is single use, and the second
+ * caller used to find it gone and end the lane on its first launch.
+ */
+test('ensureSession is single flight: concurrent callers share one mint', async () => {
+  let mints = 0
+  let release!: (v: boolean) => void
+  const once = singleFlight(() => { mints += 1; return new Promise<boolean>((r) => { release = r }) })
+  const a = once()
+  const b = once()
+  release(true)
+  assert.deepEqual(await Promise.all([a, b]), [true, true])
+  assert.equal(mints, 1)
+  const c = once()
+  release(false)
+  assert.equal(await c, false)
+  assert.equal(mints, 2, 'a later call mints again')
+  const src = readFileSync(join(import.meta.dirname, '..', 'lane-server.ts'), 'utf8')
+  assert.match(src, /const ensureSessionOnce = singleFlight\(ensureSessionNow\)/)
+  assert.match(src, /async function ensureSession\(\): Promise<boolean> \{\n\s+if \(session && storedSessionUsable\(session, LANE, Date\.now\(\)\)\) return true\n\s+return ensureSessionOnce\(\)\n\}/)
+})
+
+test('the sentence a waiting fill posts is never taken for an answer at the next boot', () => {
+  assert.ok(LANE_ANSWER_NOT_SENTENCES.includes(LANE_VAULT_WAITING_SENTENCE))
+  for (const s of LANE_NOTICE_SENTENCES) assert.ok(LANE_ANSWER_NOT_SENTENCES.includes(s))
+  const src = readFileSync(join(import.meta.dirname, '..', 'lane-server.ts'), 'utf8')
+  assert.match(src, /laneHistoryAnsweredAfter\(after, d\.messageId, LANE_ANSWER_NOT_SENTENCES\)/)
 })

@@ -125,7 +125,7 @@ import {
   laneHistoryAnsweredAfter,
   laneHistoryDeliveryState,
   laneHistoryPathFor,
-  LANE_NOTICE_SENTENCES,
+  LANE_ANSWER_NOT_SENTENCES,
   LANE_HISTORY_READ_ATTEMPTS,
   LANE_HISTORY_READ_TIMEOUT_MS,
   LANE_HISTORY_RETRY_MS,
@@ -141,6 +141,7 @@ import {
   readTicketFile,
   scrubLaneDaemonEnv,
   selectLaneBacklog,
+  singleFlight,
   storedSessionUsable,
   type LaneDelivery,
   type LaneInboxState,
@@ -285,6 +286,14 @@ async function mintWithTicket(ticket: string): Promise<boolean> {
 }
 
 async function ensureSession(): Promise<boolean> {
+  if (session && storedSessionUsable(session, LANE, Date.now())) return true
+  return ensureSessionOnce()
+}
+
+// The boot and the browser tool list ask at the same moment: one mint for both (0.90.0).
+const ensureSessionOnce = singleFlight(ensureSessionNow)
+
+async function ensureSessionNow(): Promise<boolean> {
   if (session && storedSessionUsable(session, LANE, Date.now())) return true
   session = null
   const stored = readJson(SESSION_PATH)
@@ -1009,7 +1018,7 @@ async function answeredAtServer(backlog: LaneDelivery[]): Promise<{ answered: Se
       return
     }
     const after = await readHistory(laneHistoryAfterPathFor(d), d.messageId)
-    const said = after === undefined ? null : laneHistoryAnsweredAfter(after, d.messageId, LANE_NOTICE_SENTENCES)
+    const said = after === undefined ? null : laneHistoryAnsweredAfter(after, d.messageId, LANE_ANSWER_NOT_SENTENCES)
     if (said === false) return
     answered.add(d.messageId)
     if (said === null) unsure.add(d.messageId)
