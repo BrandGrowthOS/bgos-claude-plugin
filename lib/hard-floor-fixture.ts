@@ -2407,6 +2407,181 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     },
     ruleId: "sends_data_off",
   },
+  // A file delete whose files come from somewhere else: from xargs, from
+  // find's exec family, or, for PowerShell's Remove-Item and its aliases,
+  // from a pipe.
+  {
+    name: "file_delete_fed_by_xargs",
+    input: { kind: "command", command: "find . -name '*.tmp' | xargs rm" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_xargs_null_separated",
+    input: {
+      kind: "command",
+      command: "find . -name '*.pyc' -print0 | xargs -0 rm -f",
+    },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_xargs_from_a_file",
+    input: { kind: "command", command: "xargs rm < list.txt" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_xargs_with_a_placeholder",
+    input: { kind: "command", command: "ls *.tmp | xargs -I {} rm -f {}" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_xargs_with_a_glued_placeholder",
+    input: { kind: "command", command: "ls *.tmp | xargs -I{} rm {}" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_xargs_through_a_wrapper",
+    input: { kind: "command", command: "ls *.tmp | xargs nice rm" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_xargs_after_an_optional_value_option",
+    input: { kind: "command", command: "ls *.tmp | xargs --max-lines rm" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_xargs_after_a_replace_string_option",
+    input: { kind: "command", command: "ls *.tmp | xargs -J % rm %" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_by_find_exec",
+    input: {
+      kind: "command",
+      command: "find . -name '*.tmp' -exec rm {} \\;",
+    },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_by_find_execdir_in_batches",
+    input: {
+      kind: "command",
+      command: "find . -type f -mtime +7 -execdir rm -- {} +",
+    },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_by_find_ok",
+    input: {
+      kind: "command",
+      command: "find . -name '*.orig' -ok rm {} \\;",
+    },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_powershell_pipeline",
+    input: {
+      kind: "command",
+      command: "Get-ChildItem -Filter *.tmp | Remove-Item",
+    },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_pipeline_into_ri",
+    input: { kind: "command", command: "gci *.bak | ri" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_pipeline_into_del",
+    input: { kind: "command", command: "dir *.tmp | del" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_pipeline_into_rm",
+    input: { kind: "command", command: "Get-ChildItem *.tmp | rm" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_pipeline_into_rmdir",
+    input: { kind: "command", command: "Get-ChildItem *.log | rmdir" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_pipeline_after_a_filter_block",
+    input: {
+      kind: "command",
+      command:
+        "Get-ChildItem *.tmp | Where-Object { $_.Length -eq 0 } | Remove-Item",
+    },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_pipeline_after_brackets",
+    input: { kind: "command", command: "(Get-ChildItem *.tmp) | Remove-Item" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_pipeline_across_a_line_break",
+    input: { kind: "command", command: "Get-ChildItem *.tmp |\n  Remove-Item" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_pipeline_with_a_path_block",
+    input: {
+      kind: "command",
+      command: "Get-ChildItem *.tmp | Remove-Item -Path { $_.FullName }",
+    },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_xargs_echo_is_not_a_delete",
+    input: { kind: "command", command: "find . -name '*.tmp' | xargs echo rm" },
+    ruleId: null,
+  },
+  {
+    name: "file_delete_find_exec_echo_is_not_a_delete",
+    input: {
+      kind: "command",
+      command: "find . -name '*.tmp' -exec echo rm {} \\;",
+    },
+    ruleId: null,
+  },
+  {
+    name: "file_delete_xargs_rmdir_of_empty_folders_is_not_a_file_delete",
+    input: {
+      kind: "command",
+      command: "find . -mindepth 1 -type d -empty | xargs rmdir",
+    },
+    ruleId: null,
+  },
+  {
+    name: "file_delete_xargs_git_rm_cached_is_not_a_delete",
+    input: {
+      kind: "command",
+      command: "git ls-files -z | xargs -0 git rm --cached",
+    },
+    ruleId: null,
+  },
+  {
+    name: "file_delete_pipeline_into_a_reader_is_not_a_delete",
+    input: {
+      kind: "command",
+      command: "Get-ChildItem *.tmp | Select-Object -ExpandProperty FullName",
+    },
+    ruleId: null,
+  },
+  {
+    name: "file_delete_pipeline_into_a_copy_is_not_a_delete",
+    input: {
+      kind: "command",
+      command: "Get-ChildItem *.tmp | Copy-Item -Destination backup",
+    },
+    ruleId: null,
+  },
+  {
+    name: "file_delete_rm_feeding_a_pipe_is_not_fed",
+    input: { kind: "command", command: "rm --help | head -n 5" },
+    ruleId: null,
+  },
   {
     name: "admin_and_folder_delete_names_the_delete",
     input: { kind: "command", command: "sudo rm -rf /var/cache/app" },
@@ -2752,7 +2927,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "f758cc9ec8e7a6c37ea17c31c049727bad0cb8397d88e6698075319a463af6d6";
+  "ee4ff927216f7fcafe0ca078afe91c81f10f68935a8a379c51179724d6a6f131";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
