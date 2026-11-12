@@ -43,7 +43,7 @@ function fakePage(url = `${ORIGIN}/login`) {
   return { url: () => url, title: async () => 'Sign in', isClosed: () => false }
 }
 
-function core(opts: { vaultFill?: any; pages?: any[] } = {}) {
+function core(opts: { vaultFill?: any; pages?: any[]; deadlineMs?: number } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'hvf-'))
   const pages = opts.pages ?? [fakePage()]
   const calls: string[] = []
@@ -61,6 +61,7 @@ function core(opts: { vaultFill?: any; pages?: any[] } = {}) {
   })
   const tools = ['browser_snapshot', 'browser_navigate'].map((name) => ({ name, description: '', inputSchema: { type: 'object', properties: {} } }))
   const c: any = new BrowserHostCore({ pool, browserTools: tools, deviceLabel: 'box-1', isOwnerPrincipal: (ctx: any) => ctx.principal === 'owner' || ctx.principal === `user-${OWNER}`, vaultFill: opts.vaultFill ?? null } as any)
+  if (opts.deadlineMs) c.vaultFillDeadlineMs = opts.deadlineMs
   c._runHeld = async (verdict: any) => verdict.run ? verdict.run() : { content: [{ type: 'text', text: 'ran' }] }
   c._permit = async () => ({ allowed: true })
   return { home, pool, core: c, calls, done: () => rmSync(home, { recursive: true, force: true }) }
@@ -137,6 +138,21 @@ test('refused before anything is redeemed: the owner\'s turn, stale ids, another
   } finally { r.done() }
 })
 
+test('review finding 4: a fill that never ends closes that browser and lets go of the page at the deadline', async () => {
+  const r = core({ vaultFill: () => new Promise(() => {}), deadlineMs: 50 })
+  try {
+    await r.pool.acquire(PERSON)
+    const { sessionId, tabId } = await idsFor(r.core, PERSON)
+    const answer = JSON.parse(textOf(await r.core.callTool(PERSON, 'hoai_vault_fill', { ticket: TICKET, sessionId, tabId, origin: ORIGIN })))
+    assert.deepEqual(answer, { filled: false, reason: 'timed_out' })
+    assert.equal(r.pool.peek(PERSON), null, 'the browser that held the value was closed')
+    const slot = (r.pool as any)._slots.get(r.pool.slotKey(PERSON))
+    assert.equal(slot.vaultHold, null)
+    assert.equal(slot.ownerInputLease, null)
+    assert.match(textOf(await r.core.callTool(PERSON, 'browser_snapshot', {})), /ran/, 'the next call opens a fresh browser')
+  } finally { r.done() }
+})
+
 test('the live view sends no frame while a login is being filled', () => {
   const page = fakePage()
   const engine: any = { pages: () => [page] }
@@ -204,7 +220,7 @@ test('the redeem goes out with the agent\'s own pairing, then the login is opene
     assert.equal(h.handBacks.length, 1, 'the page is released once the login document is gone')
     assert.doesNotMatch(JSON.stringify(receipt), /made-up-secret/)
     const record = JSON.parse(readFileSync(join(h.dir, 'vault-host.json'), 'utf8'))
-    assert.ok(record.accountPins[OWNER], 'the owner\'s account key is pinned on first use')
+    assert.ok(record.fillTrust[OWNER].accountPublic, 'the owner\'s account key is pinned on first use')
   } finally { h.done() }
 })
 
@@ -256,5 +272,24 @@ test('a person whose share ended loses an open browser and its folders; others k
     assert.ok(!existsSync(leoPaths.profileDir))
     assert.ok(r.pool.peek(ben), 'another person keeps theirs')
     assert.ok(existsSync(benPaths.profileDir))
+  } finally { r.done() }
+})
+
+test('review finding 6: the sweep also removes folders of an ended share with no browser open (one written again after a close)', async () => {
+  const r = core()
+  try {
+    const agentRoot = join(r.home, '.bgos-agent')
+    const leoPaths = browserPathsFor({ agentRoot, assistantId: AGENT, principal: PERSON.principal })
+    mkdirSync(leoPaths.profileDir, { recursive: true })
+    const marker = join(agentRoot, String(AGENT), 'people', LEO, 'revoked.json')
+    mkdirSync(join(marker, '..'), { recursive: true })
+    writeFileSync(marker, JSON.stringify({ reason: 'revoked', shareReason: 'view_removed' }))
+    const benPaths = browserPathsFor({ agentRoot, assistantId: AGENT, principal: 'user-user_Ben1' })
+    mkdirSync(benPaths.profileDir, { recursive: true })
+    mkdirSync(join(agentRoot, String(AGENT), 'people', 'user_Ben1'), { recursive: true })
+    assert.deepEqual(await sweepEndedShares({ pool: r.pool, agentRoot, log: () => {} }), [LEO])
+    assert.ok(!existsSync(leoPaths.profileDir))
+    assert.ok(existsSync(benPaths.profileDir), 'no marker, kept')
+    assert.deepEqual(await sweepEndedShares({ pool: r.pool, agentRoot, log: () => {} }), [], 'nothing left to do')
   } finally { r.done() }
 })

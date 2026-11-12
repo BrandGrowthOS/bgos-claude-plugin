@@ -35,6 +35,7 @@ import {
   LANE_NOTICES,
 } from './lane-core.mjs'
 import { buildInboundChannel } from './inbound-channel.js'
+import { LANE_VAULT_WAITING_SENTENCE } from './lane-browser.ts'
 
 /** What a lane daemon knows about itself, from its environment. */
 export interface LaneDaemonConfig {
@@ -462,6 +463,26 @@ export const LANE_HISTORY_AFTER_LIMIT = 50
  * message acknowledged for them too, though they answer nothing.
  */
 export const LANE_NOTICE_SENTENCES: readonly string[] = Object.freeze(Object.values(LANE_NOTICES as Record<string, string>))
+
+/**
+ * The agent rows that answer nothing at a boot's history check: the fixed
+ * notices, and the one sentence a fill that waits for the owner posts
+ * (lib/lane-browser.ts, 0.90.0), which comes before the turn's real answer.
+ */
+export const LANE_ANSWER_NOT_SENTENCES: readonly string[] = Object.freeze([...LANE_NOTICE_SENTENCES, LANE_VAULT_WAITING_SENTENCE])
+
+/**
+ * One run at a time: a call while one is in flight shares its answer (the
+ * lane session's mint spends a single use ticket, so two at once would end a
+ * lane on its first launch). A later call runs again.
+ */
+export function singleFlight<T>(run: () => Promise<T>): () => Promise<T> {
+  let inFlight: Promise<T> | null = null
+  return () => {
+    if (!inFlight) inFlight = run().finally(() => { inFlight = null })
+    return inFlight
+  }
+}
 
 /** The history page for exactly one message of a chat. */
 export function laneHistoryPathFor(d: { chatId: string; messageId: number }): string {

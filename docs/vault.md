@@ -85,9 +85,12 @@ of it takes or returns a value.
 `sessionId` and `tabId` are the ones `hoai_browser_status` shows on a
 person's turn. The host refuses unless this host is set up and pinned
 (`hoai vault-host`), the owner's signed state verifies against the account key
-pinned here on first use (`accountPins` in `vault-host.json`), the person and
-the login are in the signed `people`, and, when the fill had to ask, the
-owner's signed approval verifies. It holds the page private from before the
+pinned here on first use (`fillTrust` in `vault-host.json`, written only after
+a fill passed every check), the state is not older than one verified before,
+the person and the login are in the signed `people`, and, when the fill had to
+ask, the owner's signed approval verifies, from a device in the owner's signed
+device list, before it expires, and only once. A fill that runs past 75
+seconds closes that browser. It holds the page private from before the
 redeem until the login page is gone (or its fields were emptied) and answers
 `{filled: true}` or `{filled: false, reason}`.
 
