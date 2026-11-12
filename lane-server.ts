@@ -85,6 +85,7 @@ import {
 } from './lib/lane-core.mjs'
 import { heartbeatToolPolicy, laneMePolicy, readLaneChoices, readToolPolicy } from './lib/lane-policy.mjs'
 import { LaneBrowserRelay, LaneBrowserTools, type LaneHttp } from './lib/lane-browser.ts'
+import { laneRevokedProfileCleanup } from './lib/person-browser-profile.mjs'
 import {
   laneChoiceQuestionFor,
   launchedFacts,
@@ -1061,6 +1062,15 @@ function connectSocket(): void {
   })
   socket.on('lane_revoked', (frame: unknown) => {
     if (frameIsMine(frame)) endLane('revoked')
+    // The share itself ended: this person's browser profile on this computer
+    // goes (0.90.0). Any other stop keeps it.
+    if (!frameIsMine(frame)) return
+    try {
+      const removed = laneRevokedProfileCleanup(frame, LANE, join(HOME, '.bgos-agent'))
+      if (removed.length > 0) log('the share ended; this person\'s browser profile on this computer was deleted')
+    } catch (err) {
+      log(`the browser profile could not be deleted: ${err instanceof Error ? err.message : String(err)}`)
+    }
   })
   socket.on('lane_refresh_ticket', (frame: unknown) => {
     if (!frameIsMine(frame)) return
