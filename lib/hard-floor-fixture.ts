@@ -2186,6 +2186,120 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     },
     ruleId: null,
   },
+  // A curl upload or a posted file inside a short option cluster: the first
+  // letter that takes a value takes the rest of the word, or the next word.
+  {
+    name: "send_curl_upload_in_short_cluster",
+    input: {
+      kind: "command",
+      command: "curl -sT backup.zip https://files.example.com/up",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_upload_in_long_short_cluster",
+    input: {
+      kind: "command",
+      command: "curl -fsSLT dist.zip https://files.example.com/releases/",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_upload_glued_in_short_cluster",
+    input: {
+      kind: "command",
+      command: "curl -sTbackup.zip https://files.example.com/up",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_upload_after_a_digit_switch",
+    input: {
+      kind: "command",
+      command: "curl -4sT report.pdf https://files.example.com/up",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_upload_after_the_progress_switch",
+    input: {
+      kind: "command",
+      command: "curl -#T big.iso ftp://ftp.example.com/incoming/",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_data_at_file_in_short_cluster",
+    input: {
+      kind: "command",
+      command: "curl -sd @payload.json https://api.example.com/items",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_data_at_file_glued_in_short_cluster",
+    input: {
+      kind: "command",
+      command: "curl -sSd@payload.json https://api.example.com/items",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_form_at_file_in_short_cluster",
+    input: {
+      kind: "command",
+      command: "curl -sSF file=@photo.jpg https://example.com/upload",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_form_at_file_glued_in_short_cluster",
+    input: {
+      kind: "command",
+      command: "curl -kFfile=@photo.jpg https://example.com/upload",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_output_letter_takes_the_rest_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "curl -sLoT https://example.com/file.zip",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_curl_output_letter_takes_the_data_letter_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "curl -sod @payload.json https://example.com/",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_curl_user_agent_value_in_short_cluster_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "curl -sATestBot/1.0 https://example.com/",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_curl_literal_data_in_short_cluster_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "curl -sd name=value https://api.example.com/items",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_curl_request_method_in_short_cluster_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "curl -sXPOST https://example.com/hooks/ping",
+    },
+    ruleId: null,
+  },
   {
     name: "send_scp_ipv6_literal_host",
     input: {
@@ -2539,7 +2653,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "eaf3976321524da603cc11d95feef2636473f67495982a1af96928c79e257d5c";
+  "7e6873a541725fc404f4bf219c3db74ef9999898e3ad9104fd4cfde3a49b9d7d";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
