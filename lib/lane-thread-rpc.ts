@@ -77,6 +77,7 @@ import type { SpawnStreamJson } from './stream-json-child.ts'
 import { isSessionId, THREAD_LANE_READ_ONLY_TOOLS, type ThreadLaneConfinement } from './thread-lane-args.ts'
 import type { ThreadLaneDeps, ThreadLaneFs, ThreadTurnInput } from './thread-lanes.ts'
 import { THREAD_CLOSE, THREAD_TURN, threadClosePayload, threadRefusal, threadTurnPayload } from './thread-rpc.ts'
+import { readSenderGuardrailField } from './inbound-channel.ts'
 
 export { LANE_THREADS_TOKEN } from './lane-core.mjs'
 
@@ -193,7 +194,11 @@ export class LaneThreadRpcHandler {
     let result: LaneThreadResult
     try {
       if (frame.op === THREAD_TURN) {
-        const answer = this.deps.threads.turn(threadTurnPayload(frame.payload, frame.chatId))
+        // The owner's guardrail for this person (review F5), in its own field,
+        // put in front of the turn as the main chat's is (threadTurnPrompt).
+        const input = threadTurnPayload(frame.payload, frame.chatId)
+        const guardrail = readSenderGuardrailField(frame.payload)
+        const answer = this.deps.threads.turn(guardrail ? { ...input, senderGuardrail: guardrail } : input)
         result = { ok: true, payload: { accepted: true, state: answer.state } }
       } else {
         await this.deps.threads.close(threadClosePayload(frame.payload))

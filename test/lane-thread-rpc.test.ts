@@ -45,6 +45,8 @@ import {
   type LaneThreadEffects,
   type LaneThreadFacts,
 } from '../lib/lane-thread-rpc.ts'
+import { buildSenderGuardrailMarker } from '../lib/inbound-channel.ts'
+import { threadTurnPrompt } from '../lib/thread-lane-args.ts'
 import { ThreadLaneManager, threadsPendingPath, type ThreadTurnInput } from '../lib/thread-lanes.ts'
 import { assertConfined, threadLaneArgs } from '../lib/thread-lane-args.ts'
 import { normalizeVoiceRpc } from '../lib/voice-rpc.ts'
@@ -613,4 +615,46 @@ test('the command builder refuses a person\'s confinement that lost its floor ho
   assert.throws(() => build({}), /hook/)
   assert.throws(() => build({ PreToolUse: [] }), /hook/)
   assert.throws(() => build({ PreToolUse: floor, Stop: [] }), /hook/)
+})
+
+// ── The owner's guardrail for this person rides their thread turn (review F5) ──
+
+const RIDER = "Standing instruction from this agent's owner about the person you are talking to: only finance questions."
+
+test('a thread turn frame\'s senderGuardrail is handed to the lane\'s threads; none, no key', async () => {
+  const h = handler()
+  await h.handle.handle(frame(ANA, 'thread_turn', { ...TURN_PAYLOAD, senderGuardrail: `  ${RIDER}  ` }))
+  assert.deepEqual(h.turns, [{ chatId: '55', rootId: '101', replyId: '202', mode: 'start', text: 'hello', title: 'A thread', rootText: 'the root', senderGuardrail: RIDER }])
+  const plain = handler()
+  await plain.handle.handle(frame(ANA, 'thread_turn', { ...TURN_PAYLOAD, senderGuardrail: '   ' }))
+  assert.equal('senderGuardrail' in plain.turns[0]!, false)
+})
+
+test('the guardrail is put in front of the person\'s thread turn exactly as the main chat puts it, never in their words', async () => {
+  const r = rig()
+  r.manager.turn(turn('101', { senderGuardrail: RIDER }))
+  await r.manager.idle()
+  const sent = r.spawned[0]!.child.stdin.join('')
+  const marker = buildSenderGuardrailMarker(RIDER)
+  assert.ok(sent.includes(JSON.stringify(marker).slice(1, -1)), 'the main chat\'s own marker')
+  const content = JSON.parse(sent.trim().split('\n')[0]!).message.content as string | Array<{ text: string }>
+  const textSent = typeof content === 'string' ? content : content.map((c) => c.text).join('')
+  assert.ok(textSent.startsWith(`${marker}\n\n`), 'in front of the turn')
+  assert.ok(textSent.endsWith('look at 101'), 'the person\'s words follow unchanged')
+  // A reply in the thread carries it too.
+  assert.ok(threadTurnPrompt({ mode: 'reply', text: 'and now?', title: 'T', rootText: 'r', senderGuardrail: RIDER }).startsWith(`${marker}\n\n`))
+  assert.equal(threadTurnPrompt({ mode: 'reply', text: 'and now?', title: 'T', rootText: 'r' }), 'and now?', 'without one, exactly as before')
+})
+
+test('a replayed turn keeps its guardrail in a person\'s lane, and the owner\'s daemon reads none', async () => {
+  const row = { chatId: '55', rootId: '104', replyId: '1049', mode: 'reply', text: 'hi', title: 'T', rootText: 'root', assistantId: AGENT, lane: `person:${ANA}`, senderGuardrail: RIDER }
+  const mine = rig()
+  assert.equal(await mine.manager.reconcile(async () => ({ turns: [row] }), { assistantIds: [AGENT], lane: `person:${ANA}` }), 1)
+  await mine.manager.idle()
+  assert.ok(mine.spawned[0]!.child.stdin.join('').includes(JSON.stringify(buildSenderGuardrailMarker(RIDER)).slice(1, -1)))
+  const owner = rig()
+  const { lane: _drop, ...unstamped } = row
+  assert.equal(await owner.manager.reconcile(async () => ({ turns: [unstamped] }), { assistantIds: [AGENT] }), 1)
+  await owner.manager.idle()
+  assert.equal(owner.spawned[0]!.child.stdin.join('').includes('Guardrail from this agent'), false)
 })
