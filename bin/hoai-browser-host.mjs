@@ -43,6 +43,19 @@
  * one person's logins to another, so an unreadable principal refuses the call
  * instead of falling back to the owner's profile.
  *
+ * A PERSON'S SAVED LOGIN (0.90.0, BGOS plan 2026-11-13 section 4.3): on a
+ * person's turn the relay may send `hoai_vault_fill {ticket, sessionId,
+ * tabId, origin}`. The host checks the ids it showed that person in
+ * hoai_browser_status and the tab's origin, begins page secrecy (no other
+ * browser call, no input, no live view frame), redeems the ticket with the
+ * agent's own pairing, verifies the owner's signed state against the account
+ * key pinned here, the person, the item and the owner's signed yes when the
+ * fill had to ask (lib/agent-host-vault-fill.mjs), opens the login with this
+ * host's key, types it, presses Sign in and waits until the login document is
+ * gone, emptying the fields if it is not (lib/agent-host-page-fill.mjs), then
+ * releases the page. It answers a receipt and never a value. A person whose
+ * share ended loses an open browser and its folders (sweepEndedShares).
+ *
  * No credential is ever logged. Import-safe: main() runs only when this file
  * is executed directly, so the tests drive every piece in process.
  *
@@ -67,6 +80,10 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve, posix as posix
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { EventEmitter } from 'node:events'
 import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
+import { deletePersonBrowserProfile, personShareEnded, principalDirName } from '../lib/person-browser-profile.mjs'
+import { HostFillError, openPersonFill } from '../lib/agent-host-vault-fill.mjs'
+import { fillLoginInPage } from '../lib/agent-host-page-fill.mjs'
+import { hostPinStatus, pinAccountKey, readHostRecord, vaultHostDir } from '../lib/vault-host.mjs'
 import { ensureBrowser, bundledChromium, browserBootstrapReadiness, browserInstallActivity, cancelBrowserInstallations, whenBrowserInstallationsDrained } from '../lib/browser-bootstrap.mjs'
 import { terminateBrowserDaemon } from '../lib/browser-profile-daemon-stop.mjs'
 import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../lib/agent-inventory.mjs'
@@ -205,6 +222,8 @@ export const REFUSED_RETRY_MIN_MS = 60_000
 export const REFUSED_RETRY_MAX_MS = 15 * 60_000
 /** A pairing added or removed on this machine is noticed within this. */
 export const CREDENTIALS_RESCAN_MS = 60_000
+/** How often the host looks for a person whose share ended (their lane's revoke marker). */
+export const ENDED_SHARE_SWEEP_MS = 10_000
 /** How often a daemon-started host checks that its daemon is still alive. */
 export const PARENT_CHECK_MS = 2_000
 
@@ -505,10 +524,6 @@ export function createManagedProfileRelay({ core, deviceLabel, serverInfo = { na
 
 // ── Principal and profile paths ──────────────────────────────────────────────
 
-const CANONICAL_PRINCIPAL = /^[a-z0-9][a-z0-9_-]{0,63}$/
-// Names Windows reserves for devices, with or without an extension.
-const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/
-
 /**
  * The principal a frame is served as, or a refusal.
  *
@@ -538,33 +553,8 @@ export function readFramePrincipal(frame) {
   return { ok: true, principal: p, fallback: false }
 }
 
-/**
- * The directory name for a principal. INJECTIVE, including on a
- * case-insensitive file system (the macOS and Windows defaults):
- *
- *   - a principal that is already a safe lowercase name (`owner`,
- *     `user-42`) is used as is. Such names contain no dot;
- *   - anything else (upper case, as in every Clerk id, a dot, a slash, a
- *     space, non-ASCII) becomes `<readable>.<sha256 of the exact string>`.
- *     The dot cannot occur in the first form, so the two forms never meet,
- *     and the digest is of the untouched string, so two principals that
- *     read the same after folding still differ. Every character is lower
- *     case, so a case-insensitive disk cannot merge two names either.
- *
- * Never contains a path separator and is never `.` or `..`.
- */
-export function principalDirName(principal) {
-  const p = String(principal)
-  if (CANONICAL_PRINCIPAL.test(p) && !WINDOWS_DEVICE_NAME.test(p)) return p
-  let readable = p
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '_')
-    .replace(/^[_-]+/, '')
-    .slice(0, 24)
-  if (!readable || WINDOWS_DEVICE_NAME.test(readable)) readable = `p_${readable}`
-  const digest = createHash('sha256').update(p, 'utf8').digest('hex').slice(0, 32)
-  return `${readable}.${digest}`
-}
+/** The directory name for a principal (lib/person-browser-profile.mjs). */
+export { principalDirName }
 
 /** A positive safe integer assistant id, or null. */
 export function assistantIdOrNull(value) {
@@ -2194,7 +2184,7 @@ export class BrowserPool {
     const key = this.slotKey(ctx)
     let slot = this._slots.get(key)
     if (!slot) {
-      slot = { paths, engine: null, starting: null, idleTimer: null, purpose: null, openedAt: null }
+      slot = { paths, engine: null, starting: null, idleTimer: null, purpose: null, openedAt: null, assistantId: ctx.assistantId, principal: ctx.principal }
       this._slots.set(key, slot)
     }
     while (slot.stopping) await slot.stopping
@@ -2371,6 +2361,144 @@ export function toolResult(result) {
  * describe this host (no pane, gates answered as a card, one profile per
  * principal).
  */
+// ── A person's saved login fill (0.90.0) ─────────────────────────────────────
+
+/** What the agent hears for any browser call while a login is being typed. */
+export const VAULT_FILL_RUNNING = 'A saved login is being filled into this page right now, so nothing can read or drive the browser until it is done. Try again in a few seconds.'
+/** How long a fill waits for a browser call already running. */
+export const VAULT_FILL_DRAIN_MS = 5_000
+
+const fillIdentities = new WeakMap()
+
+/** The session id vault_fill names this browser by, stable for the engine's life. */
+export function fillIdsOf(engine) {
+  let ids = fillIdentities.get(engine)
+  if (!ids) {
+    ids = { sessionId: `vs_${randomUUID().replace(/-/g, '')}`, tabs: new WeakMap() }
+    fillIdentities.set(engine, ids)
+  }
+  return ids
+}
+
+/** The tab id vault_fill names one page by. */
+export function fillTabIdOf(engine, page) {
+  const ids = fillIdsOf(engine)
+  let tab = ids.tabs.get(page)
+  if (!tab) {
+    tab = `tab_${randomUUID().replace(/-/g, '')}`
+    ids.tabs.set(page, tab)
+  }
+  return tab
+}
+
+function fillIdsLine(engine) {
+  const pages = (engine?.pages?.() ?? []).filter((p) => !p.isClosed?.())
+  const tabs = pages.map((p, i) => `${i} ${fillTabIdOf(engine, p)}`).join(', ')
+  return `For vault_fill: sessionId ${fillIdsOf(engine).sessionId}, tabId of each tab: ${tabs || '(none)'}.`
+}
+
+/** The most bytes a redeem answer may have. */
+const REDEEM_MAX_BYTES = 2_500_000
+
+/**
+ * One person's fill, after the host core checked the target and began page
+ * secrecy (BrowserHostCore._vaultFill), in the contract's order (BGOS plan
+ * 2026-11-13 section 4.3): the agent's host key must be set up and pinned
+ * here; the ticket is redeemed with the agent's OWN pairing (POST
+ * /api/v1/vault/host/fills/<ticket>/redeem {assistantId, actingUserId,
+ * sessionId, tabId, origin}); the answer passes every check of
+ * lib/agent-host-vault-fill.mjs (the signed state against the pinned account
+ * key, the person and the item, the owner's signed yes when it had to ask)
+ * and is opened with this host's key; the value is registered as a secret of
+ * this browser, typed, Sign in pressed, and the login document awaited
+ * (lib/agent-host-page-fill.mjs). Answers a receipt; never a value.
+ */
+export async function runPersonVaultFill({ pairing, agentRoot, assistantId, actingUserId, ticket, sessionId, tabId, origin, page, engine, fetchImpl = globalThis.fetch, pageFill = fillLoginInPage, security = undefined }) {
+  const dir = vaultHostDir(join(agentRoot, String(assistantId)))
+  let record
+  try {
+    record = await readHostRecord(dir, undefined, security)
+  } catch {
+    return { filled: false, reason: 'vault_host_unavailable' }
+  }
+  if (!record) return { filled: false, reason: 'vault_host_not_set_up' }
+  if (hostPinStatus(record) !== 'pinned') return { filled: false, reason: 'vault_host_not_pinned' }
+  let redeemed
+  try {
+    const res = await fetchImpl(`${backendBase(pairing.backendUrl)}/api/v1/vault/host/fills/${encodeURIComponent(ticket)}/redeem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-BGOS-Pairing': pairing.token },
+      body: JSON.stringify({ assistantId, actingUserId, sessionId, tabId, origin }),
+      redirect: 'error',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(RESULT_POST_TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      try { await res.body?.cancel?.() } catch {}
+      return { filled: false, reason: 'redeem_refused' }
+    }
+    const raw = await res.text()
+    if (raw.length > REDEEM_MAX_BYTES) return { filled: false, reason: 'redeem_unreadable' }
+    redeemed = JSON.parse(raw)
+  } catch {
+    return { filled: false, reason: 'redeem_unreadable' }
+  }
+  let values = null
+  try {
+    values = await openPersonFill(redeemed, {
+      assistantId, ownerUserId: pairing.ownerUserId, actingUserId, origin, hostSeed: record.hostSeed,
+      pinFor: (userId, accountPublic) => pinAccountKey(dir, userId, accountPublic, undefined, security),
+    })
+  } catch (err) {
+    return { filled: false, reason: typeof err?.code === 'string' && /^[a-z_]{1,64}$/.test(err.code) ? err.code : 'vault_unverified' }
+  }
+  try {
+    // Every later answer of this browser hides the value, whatever a page does with it.
+    engine?.registerSecret?.(values.password)
+    const done = await pageFill(page, { username: values.username, password: values.password }, { origin })
+    // The engine's own privacy (lib/browser-host-core/answer-privacy.js) made
+    // the page private the moment a secret field had a value. The login
+    // document is gone now, or its fields were emptied: the host releases the
+    // page itself, as the owner's Hand back does, because nobody is there to
+    // press it on a person's unattended fill. A page that needs a reload stays
+    // private.
+    let released = null
+    try { released = engine?.handBackPrivacy?.(page) ?? null } catch { released = { ok: false } }
+    const kept = released && released.ok === false ? { private: 'kept' } : {}
+    return done?.filled === true ? { filled: true, ...kept } : { filled: false, reason: typeof done?.reason === 'string' ? done.reason : 'not_filled', ...kept }
+  } finally {
+    values = null
+  }
+}
+
+/**
+ * Close the browser of every person whose share ENDED (the reason the owner's
+ * daemon kept in their lane's revoke marker) and delete their folders. The
+ * owner is never one. Returns the people swept.
+ */
+export async function sweepEndedShares({ pool, agentRoot, isOwnerPrincipal = /** @type {(ctx: any) => boolean} */ (() => false), log = /** @type {(line: string) => void} */ (() => {}) }) {
+  const swept = []
+  for (const slot of [...(pool._slots?.values?.() ?? [])]) {
+    const m = /^user-(user_[A-Za-z0-9_-]{1,240})$/.exec(String(slot.principal ?? ''))
+    if (!m || !slot.assistantId) continue
+    const ctx = { assistantId: slot.assistantId, principal: slot.principal }
+    if (isOwnerPrincipal(ctx)) continue
+    if (!personShareEnded({ agentRoot, assistantId: slot.assistantId, userId: m[1] })) continue
+    try {
+      await pool.release(ctx)
+    } catch {
+      log(`a browser of a person whose share ended did not close cleanly`)
+    }
+    try {
+      deletePersonBrowserProfile({ agentRoot, assistantId: slot.assistantId, userId: m[1] })
+    } catch {}
+    pool._slots?.delete?.(pool.slotKey(ctx))
+    log(`the share of a person on agent ${slot.assistantId} ended: their browser was closed and its folders deleted`)
+    swept.push(m[1])
+  }
+  return swept
+}
+
 export class BrowserHostCore {
   /**
    * `browserTools` is the served browser_ roster, or a function that loads
@@ -2378,8 +2506,10 @@ export class BrowserHostCore {
    * resident), and an idle host that never receives a frame should not pay
    * for it, so it is loaded on the first tools/list or tools/call.
    */
-  constructor({ pool, browserTools, deviceLabel, gates = /** @type {any} */ (null), downloadStore = /** @type {((assistantId: number) => any) | null} */ (null), postSessionCard = /** @type {any} */ (null), isOwnerPrincipal = /** @type {((ctx: any) => boolean) | null} */ (null), intentCheck = /** @type {((assistantId: number, sessionId: string, body: any) => Promise<any>) | null} */ (null), log = () => {} }) {
+  constructor({ pool, browserTools, deviceLabel, gates = /** @type {any} */ (null), downloadStore = /** @type {((assistantId: number) => any) | null} */ (null), postSessionCard = /** @type {any} */ (null), isOwnerPrincipal = /** @type {((ctx: any) => boolean) | null} */ (null), intentCheck = /** @type {((assistantId: number, sessionId: string, body: any) => Promise<any>) | null} */ (null), vaultFill = /** @type {((input: any) => Promise<any>) | null} */ (null), log = () => {} }) {
     this.postSessionCard = postSessionCard
+    /** A person's saved login fill (runPersonVaultFill through BrowserHost), or null: hoai_vault_fill answers not_available. */
+    this.vaultFill = vaultFill
     /** A browsing card is the owner's: another person's or a room's browsing is not told in the owner's chat. */
     this.isOwnerPrincipal = isOwnerPrincipal
     this.intentCheck = intentCheck
@@ -2839,6 +2969,9 @@ export class BrowserHostCore {
   async callTool(ctx, name, args, signal) {
     // What finally leaves this host, whoever built it. Captured first: a close can drop the engine during this call.
     const said = this.pool.peek(ctx)?.engine?.resultRedactor?.() || ((value) => value)
+    // PAGE SECRECY (0.90.0): while a saved login is typed into this browser,
+    // nothing reads or drives it. Status only (it shows no page content).
+    if (this.pool.peek(ctx)?.vaultHold && name !== 'hoai_browser_status') return said(errorResult('vault_fill_running', VAULT_FILL_RUNNING))
     try {
       const pendingSubmit = name.startsWith('browser_') ? this.pool.peek(ctx)?.engine?.formSubmitRequirement?.(name, args || {}) : null
       if (refusesCompositeAction(name, args || {})) throw pendingSubmit ? submitRequired() : new HostError('not_available', FORM_CLICK_REQUIRED)
@@ -2892,7 +3025,63 @@ export class BrowserHostCore {
     if (state === 'ended') { slot.cardId = null; slot.cardSeq = 0; slot.cardStartedAt = null }
   }
 
+  /**
+   * hoai_vault_fill for a PERSON (BGOS plan 2026-11-13 section 4.3). The
+   * relay sends it only to this agent's own host, on a person's turn, with a
+   * one use ticket the lane got for exactly this session, tab and origin. The
+   * ids are the ones hoai_browser_status showed for that person's browser,
+   * and the tab must be on that origin. Page secrecy begins here, BEFORE the
+   * redeem and long before anything is typed: no other browser call on this
+   * browser, no owner or live view input (the slot's input lease is held),
+   * no live view frame (lib/remote-view.mjs), and it ends only after the
+   * login document is gone or its fields were emptied (runPersonVaultFill).
+   * Answers a receipt, never a value.
+   */
+  async _vaultFill(ctx, args) {
+    const receipt = (filled, reason) => text(JSON.stringify(filled ? { filled: true } : { filled: false, reason }))
+    if (!this.vaultFill) return receipt(false, 'not_available')
+    // The owner's own logins are filled by their desktop on their own turns; an unknown owner check is not a person.
+    if (this.isOwnerPrincipal?.(ctx) !== false) return receipt(false, 'owner_turn')
+    const person = /^user-(user_[A-Za-z0-9_-]{1,240})$/.exec(String(ctx.principal ?? ''))
+    if (!person) return receipt(false, 'not_a_person')
+    const a = args && typeof args === 'object' ? args : {}
+    const id = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v)
+    let origin = null
+    try { const u = new URL(String(a.origin)); if (u.protocol === 'https:' && u.origin === a.origin) origin = a.origin } catch {}
+    if (typeof a.ticket !== 'string' || !/^[A-Za-z0-9_-]{20,200}$/.test(a.ticket) || !id(a.sessionId) || !id(a.tabId) || !origin) return receipt(false, 'bad_input')
+    const slot = this.pool.peek(ctx)
+    if (!slot) return receipt(false, 'no_browser')
+    const ids = fillIdsOf(slot.engine)
+    const page = ids.sessionId === a.sessionId ? (slot.engine.pages?.() ?? []).find((p) => !p.isClosed?.() && fillTabIdOf(slot.engine, p) === a.tabId) : null
+    if (!page) return receipt(false, 'stale_target')
+    let pageOrigin = null
+    try { pageOrigin = new URL(page.url()).origin } catch {}
+    if (pageOrigin !== origin) return receipt(false, 'origin_mismatch')
+    if (slot.vaultHold || slot.ownerInputLease || slot.stopping) return receipt(false, 'browser_busy')
+    const hold = { kind: 'vault_fill', since: Date.now() }
+    slot.vaultHold = hold
+    slot.ownerInputLease = hold
+    try {
+      // A browser call already running finishes first (at most VAULT_FILL_DRAIN_MS).
+      let timer
+      const settled = await Promise.race([
+        Promise.allSettled([...(slot.runningTools || [])]).then(() => true),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(false), VAULT_FILL_DRAIN_MS); timer.unref?.() }),
+      ]).finally(() => clearTimeout(timer))
+      if (!settled) return receipt(false, 'browser_busy')
+      const done = await this.vaultFill({ assistantId: ctx.assistantId, actingUserId: person[1], ticket: a.ticket, sessionId: a.sessionId, tabId: a.tabId, origin, page, engine: slot.engine })
+      return done?.filled === true ? receipt(true) : receipt(false, typeof done?.reason === 'string' && /^[a-z_]{1,64}$/.test(done.reason) ? done.reason : 'not_filled')
+    } catch (err) {
+      this._log(`vault fill for agent ${ctx.assistantId}: refused (${err instanceof HostFillError ? err.code : 'error'})`)
+      return receipt(false, err instanceof HostFillError ? err.code : 'not_filled')
+    } finally {
+      if (slot.vaultHold === hold) slot.vaultHold = null
+      if (slot.ownerInputLease === hold) slot.ownerInputLease = null
+    }
+  }
+
   async _call(ctx, name, args, signal) {
+    if (name === 'hoai_vault_fill') return this._vaultFill(ctx, args)
     if (PRIVATE_PAGE_TOOLS.has(name)) return errorResult('not_available', 'This browser tool is not available. Use snapshots, element search or screenshots to read the page.')
     if (name === 'hoai_browser_open_session') {
       const slot = await this.pool.acquire(ctx)
@@ -2933,11 +3122,13 @@ export class BrowserHostCore {
       )
       return text(
         [
-          `Session on ${this.deviceLabel}: ${slot.ownerInputLease ? 'human_control' : 'agent_driving'}, login storage ${slot.engine.vault?.status().unlocked ? 'unlocked' : 'locked'}, opened ${slot.openedAt ?? 'earlier'}.`,
+          `Session on ${this.deviceLabel}: ${slot.vaultHold ? 'login_fill' : slot.ownerInputLease ? 'human_control' : 'agent_driving'}, login storage ${slot.engine.vault?.status().unlocked ? 'unlocked' : 'locked'}, opened ${slot.openedAt ?? 'earlier'}.`,
           `Purpose: ${slot.purpose ?? '(none given)'}`,
           ...(slot.engine.vault?.lastError ? ['Persistence warning: the latest browser state could not be saved encrypted. Check available disk space and retry.'] : []),
           `Tabs: ${tabs.length ? tabs.join(' | ') : '(none)'}`,
           this._pendingLine(ctx),
+          // A person's turn: the ids vault_fill names this tab by (0.90.0).
+          ...(this.isOwnerPrincipal?.(ctx) === false ? [fillIdsLine(slot.engine)] : []),
           ...downloadLines(this._downloadRows(ctx)),
         ].join('\n'),
       )
@@ -3542,6 +3733,12 @@ export class BrowserHost {
       postSessionCard: (assistantId, sessionId, payload) => this.connectionFor(assistantId)?.postSessionCard(assistantId, sessionId, payload) ?? false,
       isOwnerPrincipal: (ctx) => { const owner = this.connectionFor(ctx.assistantId)?.pairing.ownerUserId; return ctx.principal === OWNER_PRINCIPAL || (typeof owner === 'string' && ctx.principal === `user-${owner}`) },
       intentCheck: (assistantId, sessionId, body) => this.connectionFor(assistantId)?.intentCheck(sessionId, body) ?? null,
+      // A person's saved login, redeemed with the agent's OWN pairing (0.90.0).
+      vaultFill: (input) => {
+        const conn = this.connectionFor(input.assistantId)
+        if (!conn) return Promise.resolve({ filled: false, reason: 'not_connected' })
+        return runPersonVaultFill({ pairing: conn.pairing, agentRoot: this.agentRoot, fetchImpl: this._fetch, ...input })
+      },
       downloadStore: (id) => this.downloadStore(id), log })
     const version = readPackageVersion()
     this.relay = new RelaySessions({ core: this.core, serverInfo: { name: 'hoai-agent-browser', version }, instructions: hostInstructions(deviceLabel), log })
@@ -3611,6 +3808,11 @@ export class BrowserHost {
     this._downloadsTimer.unref?.()
     this._profileTimer = setInterval(() => { for (const connection of this.connections.values()) void connection.profileCompanion?.poll() }, 2000)
     this._profileTimer.unref?.()
+    // A person whose share ended loses an open browser and its folders (0.90.0).
+    this._sharesTimer = setInterval(() => {
+      void sweepEndedShares({ pool: this.pool, agentRoot: this.agentRoot, isOwnerPrincipal: (ctx) => this.core.isOwnerPrincipal?.(ctx) === true, log: this._log }).catch(() => {})
+    }, ENDED_SHARE_SWEEP_MS)
+    this._sharesTimer.unref?.()
     return this
   }
 
@@ -3684,6 +3886,8 @@ export class BrowserHost {
     installationDrain.catch(() => {})
     if (this._profileTimer) clearInterval(this._profileTimer)
     this._profileTimer = null
+    if (this._sharesTimer) clearInterval(this._sharesTimer)
+    this._sharesTimer = null
     if (this._rescanTimer) clearInterval(this._rescanTimer)
     this._rescanTimer = null
     if (this._downloadsTimer) clearInterval(this._downloadsTimer)

@@ -17869,6 +17869,7 @@ function noteLaneMisroute(transport: string, messageId: unknown, stamp: string):
 
 const LANE_OWNER_DEPS = {
   assistantId: String(ASSISTANT_ID),
+  ownerUserId: USER_ID,
   home: homedir(),
   stateRoot: process.env.BGOS_PLUGIN_STATE_DIR,
   log: (line: string) => log(`person lanes: ${line}`),
