@@ -78,7 +78,7 @@ of it takes or returns a value.
 |---|---|---|
 | List the logins the person may use | the lane, lane session | `GET /api/v1/vault/lane/items` |
 | Ask for a fill | the lane, lane session | `POST /api/v1/vault/lane/items/:itemId/fill` `{sessionId, tabId, origin}` |
-| Wait for the owner, when asked | the lane, lane session | `GET /api/v1/vault/lane/fills/:requestId` every 3 s |
+| Wait for the owner, when asked | the lane, lane session | `GET /api/v1/vault/lane/fills/:requestId` every 3 s, at most about 50 s per `vault_fill` call; then `{waiting: true, requestId}`, and a call with that `requestId` resumes |
 | Fill | the lane through the relay | `POST /api/v1/integrations/browser/mcp`, tool `hoai_vault_fill` `{ticket, sessionId, tabId, origin}` |
 | Redeem | the host, the agent's own pairing | `POST /api/v1/vault/host/fills/:ticket/redeem` `{assistantId, actingUserId, sessionId, tabId, origin}` |
 

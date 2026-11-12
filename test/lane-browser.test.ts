@@ -18,6 +18,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  LANE_VAULT_CALL_WAIT_MS,
   LANE_VAULT_TOOLS,
   LaneBrowserRelay,
   LaneBrowserTools,
@@ -48,7 +49,7 @@ type Call = { method: 'GET' | 'POST'; path: string; body?: any }
 /** A fake backend: the relay (with a host that answers MCP) and the lane vault routes. */
 function backend(opts: { hostOnline?: boolean; vault?: 'ok' | 403; fill?: any; polls?: any[]; hostReceipt?: any; pendingOnce?: boolean } = {}) {
   const calls: Call[] = []
-  const polls = [...(opts.polls ?? [])]
+  const polls = opts.polls ?? []
   let pendingLeft = opts.pendingOnce ? 1 : 0
   const answerMcp = (message: any) => {
     if (message.method === 'initialize') return { jsonrpc: '2.0', id: message.id, result: { instructions: 'host' } }
@@ -155,7 +156,8 @@ test('the vault tool descriptions say no secret is taken or returned', () => {
   assert.deepEqual(LANE_VAULT_TOOLS.map((tool) => tool.name), ['vault_items', 'vault_fill'])
   for (const tool of LANE_VAULT_TOOLS) assert.match(tool.description ?? "", /never (takes|returns)[^.]*password/i)
   const fill = LANE_VAULT_TOOLS[1]!
-  assert.deepEqual(Object.keys((fill.inputSchema as any).properties).sort(), ['itemId', 'origin', 'sessionId', 'tabId'])
+  assert.deepEqual(Object.keys((fill.inputSchema as any).properties).sort(), ['itemId', 'origin', 'requestId', 'sessionId', 'tabId'])
+  assert.deepEqual((fill.inputSchema as any).required, ['itemId', 'sessionId', 'tabId', 'origin'], 'requestId is optional')
 })
 
 test('vault_items answers metadata only, copied field by field', async () => {
@@ -291,4 +293,52 @@ test('the sentence a waiting fill posts is never taken for an answer at the next
   for (const s of LANE_NOTICE_SENTENCES) assert.ok(LANE_ANSWER_NOT_SENTENCES.includes(s))
   const src = readFileSync(join(import.meta.dirname, '..', 'lane-server.ts'), 'utf8')
   assert.match(src, /laneHistoryAnsweredAfter\(after, d\.messageId, LANE_ANSWER_NOT_SENTENCES\)/)
+})
+
+/**
+ * One vault_fill call never holds the turn for the owner's whole 10 minutes
+ * (Claude Code's MCP tool timeout may cut it, and the turn sits blocked): it
+ * waits about 50 s, then answers that it is still waiting, with the
+ * requestId to call again with. The person is told once per request.
+ */
+test('a call waits at most about 50 s, then says to call again with the requestId; that call resumes the same request', async () => {
+  const polls: any[] = Array.from({ length: 40 }, () => ({ status: 'waiting' }))
+  const b = backend({ fill: { status: 'waiting', requestId: 'req-1', expiresAt: '2026-11-13T10:10:00Z' }, polls })
+  const { t, told, now } = tools(b)
+  const start = now()
+  const args = { itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN }
+  const first = await t.call('vault_fill', args)
+  assert.equal(first.isError, undefined, 'not an error: still waiting')
+  const said = JSON.parse(textOf(first))
+  assert.deepEqual(Object.keys(said).sort(), ['filled', 'message', 'requestId', 'waiting'])
+  assert.equal(said.filled, false)
+  assert.equal(said.waiting, true)
+  assert.equal(said.requestId, 'req-1')
+  assert.match(said.message, /^Waiting for the owner to approve; call vault_fill again with requestId req-1 to continue\.$/)
+  assert.ok(now() - start <= LANE_VAULT_CALL_WAIT_MS + 3_000, `held ${now() - start} ms`)
+  assert.ok(LANE_VAULT_CALL_WAIT_MS <= 50_000)
+  assert.deepEqual(told, [LANE_VAULT_WAITING_SENTENCE])
+  assert.doesNotMatch(textOf(first), new RegExp(TICKET))
+  // The owner answers; the next call resumes the same request: no new ask, nobody told again.
+  polls.splice(0, polls.length, { status: 'ready', ticket: TICKET })
+  const second = await t.call('vault_fill', { ...args, requestId: 'req-1' })
+  assert.deepEqual(JSON.parse(textOf(second)), { filled: true })
+  assert.equal(b.calls.filter((c) => c.path === `vault/lane/items/${ITEM}/fill`).length, 1, 'one fill request only')
+  assert.deepEqual(told, [LANE_VAULT_WAITING_SENTENCE], 'told once')
+  const relayed = b.calls.find((c) => c.body?.message?.params?.name === 'hoai_vault_fill')!
+  assert.deepEqual(relayed.body.message.params.arguments, { ticket: TICKET, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })
+})
+
+test('a resumed call must name the same login, session, tab and origin as the request it resumes, and a usable requestId', async () => {
+  const b = backend({ fill: { status: 'waiting', requestId: 'req-1', expiresAt: '2026-11-13T10:10:00Z' }, polls: Array.from({ length: 40 }, () => ({ status: 'waiting' })) })
+  const { t } = tools(b)
+  const args = { itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN }
+  await t.call('vault_fill', args)
+  const before = b.calls.length
+  for (const changed of [{ tabId: 'tab_2' }, { sessionId: 'vs_2' }, { origin: 'https://other.example.com' }, { itemId: '3f1c3a4b-5d6e-4f70-8a9b-0c1d2e3f4a5b' }]) {
+    const r = await t.call('vault_fill', { ...args, ...changed, requestId: 'req-1' })
+    assert.equal(r.isError, true, JSON.stringify(changed))
+  }
+  assert.equal((await t.call('vault_fill', { ...args, requestId: '../x' })).isError, true)
+  assert.equal(b.calls.length, before, 'nothing asked for any of them')
 })
