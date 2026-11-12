@@ -4,6 +4,7 @@ import {
   buildFillIntent,
   hostPinStatus,
   loadOrCreateHostKey,
+  readHostRecord,
   signFillIntent,
   vaultCall,
   verifyFillIntent,
@@ -115,6 +116,7 @@ const MESSAGES: Record<string, string> = {
   VAULT_HOST_SETUP_REQUIRED: `This agent machine has no vault host identity yet. ${HOST_SETUP}`,
   VAULT_HOST_SETUP_PENDING: HOST_PENDING,
   VAULT_HOST_CHANGE_PENDING: HOST_CHANGE,
+  VAULT_HOST_SETUP_RETRY: 'HOAI could not be reached to finish setting up the vault on this computer. Nothing has to be typed or approved anywhere. Try once more later; do not retry in a loop and do not ask the owner to run any command.',
   VAULT_HOST_STORAGE: 'This computer could not keep its vault key file private to the agent\'s own account, so the vault is not set up here. HOAI shows the owner why. Do not retry in a loop.',
   VAULT_HOST_KEY_EXPOSED: 'The vault host key file is readable by other users, so it is not used. Ask the owner to remove it and run `hoai vault-host` in a terminal on this agent machine.',
   VAULT_HOST_KEY_INVALID: 'The vault host key file is damaged or belongs to another agent. Ask the owner to remove it and run `hoai vault-host` in a terminal on this agent machine.',
@@ -177,21 +179,21 @@ export async function handleVaultTool(name: string, args: unknown, deps: VaultTo
     // Zero setup: a machine that is not pinned yet first sets itself up (its
     // own keys, offered to the server). Where the server does not take offers
     // the answer is `off` and everything below is as it always was.
-    let host: Awaited<ReturnType<typeof loadOrCreateHostKey>> | null = null
-    let auto: { status: string; code?: string } | null = null
-    try {
-      host = await loadOrCreateHostKey(deps.stateDir, assistantId, undefined, deps.security)
-    } catch (error) {
-      if (!deps.autoHost) throw error
+    // The server is asked BEFORE any key exists here, and while that path is
+    // open nobody is sent to a terminal: a machine that cannot check in is
+    // told to try later.
+    if (deps.autoHost) {
+      const known = await readHostRecord(deps.stateDir, undefined, deps.security).catch(() => null)
+      if (!known || hostPinStatus(known) !== 'pinned') {
+        const auto = await deps.autoHost().catch(() => ({ status: 'unavailable' }))
+        if (auto.status === 'problem') throw new ToolRefusal('VAULT_HOST_STORAGE')
+        if (auto.status === 'offered') throw new ToolRefusal('VAULT_HOST_SETUP_PENDING')
+        if (auto.status === 'change_offered') throw new ToolRefusal('VAULT_HOST_CHANGE_PENDING')
+        if (auto.status !== 'installed' && auto.status !== 'off' && auto.status !== 'disabled') throw new ToolRefusal('VAULT_HOST_SETUP_RETRY')
+      }
     }
-    if (deps.autoHost && (!host || hostPinStatus(host) !== 'pinned')) {
-      auto = await deps.autoHost().catch(() => null)
-      if (auto?.status === 'problem') throw new ToolRefusal('VAULT_HOST_STORAGE')
-      host = await loadOrCreateHostKey(deps.stateDir, assistantId, undefined, deps.security)
-      if (auto?.status === 'offered') throw new ToolRefusal('VAULT_HOST_SETUP_PENDING')
-      if (auto?.status === 'change_offered') throw new ToolRefusal('VAULT_HOST_CHANGE_PENDING')
-    }
-    if (!host) throw new ToolRefusal('VAULT_UNAVAILABLE')
+    // Installed, or a server without zero setup: the first use that always was.
+    const host = await loadOrCreateHostKey(deps.stateDir, assistantId, undefined, deps.security)
     const call = (method: 'GET' | 'POST', sub: string, extra: { query?: Row; body?: Row } = {}) => {
       if (!host.signingSecret) throw new ToolRefusal('VAULT_HOST_SETUP_REQUIRED')
       return vaultCall({ method, apiBase: deps.apiBase, assistantId, sub, ...extra, signingSecret: host.signingSecret, pairingToken: deps.pairingToken, fetch: deps.fetch })

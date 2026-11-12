@@ -294,6 +294,127 @@ test('Windows: when the folder cannot be protected no key is written, and the ow
   assert.ok(!logs.join('\n').includes(dir), 'no path in the log line')
 })
 
+// -- Review findings (2026-11-12, cold read of the first build) -------------------------------
+
+// A disk whose protection check takes real time, as PowerShell does on Windows: every check yields to the
+// event loop, so two runs in one process interleave the way two processes do.
+function slowDisk(ms = 3) {
+  const w = windows()
+  return { ...w.security, async readWindowsAcl(path: string) { await new Promise((r) => setTimeout(r, ms)); return w.security.readWindowsAcl(path) } }
+}
+
+test('review 3: two runs at once end on ONE identity, and the server holds the same one as the disk', async () => {
+  const dir = tempDir()
+  const s = server()
+  const security = slowDisk()
+  // One run is slower than the other, as two processes are: without a lock each makes its own identity.
+  const [a, b] = await Promise.all([run(dir, s.fetch, { security }), run(dir, s.fetch, { security: slowDisk(11) })])
+  assert.equal(a.result.status, 'offered')
+  assert.equal(b.result.status, 'offered')
+  const record = (await readHostRecord(dir, fs, security))!
+  const offered = s.calls.filter((c) => c.method === 'POST' && c.path === `${PREFIX}/host-offer`).map((c) => JSON.parse(c.body).identityPublic)
+  assert.deepEqual([...new Set(offered)], [record.identityPublic], 'one identity was offered, the one on disk')
+  assert.equal(s.state.offer!.identityPublic, record.identityPublic)
+})
+
+test('review 3: the same on a machine that had a host key and no identity yet (an earlier tool call made it)', async () => {
+  const dir = tempDir()
+  const { loadOrCreateHostKey } = await import('./helpers/vault-host.mjs')
+  const security = slowDisk()
+  await loadOrCreateHostKey(dir, ASSISTANT, fs, security)
+  const s = server()
+  await Promise.all([run(dir, s.fetch, { security }), run(dir, s.fetch, { security: slowDisk(7) }), run(dir, s.fetch, { security: slowDisk(13) })])
+  const record = (await readHostRecord(dir, fs, security))!
+  const offered = s.calls.filter((c) => c.method === 'POST' && c.path === `${PREFIX}/host-offer`).map((c) => JSON.parse(c.body).identityPublic)
+  assert.deepEqual([...new Set(offered)], [record.identityPublic])
+})
+
+test('review 3: a lock left behind by a run that died does not block the machine for good', async () => {
+  const dir = tempDir()
+  fs.mkdirSync(join(dir, '..'), { recursive: true })
+  const lock = `${dir}.setup.lock`
+  fs.writeFileSync(lock, '')
+  const old = new Date(Date.now() - 10 * 60_000)
+  fs.utimesSync(lock, old, old)
+  const { result } = await run(dir, server().fetch)
+  assert.equal(result.status, 'offered')
+  assert.equal(fs.existsSync(lock), false, 'the lock is released')
+})
+
+test('review 4: Windows, the access list cannot be READ (a slow or blocked PowerShell): a good key is left alone', async () => {
+  const dir = tempDir()
+  const w = windows()
+  const s = server()
+  await run(dir, s.fetch, { security: w.security })
+  const before = fs.readFileSync(join(dir, VAULT_HOST_FILE_NAME), 'utf8')
+  const flaky = { ...w.security, async readWindowsAcl() { throw new Error('powershell timed out') } }
+  const { result } = await run(dir, s.fetch, { security: flaky })
+  assert.equal(result.status, 'unavailable')
+  assert.equal(fs.readFileSync(join(dir, VAULT_HOST_FILE_NAME), 'utf8'), before, 'the key file was not touched')
+  assert.deepEqual(s.state.problems, [], 'and it is not reported as exposed')
+  // An unreadable answer (not an access list at all) is the same: unknown, not exposed.
+  const garbled = { ...w.security, async readWindowsAcl() { return null } }
+  assert.equal((await run(dir, s.fetch, { security: garbled })).result.status, 'unavailable')
+  assert.equal(fs.readFileSync(join(dir, VAULT_HOST_FILE_NAME), 'utf8'), before)
+})
+
+test('review 4: a key file owned by another account is not ours to delete', { skip: !posix }, async () => {
+  const dir = tempDir()
+  const s = server()
+  await run(dir, s.fetch)
+  const before = fs.readFileSync(join(dir, VAULT_HOST_FILE_NAME), 'utf8')
+  const other = (process.getuid?.() ?? 0) + 1
+  const foreign = { ...fs, lstatSync(path: fs.PathLike) { const st = fs.lstatSync(path); return String(path).endsWith(VAULT_HOST_FILE_NAME) ? Object.assign(Object.create(Object.getPrototypeOf(st)), st, { uid: other }) : st } } as typeof fs
+  const { result } = await run(dir, s.fetch, { fs: foreign })
+  assert.equal(result.status, 'unavailable')
+  assert.equal(fs.readFileSync(join(dir, VAULT_HOST_FILE_NAME), 'utf8'), before)
+})
+
+test('review 4: a key file that belongs to another agent is reported, never deleted', async () => {
+  const dir = tempDir()
+  const { loadOrCreateHostKey } = await import('./helpers/vault-host.mjs')
+  await loadOrCreateHostKey(dir, 999)
+  const before = fs.readFileSync(join(dir, VAULT_HOST_FILE_NAME), 'utf8')
+  const s = server()
+  const { result } = await run(dir, s.fetch)
+  assert.deepEqual(result, { status: 'problem', code: 'key_invalid' })
+  assert.equal(fs.readFileSync(join(dir, VAULT_HOST_FILE_NAME), 'utf8'), before)
+})
+
+test('review 2: the tools ask the server before any key exists; while HOAI cannot be reached no key is made and nobody is sent to a terminal', async () => {
+  const dir = tempDir()
+  const s = server({ down: true })
+  const result = await handleVaultTool('vault_items', {}, toolDeps(dir, s.fetch, []))
+  const answer = JSON.parse(text(result))
+  assert.equal(answer.error, 'VAULT_HOST_SETUP_RETRY')
+  assert.doesNotMatch(answer.message, /terminal|hoai vault-host|fingerprint|paste/i)
+  assert.equal(fs.existsSync(join(dir, VAULT_HOST_FILE_NAME)), false)
+})
+
+test('review 5: a machine that is set up but could not check in is told to try later, with no terminal', async () => {
+  const dir = tempDir()
+  const s = server()
+  await run(dir, s.fetch)
+  // Keys exist, not pinned, and now the server cannot be reached.
+  const result = await handleVaultTool('vault_fill_prepare', { itemId: '0b6f2a1e-3c4d-4e5f-8a9b-0c1d2e3f4a5b', sessionId: 's', tabId: 't', origin: 'https://example.test' }, toolDeps(dir, server({ down: true }).fetch, []))
+  const answer = JSON.parse(text(result))
+  assert.equal(answer.error, 'VAULT_HOST_SETUP_RETRY')
+  assert.doesNotMatch(answer.message, /terminal|hoai vault-host|fingerprint/i)
+})
+
+test('review 2: with the feature off the probe still comes first, then the older first use stands as it was', async () => {
+  const dir = tempDir()
+  const s = server({ off: true })
+  let keyFileAtProbe: boolean | null = null
+  const watching = (async (url: string | URL, init?: RequestInit) => {
+    keyFileAtProbe ??= fs.existsSync(join(dir, VAULT_HOST_FILE_NAME))
+    return s.fetch(url as string, init)
+  }) as unknown as typeof globalThis.fetch
+  const result = await handleVaultTool('vault_items', {}, toolDeps(dir, watching, []))
+  assert.equal(JSON.parse(text(result)).error, 'VAULT_HOST_SETUP_REQUIRED')
+  assert.equal(keyFileAtProbe, false, 'no key existed when the server was asked')
+})
+
 // -- The vault tools: no terminal is ever asked for ---------------------------------------
 
 function toolDeps(dir: string, fetch: typeof globalThis.fetch, logs: string[], autoFetch = fetch) {

@@ -24,11 +24,15 @@ Where the HOAI server takes host offers (its flag `VAULT_ZERO_SETUP_ENABLED`), t
 - **The vault tools no longer send anyone to a terminal.** While the setup is finishing they answer `VAULT_HOST_SETUP_PENDING`; for a changed computer `VAULT_HOST_CHANGE_PENDING`. Neither names a command, a key or a fingerprint.
 - `hoai vault-host auto` shows the state from a command line and needs no terminal. Plain `hoai vault-host` with no signing key now tries this first and only falls back to the pasted key where the server does not take offers.
 
+- **One setup at a time.** The daemon, a tool call and `hoai vault-host auto` take turns through a lock file beside the vault folder, so two of them can never each make an identity and offer different ones. A lock left by a run that died is taken over after a minute.
+- **A key file is removed only when it is known to be unusable.** Damaged, or read as readable by another account. A file whose protection could not be read (a slow or blocked PowerShell on Windows), one another account owns, a link, or another agent's file is left exactly as it is and the run answers `unavailable`.
+- **While HOAI cannot be reached** the vault tools answer `VAULT_HOST_SETUP_RETRY` (try later, nothing to type), make no key and name no command.
+
 Nothing changes on a server without the flag: the first request answers 404, no key is made and the older flow stands. `HOAI_VAULT_AUTO_HOST=0` keeps a machine out of it.
 
 The trade, stated in HOAI's design note (`docs/superpowers/specs/2026-11-12-vault-zero-setup-design.md`): the owner's app trusts the first key it sees for an agent, so a server that is already hostile at the minute of first setup could substitute its own. Item values stay end to end encrypted, and a later change is never trusted without the owner.
 
-**Tests:** `test/vault-host-auto.test.ts` (21): keys made with no terminal and only public halves on the wire, the file modes, the pin only for this machine's own keys, a lying server, the 404 and kill switch paths, a damaged and an exposed key file, the Windows access list written before any key (with the injected reader on every OS, and for real in the Windows CI job), the three tool answers, and the daemon wiring. `test/pairing-lock-standdown.test.ts` lists `vault_host_setup` as a frame only the lock holder acts on.
+**Tests:** `test/vault-host-auto.test.ts` (30): keys made with no terminal and only public halves on the wire, the file modes, the pin only for this machine's own keys, a lying server, the 404 and kill switch paths, a damaged and an exposed key file, the Windows access list written before any key (with the injected reader on every OS, and for real in the Windows CI job), the tool answers, the daemon wiring, and the nine cases a cold review of the first build added (two and three runs at once, a stale lock, an unreadable access list, a file owned by another account, another agent's file, the server asked before any key exists). `test/pairing-lock-standdown.test.ts` lists `vault_host_setup` as a frame only the lock holder acts on.
 
 ## 0.87.4 (2026-11-11)
 

@@ -50,7 +50,11 @@ older steps below are the way.
 
 A key file another account could read is never used: it is removed, a fresh
 key is made, and the owner sees a changed computer. A folder that cannot be
-made private makes no key; HOAI tells the owner why with a fixed code.
+made private makes no key; HOAI tells the owner why with a fixed code. A file
+is removed only when that is KNOWN: one whose protection could not be read (a
+slow PowerShell), that another account owns, or that belongs to another agent
+is left alone. One setup runs at a time on a machine (a lock file beside the
+vault folder), so the daemon and a command never make two identities.
 
 What this trades: the owner's app trusts the FIRST key it sees for an agent.
 A server already hostile at that minute could substitute its own key and read
