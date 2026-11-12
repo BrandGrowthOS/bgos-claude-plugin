@@ -60,6 +60,9 @@ const D1_PAYLOAD = {
 const hookInput = (toolName: string, toolInput: unknown) =>
   JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput })
 
+/** The four most dangerous kinds, deletes counted both ways: the server's HARD_FLOOR_TOP_RULE_IDS. */
+const TOP_KINDS = ['recursive_delete', 'file_delete', 'admin_rights', 'uses_secret_key', 'sends_data_off']
+
 const stdinOf = (text: string) => Readable.from([Buffer.from(text, 'utf8')])
 
 /** A plugin state folder in which a live daemon (this test's own pid) is attached to `folder`. */
@@ -99,7 +102,11 @@ test('every fixture case a hook can see: the ask on a match, nothing otherwise',
     else if (c.input.kind === 'tool') input = hookInput(c.input.toolName, {})
     else continue // a request is the relay's input, not the hook's
     const out = decideFloorHook(input, core)
-    const rule = core.HARD_FLOOR_RULES.find((r) => r.id === c.ruleId)
+    // The hook names the MOST DANGEROUS kind the call falls under (0.87.5):
+    // a top kind when one matched, else the first in list order.
+    const kinds = c.ruleIds ?? (c.ruleId === null ? [] : [c.ruleId])
+    const leadId = kinds.find((id) => TOP_KINDS.includes(id)) ?? kinds[0]
+    const rule = core.HARD_FLOOR_RULES.find((r) => r.id === leadId)
     if (rule) {
       asked += 1
       assert.equal(out, floorAskOutput(rule.words), c.name)
@@ -170,14 +177,14 @@ test('fails open: junk, the wrong event, and a missing input print nothing', () 
 
 test('fails open: a classifier that throws, or answers nonsense, prints nothing', () => {
   const throwing = {
-    classifyToolCall: () => {
+    classifyToolCallLead: () => {
       throw new Error('boom')
     },
   }
   assert.equal(decideFloorHook(JSON.stringify(D1_PAYLOAD), throwing), '')
   for (const nonsense of [{}, { words: '' }, { words: 42 }, 'deleting', true]) {
     assert.equal(
-      decideFloorHook(JSON.stringify(D1_PAYLOAD), { classifyToolCall: () => nonsense as never }),
+      decideFloorHook(JSON.stringify(D1_PAYLOAD), { classifyToolCallLead: () => nonsense as never }),
       '',
     )
   }
@@ -310,7 +317,7 @@ const failOpenRuns: Array<[string, Parameters<typeof main>[0]]> = [
     {
       stdin: stdinOf(JSON.stringify(D1_PAYLOAD)),
       loadCore: async () => ({
-        classifyToolCall: () => {
+        classifyToolCallLead: () => {
           throw new Error('boom')
         },
       }),

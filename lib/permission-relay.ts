@@ -53,8 +53,24 @@
  * answers at all.
  */
 
-import { classifyToolCall, isOwnSendingTool, previewIsElided } from './hard-floor.js'
-import { compactFloorEvidence } from './floor-evidence.mjs'
+import {
+  classifyFloorAll,
+  classifyPermissionRequestAll,
+  classifyPermissionRequestLead,
+  classifyToolCallAll,
+  isOwnSendingTool,
+  previewIsElided,
+  readToolInput,
+  type HardFloorMatch,
+} from './hard-floor.js'
+import {
+  FLOOR_FIT_READ_BUDGET,
+  compactFloorEvidence,
+  fitFloorEvidence,
+  floorEvidenceKinds,
+  floorEvidenceParts,
+  mostRead,
+} from './floor-evidence.mjs'
 import {
   emailSendCardText,
   emailSendCardTool,
@@ -431,6 +447,18 @@ export const FLOOR_EVIDENCE_LEAD_MAX = 1500
  *     reader (which reads the first such key of a text that is not JSON)
  *     matches it. The lead is fitted to FLOOR_EVIDENCE_LEAD_MAX by dropping
  *     arguments, never the operator, with a marker saying how many went.
+ *     EVERY KIND (0.87.5): the evidence carries each kind's command, one per
+ *     line, the most dangerous first, and the card is whichever of these the
+ *     server's card reader reads the most kinds in, the top kinds counted
+ *     first: led by every kind's command (each fitted, a long word shortened
+ *     in its middle, one that cannot fit left out, never the ones after it),
+ *     led by the most dangerous kind's command alone, led the way it was
+ *     before 0.87.5 (the first kind in the list's order, its own command
+ *     fitted for it alone), or not led at all. A tie keeps the earlier one,
+ *     so a card of one kind is led as before whenever that reads as much. A
+ *     top kind the server cannot read on the card is never marked as one
+ *     that is asked about every time, and the card never reads fewer kinds
+ *     than its preview alone or than before.
  *   - anything else: the preview, capped, as before.
  *
  * And this channel's own `email_send`, an MCP tool the floor holds when the
@@ -457,21 +485,70 @@ export function permissionCardTool(input: {
     // Fitted by dropping ARGUMENTS, never the operator: a head cut of a long
     // simple command lost the redirect, the `-rf` or the `.git` destination
     // at its end, so the server stamped nothing (lib/floor-evidence.mjs).
-    const ruleId = floorLeadRule(name, key, evidence)
-    const fitted = ruleId
-      ? compactFloorEvidence({
-          toolName: name,
-          ruleId,
-          evidence,
-          max: FLOOR_EVIDENCE_LEAD_MAX,
-          measure: (text: string) => JSON.stringify({ [key]: text }).length,
-        }).evidence
-      : evidence.slice(0, FLOOR_EVIDENCE_LEAD_MAX)
+    const measure = (text: string) => JSON.stringify({ [key]: text }).length
     const writeKey = FLOOR_LEAD_WRITE_KEY[name]
-    const lead = JSON.stringify(writeKey ? { [key]: fitted, [writeKey]: '...' } : { [key]: fitted })
-    return capToolPreview(`${lead}\n${preview}`)
+    const ledBy = (fitted: string) =>
+      capToolPreview(`${JSON.stringify(writeKey ? { [key]: fitted, [writeKey]: '...' } : { [key]: fitted })}\n${preview}`)
+    const kinds = floorLeadKinds(name, evidence)
+    // Only a kind the evidence or the whole preview reads is counted: the
+    // card's own cut can leave a word ending the way a key does, which the
+    // whole word does not.
+    const real = new Set([...kinds, ...classifyPermissionRequestAll(name, preview).map((m) => m.ruleId)])
+    const read = (card: string) => cardFloorKinds(name, card).filter((m) => real.has(m.ruleId))
+    const parts = floorEvidenceParts(name, evidence)
+    // As before: the first kind in the list's order, led by its own command.
+    const firstLine = parts.find((part) => part.ruleIds.includes(kinds[0] ?? ''))?.evidence ?? evidence
+    const asBefore = ledBy(leadAsBefore(name, kinds[0], firstLine, measure))
+    const unled = capToolPreview(preview)
+    const everyKind = ledBy(fitFloorEvidence({ toolName: name, evidence, max: FLOOR_EVIDENCE_LEAD_MAX, measure }).evidence)
+    // One kind: led as before, unless the preview alone, or the command with
+    // a word too long to keep shortened in its middle, reads more.
+    if (kinds.length <= 1) return mostRead([asBefore, unled, everyKind], read, kinds[0])
+    const worst = parts[0]
+    const worstAlone = worst
+      ? ledBy(leadAsBefore(name, floorLeadKinds(name, worst.evidence)[0], worst.evidence, measure, FLOOR_FIT_READ_BUDGET))
+      : asBefore
+    return mostRead([everyKind, worstAlone, asBefore, unled], read, worst?.ruleIds[0])
   }
   return capToolPreview(preview)
+}
+
+/**
+ * A lead fitted the way it was before 0.87.5: for the first kind the evidence
+ * reads, by dropping arguments; the evidence's head when it reads none.
+ * `budget`: how many characters the dropping may read (unbounded, as before,
+ * when absent).
+ */
+function leadAsBefore(
+  name: string,
+  ruleId: string | undefined,
+  evidence: string,
+  measure: (text: string) => number,
+  budget?: number,
+): string {
+  return ruleId
+    ? compactFloorEvidence({ toolName: name, ruleId, evidence, max: FLOOR_EVIDENCE_LEAD_MAX, measure, budget }).evidence
+    : evidence.slice(0, FLOOR_EVIDENCE_LEAD_MAX)
+}
+
+/**
+ * The kinds the server's card reader reads in a card's `tool`: as JSON when
+ * it is, else by the first keys that survive in it AND as one command,
+ * whole, the way it reads a card that is not JSON.
+ */
+function cardFloorKinds(name: string, tool: string): HardFloorMatch[] {
+  const text = tool.trim()
+  if (text.startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(text)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return classifyToolCallAll(name, parsed)
+    } catch {
+      /* cut short, or a lead line then the preview: read below */
+    }
+  }
+  const byKeys = classifyToolCallAll(name, readToolInput(name, text))
+  const asCommand = classifyFloorAll({ kind: 'command', command: text }).filter((m) => !byKeys.some((k) => k.ruleId === m.ruleId))
+  return [...byKeys, ...asCommand]
 }
 
 /**
@@ -506,9 +583,21 @@ const FLOOR_LEAD_WRITE_KEY: Record<string, string> = {
   MultiEdit: 'edits',
 }
 
-/** The rule the evidence itself reads as, which is what the fitting keeps. */
-function floorLeadRule(name: string, key: string, evidence: string): string | null {
-  return classifyToolCall(name, { [key]: evidence })?.ruleId ?? null
+/** Every kind the evidence itself reads as, in list order, which is what the fitting keeps. */
+function floorLeadKinds(name: string, evidence: string): string[] {
+  return floorEvidenceKinds(name, evidence)
+}
+
+/**
+ * A card with NO floor evidence handed to it (auto approve off and no hook
+ * record: the hook failed open, or its marker was missing) is still read by
+ * the server from its first command alone, so it leads with every kind its
+ * own preview shows, most dangerous first, exactly as a held card leads with
+ * the record's. Nothing when the preview shows none.
+ */
+function previewFloorEvidence(toolName: string, inputPreview: string | undefined): string {
+  if (String(toolName ?? '').startsWith('mcp__')) return ''
+  return classifyPermissionRequestLead(toolName, inputPreview ?? '')?.evidence ?? ''
 }
 
 /**
@@ -542,7 +631,10 @@ export function buildPermissionRequestBody(
     messageType: 'approval_request',
     options: permissionApprovalOptions(input.requestId),
     approvalMeta: {
-      tool: permissionCardTool(input),
+      tool: permissionCardTool({
+        ...input,
+        floorEvidence: input.floorEvidence ?? previewFloorEvidence(input.toolName, input.inputPreview),
+      }),
       agent_route: PERMISSION_AGENT_ROUTE,
       // The CLI hands us no risk signal at all, so claiming low or high would
       // be an invention. The app hides the pill unless the owner turned
