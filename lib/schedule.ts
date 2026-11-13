@@ -36,12 +36,22 @@
  *       dayOfMonth?: number,            // 1..31, clamped to month length; REQUIRED for monthly
  *     },
  *     chatId?: number,                  // omitted = backend uses the agent's main chat
+ *     clientRequestId?: string,         // 16..100 of A-Z a-z 0-9 _ - ; see below
  *   }
  *   At least ONE of fireAt / everyHours / recurrence (backend 400 otherwise).
  *   everyHours + recurrence together is a 400. fireAt + everyHours is an
  *   ANCHORED repeat (first fire pinned at fireAt, then every N hours). The
  *   201 response is the agent task view { id, kind, topic, instruction,
  *   chatId, nextFireAt, everyHours, recurrence, status }.
+ *
+ * clientRequestId is the request's own name. The backend
+ * answers a second send of the same id with the same body by returning the
+ * first result and making nothing new; the same id with another body is a 409.
+ * An older backend either drops the field without a word or refuses it with
+ * a 400; ./schedule-send.ts handles both. The
+ * builder only checks the shape and carries the id: it never makes one (no
+ * randomness here) and never derives one from the body, because two identical
+ * routines that were both asked for must both be made.
  *
  * The tool's single `when` argument maps onto that:
  *   - ISO datetime string             -> fireAt (one-shot)
@@ -73,6 +83,9 @@ export const SCHEDULE_INSTRUCTION_MAX = 2000
 export const RECURRENCE_FREQS = ['daily', 'weekly', 'monthly'] as const
 export type RecurrenceFreq = (typeof RECURRENCE_FREQS)[number]
 
+/** The shape the backend accepts for clientRequestId (SCHEDULE_REQUEST_ID_PATTERN there). */
+export const SCHEDULE_REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,100}$/
+
 /** Backend caps: everyHours 1..8760, recurrence.interval 1..366, tz <= 64. */
 const EVERY_HOURS_MAX = 8760
 const INTERVAL_MAX = 366
@@ -99,6 +112,35 @@ export interface ScheduleCreateBody {
   everyHours?: number
   recurrence?: ScheduleRecurrence
   chatId?: number
+  /** The boards each run of a wake may use (0.86.20): the server's grant. */
+  boards?: Array<{ boardId: string; access: 'read' | 'write' }>
+  clientRequestId?: string
+}
+
+/** How many boards one schedule may name (the server's SCHEDULE_GRANT_MAX_BOARDS). */
+export const SCHEDULE_BOARDS_MAX = 10
+const BOARD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The boards a wake names, as the server reads them: one entry per board (write wins), lower case ids. An error
+ * sentence for anything else.
+ */
+function buildScheduleBoards(input: unknown, kind: unknown): { ok: true; boards: ScheduleCreateBody['boards'] } | { ok: false; error: string } {
+  if (input == null) return { ok: true, boards: undefined }
+  if (!Array.isArray(input)) return { ok: false, error: 'boards must be a list of { board_id, access } (access is read or write).' }
+  if (input.length === 0) return { ok: true, boards: undefined }
+  if (kind !== 'wake') return { ok: false, error: 'Only a wake can name boards; a call rings the owner and uses none.' }
+  const byId = new Map<string, 'read' | 'write'>()
+  for (const item of input) {
+    const raw = isPlainObject(item) ? (item.board_id ?? item.boardId) : undefined
+    const boardId = typeof raw === 'string' ? raw.trim().toLowerCase() : ''
+    if (!BOARD_ID_RE.test(boardId)) return { ok: false, error: 'Each board needs its board id (the id boards_list shows), not its name.' }
+    const access = isPlainObject(item) && item.access != null ? item.access : 'read'
+    if (access !== 'read' && access !== 'write') return { ok: false, error: "A board's access is read or write." }
+    byId.set(boardId, byId.get(boardId) === 'write' ? 'write' : access)
+  }
+  if (byId.size > SCHEDULE_BOARDS_MAX) return { ok: false, error: `A schedule can name at most ${SCHEDULE_BOARDS_MAX} boards.` }
+  return { ok: true, boards: [...byId].map(([boardId, access]) => ({ boardId, access })) }
 }
 
 export interface ScheduleCreateInput {
@@ -112,6 +154,10 @@ export interface ScheduleCreateInput {
   when?: unknown
   /** Chat to bind to. Omitted from the body unless a finite number. */
   chatId?: number | null
+  /** Optional, wakes only: [{ board_id, access }] the runs may use whoever posts meanwhile. */
+  boards?: unknown
+  /** This request's own name (16..100 of A-Z a-z 0-9 _ -), made by the caller, never derived from the body. Omitted = no id on the wire. */
+  clientRequestId?: unknown
 }
 
 export type ScheduleBuildResult =
@@ -414,6 +460,23 @@ export function buildScheduleCreateBody(input: ScheduleCreateInput): ScheduleBui
 
   if (typeof chatId === 'number' && Number.isFinite(chatId)) {
     body.chatId = chatId
+  }
+
+  const boards = buildScheduleBoards(input.boards, kind)
+  if (!boards.ok) return boards
+  if (boards.boards) body.boards = boards.boards
+
+  const { clientRequestId } = input
+  if (clientRequestId != null) {
+    if (typeof clientRequestId !== 'string' || !SCHEDULE_REQUEST_ID_PATTERN.test(clientRequestId)) {
+      return {
+        ok: false,
+        error:
+          'The add-on made a request name the server would refuse, so nothing was scheduled. ' +
+          'This is a fault in the add-on, not in your arguments: try schedule again.',
+      }
+    }
+    body.clientRequestId = clientRequestId
   }
 
   return { ok: true, body }

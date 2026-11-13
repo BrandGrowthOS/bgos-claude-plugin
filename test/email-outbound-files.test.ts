@@ -2323,20 +2323,35 @@ function r8BigWorkbook(n: number): Buffer {
   ])
 }
 
-test('review round 8: ordinary large files go: 24.9 MB of prose, a 24 MB log, a 22.5 MB CSV and a workbook of 900000 shared strings', { timeout: 180_000 }, async () => {
+test('review round 8: ordinary large files go: 24.9 MB of prose, a 24 MB log, a 22.5 MB CSV and a workbook of 900000 shared strings', { timeout: 180_000 }, async (t) => {
+  const { outboundContentVerdict } = await import('../lib/email-outbound-content.ts')
   for (const [name, build] of [
     ['notes.txt', () => r8Lines(24.9 * MB, (_, words) => `${words}\n`)],
     ['server.log.txt', () => r8Lines(24 * MB, (i, words) => `2026-10-28T03:${String(i % 60).padStart(2, '0')}:00Z INFO worker=${i % 17} ${words}\n`)],
     ['sales.csv', () => r8Lines(22.5 * MB, (i) => `2026-10-28,Widget blue large,SKU-${1234567 + i},12.50,warehouse ${i % 9}\n`)],
     ['orders.xlsx', () => r8BigWorkbook(900_000)],
   ] as const) {
-    const bytes = build()
-    const stop = await stopOf(async () => {
-      const got = await heartbeatRefusal(name, bytes)
-      assert.equal(got.why, null, `${name} (${(bytes.length / MB).toFixed(1)} MB)`)
-      return got.maxGap
+    await t.test(name, async (t) => {
+      const bytes = build()
+      const ratios: number[] = []
+      // Calibrate with the real content checks inline in this process, on these same bytes and under the same
+      // unspendable budget. A busy runner slows the calibration too. The Worker must keep its longest main thread
+      // pause below a quarter of that inline cost, rather than below a fixed number of milliseconds.
+      // Always take three paired samples: their median tolerates a scheduling or GC outlier in either measurement,
+      // while moving the content checks back onto the main thread leaves their long pauses visible in every round.
+      for (let round = 0; round < 3; round++) {
+        const started = performance.now()
+        assert.deepEqual(await outboundContentVerdict(bytes, name.endsWith('.xlsx') ? 'xlsx' : 'text', name, [], UNDER_BUDGET_MS), { kind: 'ok' }, `${name}: inline calibration`)
+        const baselineMs = performance.now() - started
+        const got = await heartbeatRefusal(name, bytes)
+        assert.equal(got.why, null, `${name} (${(bytes.length / MB).toFixed(1)} MB)`)
+        const ratio = got.maxGap / baselineMs
+        ratios.push(ratio)
+        t.diagnostic(`round ${round + 1}: inline ${baselineMs.toFixed(1)} ms, main thread gap ${got.maxGap.toFixed(1)} ms, ratio ${ratio.toFixed(3)}`)
+      }
+      const ratio = ratios.sort((a, b) => a - b)[1]!
+      assert.ok(ratio < 0.25, `${name}: median main thread pause / inline content time was ${ratio.toFixed(3)}, expected < 0.25`)
     })
-    assert.ok(stop <= 100, `${name} stopped the main thread for ${Math.round(stop)} ms`)
   }
 })
 
@@ -3937,8 +3952,11 @@ test('the swap check compares device and file numbers as bigint, on every look',
     [a, a, b, 'file number, second look'],
     [b, b, a, 'file number, second look'],
     [c, d, d, 'device, first look'],
+    [d, c, c, 'device, first look'],
     [c, d, c, 'device, the handle'],
+    [d, c, d, 'device, the handle'],
     [c, c, d, 'device, second look'],
+    [d, d, c, 'device, second look'],
   ] as const) {
     assert.equal((await readOne(path, { home, fs: reading(first, opened, second) })).error, changedSentence(path), label)
   }
@@ -3947,6 +3965,120 @@ test('the swap check compares device and file numbers as bigint, on every look',
     assert.equal(read.ok, true, JSON.stringify(read.error))
     assert.equal(read.file.size, PDF.length)
   }
+})
+
+// ── the same-file check: a number left out or zero is unknown, and then the times decide ───────────────────────
+
+/** What a bigint stat carries that the same-file check reads. A field left undefined is one the system did not give. */
+type Look = { dev?: bigint, ino?: bigint, size?: bigint, mtimeNs?: bigint, ctimeNs?: bigint, birthtimeNs?: bigint }
+
+/** An unchanged file as a bigint stat gives it: device, file number, size and the three times in ns. */
+const UNCHANGED: Look = {
+  dev: 3n, ino: 41n, size: BigInt(PDF.length),
+  mtimeNs: 1_762_300_000_123_456_789n, ctimeNs: 1_762_300_000_223_456_789n, birthtimeNs: 1_762_200_000_000_000_001n,
+}
+
+/** A file system held in memory: the path's first look, the handle's look and the path's second look, each injected. */
+function lookFs(first: Look, opened: Look, second: Look) {
+  const stat = (look: Look) => ({ isFile: () => true, ...look, size: look.size ?? BigInt(PDF.length) })
+  const looks = [first, second]
+  let n = 0
+  return {
+    realpath: async (given: string) => given,
+    lstat: async () => stat(looks[Math.min(n++, 1)]!),
+    open: async () => ({
+      stat: async () => stat(opened),
+      read: async (buffer: Uint8Array, offset: number, length: number, position: number) => {
+        const read = Math.max(0, Math.min(length, PDF.length - position))
+        buffer.set(PDF.subarray(position, position + read), offset)
+        return { bytesRead: read }
+      },
+      close: async () => {},
+    }),
+  }
+}
+
+/** Reads one file with each of its three looks injected. */
+async function readLooks(first: Look, opened: Look, second: Look): Promise<any> {
+  return readOne(`${MEM_HOME}\\Documents\\q3.pdf`, { home: MEM_HOME, fs: lookFs(first, opened, second) })
+}
+
+/** Each way one look can differ from the other two: the first look, the handle, the second look. */
+function oneLookDiffers(same: Look, other: Look): Array<[Look, Look, Look, string]> {
+  return [[other, same, same, 'first look'], [same, other, same, 'the handle'], [same, same, other, 'second look']]
+}
+
+const MEM_CHANGED = changedSentence(`${MEM_HOME}\\Documents\\q3.pdf`)
+
+test('the same-file check: a device number left out on both sides is not a match, so the times decide', async () => {
+  const noDev: Look = { ...UNCHANGED, dev: undefined }
+  for (const [label, other] of [
+    ['modified time', { ...noDev, mtimeNs: noDev.mtimeNs! + 1n }],
+    ['change time', { ...noDev, ctimeNs: noDev.ctimeNs! + 1n }],
+  ] as const) {
+    for (const [first, opened, second, where] of oneLookDiffers(noDev, other)) {
+      assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `${label}, ${where}`)
+    }
+  }
+  // A device number of zero is none, as a file number of zero is.
+  const zeroDev: Look = { ...UNCHANGED, dev: 0n }
+  for (const [first, opened, second, where] of oneLookDiffers(zeroDev, { ...zeroDev, mtimeNs: zeroDev.mtimeNs! + 1n })) {
+    assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `zero device, ${where}`)
+  }
+  // A different file number still says another file, device or not.
+  for (const [first, opened, second, where] of oneLookDiffers(noDev, { ...noDev, ino: 42n })) {
+    assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `file number, ${where}`)
+  }
+  // The controls: the same file, with no device number or a zero one, still goes.
+  for (const same of [noDev, zeroDev]) {
+    const read = await readLooks(same, same, same)
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+  }
+})
+
+test('the same-file check: with no file number (zero or left out) the size and the modified and change times in ns must all match', async () => {
+  for (const ino of [0n, undefined]) {
+    const same: Look = { ...UNCHANGED, ino }
+    for (const [label, other] of [
+      ['size', { ...same, size: same.size! + 1n }],
+      ['device number', { ...same, dev: same.dev! + 1n }],
+      ['modified time, 1 ns', { ...same, mtimeNs: same.mtimeNs! + 1n }],
+      ['change time, 1 ns', { ...same, ctimeNs: same.ctimeNs! + 1n }],
+      ['birth time, 1 ns', { ...same, birthtimeNs: same.birthtimeNs! + 1n }],
+      ['modified time left out', { ...same, mtimeNs: undefined }],
+      ['change time left out', { ...same, ctimeNs: undefined }],
+    ] as const) {
+      for (const [first, opened, second, where] of oneLookDiffers(same, other)) {
+        assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `file number ${ino}: ${label}, ${where}`)
+      }
+    }
+    // Times left out on every look prove nothing: the size alone does not pass.
+    const timeless: Look = { ...same, mtimeNs: undefined, ctimeNs: undefined, birthtimeNs: undefined }
+    assert.equal((await readLooks(timeless, timeless, timeless)).error, MEM_CHANGED, `file number ${ino}: no times at all`)
+    // The controls: an unchanged file on a drive that reports no file number goes, and so does one whose system
+    // gives no birth time (left out, or zero as Linux reports it without one) on either look.
+    const read = await readLooks(same, same, same)
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+    assert.equal(read.file.size, PDF.length)
+    for (const birthtimeNs of [undefined, 0n]) {
+      for (const [first, opened, second, where] of oneLookDiffers(same, { ...same, birthtimeNs })) {
+        const read = await readLooks(first, opened, second)
+        assert.equal(read.ok, true, `file number ${ino}: birth time ${birthtimeNs} on the ${where} only: ${JSON.stringify(read.error)}`)
+      }
+    }
+  }
+})
+
+test('the same-file check: with full numbers on every look the times are not needed', async () => {
+  const numbersOnly: Look = { dev: 3n, ino: 41n }
+  const read = await readLooks(numbersOnly, numbersOnly, numbersOnly)
+  assert.equal(read.ok, true, JSON.stringify(read.error))
+})
+
+test('the real file system export is frozen, as the other test exports are', async () => {
+  const lib = await m()
+  assert.equal(Object.isFrozen(lib.OUTBOUND_REAL_FS_FOR_TESTS), true)
+  assert.throws(() => { lib.OUTBOUND_REAL_FS_FOR_TESTS.lstat = async () => ({}) }, TypeError)
 })
 
 test('the real file system answers a stat with bigints, on a path and on an open file', async (t) => {
@@ -3959,6 +4091,9 @@ test('the real file system answers a stat with bigints, on a path and on an open
   const seen = await fs.lstat(path, { bigint: true })
   assert.equal(typeof seen.ino, 'bigint')
   assert.equal(typeof seen.dev, 'bigint')
+  // And the times in ns, which the same-file check falls back on when a drive gives no file number.
+  assert.equal(typeof seen.mtimeNs, 'bigint')
+  assert.equal(typeof seen.ctimeNs, 'bigint')
   const handle = await fs.open(path, 'r')
   try {
     const opened = await handle.stat({ bigint: true })
@@ -3966,9 +4101,25 @@ test('the real file system answers a stat with bigints, on a path and on an open
     assert.equal(typeof opened.dev, 'bigint')
     assert.equal(opened.ino, seen.ino)
     assert.equal(opened.dev, seen.dev)
+    assert.equal(opened.mtimeNs, seen.mtimeNs)
+    assert.equal(opened.ctimeNs, seen.ctimeNs)
   } finally {
     await handle.close()
   }
+  // A drive that reports no file or device number: the real stats with those two set to zero. The file was written
+  // once above and is not touched again, so it is unchanged, and the times of the real looks agree: it still goes.
+  const noNumbers = (s: any) => ({
+    isFile: () => s.isFile(), size: s.size, dev: 0n, ino: 0n, mtimeNs: s.mtimeNs, ctimeNs: s.ctimeNs, birthtimeNs: s.birthtimeNs,
+  })
+  const zeroDrive = {
+    lstat: async (p: string, options: { bigint: true }) => noNumbers(await fs.lstat(p, options)),
+    open: async (p: string, flags: 'r') => {
+      const h = await fs.open(p, flags)
+      return { stat: async (options: { bigint: true }) => noNumbers(await h.stat(options)), read: h.read, close: h.close }
+    },
+  }
+  const read = await readOne(path, { home, fs: zeroDrive })
+  assert.equal(read.ok, true, JSON.stringify(read.error))
 })
 
 test('final fix: a file swapped in place between the check and the open is refused by the handle check (the inode)', async () => {
@@ -4536,4 +4687,122 @@ test('final fix 4: a main thread stop is read over rounds: one spike passes, a s
   const within = rounds(50, 900, 900)
   assert.equal(await stopOf(within.round, 50), 50)
   assert.equal(within.left(), 2)
+})
+
+// ── the text check runs in the content Worker ──
+
+/** The refusal a .txt or .csv file gets when its bytes are not clean UTF-8 text. */
+const notTextSentence = (path: string) => `${path} is not really a text file (its contents say otherwise), so it is not attached.`
+
+/** Files named .txt or .csv whose bytes are not clean text, and clean text that sits at the edge of the rule. */
+const TEXT_EDGES: readonly (readonly [string, Buffer, boolean])[] = [
+  ['program.txt', PROGRAM, false],
+  ['latin1.csv', Buffer.from('Name,City\nAna,Mal\xe9\n', 'latin1'), false],
+  ['bell.txt', Buffer.from('Hello\x07 there\n'), false],
+  ['tab-vt.txt', Buffer.from('one\x0btwo\n'), false],
+  ['del.csv', Buffer.from('a,b\x7f\n'), false],
+  ['c1.txt', Buffer.from('Price \u0085 list\n'), false],
+  ['nul-late.csv', Buffer.concat([Buffer.from('Item,Qty\n'.repeat(5000)), Buffer.from([0])]), false],
+  ['cut.txt', Buffer.from([0x61, 0x62, 0xe2, 0x82]), false],
+  ['surrogate.txt', Buffer.from([0x61, 0xed, 0xa0, 0x80, 0x0a]), false],
+  ['overlong.txt', Buffer.from([0xc0, 0xaf, 0x0a]), false],
+  ['bom.csv', Buffer.from('\ufeffName,Qty\nChairs,12\n'), true],
+  ['spacing.txt', Buffer.from('a\tb\r\n\fc\n'), true],
+  ['world.txt', Buffer.from('Grüße aus Köln, café, 日本語, thanks 🎉\n'), true],
+  ['markup.txt', Buffer.from('<html><body>Quarterly notes</body></html>\n'), true],
+]
+
+test('a .txt or .csv file whose bytes are not clean text is refused with the same sentence as before, under any budget; clean text at the edges goes', async () => {
+  for (const [name, bytes, goes] of TEXT_EDGES) {
+    const got = await memRefusal(name, bytes)
+    assert.equal(got.why, goes ? null : notTextSentence(got.path), name)
+    // A budget already spent says nothing about a file that is not text: it is still refused as not text.
+    if (!goes) assert.equal((await memRefusal(name, bytes, { officeReadMs: OVER_BUDGET_MS })).why, notTextSentence(got.path), `${name}, over budget`)
+  }
+})
+
+/**
+ * The text rule as it was before the check moved into the Worker, copied here and frozen, so a change to the shared
+ * rule (lib/email-clean-text.ts) shows up as a change in what is accepted.
+ */
+function frozenCleanText(bytes: Uint8Array): boolean {
+  let text: string
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return false
+  }
+  return !/[\u0000-\u0008\u000B\u000E-\u001F\u007F-\u009F]/.test(text)
+}
+
+test('the text rule is unchanged: the inbound type check and the content stage both say not text exactly where the old rule did, before any budget is read', async () => {
+  const { isType } = await import('../lib/email-files.ts')
+  const { outboundContentVerdict } = await import('../lib/email-outbound-content.ts')
+  const samples: Buffer[] = TEXT_EDGES.map(([, bytes]) => bytes)
+  // Short printable lines, some with a two byte letter, and every third with one random byte put in: a fixed seed,
+  // so a run is repeatable.
+  let seed = 11
+  const next = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff)
+  for (let n = 0; n < 400; n++) {
+    const line = Array.from({ length: 1 + (next() % 24) }, () => 0x20 + (next() % 95))
+    if (n % 5 === 0) line.push(0xc3, 0xa9)
+    if (n % 3 === 0) line.splice(next() % line.length, 1, next() % 256)
+    samples.push(Buffer.from(line))
+  }
+  let notText = 0
+  for (const bytes of samples) {
+    const clean = frozenCleanText(bytes)
+    if (!clean) notText++
+    assert.equal(isType(bytes, 'text'), clean, `${bytes.toString('hex')}: inbound type check`)
+    for (const budget of [UNDER_BUDGET_MS, OVER_BUDGET_MS]) {
+      const verdict = await outboundContentVerdict(new Uint8Array(bytes), 'text', 'sample.txt', [], budget)
+      assert.equal(verdict.kind === 'not_type', !clean, `${bytes.toString('hex')} at budget ${budget}: ${verdict.kind}`)
+    }
+  }
+  // Both kinds were tried.
+  assert.ok(notText > 50 && notText < samples.length - 50, `${notText} of ${samples.length} samples were not text`)
+})
+
+test('the main thread is free while a large text file is checked: a timer queued as the read ends is not held by the check', { timeout: 180_000 }, async (t) => {
+  const { isType } = await import('../lib/email-files.ts')
+  for (const [name, build] of [
+    ['digits.csv', () => digitLines(23 * MB)],
+    ['letters.txt', () => Buffer.from('Grüße aus Köln, café 日本語, see you Monday.\n'.repeat(480_000))],
+  ] as const) {
+    await t.test(name, async (t) => {
+      const bytes = build()
+      const ratios: number[] = []
+      // Three paired rounds, the median read: a GC or scheduling outlier comes once, a check on the main thread every time.
+      for (let round = 0; round < 3; round++) {
+        // What the text check costs on this thread, on this runner, right now.
+        const started = performance.now()
+        assert.equal(isType(bytes, 'text'), true, `${name}: inline calibration`)
+        const inlineMs = performance.now() - started
+        // The read ends at the handle's close. A timer queued there runs at the next turn of the event loop, so it is
+        // late by whatever this thread does between the close and the hand off to the Worker.
+        const fs = memFs(bytes)
+        const open = fs.open
+        let lateMs = -1
+        fs.open = async () => {
+          const handle = await open()
+          const close = handle.close
+          handle.close = async () => {
+            const queued = performance.now()
+            setImmediate(() => {
+              lateMs = performance.now() - queued
+            })
+            return close()
+          }
+          return handle
+        }
+        const why = await refusal(`${MEM_HOME}\\Documents\\${name}`, { home: MEM_HOME, fs, officeReadMs: UNDER_BUDGET_MS })
+        assert.equal(why, null, name)
+        assert.ok(lateMs >= 0, `${name}: the timer ran`)
+        ratios.push(lateMs / inlineMs)
+        t.diagnostic(`round ${round + 1}: inline text check ${inlineMs.toFixed(1)} ms, timer late ${lateMs.toFixed(1)} ms`)
+      }
+      const ratio = ratios.sort((a, b) => a - b)[1]!
+      assert.ok(ratio < 0.25, `${name}: the timer was held for ${ratio.toFixed(2)} of the inline text check, expected under 0.25`)
+    })
+  }
 })

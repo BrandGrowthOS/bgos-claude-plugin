@@ -1,0 +1,8 @@
+Fetched main: 01a6284e34a641a046df5505bb0026b1756771ea
+Three-way merge with changelog-only temporary commit: exit 0
+9a53789d490a128b0db8dbc0770c63554de1406c
+Unreleased and all release history are byte-identical to fetched main.
+Only the separate Unreleased mission changes section differs.
+No main code merge or ref update was performed.
+Complete staged fix tree also merges with fetched main: exit 0.
+7afef5c956ddbd06c325440186e51092c8a90c97

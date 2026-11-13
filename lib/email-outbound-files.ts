@@ -41,7 +41,9 @@
 //      lives in lib/email-outbound-content.ts and runs in a worker thread
 //      that is terminated at OUTBOUND_CONTENT_DEADLINE_MS (5 seconds); late,
 //      broken or unreadable, the file is refused. Steps 1 to 3 and the size
-//      and type checks of step 4 stay on the main thread. Round 8: one long
+//      and type checks of step 4 stay on the main thread, all but a text
+//      file's type check, which the Worker runs first (it decodes the whole
+//      file, so it is never run on the main thread). Round 8: one long
 //      lived Worker, reused for every file and replaced only after a deadline,
 //      an error, an exit or a bad reply; the deadline is 5 seconds plus 1 per
 //      MB (at most 40); a path over 4096 characters is refused before any
@@ -270,18 +272,30 @@ export interface OutboundStat {
   size: number | bigint
   dev?: number | bigint
   ino?: number | bigint
+  /** The modified, change and birth times in ns, which a stat asked for bigints gives. */
+  mtimeNs?: bigint
+  ctimeNs?: bigint
+  birthtimeNs?: bigint
 }
 
-/** A stat as the read keeps it: device and file number as they came, the size as a number. */
+/** A stat as the read keeps it: the numbers and times the swap check compares as they came, the size as a number. */
 interface ReadStat extends OutboundStat {
   size: number
 }
 
-/** Every stat here asks for this, so sameFileAs compares device and file numbers as bigint. */
+/** Every stat here asks for this, so sameFileAs compares device and file numbers and the times in ns as bigint. */
 const FILE_NUMBERS_AS_BIGINT = { bigint: true } as const
 
 function readStat(stat: OutboundStat): ReadStat {
-  return { isFile: () => stat.isFile(), size: Number(stat.size), dev: stat.dev, ino: stat.ino }
+  return {
+    isFile: () => stat.isFile(),
+    size: Number(stat.size),
+    dev: stat.dev,
+    ino: stat.ino,
+    mtimeNs: stat.mtimeNs,
+    ctimeNs: stat.ctimeNs,
+    birthtimeNs: stat.birthtimeNs,
+  }
 }
 
 /** What the read needs of an open file. */
@@ -350,7 +364,7 @@ function nativeRealpath(path: string): Promise<string> {
   return new Promise((resolve, reject) => native(path, (err, real) => (err ? reject(err) : resolve(String(real)))))
 }
 
-const REAL_FS: OutboundFs = {
+const REAL_FS: OutboundFs = Object.freeze<OutboundFs>({
   realpath: nativeRealpath,
   lstat: (path, options) => lstatPromise(path, options),
   open: async (path, flags) => {
@@ -361,7 +375,7 @@ const REAL_FS: OutboundFs = {
       close: () => handle.close(),
     }
   },
-}
+})
 
 /** The real file system, for the test that it answers with bigints when asked. */
 export const OUTBOUND_REAL_FS_FOR_TESTS = REAL_FS
@@ -920,12 +934,18 @@ const outboundSafetyStop = (path: string): string =>
 const outboundOutOfTime = (path: string): string =>
   `${shown(path)} took too long to check, so it is not attached this time. Try again in a few minutes.`
 
+/** The sentence for a file whose bytes are not the type its name says. */
+const notThatType = (path: string, type: EmailFileType): string =>
+  `${shown(path)} is not really a ${TYPE_LABEL[type]} file (its contents say otherwise), so it is not attached.`
+
 /** Round 7: the sentence for what the content stage found, or null when the file may go. */
-function contentSentence(verdict: ContentVerdict, path: string): string | null {
+function contentSentence(verdict: ContentVerdict, path: string, type: EmailFileType): string | null {
   const name = shown(path)
   switch (verdict.kind) {
     case 'ok':
       return null
+    case 'not_type':
+      return notThatType(path, type)
     case 'unsafe':
       return `${name} could not be read safely, so it is never attached.`
     case 'over_budget':
@@ -956,10 +976,30 @@ function baseName(path: string): string {
   return parts[parts.length - 1] ?? ''
 }
 
-/** The same file, by device and file number where the system gives them (a zero is none), else by size. */
+/** A number the system gave (a device or file number, a birth time): one left out, or a zero, is unknown. */
+const known = (v: unknown): boolean => v !== undefined && v !== null && String(v) !== '0'
+
+/** A time the system gave: one left out is unknown (a zero is a time, the start of 1970). */
+const givenTime = (v: unknown): boolean => v !== undefined && v !== null
+
+/** Both sides gave the value and it is the same; an unknown value is never a match. */
+const bothSame = (given: (v: unknown) => boolean, x: unknown, y: unknown): boolean => given(x) && given(y) && String(x) === String(y)
+
+/**
+ * The same file. A device or file number that both sides gave and that differs means another file. With both numbers
+ * known on both sides and equal, it is the same file. Otherwise at least one number is unknown, and the size, the
+ * modified time and the change time in ns must all be given and equal, and the birth time too where both sides give
+ * one (Linux gives a zero when it has none). Reading a file changes none of these, so an unchanged file on a drive
+ * that reports no file number still goes; the access time is not compared, as reading changes it.
+ */
 function sameFileAs(a: ReadStat, b: ReadStat): boolean {
-  const known = (v: unknown) => v !== undefined && String(v) !== '0'
-  return known(a.ino) && known(b.ino) ? String(a.ino) === String(b.ino) && String(a.dev) === String(b.dev) : a.size === b.size
+  for (const key of ['dev', 'ino'] as const) {
+    if (known(a[key]) && known(b[key]) && String(a[key]) !== String(b[key])) return false
+  }
+  if (bothSame(known, a.dev, b.dev) && bothSame(known, a.ino, b.ino)) return true
+  if (a.size !== b.size) return false
+  if (!bothSame(givenTime, a.mtimeNs, b.mtimeNs) || !bothSame(givenTime, a.ctimeNs, b.ctimeNs)) return false
+  return !(known(a.birthtimeNs) && known(b.birthtimeNs)) || String(a.birthtimeNs) === String(b.birthtimeNs)
 }
 
 /**
@@ -1063,7 +1103,7 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     // The handle must be the file just checked: a swap between the stat and the open is refused.
     const opened = readStat(await handle.stat(FILE_NUMBERS_AS_BIGINT))
     const changed = `${shown(path)} changed while HOAI read it, so it is not attached.`
-    // Compared by device and file number where the system gives them (a zero is none), else by size.
+    // Compared by device and file number where the system gives both (a zero is none), else by size and times (sameFileAs).
     const sameFile = sameFileAs(stat, opened)
     if (!opened.isFile() || !sameFile) {
       return { ok: false, error: changed }
@@ -1087,12 +1127,14 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   } finally {
     await handle.close().catch(() => {})
   }
-  if (!isType(bytes, type)) {
-    return { ok: false, error: `${shown(path)} is not really a ${TYPE_LABEL[type]} file (its contents say otherwise), so it is not attached.` }
-  }
-  // Round 7: the content stage (a text file's header and whole text, a Word or Excel file's rows and words, and every
-  // check on them) runs in the content Worker under a hard deadline; the steps above stay on this thread. A picture
-  // or a PDF has no words read here.
+  // A text file's type check (clean UTF-8 text, lib/email-clean-text.ts) reads and decodes the whole file, tens of ms
+  // for a large one, so it is not run on this thread: the content Worker runs it first, before any other check and
+  // whatever the budget, and answers not_type, which gets this same sentence. Every other type is read off its first
+  // bytes or its zip directory, under small caps, here.
+  if (type !== 'text' && !isType(bytes, type)) return { ok: false, error: notThatType(path, type) }
+  // Round 7: the content stage (a text file's type check, header and whole text, a Word or Excel file's rows and words,
+  // and every check on them) runs in the content Worker under a hard deadline; the steps above stay on this thread. A
+  // picture or a PDF has no words read here.
   if (type === 'text' || type === 'docx' || type === 'xlsx') {
     // `bytes` is a view, at offset 0, of the buffer allocated above for this read alone: it is transferred, not copied.
     const checked = await contentInWorker(bytes.buffer as ArrayBuffer, bytes.length, type, name, ctx)
@@ -1100,7 +1142,7 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     if (checked === OUT_OF_TIME) return { ok: false, error: outboundOutOfTime(path) }
     if (checked === null) return { ok: false, error: `${shown(path)} could not be read safely, so it is never attached.` }
     bytes = checked.bytes
-    const why = contentSentence(checked.verdict, path)
+    const why = contentSentence(checked.verdict, path, type)
     if (why !== null) return { ok: false, error: why }
   }
   return { ok: true, file: { path, realPath: real, name, type, mime: TYPE_MIME[type], size: bytes.length, bytes } }

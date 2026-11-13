@@ -24,6 +24,7 @@
  *
  * Run with: npx tsx --test test/mission-private.test.ts
  */
+import { createScheduleGrantRuns, requireBoardsTurn } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -102,7 +103,7 @@ test('the admission gate is turn aware for every mission tool: a verified turn f
     const run = (turn: unknown, senders: { prompt: string | null; people: string[] }) => execute(admissionSource + '\nreturn privateCall;', {
       req: { params: { name } }, lockHeld: true, privateTurns: { current: () => turn, turnSenders: () => senders }, PRIVATE_MARKER_PATHS: [],
       PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', log: () => {},
-      requirePrivateTurn, turnAwarePrivateTurn,
+      requirePrivateTurn, turnAwarePrivateTurn, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
     })
     const frozen = await run({ actingUserId: 'user_recipient', chatId: '20', turnId: 't' }, { prompt: 'user_recipient', people: [] })
     assert.deepEqual([frozen.actingUserId, frozen.chatId, frozen.headers], ['user_recipient', '20', { 'X-BGOS-Acting-User': 'user_recipient' }], name)
@@ -351,4 +352,19 @@ test('Stop during mission lookup prevents the waiting tool call from making a wo
   const result = await r.run('set_goal_working', { goal_ids: [3], working: true })
   assert.equal(result.isError, true)
   assert.equal(r.sent.filter(call => call.method === 'PATCH').length, 0)
+})
+
+
+test('nested waiting reaches the admitted recipient mission with their headers, and null clears it', async () => {
+  for (const waiting of [{ on: 'agent', who: 'Demo Agent', why: 'review' }, null]) {
+    const r = rig({ actingUserId: RECIPIENT, chatId: RECIPIENT_CHAT, headers: { 'X-BGOS-Acting-User': RECIPIENT } })
+    const result = await r.run('set_goal_waiting', { goal_id: 3, waiting })
+    assert.notEqual(result?.isError, true, JSON.stringify(result))
+    assert.deepEqual(r.sent.map(c => [c.method, c.path]), [
+      ['GET', `assistants/900/missions/active?chatId=${RECIPIENT_CHAT}`],
+      ['PATCH', 'integrations/assistants/900/missions/77/goals/3/waiting'],
+    ])
+    assert.deepEqual(r.sent[1]!.body, { waiting })
+    assert.deepEqual(r.sent[1]!.headers, { 'X-BGOS-Acting-User': RECIPIENT })
+  }
 })

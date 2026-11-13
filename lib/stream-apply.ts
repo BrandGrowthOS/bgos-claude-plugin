@@ -44,6 +44,10 @@ import {
   type RoomAgentSender,
 } from './inbound-channel.ts'
 import { senderUserIdCandidate } from './permission-relay.ts'
+import { cardAnswerClickOf, type CardAnswerClick } from './card-answer.ts'
+// Re-exported so every lane that reads a stream answer has the card answer's
+// reader and text from the module it already loads.
+export { cardAnswerClickOf, cardAnswerText } from './card-answer.ts'
 
 // ── Payload normalization ────────────────────────────────────────────────────
 
@@ -83,6 +87,12 @@ export interface StreamAnswerPayload {
    * Present only when the answer carries one.
    */
   emailSendApproval?: unknown
+  /**
+   * A press on a ui_card's button, read off the raw answer with its values
+   * (lib/card-answer.ts), or absent. Its messageId is the view's; it is read
+   * here with 0 because the answer alone does not carry it.
+   */
+  card?: CardAnswerClick
 }
 
 export interface StreamMessageView {
@@ -132,7 +142,13 @@ function answerPayloadOf(raw: unknown): StreamAnswerPayload | null {
     clickerUserId: senderUserIdCandidate(r),
     tapperUserId: readTapperUserId(r),
     ...(r.emailSendApproval !== undefined && r.emailSendApproval !== null ? { emailSendApproval: r.emailSendApproval } : {}),
+    ...cardOf(r),
   }
+}
+
+function cardOf(r: Record<string, unknown>): { card?: CardAnswerClick } {
+  const card = cardAnswerClickOf(0, r)
+  return card ? { card } : {}
 }
 
 /**
@@ -526,6 +542,8 @@ export function buildStreamClickMeta(opts: {
   tapperUserId: string | null
   assistantId: string
   ts?: string
+  /** A card's answer: adds card_answer, action_id and answered_by_person (lib/card-answer.ts). */
+  card?: CardAnswerClick | null
 }): Record<string, string> {
   return buildButtonClickedMeta({ ...opts, transport: 'stream' })
 }

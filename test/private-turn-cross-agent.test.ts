@@ -322,3 +322,24 @@ test('control: Mark\'s own hook still writes under his key', (t) => {
   assert.equal(wrote.path, mark.markerPath)
   assert.equal(readPrivateJson(mark.markerPath, 2048)?.sessionId, mark.session)
 })
+
+test('a group lane (HOAI_GROUP_LANE) writes no marker and reports nothing: no error line on a normal turn', (t) => {
+  // A group lane is a headless session of the agent for one group, run by its daemon in the agent's folder with no
+  // MCP server and so no private tool (lib/group-lanes.ts). No daemon is attached to its session, by design.
+  const { root, mark, vera, runHook, assertNothingOfMarksTouched } = twoAgents(t)
+  const lane = vera.env({ HOAI_GROUP_LANE: '123' })
+  const run = runHook(vera.payload('UserPromptSubmit', { cwd: mark.folder }), lane)
+  assert.equal(run.status, 0, `no error (stderr: ${run.stderr})`)
+  assert.equal(run.stderr, '')
+  assert.equal(run.stdout, '')
+  assert.equal(existsSync(privateUnservedPath(root, vera.session)), false, 'no note for a refusal line either')
+  assertNothingOfMarksTouched('a group lane')
+  // Still fail closed: no marker anywhere, so a private tool would refuse.
+  let reported = ''
+  assert.equal(recordPrivateBoundary(vera.payload('UserPromptSubmit', { cwd: mark.folder }), lane, (why) => { reported = why }), false)
+  assert.equal(reported, '')
+  // Only a chat id counts: any other value is an ordinary session, which still says why.
+  for (const value of ['', 'yes', '0', '12a']) {
+    assert.equal(runHook(vera.payload('UserPromptSubmit', { cwd: mark.folder }), vera.env({ HOAI_GROUP_LANE: value })).status, 1, value)
+  }
+})

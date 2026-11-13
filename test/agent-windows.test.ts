@@ -162,6 +162,102 @@ test('planViewers (review): an agent that restarts in a loop gets a new viewer a
   assert.deepEqual(later.open.map((a: any) => a.session), ['pid:72'])
 })
 
+// -- planViewers, one switch per agent (agentWindows in the keep-alive answer) ------------------------
+
+test('planViewers per agent: only an agent whose own value is true gets a viewer; an agent set false has its viewer closed; an agent the server does not list stays off', () => {
+  const agents = [agent('7', 'pid:70', T0 - 9 * MIN), agent('8', 'pid:80', T0 - 8 * MIN), agent('9', 'pid:90', T0 - 7 * MIN)]
+  const viewers = [{ id: '8', session: 'pid:80', handle: 1008 }]
+  const memory = { ...emptyViewerMemory(), lastShow: true, opened: { '8': 'pid:80' } }
+  // 7 On, 8 Off, 9 not listed yet. show (the per computer value an older plugin acts on) is false here.
+  const out = planViewers({ show: false, agentWindows: { '7': true, '8': false }, agents, viewers, memory, now: T0 } as any)
+  assert.deepEqual(out.open.map((a: any) => a.id), ['7'], 'only the agent set On')
+  assert.deepEqual(out.close.map((v: any) => v.handle), [1008], 'the viewer of the agent set Off')
+  assert.deepEqual(out.memory.opened, { '7': 'pid:70' }, 'nothing remembered for 8 or 9')
+  assert.equal(out.memory.lastShow, true, 'some agent shows')
+  // The same answer with show true changes nothing: the per agent value decides, not the computer value.
+  const same = planViewers({ show: true, agentWindows: { '7': true, '8': false }, agents, viewers, memory, now: T0 } as any)
+  assert.deepEqual([same.open, same.close, same.memory], [out.open, out.close, out.memory])
+})
+
+test('planViewers per agent: an answer that lists no agent as true is the Off branch (every viewer closed, the memory cleared), even with show true', () => {
+  const agents = [agent('7', 'pid:70', T0 - 9 * MIN)]
+  const viewers = [{ id: '7', session: 'pid:70', handle: 1007 }]
+  const memory = { ...emptyViewerMemory(), lastShow: true, opened: { '7': 'pid:70' }, lastOpenAt: { '7': T0 - MIN } }
+  const off = planViewers({ show: false, agents, viewers, memory, now: T0 })
+  for (const agentWindows of [{}, { '7': false }, { '99': false }]) {
+    const out = planViewers({ show: true, agentWindows, agents, viewers, memory, now: T0 } as any)
+    assert.deepEqual(out, off, JSON.stringify(agentWindows))
+  }
+})
+
+test('planViewers per agent: an older server (no agentWindows, null or undefined) behaves exactly as the computer value says, as in 0.86.19', () => {
+  const agents = [agent('7', 'pid:70', T0 - 9 * MIN), agent('8', 'pid:80', T0 - 8 * MIN)]
+  const viewers = [{ id: '8', session: 'pid:80', handle: 1008 }, { id: '5', session: 'pid:50', handle: 1005 }]
+  const memories = [emptyViewerMemory(), { ...emptyViewerMemory(), lastShow: true, opened: { '8': 'pid:80' }, closed: { '7': 'pid:70' }, lastOpenAt: { '7': T0 - MIN } }]
+  for (const show of [true, false]) {
+    for (const memory of memories) {
+      const today = planViewers({ show, agents, viewers, memory, now: T0 })
+      for (const agentWindows of [null, undefined]) {
+        assert.deepEqual(planViewers({ show, agentWindows, agents, viewers, memory, now: T0 } as any), today, `show ${show}, agentWindows ${agentWindows}`)
+      }
+    }
+  }
+  // And the contrast that proves the map is read when it is there: show true, the map lists nobody as On.
+  const listed = planViewers({ show: true, agentWindows: {}, agents, viewers: [], memory: emptyViewerMemory(), now: T0 } as any)
+  assert.deepEqual(listed.open, [], 'a map that lists nobody as On opens nothing')
+  const absent = planViewers({ show: true, agents, viewers: [], memory: emptyViewerMemory(), now: T0 })
+  assert.deepEqual(absent.open.map((a: any) => a.id), ['7', '8'], 'no map: every agent follows show')
+})
+
+test('planViewers per agent: a flip of one agent clears its own 5 minute reopen wait (Off closes now, On opens now); another agent restarting in a loop still waits', () => {
+  const a7 = agent('7', 'pid:70', T0 - 9 * MIN)
+  const both = { '7': true, '8': true }
+  const first = planViewers({ show: false, agentWindows: both, agents: [a7, agent('8', 'pid:80', T0 - 8 * MIN)], viewers: [], memory: emptyViewerMemory(), now: T0 } as any)
+  assert.deepEqual(first.open.map((a: any) => a.id), ['7', '8'])
+  // One minute on: 7 is set Off; 8 restarted (a new session), so its new viewer waits out the 5 minutes.
+  const v7 = { id: '7', session: 'pid:70', handle: 1007 }
+  const off = planViewers({ show: false, agentWindows: { '7': false, '8': true }, agents: [a7, agent('8', 'pid:81', T0 + MIN)], viewers: [v7], memory: first.memory, now: T0 + MIN } as any)
+  assert.deepEqual(off.close.map((v: any) => v.handle), [1007], '7 closes now')
+  assert.deepEqual(off.open, [], '8 waits (crash loop holding)')
+  // Two minutes on: 7 is set On again, well inside its 5 minutes: it opens now. 8 still waits.
+  const on = planViewers({ show: false, agentWindows: both, agents: [a7, agent('8', 'pid:81', T0 + MIN)], viewers: [], memory: off.memory, now: T0 + 2 * MIN } as any)
+  assert.deepEqual(on.open.map((a: any) => a.id), ['7'], '7 opens now; 8 is still inside its wait')
+  assert.equal(on.memory.lastOpenAt['8'], T0, "8's wait is kept")
+  // Once 8's 5 minutes are up it opens as before.
+  const later = planViewers({ show: false, agentWindows: both, agents: [a7, agent('8', 'pid:81', T0 + MIN)], viewers: [{ ...v7, handle: 2007 }], memory: on.memory, now: T0 + 5 * MIN } as any)
+  assert.deepEqual(later.open.map((a: any) => a.id), ['8'])
+})
+
+test('planViewers per agent: a viewer the owner closed comes back when that one agent goes Off and On, like the all agents switch; the others keep theirs closed', () => {
+  const a7 = agent('7', 'pid:70', T0 - 9 * MIN)
+  const a8 = agent('8', 'pid:80', T0 - 8 * MIN)
+  const both = { '7': true, '8': true }
+  const opened = planViewers({ show: false, agentWindows: both, agents: [a7, a8], viewers: [], memory: emptyViewerMemory(), now: T0 } as any)
+  // The owner closes both windows.
+  const closed = planViewers({ show: false, agentWindows: both, agents: [a7, a8], viewers: [], memory: opened.memory, now: T0 + MIN } as any)
+  assert.deepEqual(closed.memory.closed, { '7': 'pid:70', '8': 'pid:80' })
+  const off7 = planViewers({ show: false, agentWindows: { '7': false, '8': true }, agents: [a7, a8], viewers: [], memory: closed.memory, now: T0 + 2 * MIN } as any)
+  const on7 = planViewers({ show: false, agentWindows: both, agents: [a7, a8], viewers: [], memory: off7.memory, now: T0 + 3 * MIN } as any)
+  assert.deepEqual(on7.open.map((a: any) => a.id), ['7'], '7 comes back; 8 stays closed by its owner')
+  assert.deepEqual(on7.memory.closed, { '8': 'pid:80' })
+})
+
+test('planViewers per agent (review): "a viewer could not be opened" is forgotten when the agents set On change, as when the one setting went off and on; the same answer keeps it', () => {
+  const a7 = agent('7', 'pid:70', T0 - 9 * MIN)
+  const a8 = agent('8', 'pid:80', T0 - 8 * MIN)
+  const both = { '7': true, '8': true }
+  const first = planViewers({ show: false, agentWindows: both, agents: [a7, a8], viewers: [], memory: emptyViewerMemory(), now: T0 } as any)
+  // The pass could not open a viewer: it marks the memory.
+  const failed = { ...first.memory, openFailed: true }
+  const same = planViewers({ show: false, agentWindows: both, agents: [a7, a8], viewers: [], memory: failed, now: T0 + MIN } as any)
+  assert.equal(same.memory.openFailed, true, 'the same answer keeps it')
+  const flipped = planViewers({ show: false, agentWindows: { '7': false, '8': true }, agents: [a7, a8], viewers: [], memory: same.memory, now: T0 + 2 * MIN } as any)
+  assert.equal(flipped.memory.openFailed, false, 'a flip forgets it')
+  // Without the map nothing new is kept in the memory (state.json and the old path stay as they were).
+  assert.equal('shownIds' in planViewers({ show: true, agents: [a7], viewers: [], memory: emptyViewerMemory(), now: T0 }).memory, false)
+  assert.deepEqual(Object.keys(viewerMemoryForState(flipped.memory)).sort(), ['closed', 'lastOpenAt', 'lastShow', 'opened'])
+})
+
 test('viewerMemoryForState / viewerMemoryFromState: opened, closed, the cool-down and the last setting survive a watcher restart; junk does not', () => {
   const memory = { ...emptyViewerMemory(), opened: { '7': 'pid:70' }, closed: { '8': 'pid:80' }, lastOpenAt: { '7': T0 }, lastShow: true, opens: [T0], scanned: true }
   const saved = JSON.parse(JSON.stringify(viewerMemoryForState(memory)))
@@ -279,6 +375,28 @@ test('runWindowsPass win32: the setting off and already handled is a no-op (no p
   const out = await runWindowsPass(winCtx(first, fs, rows, false) as any)
   assert.deepEqual(first.kills, [[6001, 'SIGTERM']])
   assert.equal(out.memory.scanned, true)
+})
+
+test('runWindowsPass win32 per agent: with the computer value off, an agent set On still gets its viewer and the agent set Off does not; the report says showing', async () => {
+  const fs = winMachine({ '912': 4242, '7': 4343 })
+  const rows = [winRow('912', 'C:\\Users\\kc\\hoai-agents\\Wolf'), winRow('7', 'C:\\Users\\kc\\hoai-agents\\ava')]
+  const fx = winEffects([proc(4242, 1, 'node hoai-core.mjs'), proc(4343, 1, 'node hoai-core.mjs')])
+  const memory = { ...emptyViewerMemory(), lastShow: false, scanned: true, consolesChecked: [4242, 4343] }
+  const out = await runWindowsPass({ ...winCtx(fx, fs, rows, false, memory), agentWindows: { '912': true, '7': false } } as any)
+  assert.deepEqual(out.report, { mode: 'viewer', reason: 'showing' })
+  assert.deepEqual(fx.spawns.map((s) => s.args.slice(2)), [['-ConsolePid', '4242', '-AssistantId', '912']])
+  assertAgentUntouched(fx, [4242, 4343])
+})
+
+test('runWindowsPass win32 per agent: a map with no agent On is off even with the computer value on: no process listing once handled, and setting_off', async () => {
+  const fs = winMachine({ '912': 4242 })
+  const rows = [winRow('912', 'C:\\Users\\kc\\hoai-agents\\Wolf')]
+  const idle = winEffects([proc(4242, 1, 'node hoai-core.mjs')])
+  const memory = { ...emptyViewerMemory(), lastShow: false, scanned: true, consolesChecked: [4242] }
+  const out = await runWindowsPass({ ...winCtx(idle, fs, rows, true, memory), agentWindows: { '912': false } } as any)
+  assert.deepEqual(out.report, { mode: 'viewer', reason: 'setting_off' })
+  assert.deepEqual(idle.execs, [], 'nothing listed')
+  assert.deepEqual(idle.spawns, [])
 })
 
 test('runWindowsPass win32 (review): a supervisor.json whose pid now belongs to something else is looked at once; with the setting off nothing is listed again', async () => {
@@ -459,6 +577,17 @@ test('runWindowsPass darwin, setting OFF: each READ ONLY client (a viewer) is de
   assert.deepEqual(detaches.map((c) => c.args), [['-L', 'hoai-912', 'detach-client', '-t', '/dev/ttys003']])
   assert.deepEqual(fx.kills, [])
   assert.equal(fx.execs.some((c) => c.file === 'open'), false)
+  NO_TMUX_KILL(fx)
+})
+
+test('runWindowsPass darwin per agent: with the computer value off, only the agent set On gets a Terminal; the one not listed gets nothing', async () => {
+  const fs = memoryFs()
+  const rows = [posixRow('912', '/Users/kc/hoai-agents/Wolf'), posixRow('55', '/Users/kc/hoai-agents/Nova', { supervisor: 'launcher-live' })]
+  const fx = tmuxEffects({ 'hoai-912': { sessions: [['hoai-912', 1000]], clients: [] }, '': { sessions: [['hoai-55', 900]], clients: [] } })
+  const memory = { ...emptyViewerMemory(), lastShow: false, scanned: true }
+  const out = await runWindowsPass({ ...posixCtx('darwin', fx, fs, rows, false, memory), agentWindows: { '912': true } } as any)
+  assert.deepEqual(out.report, { mode: 'tmux', reason: 'showing' })
+  assert.deepEqual(fx.execs.filter((c) => c.file === 'open').map((c) => c.args), [['-g', '-a', 'Terminal', `${PHOME}/.bgos-agent/912/${POSIX_VIEWER_FILE_NAME}`]])
   NO_TMUX_KILL(fx)
 })
 

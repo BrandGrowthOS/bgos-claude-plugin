@@ -1,0 +1,2191 @@
+TAP version 13
+# Subtest: self-write ordering: HTTP first retains a newer checked goal and Stop asks and blocks
+ok 1 - self-write ordering: HTTP first retains a newer checked goal and Stop asks and blocks
+  ---
+  duration_ms: 174.24475
+  type: 'test'
+  ...
+# Subtest: self-write ordering: HTTP first cannot resurrect a newer completed mission
+ok 2 - self-write ordering: HTTP first cannot resurrect a newer completed mission
+  ---
+  duration_ms: 0.436
+  type: 'test'
+  ...
+# Subtest: self-write ordering: frame first retains a newer checked goal and Stop asks and blocks
+ok 3 - self-write ordering: frame first retains a newer checked goal and Stop asks and blocks
+  ---
+  duration_ms: 169.11
+  type: 'test'
+  ...
+# Subtest: self-write ordering: frame first cannot resurrect a newer completed mission
+ok 4 - self-write ordering: frame first cannot resurrect a newer completed mission
+  ---
+  duration_ms: 0.327459
+  type: 'test'
+  ...
+# Subtest: self-write ordering: an older frame cannot erase a newer self-write checked goal
+ok 5 - self-write ordering: an older frame cannot erase a newer self-write checked goal
+  ---
+  duration_ms: 0.167959
+  type: 'test'
+  ...
+# Subtest: self-write ordering: an older frame cannot resurrect a newer self-write completion
+ok 6 - self-write ordering: an older frame cannot resurrect a newer self-write completion
+  ---
+  duration_ms: 0.119792
+  type: 'test'
+  ...
+# Subtest: self-write ordering: timestamps compare instants across time zones
+ok 7 - self-write ordering: timestamps compare instants across time zones
+  ---
+  duration_ms: 0.120125
+  type: 'test'
+  ...
+# Subtest: self-write ordering: unversioned legacy snapshots work until a server version is known
+ok 8 - self-write ordering: unversioned legacy snapshots work until a server version is known
+  ---
+  duration_ms: 0.207792
+  type: 'test'
+  ...
+# Subtest: self-write ordering: versions are per mission and allow later server writes after closure
+ok 9 - self-write ordering: versions are per mission and allow later server writes after closure
+  ---
+  duration_ms: 0.157875
+  type: 'test'
+  ...
+# Subtest: self-write ordering: newer cold discovery prevents an older waiting response from erasing checks
+ok 10 - self-write ordering: newer cold discovery prevents an older waiting response from erasing checks
+  ---
+  duration_ms: 0.350542
+  type: 'test'
+  ...
+# Subtest: self-write ordering: a remembered completion rejects an older cold discovery without checking it
+ok 11 - self-write ordering: a remembered completion rejects an older cold discovery without checking it
+  ---
+  duration_ms: 0.121167
+  type: 'test'
+  ...
+# Subtest: self-write ordering: an unchanged open discovery can restore a mission after chat cache eviction
+ok 12 - self-write ordering: an unchanged open discovery can restore a mission after chat cache eviction
+  ---
+  duration_ms: 1.030916
+  type: 'test'
+  ...
+# Subtest: self-write ordering: a goal-check completion cannot be mistaken for chat cache eviction
+ok 13 - self-write ordering: a goal-check completion cannot be mistaken for chat cache eviction
+  ---
+  duration_ms: 0.162
+  type: 'test'
+  ...
+# Subtest: closing one of two missions preserves the other in prompt context and Stop eligibility
+ok 14 - closing one of two missions preserves the other in prompt context and Stop eligibility
+  ---
+  duration_ms: 0.142
+  type: 'test'
+  ...
+# Subtest: a completion removes only its mission when another open mission was most recently seen
+ok 15 - a completion removes only its mission when another open mission was most recently seen
+  ---
+  duration_ms: 0.093833
+  type: 'test'
+  ...
+# Subtest: multiple cached missions are checked by explicit id and Stop names every passing mission
+ok 16 - multiple cached missions are checked by explicit id and Stop names every passing mission
+  ---
+  duration_ms: 0.181125
+  type: 'test'
+  ...
+# Subtest: a failed check read for one mission does not prevent verification of another mission
+ok 17 - a failed check read for one mission does not prevent verification of another mission
+  ---
+  duration_ms: 0.203667
+  type: 'test'
+  ...
+# Subtest: a cold implicit lookup can discover one mission, and ambiguity produces an empty answer
+ok 18 - a cold implicit lookup can discover one mission, and ambiguity produces an empty answer
+  ---
+  duration_ms: 0.196291
+  type: 'test'
+  ...
+# Subtest: adding a checked goal after a fresh empty report performs a new verification before Stop
+ok 19 - adding a checked goal after a fresh empty report performs a new verification before Stop
+  ---
+  duration_ms: 0.134542
+  type: 'test'
+  ...
+# Subtest: a closed explicit report removes only that mission and a wrong report id is ignored
+ok 20 - a closed explicit report removes only that mission and a wrong report id is ignored
+  ---
+  duration_ms: 0.139625
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block
+ok 21 - a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.137
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block
+ok 22 - a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.085292
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block
+ok 23 - a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.088125
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block
+ok 24 - a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.086375
+  type: 'test'
+  ...
+# Subtest: a cold discovery cannot resurrect a mission created and completed while the read was pending
+ok 25 - a cold discovery cannot resurrect a mission created and completed while the read was pending
+  ---
+  duration_ms: 0.095
+  type: 'test'
+  ...
+# Subtest: HTTP work completing after the daemon answer budget cannot resurrect a completed mission
+ok 26 - HTTP work completing after the daemon answer budget cannot resurrect a completed mission
+  ---
+  duration_ms: 22.021833
+  type: 'test'
+  ...
+# Subtest: all goal-state sources obey one server revision rule
+    # Subtest: snapshot then older snapshot: checked goal
+    not ok 1 - snapshot then older snapshot: checked goal
+      ---
+      duration_ms: 1.735417
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: snapshot then older snapshot: completion
+    ok 2 - snapshot then older snapshot: completion
+      ---
+      duration_ms: 0.095333
+      type: 'test'
+      ...
+    # Subtest: snapshot then older WebSocket: checked goal
+    not ok 3 - snapshot then older WebSocket: checked goal
+      ---
+      duration_ms: 0.166625
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: snapshot then older WebSocket: completion
+    ok 4 - snapshot then older WebSocket: completion
+      ---
+      duration_ms: 0.067875
+      type: 'test'
+      ...
+    # Subtest: snapshot then older tick delta: checked goal
+    not ok 5 - snapshot then older tick delta: checked goal
+      ---
+      duration_ms: 0.113292
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: snapshot then older tick delta: completion
+    ok 6 - snapshot then older tick delta: completion
+      ---
+      duration_ms: 0.066791
+      type: 'test'
+      ...
+    # Subtest: snapshot then older HTTP self-write: checked goal
+    not ok 7 - snapshot then older HTTP self-write: checked goal
+      ---
+      duration_ms: 0.169625
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: snapshot then older HTTP self-write: completion
+    ok 8 - snapshot then older HTTP self-write: completion
+      ---
+      duration_ms: 0.091959
+      type: 'test'
+      ...
+    # Subtest: snapshot then older HTTP discovery: checked goal
+    not ok 9 - snapshot then older HTTP discovery: checked goal
+      ---
+      duration_ms: 0.440792
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: snapshot then older HTTP discovery: completion
+    ok 10 - snapshot then older HTTP discovery: completion
+      ---
+      duration_ms: 0.346084
+      type: 'test'
+      ...
+    # Subtest: snapshot then older goal-check report: checked goal
+    not ok 11 - snapshot then older goal-check report: checked goal
+      ---
+      duration_ms: 0.120125
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: snapshot then older goal-check report: completion
+    not ok 12 - snapshot then older goal-check report: completion
+      ---
+      duration_ms: 0.250959
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: WebSocket then older snapshot: checked goal
+    not ok 13 - WebSocket then older snapshot: checked goal
+      ---
+      duration_ms: 0.110292
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: WebSocket then older snapshot: completion
+    ok 14 - WebSocket then older snapshot: completion
+      ---
+      duration_ms: 0.061167
+      type: 'test'
+      ...
+    # Subtest: WebSocket then older WebSocket: checked goal
+    not ok 15 - WebSocket then older WebSocket: checked goal
+      ---
+      duration_ms: 0.103459
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: WebSocket then older WebSocket: completion
+    ok 16 - WebSocket then older WebSocket: completion
+      ---
+      duration_ms: 0.064208
+      type: 'test'
+      ...
+    # Subtest: WebSocket then older tick delta: checked goal
+    not ok 17 - WebSocket then older tick delta: checked goal
+      ---
+      duration_ms: 0.121417
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: WebSocket then older tick delta: completion
+    ok 18 - WebSocket then older tick delta: completion
+      ---
+      duration_ms: 0.060375
+      type: 'test'
+      ...
+    # Subtest: WebSocket then older HTTP self-write: checked goal
+    not ok 19 - WebSocket then older HTTP self-write: checked goal
+      ---
+      duration_ms: 0.130792
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: WebSocket then older HTTP self-write: completion
+    ok 20 - WebSocket then older HTTP self-write: completion
+      ---
+      duration_ms: 0.09
+      type: 'test'
+      ...
+    # Subtest: WebSocket then older HTTP discovery: checked goal
+    not ok 21 - WebSocket then older HTTP discovery: checked goal
+      ---
+      duration_ms: 0.383958
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: WebSocket then older HTTP discovery: completion
+    ok 22 - WebSocket then older HTTP discovery: completion
+      ---
+      duration_ms: 0.326333
+      type: 'test'
+      ...
+    # Subtest: WebSocket then older goal-check report: checked goal
+    not ok 23 - WebSocket then older goal-check report: checked goal
+      ---
+      duration_ms: 0.100583
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: WebSocket then older goal-check report: completion
+    not ok 24 - WebSocket then older goal-check report: completion
+      ---
+      duration_ms: 0.122958
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: tick delta then older snapshot: checked goal
+    not ok 25 - tick delta then older snapshot: checked goal
+      ---
+      duration_ms: 0.092292
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: tick delta then older snapshot: completion
+    ok 26 - tick delta then older snapshot: completion
+      ---
+      duration_ms: 0.057
+      type: 'test'
+      ...
+    # Subtest: tick delta then older WebSocket: checked goal
+    not ok 27 - tick delta then older WebSocket: checked goal
+      ---
+      duration_ms: 0.098584
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: tick delta then older WebSocket: completion
+    ok 28 - tick delta then older WebSocket: completion
+      ---
+      duration_ms: 0.06075
+      type: 'test'
+      ...
+    # Subtest: tick delta then older tick delta: checked goal
+    not ok 29 - tick delta then older tick delta: checked goal
+      ---
+      duration_ms: 0.087166
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: tick delta then older tick delta: completion
+    ok 30 - tick delta then older tick delta: completion
+      ---
+      duration_ms: 0.059625
+      type: 'test'
+      ...
+    # Subtest: tick delta then older HTTP self-write: checked goal
+    not ok 31 - tick delta then older HTTP self-write: checked goal
+      ---
+      duration_ms: 0.137917
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: tick delta then older HTTP self-write: completion
+    ok 32 - tick delta then older HTTP self-write: completion
+      ---
+      duration_ms: 0.092667
+      type: 'test'
+      ...
+    # Subtest: tick delta then older HTTP discovery: checked goal
+    not ok 33 - tick delta then older HTTP discovery: checked goal
+      ---
+      duration_ms: 0.374125
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: tick delta then older HTTP discovery: completion
+    ok 34 - tick delta then older HTTP discovery: completion
+      ---
+      duration_ms: 0.352042
+      type: 'test'
+      ...
+    # Subtest: tick delta then older goal-check report: checked goal
+    not ok 35 - tick delta then older goal-check report: checked goal
+      ---
+      duration_ms: 0.095916
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: tick delta then older goal-check report: completion
+    not ok 36 - tick delta then older goal-check report: completion
+      ---
+      duration_ms: 0.101917
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP self-write then older snapshot: checked goal
+    not ok 37 - HTTP self-write then older snapshot: checked goal
+      ---
+      duration_ms: 0.137167
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP self-write then older snapshot: completion
+    ok 38 - HTTP self-write then older snapshot: completion
+      ---
+      duration_ms: 0.085209
+      type: 'test'
+      ...
+    # Subtest: HTTP self-write then older WebSocket: checked goal
+    not ok 39 - HTTP self-write then older WebSocket: checked goal
+      ---
+      duration_ms: 0.116959
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP self-write then older WebSocket: completion
+    ok 40 - HTTP self-write then older WebSocket: completion
+      ---
+      duration_ms: 0.083375
+      type: 'test'
+      ...
+    # Subtest: HTTP self-write then older tick delta: checked goal
+    not ok 41 - HTTP self-write then older tick delta: checked goal
+      ---
+      duration_ms: 0.122833
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP self-write then older tick delta: completion
+    ok 42 - HTTP self-write then older tick delta: completion
+      ---
+      duration_ms: 0.079625
+      type: 'test'
+      ...
+    # Subtest: HTTP self-write then older HTTP self-write: checked goal
+    not ok 43 - HTTP self-write then older HTTP self-write: checked goal
+      ---
+      duration_ms: 0.129792
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP self-write then older HTTP self-write: completion
+    ok 44 - HTTP self-write then older HTTP self-write: completion
+      ---
+      duration_ms: 0.094334
+      type: 'test'
+      ...
+    # Subtest: HTTP self-write then older HTTP discovery: checked goal
+    not ok 45 - HTTP self-write then older HTTP discovery: checked goal
+      ---
+      duration_ms: 0.450459
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP self-write then older HTTP discovery: completion
+    ok 46 - HTTP self-write then older HTTP discovery: completion
+      ---
+      duration_ms: 0.373166
+      type: 'test'
+      ...
+    # Subtest: HTTP self-write then older goal-check report: checked goal
+    not ok 47 - HTTP self-write then older goal-check report: checked goal
+      ---
+      duration_ms: 0.120333
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP self-write then older goal-check report: completion
+    not ok 48 - HTTP self-write then older goal-check report: completion
+      ---
+      duration_ms: 0.127708
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older snapshot: checked goal
+    not ok 49 - HTTP discovery then older snapshot: checked goal
+      ---
+      duration_ms: 0.883375
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older snapshot: completion
+    not ok 50 - HTTP discovery then older snapshot: completion
+      ---
+      duration_ms: 0.487042
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older WebSocket: checked goal
+    not ok 51 - HTTP discovery then older WebSocket: checked goal
+      ---
+      duration_ms: 0.59575
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older WebSocket: completion
+    not ok 52 - HTTP discovery then older WebSocket: completion
+      ---
+      duration_ms: 0.522125
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older tick delta: checked goal
+    not ok 53 - HTTP discovery then older tick delta: checked goal
+      ---
+      duration_ms: 0.533334
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older tick delta: completion
+    not ok 54 - HTTP discovery then older tick delta: completion
+      ---
+      duration_ms: 0.512791
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older HTTP self-write: checked goal
+    not ok 55 - HTTP discovery then older HTTP self-write: checked goal
+      ---
+      duration_ms: 0.690416
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        retained goals carry the server revision they came from
+        + actual - expected
+
+        + undefined
+        - '2026-11-06T10:00:02.000Z'
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: '2026-11-06T10:00:02.000Z'
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:513:16)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older HTTP self-write: completion
+    not ok 56 - HTTP discovery then older HTTP self-write: completion
+      ---
+      duration_ms: 0.602417
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older HTTP discovery: checked goal
+    not ok 57 - HTTP discovery then older HTTP discovery: checked goal
+      ---
+      duration_ms: 1.200916
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older HTTP discovery: completion
+    not ok 58 - HTTP discovery then older HTTP discovery: completion
+      ---
+      duration_ms: 0.708417
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older goal-check report: checked goal
+    not ok 59 - HTTP discovery then older goal-check report: checked goal
+      ---
+      duration_ms: 0.94425
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: HTTP discovery then older goal-check report: completion
+    not ok 60 - HTTP discovery then older goal-check report: completion
+      ---
+      duration_ms: 0.443875
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older snapshot: checked goal
+    not ok 61 - goal-check report then older snapshot: checked goal
+      ---
+      duration_ms: 0.111791
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older snapshot: completion
+    not ok 62 - goal-check report then older snapshot: completion
+      ---
+      duration_ms: 0.103042
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older WebSocket: checked goal
+    not ok 63 - goal-check report then older WebSocket: checked goal
+      ---
+      duration_ms: 0.091375
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older WebSocket: completion
+    not ok 64 - goal-check report then older WebSocket: completion
+      ---
+      duration_ms: 0.094708
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older tick delta: checked goal
+    not ok 65 - goal-check report then older tick delta: checked goal
+      ---
+      duration_ms: 0.093333
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older tick delta: completion
+    not ok 66 - goal-check report then older tick delta: completion
+      ---
+      duration_ms: 0.089625
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older HTTP self-write: checked goal
+    not ok 67 - goal-check report then older HTTP self-write: checked goal
+      ---
+      duration_ms: 0.123916
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older HTTP self-write: completion
+    not ok 68 - goal-check report then older HTTP self-write: completion
+      ---
+      duration_ms: 0.113833
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older HTTP discovery: checked goal
+    not ok 69 - goal-check report then older HTTP discovery: checked goal
+      ---
+      duration_ms: 0.400292
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older HTTP discovery: completion
+    not ok 70 - goal-check report then older HTTP discovery: completion
+      ---
+      duration_ms: 0.397416
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older goal-check report: checked goal
+    not ok 71 - goal-check report then older goal-check report: checked goal
+      ---
+      duration_ms: 0.107917
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        false !== true
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: true
+      actual: false
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:508:14)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    # Subtest: goal-check report then older goal-check report: completion
+    not ok 72 - goal-check report then older goal-check report: completion
+      ---
+      duration_ms: 0.086541
+      type: 'test'
+      location: '[checkout]/test/mission-turn-refresh.test.ts:8:17201'
+      failureType: 'testCodeFailure'
+      error: |-
+        an intermediate active revision cannot undo completion
+        + actual - expected
+
+        + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+        +   '- 1. Date (done when: chosen)\n' +
+        +   '- 2. Draft (done when: written)\n' +
+        +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+        - null
+
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: ~
+      actual: |-
+        HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+        - 1. Date (done when: chosen)
+        - 2. Draft (done when: written)
+        Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:509:26)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:480:5)
+        async Test.run (node:internal/test_runner/test:1208:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+      ...
+    1..72
+not ok 27 - all goal-state sources obey one server revision rule
+  ---
+  duration_ms: 19.925167
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:8:17019'
+  failureType: 'subtestsFailed'
+  error: '52 subtests failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: T0 snapshot, T2 report, T1 HTTP preserves Stop verification
+not ok 28 - T0 snapshot, T2 report, T1 HTTP preserves Stop verification
+  ---
+  duration_ms: 0.849709
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:8:18690'
+  failureType: 'testCodeFailure'
+  error: |-
+    the report advances the same revision gate as snapshots
+    + actual - expected
+    ... Skipped lines
+
+      {
+        assistantId: '7',
+        chats: {
+          '12': {
+            missions: {
+              '101': {
+    +           checkedAt: null,
+    -           checkedAt: 1794000361399,
+                goals: [
+                  {
+                    done: false,
+                    doneWhen: 'chosen',
+                    id: 1,
+    ...
+                  },
+    -             {
+    -               check: {
+    -                 kind: 'pr_merged',
+    -                 number: 42,
+    -                 repo: 'example/project'
+    -               },
+    -               done: false,
+    -               doneWhen: 'merged',
+    -               id: 3,
+    -               name: 'Merge release'
+    -             }
+                ],
+                missionId: 101,
+    +           passing: [],
+    +           seenAt: 1794000361400,
+    -           passing: [
+    -             {
+    -               evidence: 'merged for 101',
+    -               id: 1,
+    -               name: 'Date'
+    -             },
+    -             {
+    -               evidence: 'merged for 101',
+    -               id: 2,
+    -               name: 'Draft'
+    -             },
+    -             {
+    -               evidence: 'merged for 101',
+    -               id: 3,
+    -               name: 'Merge release'
+    -             }
+    -           ],
+    -           seenAt: 1794000361399,
+                status: 'active',
+                title: 'Demo 101'
+              }
+            },
+    +       seenAt: 1794000361400
+    -       seenAt: 1794000361399
+          }
+        },
+        schemaVersion: 1,
+        turnChatId: null,
+    +   updatedAt: 1794000361400
+    -   updatedAt: 1794000361399
+      }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1794000361399
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+              2:
+                id: 3
+                name: 'Merge release'
+                doneWhen: 'merged'
+                done: false
+                check:
+                  kind: 'pr_merged'
+                  repo: 'example/project'
+                  number: 42
+            passing:
+              0:
+                id: 1
+                name: 'Date'
+                evidence: 'merged for 101'
+              1:
+                id: 2
+                name: 'Draft'
+                evidence: 'merged for 101'
+              2:
+                id: 3
+                name: 'Merge release'
+                evidence: 'merged for 101'
+            checkedAt: 1794000361399
+            seenAt: 1794000361399
+        seenAt: 1794000361399
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1794000361400
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+            passing:
+            checkedAt: ~
+            seenAt: 1794000361400
+        seenAt: 1794000361400
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:528:12)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: T0 snapshot, T2 report, T1 HTTP preserves closure
+not ok 29 - T0 snapshot, T2 report, T1 HTTP preserves closure
+  ---
+  duration_ms: 0.195917
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:8:18690'
+  failureType: 'testCodeFailure'
+  error: |-
+    the report advances the same revision gate as snapshots
+    + actual - expected
+
+      {
+        assistantId: '7',
+    +   chats: {
+    +     '12': {
+    +       missions: {
+    +         '101': {
+    +           checkedAt: null,
+    +           goals: [
+    +             {
+    +               done: false,
+    +               doneWhen: 'chosen',
+    +               id: 1,
+    +               name: 'Date'
+    +             },
+    +             {
+    +               done: false,
+    +               doneWhen: 'written',
+    +               id: 2,
+    +               name: 'Draft'
+    +             }
+    +           ],
+    +           missionId: 101,
+    +           passing: [],
+    +           seenAt: 1794000361400,
+    +           status: 'active',
+    +           title: 'Demo 101'
+    +         }
+    +       },
+    +       seenAt: 1794000361400
+    +     }
+    +   },
+    -   chats: {},
+        schemaVersion: 1,
+        turnChatId: null,
+        updatedAt: 1794000361400
+      }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1794000361400
+    turnChatId: ~
+    chats:
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1794000361400
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+            passing:
+            checkedAt: ~
+            seenAt: 1794000361400
+        seenAt: 1794000361400
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:528:12)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: T0 snapshot, T2 report, T1 WebSocket preserves Stop verification
+not ok 30 - T0 snapshot, T2 report, T1 WebSocket preserves Stop verification
+  ---
+  duration_ms: 0.191458
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:8:18690'
+  failureType: 'testCodeFailure'
+  error: |-
+    the report advances the same revision gate as snapshots
+    + actual - expected
+    ... Skipped lines
+
+      {
+        assistantId: '7',
+        chats: {
+          '12': {
+            missions: {
+              '101': {
+    +           checkedAt: null,
+    -           checkedAt: 1794000361400,
+                goals: [
+                  {
+                    done: false,
+                    doneWhen: 'chosen',
+                    id: 1,
+    ...
+                  },
+    -             {
+    -               check: {
+    -                 kind: 'pr_merged',
+    -                 number: 42,
+    -                 repo: 'example/project'
+    -               },
+    -               done: false,
+    -               doneWhen: 'merged',
+    -               id: 3,
+    -               name: 'Merge release'
+    -             }
+                ],
+                missionId: 101,
+    +           passing: [],
+    -           passing: [
+    -             {
+    -               evidence: 'merged for 101',
+    -               id: 1,
+    -               name: 'Date'
+    -             },
+    -             {
+    -               evidence: 'merged for 101',
+    -               id: 2,
+    -               name: 'Draft'
+    -             },
+    -             {
+    -               evidence: 'merged for 101',
+    -               id: 3,
+    -               name: 'Merge release'
+    -             }
+    -           ],
+                seenAt: 1794000361400,
+                status: 'active',
+                title: 'Demo 101'
+              }
+            },
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1794000361400
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+              2:
+                id: 3
+                name: 'Merge release'
+                doneWhen: 'merged'
+                done: false
+                check:
+                  kind: 'pr_merged'
+                  repo: 'example/project'
+                  number: 42
+            passing:
+              0:
+                id: 1
+                name: 'Date'
+                evidence: 'merged for 101'
+              1:
+                id: 2
+                name: 'Draft'
+                evidence: 'merged for 101'
+              2:
+                id: 3
+                name: 'Merge release'
+                evidence: 'merged for 101'
+            checkedAt: 1794000361400
+            seenAt: 1794000361400
+        seenAt: 1794000361400
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1794000361400
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+            passing:
+            checkedAt: ~
+            seenAt: 1794000361400
+        seenAt: 1794000361400
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:528:12)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: T0 snapshot, T2 report, T1 WebSocket preserves closure
+not ok 31 - T0 snapshot, T2 report, T1 WebSocket preserves closure
+  ---
+  duration_ms: 0.137666
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:8:18690'
+  failureType: 'testCodeFailure'
+  error: |-
+    the report advances the same revision gate as snapshots
+    + actual - expected
+
+      {
+        assistantId: '7',
+    +   chats: {
+    +     '12': {
+    +       missions: {
+    +         '101': {
+    +           checkedAt: null,
+    +           goals: [
+    +             {
+    +               done: false,
+    +               doneWhen: 'chosen',
+    +               id: 1,
+    +               name: 'Date'
+    +             },
+    +             {
+    +               done: false,
+    +               doneWhen: 'written',
+    +               id: 2,
+    +               name: 'Draft'
+    +             }
+    +           ],
+    +           missionId: 101,
+    +           passing: [],
+    +           seenAt: 1794000361401,
+    +           status: 'active',
+    +           title: 'Demo 101'
+    +         }
+    +       },
+    +       seenAt: 1794000361401
+    +     }
+    +   },
+    -   chats: {},
+        schemaVersion: 1,
+        turnChatId: null,
+        updatedAt: 1794000361401
+      }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1794000361401
+    turnChatId: ~
+    chats:
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1794000361401
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+            passing:
+            checkedAt: ~
+            seenAt: 1794000361401
+        seenAt: 1794000361401
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:528:12)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+1..31
+# tests 103
+# suites 0
+# pass 46
+# fail 57
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 926.798875

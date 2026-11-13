@@ -1,0 +1,9 @@
+Independent read-only source review of the mission snapshot ordering fix.
+
+Initial review identified that cold discovery bypassed the new version map. A newer discovery could therefore be erased by an older self-write, and an old discovery could ignore a completion tombstone. Two regressions failed before the correction. Discovery now passes through the shared snapshot gate and checks only accepted cache entries.
+
+Follow-up review identified that equal-version restoration after cache eviction could mistake goal-check completion for eviction. Its regression failed before the correction. A closed goal-check report now marks the remembered version closed.
+
+Final assessment: no remaining material findings within the requested snapshot-ordering scope. Both follow-up findings are corrected. Equal restoration is limited to missing open entries, with coverage for cache eviction and report closure.
+
+The reviewer performed source inspection only, with no tests, network calls or repository changes. The primary worker ran all test, mutation, typecheck and hygiene validation recorded here.

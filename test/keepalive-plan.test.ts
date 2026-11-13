@@ -26,6 +26,7 @@ import {
   AGENT_STATE_FRESH_MS,
   CREATE_LAUNCH_REASONS,
   KEEPALIVE_SWITCH_STATES,
+  KEEPALIVE_AGENT_WINDOWS_MAX,
   INSTALL_RETRY_MS,
   KEEPALIVE_CACHE_MAX_AGE_MS,
   LAUNCHER_STABLE_MS,
@@ -568,6 +569,44 @@ test('parseKeepAliveResponse: the owner setting and the computer switch arrive a
   assert.equal(parseKeepAliveResponse({ enabled: true, enabledAt: 'x', assistantIds: [], switchState: 'never_set' })!.switchState, 'on')
 })
 
+test('parseKeepAliveResponse: agentWindows, one On or Off per agent, is kept beside showAgentWindows (digit ids, true or false only, capped); absent or not a map is no field at all (an older server)', () => {
+  const base = { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: false }
+  assert.deepEqual(parseKeepAliveResponse({ ...base, agentWindows: { '7': true, '912': false } }), {
+    enabled: false,
+    enabledAt: null,
+    assistantIds: [],
+    switchState: 'off',
+    showAgentWindows: false,
+    agentWindows: { '7': true, '912': false },
+  })
+  assert.deepEqual(parseKeepAliveResponse({ ...base, agentWindows: {} })!.agentWindows, {}, 'an empty map is a map: nobody On')
+  assert.deepEqual(
+    parseKeepAliveResponse({ ...base, agentWindows: { '7': true, x: true, '-1': true, ' 8': true, '9': 'true', '10': 1, '11': null, '1.5': true, '12': false } })!.agentWindows,
+    { '7': true, '12': false },
+    'junk entries are dropped (that agent stays Off)',
+  )
+  for (const notAMap of [undefined, null, [], 'all', true, 7]) {
+    const parsed = parseKeepAliveResponse({ ...base, agentWindows: notAMap })!
+    assert.equal('agentWindows' in parsed, false, JSON.stringify(notAMap ?? 'absent'))
+  }
+  const many = Object.fromEntries(Array.from({ length: KEEPALIVE_AGENT_WINDOWS_MAX + 5 }, (_, i) => [String(i + 1), true]))
+  assert.equal(Object.keys(parseKeepAliveResponse({ ...base, agentWindows: many })!.agentWindows!).length, KEEPALIVE_AGENT_WINDOWS_MAX)
+})
+
+test('agentWindows rides the live answer, the cache and the decision; a refusal or no answer carries none (windows off as today); a cache without it reads as an older server', () => {
+  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: false, agentWindows: { '912': true } }
+  const body = buildKeepAliveCache(live, NOW - 60 * MIN)
+  assert.deepEqual(JSON.parse(body).agentWindows, { '912': true })
+  const cache = parseKeepAliveCache(body)
+  assert.deepEqual(cache!.agentWindows, { '912': true })
+  assert.deepEqual(decideKeepAliveConsent({ live, cache: null, now: NOW }), { ...live, source: 'live' })
+  assert.deepEqual(decideKeepAliveConsent({ live: null, cache, now: NOW }), { ...live, source: 'cache' })
+  assert.equal('agentWindows' in decideKeepAliveConsent({ live: null, cache, now: NOW, refused: true }), false)
+  assert.equal('agentWindows' in decideKeepAliveConsent({ live: null, cache: null, now: NOW }), false)
+  const plain = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: true }
+  assert.equal(buildKeepAliveCache(plain, NOW), `${JSON.stringify({ schemaVersion: 1, enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() }, null, 2)}\n`, 'no field, the same bytes as before')
+})
+
 test('decideKeepAliveConsent: live answer wins; a failure falls back to a cache younger than 24 h; otherwise OFF', () => {
   const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: true }
   const cache = parseKeepAliveCache(buildKeepAliveCache(live, NOW - 23 * 60 * MIN))
@@ -835,4 +874,45 @@ test('decideFreshStart: a PENDING marker (recent, written after this session sta
   assert.deepEqual(plan.decideFreshStart({ ...base, markerMtimeMs: now - plan.MARKER_PENDING_MS }), { proceed: true }, 'stranded longer than anyone takes to act on it: rewrite it, so a takeover sees a fresh one')
   assert.deepEqual(plan.decideFreshStart({ ...base, markerMtimeMs: now - 2 * 3_600_000 }), { proceed: true }, 'written before this session started: stale')
   assert.deepEqual(plan.decideFreshStart({ ...base, markerTier: false }), { proceed: true }, 'a service restart does not go through the marker')
+})
+
+// helperwedge finding 1: the wedge input to the safe moment (only the check up passes it, only for C5).
+test('decideSafeMoment with a wedge: no session progress for the window lifts the turn, the owed reply and a delivery in flight', () => {
+  const NOW = Date.parse('2026-11-12T21:04:03Z')
+  const M = 60_000
+  const state = { turnInFlight: true, pendingMessages: 1, pendingPermissions: 0, activeOperations: 1, turnSignal: 'hooks' }
+  const base = { running: true, stateFresh: true, state, descendants: [] as string[], activityMs: [NOW - 2 * M], now: NOW }
+  const wedge = (progressMs: Array<number | null>) => ({ windowMs: 10 * M, progressMs })
+  assert.deepEqual(decideSafeMoment(base as any), { safe: false, reason: 'turn_in_flight' }, 'without the wedge input: unchanged')
+  assert.deepEqual(decideSafeMoment({ ...base, wedge: wedge([NOW - 16 * M, NOW - 15 * M]) } as any), { safe: true, reason: 'wedged_turn' })
+  assert.deepEqual(decideSafeMoment({ ...base, wedge: wedge([null, null]) } as any), { safe: false, reason: 'turn_in_flight' }, 'no evidence is not no progress (review F1)')
+  assert.deepEqual(decideSafeMoment({ ...base, wedge: wedge([NOW - 16 * M, NOW - 3 * M]) } as any), { safe: false, reason: 'turn_in_flight' }, 'still making progress')
+  assert.deepEqual(decideSafeMoment({ ...base, wedge: wedge([NOW + 5 * M]) } as any), { safe: false, reason: 'turn_in_flight' }, 'a future stamp reads as recent')
+  assert.deepEqual(decideSafeMoment({ ...base, wedge: { windowMs: 10 * M, progressMs: null } } as any), { safe: false, reason: 'turn_in_flight' }, 'progress never read is unknown')
+  assert.deepEqual(decideSafeMoment({ ...base, state: { ...state, pendingPermissions: 1 }, wedge: wedge([NOW - 16 * M, NOW - 15 * M]) } as any), { safe: false, reason: 'pending_permission' })
+  assert.deepEqual(decideSafeMoment({ ...base, descendants: null, wedge: wedge([NOW - 16 * M, NOW - 15 * M]) } as any), { safe: false, reason: 'process_tree_unreadable' })
+  assert.deepEqual(
+    decideSafeMoment({ ...base, descendants: ['/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh && make'], wedge: wedge([NOW - 16 * M, NOW - 15 * M]) } as any),
+    { safe: false, reason: 'background_job' },
+  )
+  assert.deepEqual(decideSafeMoment({ ...base, running: false, wedge: wedge([NOW - 16 * M, NOW - 15 * M]) } as any), { safe: true, reason: 'not_running' })
+})
+
+// REVIEW-0432 F1: no progress evidence is not "no progress". The wedge lifts the hold only when every
+// progress source was read (a model turn stamp AND a hook stamp, from a fresh state whose hooks reach
+// the daemon) and every one is older than the window.
+test('decideSafeMoment with a wedge: progress that was not read keeps the hold (review F1)', () => {
+  const NOW = Date.parse('2026-11-12T21:04:03Z')
+  const M = 60_000
+  const state = { turnInFlight: true, pendingMessages: 1, pendingPermissions: 0, activeOperations: 0, turnSignal: 'hooks' }
+  const base = { running: true, stateFresh: true, state, descendants: [] as string[], activityMs: [NOW - 2 * M], now: NOW }
+  const wedge = (progressMs: Array<number | null>) => ({ windowMs: 10 * M, progressMs })
+  const held = (input: any, why: string) => assert.notEqual(decideSafeMoment(input).reason, 'wedged_turn', why)
+  held({ ...base, wedge: wedge([null, null]) }, 'neither transcript nor spool read (scenario A)')
+  held({ ...base, wedge: wedge([NOW - 20 * M, null]) }, 'no hook stamp')
+  held({ ...base, wedge: wedge([null, NOW - 20 * M]) }, 'no model turn stamp')
+  held({ ...base, state: { ...state, turnSignal: 'none' }, wedge: wedge([NOW - 20 * M, NOW - 20 * M]) }, 'hooks do not reach the daemon (scenario B)')
+  held({ ...base, stateFresh: false, wedge: wedge([NOW - 20 * M, NOW - 20 * M]) }, 'no fresh state to vouch for the hooks')
+  assert.deepEqual(decideSafeMoment({ ...base, wedge: wedge([null, null]) } as any), { safe: false, reason: 'turn_in_flight' })
+  assert.deepEqual(decideSafeMoment({ ...base, wedge: wedge([NOW - 20 * M, NOW - 20 * M]) } as any), { safe: true, reason: 'wedged_turn' }, 'every source read and old')
 })

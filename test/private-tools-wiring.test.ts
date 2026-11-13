@@ -1,10 +1,12 @@
 import { test } from 'node:test'
+import { createScheduleGrantRuns, requireBoardsTurn } from '../lib/schedule-grant-run.mjs'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { privateActor, privateSenderUserId } from '../lib/private-turn.mjs'
 import * as privateTurnModule from '../lib/private-turn.mjs'
 import { buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath } from '../lib/schedule.js'
+import { newScheduleRequestId, sendScheduleCreate } from '../lib/schedule-send.js'
 
 const source = readFileSync('server.ts', 'utf8')
 const scheduleSource = source.slice(source.indexOf("    case 'schedule': {"), source.indexOf("    case 'create_mission': {"))
@@ -19,7 +21,7 @@ test('actual tool admission refuses unresolved sender and passive daemon before 
   for (const name of ['schedule', 'list_schedules', 'cancel_schedule', 'boards_list']) {
     let called = 0
     const bindings = { req: { params: { name } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner',
-      requirePrivateTurn: () => { called++; throw new Error('private action did not start') } }
+      requirePrivateTurn: () => { called++; throw new Error('private action did not start') }, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(), }
     const result = await execute(admissionSource + '\nreturn privateCall;', bindings)
     assert.equal(called, 1)
     assert.equal(result.isError, true)
@@ -33,10 +35,10 @@ test('actual tool admission refuses unresolved sender and passive daemon before 
 test('actual schedule create/list/cancel carry frozen recipient header; omitted chat is recipient chat', async () => {
   const calls: any[] = []
   let current = { actingUserId: 'user_recipient', chatId: '200', headers: { 'X-BGOS-Acting-User': 'user_recipient' } }
-  const privateCall = execute(admissionSource + '\nreturn privateCall;', { req: { params: { name: 'schedule' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', requirePrivateTurn: () => structuredClone(current) })
+  const privateCall = execute(admissionSource + '\nreturn privateCall;', { req: { params: { name: 'schedule' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', requirePrivateTurn: () => structuredClone(current), requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(), })
   current = { actingUserId: 'user_other', chatId: '300', headers: { 'X-BGOS-Acting-User': 'user_other' } }
   const bindings = {
-    privateCall, buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath, log: () => {},
+    privateCall, buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath, newScheduleRequestId, sendScheduleCreate, log: () => {},
     resolveAuthorizedChat: (chatId: string) => ({ ok: true, chatId }),
     bgosPeerPost: async (path: string, body: any, headers: any) => { calls.push({ path, body, headers }); return { ok: true } },
     bgosPeerGet: async (path: string, headers: any) => { calls.push({ path, headers }); return [] },
@@ -122,7 +124,7 @@ test('with no private turn hook registered the call is still refused, and says w
   const result = await execute(admissionSource + '\nreturn privateCall;', {
     req: { params: { name: 'boards_query' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [], USER_ID: 'user_owner',
     PRIVATE_HOOK: { registered: false }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing',
-    requirePrivateTurn: () => { called++; throw new Error('private action did not start') },
+    requirePrivateTurn: () => { called++; throw new Error('private action did not start') }, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
   })
   assert.equal(called, 1, 'the gate still runs: a missing hook is not a fallback')
   assert.equal(result.isError, true)
@@ -136,7 +138,7 @@ test('a refused private call on a peer turn is counted with the tool name and th
     execute(admissionSource + '\nreturn privateCall;', {
       req: { params: { name: 'boards_query' } }, lockHeld: true, USER_ID: 'user_owner', PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing',
       privateTurns: { peerTurn: () => peer, explain: () => 'no private turn is open (stub)' },
-      requirePrivateTurn: () => { throw new Error('private action did not start') },
+      requirePrivateTurn: () => { throw new Error('private action did not start') }, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
       recordPeerRefusal: (input: Record<string, unknown>) => { recorded.push(input); return { line: 'peer private call refused' } },
       log: (line: string) => logs.push(line),
       pathDirname: () => '/state/1050', CURSOR_FILE_PATH: '/state/1050/cursor.json', ASSISTANT_ID: 1050,

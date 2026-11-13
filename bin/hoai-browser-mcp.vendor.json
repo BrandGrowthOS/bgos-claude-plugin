@@ -1,11 +1,15 @@
 {
   "file": "bin/hoai-browser-mcp.mjs",
   "source": "BGOS: frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs",
-  "sha256": "2fd50404ff330d65f5f38017ffb7dd0a5df2f1c560b694c1f329b1bbe88f71ef",
-  "vendoredAt": "2026-10-21",
-  "sourceCommit": "62193f7a500a6405fdfaddb7a0557c2a08a0cf75",
-  "why": "Plugin 0.72.0 copy, ahead of BGOS (mission 173). It starts from the shim reviewed in BGOS PR #2625 (sha256 a55d97ae, BGOS 62193f7a, the bytes #253 and #260 vendored) and adds: every browser_profile_* refusal answered with its code and one plain sentence; a 409 is host_offline only when the relay says host_offline; profile requests carry the pairing header only; no tool text, schema or served instruction offers a profile choice, and the open call opens the agent's own browser; a desktop app the owner quit (the backend's browser_profile_writer_offline before dispatch, or a managed profile that is not active while the host probe says offline) reads as offline mode, exactly as before the app ever ran, once the host probe says no desktop app is online (an online or failed probe, as after a relaunch that cannot take an earlier launch's browser, gets the code's own sentence: nothing ran); that probe is bounded.",
+  "sha256": "28b9fc680ddef334ff49958d605b27658e1ceb57a6f83d3bd20ffd7a2a4f02d6",
+  "sourceSha256": "2fd50404ff330d65f5f38017ffb7dd0a5df2f1c560b694c1f329b1bbe88f71ef",
+  "vendoredAt": "2026-11-07",
+  "sourceCommit": "aed69c93bd191ce8de678b4f5cac4761f7130680",
+  "why": "Plugin 0.86.12 copy, ahead of BGOS. It is the BGOS blob at sourceCommit (sourceSha256, measured from that committed blob and still the shim on BGOS main) plus exactly bin/hoai-browser-mcp.ahead.patch: fill-only tool schemas, browser_fill_form limited to textbox fields, composite submission and sequential typing refused before forwarding, whole key chords validated (only Alt, Control, ControlOrMeta, Meta and Shift may precede the final key, and Enter, Return and Space are refused in every position), and the separate approved browser_click rule added to served instructions. The portable host carries the same rules and the filled-field barrier.",
   "howToUpdate": "docs/vendoring-the-hoai-browser-shim.md",
-  "crossTreeCheck": "HOAI_BROWSER_SHIM_SOURCE=<path to the BGOS shim> npx tsx --test test/hoai-browser-mcp.vendor.test.ts",
-  "aheadOfSource": "BGOS must take this copy back byte for byte (frontend/electron-app/agent-browser/shim/, its pin and the codex-channel-bgos copy). Until it does, the armed cross-tree check fails by design and says which side is behind."
+  "crossTreeCheck": "Offline CI: node scripts/check-browser-shim-source.mjs verifies the vendored bytes against sourceSha256 recorded with sourceCommit, without network or credentials. Trusted pushes and scheduled runs: node scripts/check-browser-shim-source.mjs --live fetches the pinned source when BGOS_SOURCE_READ_TOKEN is available, verifies both hashes and byte parity, then runs the vendor suite with HOAI_BROWSER_SHIM_SOURCE set. An unavailable token emits a skip notice; fetch failures or mismatches fail. Local checkout audit: HOAI_BROWSER_SHIM_SOURCE=<path to the pinned BGOS shim> node --import tsx --test --test-concurrency=4 test/hoai-browser-mcp.vendor.test.ts",
+  "aheadOfSource": {
+    "patch": "bin/hoai-browser-mcp.ahead.patch",
+    "bgosFollowUp": "Apply bin/hoai-browser-mcp.ahead.patch to frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs (git apply, byte for byte), set hoai-browser-mcp.pin.json sha256 to this sha256, add shim tests for the refusals and fill-only schemas, re-vendor codex-channel-bgos, then re-pin this copy at parity and delete the patch."
+  }
 }

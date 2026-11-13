@@ -363,6 +363,133 @@ describe('readiness resend on change', () => {
   })
 })
 
+describe('capabilities resend on change', () => {
+  // The live case: the boot beat is the only full beat for 6 hours, and
+  // server.ts modelEffortDeclared() is false on it by design (the claude
+  // --help read starts in the background on that first call). The status
+  // beats carry no capabilities, so the backend kept a declaration without
+  // model_effort_picker although every later call said true.
+  const base = (caps: () => string[], calls: Array<Record<string, unknown>>, updateStatus = true) =>
+    startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.85.5'),
+      post: async (_path, body) => {
+        calls.push(body)
+        return {}
+      },
+      log: () => {},
+      ...(updateStatus
+        ? {
+            updateStatus: {
+              latestKnownVersion: () => null,
+              updateReadiness: () => ({ supervised: 'launcher' as const, autoUpdateEnabled: true, rollbackLatched: false, pendingRestartVersion: null }),
+            },
+          }
+        : {}),
+      machineId: () => 'm',
+      capabilities: caps,
+    })
+  const stop = (h: ReturnType<typeof startVersionHeartbeat>) => {
+    clearInterval(h!.timer)
+    clearInterval(h!.readinessTimer)
+    clearInterval(h!.statusTimer)
+  }
+
+  test('a token that turns true after boot goes out on the next poll, not 6h later', async () => {
+    let picker = false
+    const calls: Array<Record<string, unknown>> = []
+    const h = base(() => [...declaredCapabilities({ canInjectGoal: true, floorHook: true, personLanes: true, modelEffortPicker: picker, authMode: 'pairing', platform: 'linux' })], calls)
+    await Bun.sleep(0)
+    expect(calls.length).toBe(1)
+    expect(calls[0]!.capabilities).not.toContain('model_effort_picker')
+    await h!.pollReadiness()
+    expect(calls.length).toBe(1)
+    picker = true
+    await h!.pollReadiness()
+    expect(calls.length).toBe(2)
+    expect(calls[1]!.capabilities).toContain('model_effort_picker')
+    expect(calls[1]!.daemonVersion).toBe('0.85.5')
+    await h!.pollReadiness()
+    expect(calls.length).toBe(2)
+    picker = false
+    await h!.pollReadiness()
+    expect(calls.length).toBe(3)
+    expect(calls[2]!.capabilities).not.toContain('model_effort_picker')
+    stop(h)
+  })
+
+  test('a changed set whose post fails is sent again on the next poll', async () => {
+    let caps = ['a']
+    let failNext = false
+    const calls: Array<Record<string, unknown>> = []
+    const h = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.85.5'),
+      post: async (_path, body) => {
+        if (failNext) {
+          failNext = false
+          throw new Error('server down')
+        }
+        calls.push(body)
+        return {}
+      },
+      log: () => {},
+      machineId: () => 'm',
+      capabilities: () => caps,
+    })
+    await Bun.sleep(0)
+    expect(calls.length).toBe(1)
+    caps = ['a', 'b']
+    failNext = true
+    await h!.pollReadiness()
+    expect(calls.length).toBe(1)
+    await h!.pollReadiness()
+    expect(calls.length).toBe(2)
+    expect(calls[1]!.capabilities).toEqual(['a', 'b'])
+    stop(h)
+  })
+
+  test('works with no updateStatus provider at all', async () => {
+    let caps = ['a']
+    const calls: Array<Record<string, unknown>> = []
+    const h = base(() => caps, calls, false)
+    await Bun.sleep(0)
+    await h!.pollReadiness()
+    expect(calls.length).toBe(1)
+    caps = ['a', 'b']
+    await h!.pollReadiness()
+    expect(calls.length).toBe(2)
+    stop(h)
+  })
+
+  test('the same set in another order, or with a repeat, is no change', async () => {
+    let caps = ['a', 'b']
+    const calls: Array<Record<string, unknown>> = []
+    const h = base(() => caps, calls)
+    await Bun.sleep(0)
+    caps = ['b', 'a', 'a']
+    await h!.pollReadiness()
+    expect(calls.length).toBe(1)
+    stop(h)
+  })
+
+  test('an empty set or a throwing provider is no change and never breaks the poll', async () => {
+    let mode: 'ok' | 'empty' | 'throw' = 'ok'
+    const calls: Array<Record<string, unknown>> = []
+    const h = base(() => {
+      if (mode === 'throw') throw new Error('probe down')
+      return mode === 'empty' ? [] : ['a']
+    }, calls)
+    await Bun.sleep(0)
+    mode = 'empty'
+    await expect(h!.pollReadiness()).resolves.toBeUndefined()
+    mode = 'throw'
+    await expect(h!.pollReadiness()).resolves.toBeUndefined()
+    expect(calls.length).toBe(1)
+    stop(h)
+  })
+})
+
 describe('declared capabilities on the heartbeat', () => {
   // The heartbeat is the REFRESH path: an already-paired daemon that updates
   // starts declaring here on its next beat, no re-pair required, and an array
@@ -422,6 +549,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
       'mission_goal_working',
       'permission_card',
       'plan_card',
@@ -436,6 +564,7 @@ describe('declared capabilities on the heartbeat', () => {
       'skills_list',
       'skills_receive',
       'ui_card',
+      'ui_card_answers',
       'ask_answered',
       'ask_multi_select',
       'email_label',
@@ -452,6 +581,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
       'mission_goal_working',
       'permission_card',
       'plan_card',
@@ -466,6 +596,7 @@ describe('declared capabilities on the heartbeat', () => {
       'skills_list',
       'skills_receive',
       'ui_card',
+      'ui_card_answers',
       'ask_answered',
       'ask_multi_select',
       'email_label',

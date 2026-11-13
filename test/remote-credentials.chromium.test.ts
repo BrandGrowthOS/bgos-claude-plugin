@@ -60,13 +60,16 @@ test('actual owner fill remains redacted from MCP snapshots, evaluate, console a
   await engine.callTool('browser_console_messages', { filename: 'console-encoded.txt' })
   const outputs = JSON.stringify([snapshot, evaluated, consoleMessages]) + files(paths.outputDir).filter(file => /\.(txt|log|md)$/.test(file)).map(file => readFileSync(file, 'utf8')).join('\n')
   for (const marker of [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)]) assert.equal(outputs.includes(marker), false, marker)
-  assert.ok(outputs.includes('[REDACTED]'))
+  const privateReply = { content: [{ type: 'text', text: 'This browser is private. Finish here, then press Hand back so I can carry on.' }] }
+  assert.deepEqual(snapshot, privateReply, 'a filled credential holds the whole page, not only its field value')
+  assert.equal(evaluated.isError, true)
+  assert.equal(consoleMessages.isError, true)
   assert.deepEqual(engine.vault.list(origin), [])
   await page.evaluate((value: string) => { document.title = value; history.replaceState(null, '', '?' + encodeURIComponent(value)) }, secret)
   const core = new BrowserHostCore({ pool: { peek: () => slot } as any, browserTools: [], deviceLabel: 'fixture' })
   const status = JSON.stringify(await core.callTool(view.context, 'hoai_browser_status', {}))
   for (const marker of [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)]) assert.equal(status.includes(marker), false)
-  assert.ok(status.includes('[REDACTED]'))
+  assert.equal(status, JSON.stringify(privateReply), 'status carries only the fixed private reply, without page metadata')
 
   // Only a single explicit pointer gesture may submit the exact trusted form.
   view.cdp = await page.context().newCDPSession(page)

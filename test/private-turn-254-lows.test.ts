@@ -1,22 +1,7 @@
 /**
- * #254's four lows (HOAI board row c69224fe, Data, agent 900), on the shared host of the private turn package.
- *
- * L1. An OLDER private turn hook registered beside this one (a stale settings entry next to the plugin's own) writes
- *     the turn record without the `untracked` flag (0.69.8 to 0.70.0), so a card with no delivery behind it (a meeting
- *     line, someone else's tap) queued from the previous CLI turn and run as a prompt of the owner's turn was missed by
- *     email_send: the flag is the only trace of it (its places name the turn before). Now the hook stamps the record it
- *     keeps whole (`record: 2`), and a marker without the stamp makes email_send ask when such a card was placed in the
- *     CLI turn this daemon read right before this one. Ordinary version skew costs nothing more: no such card, no ask.
- * L2. Argued closed: a new daemon life is a new claude process (claude never respawns a stdio MCP server, and every
- *     restart the plugin asks for replaces the claude session), so the email's CLI turn ended with that process, as
- *     #254's rule treats a Stop. Pinned below.
- * L3. In test/agent-email-send.test.ts (the tool path): a retried askOwner draft is kept once.
- * L4. A hook before 0.69.8 records no CLI turn, so email_send counts what was delivered since the last Stop LINE, and a
- *     Stop line that landed late (after the next prompt's hook, or after a card reached the gap) put that card behind
- *     the Stop: the owner's send went directly. Now a Stop line puts behind the Stop only what was not placed in the
- *     gap after the closed marker it finds, and a line that finds the CLI already in a later turn puts nothing behind.
- *
- * Run with: npx tsx --test test/private-turn-254-lows.test.ts
+ * Turn provenance remains complete across supported hook versions and lifecycle boundaries.
+ * Unknown provenance requires owner approval or prevents private authority as appropriate.
+ * These tests exercise the production hooks and private-turn host.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -265,11 +250,7 @@ test('L4 control: a hook before 0.69.8, a Stop line that lands late puts nothing
   assert.deepEqual(await sendAdmitted(host), directOf(next), 'a Stop line on time puts it behind')
 })
 
-// ── Security review of c69224fe (findings fixed red first) ──
-// High: L2 was argued closed on "a new daemon life is a new claude process", but one daemon process wrote its attached
-// entry with a new `at` at every arm (the start and the end of armDelivery, every reclaim), so the hook saw a new daemon
-// life inside one CLI turn with no Stop: someone else's prompt and the owner's became two turns. Low: L1 with a hook
-// before 0.69.8 beside this one writing last still sent directly.
+// Daemon lifecycle validation preserves sender isolation.
 
 test('review (High): an email prompt, the daemon arming again in the SAME process, then the owner\'s prompt of the same CLI turn: email_send asks', async (t) => {
   const host = agentHost(t)
@@ -352,17 +333,7 @@ test('review (Low) control: a hook before 0.69.8 beside this one writing last, t
   assert.deepEqual(await sendAdmitted(host), directOf(owner))
 })
 
-// ── The security re-review of c69224fe ──
-// Medium: L2 by another route. A daemon that loses the pairing lock stands down and clears its attached entry
-// (stopHookIntake); a prompt the CLI runs in that window finds no daemon attached, and the hook closed the session's
-// live marker as stale, so the owner's next prompt of the SAME CLI turn, after the re-arm, began a new CLI turn:
-// someone else's words and the owner's became two turns. A stale close at a prompt now holds the CLI turn it closed,
-// marked unsure (a prompt ran in it that no marker recorded); a Stop or SessionEnd in the window closes it for good.
-// Low: the same split from a torn read of the entry while markFloorAttached rewrote it at every arm: an entry that would
-// not change is not written again, and a torn read now holds the turn as above. Low: L1 with a hook before 0.69.8
-// beside this one writing last, an email queued across the Stop and run as its own prompt sent directly (only untracked
-// cards were counted), and an untracked card past the forwarder's 256 KiB clip lost its tag. Low (precision): a stamped
-// marker's untracked flag is whole, so the daemon's own copy (untrackedRan) no longer adds an ask to the next turn.
+// Incomplete provenance cannot reset authority within a CLI turn.
 
 const attachedDir = (host: Host) => join(host.root, 'floor', 'attached')
 const attachedKeys = (host: Host) => readdirSync(attachedDir(host)).filter((name) => name.endsWith('.json')).map((name) => name.slice(0, -5))
@@ -564,11 +535,7 @@ for (const line of ['after the Stop hook', 'control: on time'] as const) {
   })
 }
 
-// ── Third review of c69224fe (findings fixed red first) ──
-// Medium: a rival daemon of the same pairing in the same folder attached at this daemon's key while it stood down, so
-// the window prompt was written under the rival's daemon life and the owner's prompt after the re-arm opened a new CLI
-// turn inside the same one. Medium (on main since 0.69.8): another claude session in the agent's folder ran its hooks
-// under this daemon's entry and overwrote the marker, which split the agent's CLI turn the same way.
+// Session and daemon ownership remain part of turn validation.
 
 /**
  * A rival daemon of this pairing in the same folder: a process this test starts and stops itself (its pid running),
@@ -814,13 +781,7 @@ test('review 3: a changed attached entry is written whole beside it and moved ov
   assert.equal(files.size, 1, 'nothing left beside it')
 })
 
-// ── Fourth review of c69224fe (round 3's fixes reviewed; findings fixed red first) ──
-// Medium (introduced by round 3): the attached entry kept naming the agent's session after its SessionEnd, so after the
-// operator's /clear the new session's first prompt wrote no marker (its hook runs before its line binds the session).
-// A share recipient's card or an email queued across the /clear then ran with no tag in any marker, and the owner's
-// message behind it in the same CLI turn acted as the owner, or email_send sent directly. Low (same cause, fails
-// closed): the owner's own first message after a /clear was refused for its whole CLI turn. The entry names no session
-// once the bound session's SessionEnd is consumed, as at a daemon's start, until the next session binds.
+// Session transitions preserve queued content provenance.
 
 test('review 4: the attached entry names the bound session, and none once that session\'s SessionEnd was the last event (floorEntrySession)', () => {
   const entry = (floorState as any).floorEntrySession
@@ -885,13 +846,7 @@ test('review 4 control: once the new session\'s first delivered prompt binds it,
   assert.deepEqual(readPrivateJson(host.markerPaths[0]!, 2048), before, 'another session\'s prompt leaves the agent\'s marker as it was')
 })
 
-// ── The final review of the round 4 fixes (92711f1): the /clear's SessionEnd line read late ──
-// The SessionEnd forwarder is async. Until the daemon reads its line, the entry still names the ended session, so the
-// new session's first prompt found 'other-session' and wrote no marker; and when that prompt's own line was read
-// first, the intake, still bound to the ended session, dropped it as another session's. A share recipient's card or an
-// email queued across the /clear then reached the owner's CLI turn with no trace, and the owner's message behind it
-// acted as the owner, or email_send sent directly. The synchronous SessionEnd hook now says which session ended
-// (`ended` in its closed marker), and an entry naming that session serves the next one as if unbound.
+// Session end processing preserves sender isolation regardless of hook arrival order.
 
 /** A session id whose spool folder a directory listing gives before (or after) every random UUID's. */
 const sortingId = (first: boolean) => `${first ? '00000000-0000-4000-8000-' : 'ffffffff-ffff-4fff-bfff-'}${randomUUID().slice(-12)}`
@@ -1023,12 +978,7 @@ test('final review control: an older forwarder (no startedAt on its lines) and a
   assert.deepEqual(await sendAdmitted(host), directOf(owner))
 })
 
-// ── Final re-review of c69224fe (findings fixed red first) ──
-// Medium (older than round 5): a share recipient's card queued across a /clear runs as the new session's first prompt;
-// its hook writes its marker (the ended rule), but its line, read while the intake is still bound to the session that
-// ended, is dropped, and the late SessionEnd line forgets the recipient (no marker of that session left). The turn aware
-// tools then acted as the owner on the recipient's words. They now read the live marker's tags too: a person this daemon
-// delivered to, named there, refuses them, whatever session wrote it.
+// Turn-aware tools validate live marker provenance before admitting authority.
 async function neverOwner(host: Host, label: string) {
   for (const name of [...GATED, ...TURN_AWARE]) assert.notEqual(await actsFor(host, name), 'owner', `${label}: ${name} acts as the owner on a share recipient's words; explain: ${host.explain()}`)
   assert.notEqual(host.browser(), 'owner', `${label}: the Agent Browser`)

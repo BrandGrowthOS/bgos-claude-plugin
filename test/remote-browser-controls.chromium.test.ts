@@ -1,23 +1,34 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import { EventEmitter, once } from 'node:events'
 import { mkdtempSync, realpathSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ChromiumEngine, browserPathsFor, resolveChromeExecutable } from '../bin/hoai-browser-host.mjs'
+import { browserPathsFor, resolveChromeExecutable } from '../bin/hoai-browser-host.mjs'
+import { TestChromiumEngine } from './helpers/chromium-engine.ts'
 import { RemoteBrowserViews } from '../lib/remote-view.mjs'
 import { RemoteCredentials } from '../lib/remote-credentials.mjs'
 import { RemoteOwnerInput } from '../lib/remote-input.mjs'
 import crypto from '../lib/remote-credentials-crypto.cjs'
 
+const TEST_TIMEOUT_MS = process.platform === 'win32' ? 120_000 : 45_000
+const EVENT_WAIT_MS = process.platform === 'win32' ? 10_000 : 3_000
+
 async function fixture(t: any) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'hoai-normal-browser-')))
+  const slowRequests = new EventEmitter()
   const server = createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html')
     if (req.url === '/slow-headers' || req.url === '/slow-document') {
       if (req.url === '/slow-document') res.write('<!doctype html><title>Slow document</title><p>Still loading')
-      const timer = setTimeout(() => res.end('<!doctype html><title>Delayed response</title>Complete'), 12000)
+      const request = { completed: false, closed: new Promise<void>(resolve => res.once('close', resolve)) }
+      const timer = setTimeout(() => {
+        request.completed = true
+        res.end('<!doctype html><title>Delayed response</title>Complete')
+      }, 12000)
       res.on('close', () => clearTimeout(timer))
+      slowRequests.emit(req.url, request)
       return
     }
     const inputs = '<input id="user" name="username" autocomplete="username"><input id="password" name="password" type="password" autocomplete="current-password">'
@@ -32,22 +43,28 @@ async function fixture(t: any) {
   const origin = `http://127.0.0.1:${(server.address() as any).port}`
   const context = { assistantId: 901, principal: 'user-fixture' }
   const paths = browserPathsFor({ agentRoot: root, ...context })
-  const engine: any = new ChromiumEngine({ ...paths, executable: process.env.HOAI_BROWSER_EXECUTABLE || resolveChromeExecutable({ env: process.env }).path })
+  const engine: any = new TestChromiumEngine({ ...paths, executable: process.env.HOAI_BROWSER_EXECUTABLE || resolveChromeExecutable({ env: process.env }).path })
   // Registered before the start, and the server closes even when the start or the stop throws: a
   // listening server left behind keeps this file's process alive after its last test
   // (test/chromium-fixtures-exit.test.ts).
   t.after(async () => {
     try { await engine.stop() } finally {
       await new Promise<void>(resolve => server.close(() => resolve()))
-      rmSync(root, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
   await engine.start()
   const slot: any = { engine, runningTools: new Set() }
-  return { root, origin, context, engine, slot, paths, page: engine.pages()[0] }
+  const slowRequest = async (path: string) => {
+    const [request] = await once(slowRequests, path, { signal: AbortSignal.timeout(10_000) })
+    return request as { completed: boolean; closed: Promise<void> }
+  }
+  return { root, origin, context, engine, slot, paths, page: engine.pages()[0], slowRequest }
 }
 
-test('owner normal browser creates, switches and closes real agent tabs and navigates history under its lease', { timeout: 45000 }, async t => {
+// This scenario creates 16 real tabs as well as exercising history and popups.
+// Keep the per-action assertions below, with room for a busy runner's whole test.
+test('owner normal browser creates, switches and closes real agent tabs and navigates history under its lease', { timeout: 120_000 }, async t => {
   const f = await fixture(t)
   const frames: any[] = [], closes: any[] = []
   const pool: any = { peek: () => f.slot, slotKey: () => 'fixture' }
@@ -77,7 +94,9 @@ test('owner normal browser creates, switches and closes real agent tabs and navi
     }
     const requestId = ++id
     await views.command({ viewId: 'normal-view', frame: { id: requestId, method, params, sessionId: target.sessionId, tabId: target.tabId } }, 'fixture-host')
-    return frames.find(frame => frame.id === requestId)
+    const reply = frames.find(frame => frame.id === requestId)
+    assert.ok(reply, `Missing reply to ${method} ${params.action || ''}: ${JSON.stringify(closes)}`)
+    return reply
   }
   const owner = async () => (await command('hoai.input.acquire')).result.leaseId
   const action = async (method: string, params: any) => {
@@ -160,7 +179,7 @@ test('owner normal browser creates, switches and closes real agent tabs and navi
   assert.equal(f.engine.pages().length, 16)
   await command('hoai.input.release')
   await f.engine.callTool('browser_tabs', { action: 'close', index: 0 })
-  const backgroundCloseDeadline = Date.now() + 3000
+  const backgroundCloseDeadline = Date.now() + EVENT_WAIT_MS
   while (state().tabs.length !== 15) {
     if (Date.now() > backgroundCloseDeadline) throw new Error('A background tab close did not refresh the roster')
     await new Promise(resolve => setTimeout(resolve, 10))
@@ -178,7 +197,7 @@ test('owner normal browser creates, switches and closes real agent tabs and navi
   assert.equal(actualNext.isClosed(), false)
 })
 
-test('slow headers, slow documents and owner-clicked links accept Stop without blocking the remote stream', { timeout: 45000 }, async t => {
+test('slow headers, slow documents and owner-clicked links accept Stop without blocking the remote stream', { timeout: TEST_TIMEOUT_MS }, async t => {
   const f = await fixture(t)
   await f.page.goto(f.origin + '/plain')
   const frames: any[] = [], closes: any[] = []
@@ -201,18 +220,20 @@ test('slow headers, slow documents and owner-clicked links accept Stop without b
   }
   await command('Page.startScreencast')
   const waitLoading = async () => {
-    const deadline = Date.now() + 3000
+    const deadline = Date.now() + EVENT_WAIT_MS
     while (!frames.some(frame => frame.method === 'hoai.browser.state' && frame.params.tabs[frame.params.activeIndex].loading)) {
       if (Date.now() > deadline) throw new Error('The owner link did not publish loading state')
       await new Promise(resolve => setTimeout(resolve, 10))
     }
   }
   for (const path of ['/slow-headers', '/slow-document']) {
+    const requested = f.slowRequest(path)
     const leaseId = (await command('hoai.input.acquire')).result.leaseId
     const started = Date.now()
     assert.deepEqual((await command('hoai.browser.navigate', { leaseId, url: f.origin + path })).result, {})
     assert.ok(Date.now() - started < 2000, 'Dispatch must acknowledge before the ten-second relay deadline')
     await waitLoading()
+    const request = await requested
     // Header delay retains the current lease. A committed document may revoke
     // it; wait for its physical commit and then take control of that document.
     let stopLease = views.views.get('slow-view').ownerLease?.id
@@ -222,6 +243,8 @@ test('slow headers, slow documents and owner-clicked links accept Stop without b
     }
     assert.deepEqual((await command('hoai.browser.navigation', { leaseId: stopLease, action: 'stop' })).result, {})
     await views.views.get('slow-view').navigationPending.catch(() => {})
+    await request.closed
+    assert.equal(request.completed, false, 'Stop must abort the response before the server finishes it')
     assert.equal(closes.length, 0)
     assert.equal(views.views.size, 1)
     await f.page.goto(f.origin + '/plain')
@@ -230,10 +253,14 @@ test('slow headers, slow documents and owner-clicked links accept Stop without b
   const leaseId = (await command('hoai.input.acquire')).result.leaseId
   const box = await f.page.locator('#slow-link').boundingBox()
   const pointer = { leaseId, x: box!.x + 5, y: box!.y + 5, button: 'left' }
+  const clickedRequest = f.slowRequest('/slow-headers')
   await command('hoai.input.pointer', { ...pointer, type: 'down' })
   await command('hoai.input.pointer', { ...pointer, type: 'up' })
   await waitLoading()
+  const request = await clickedRequest
   assert.deepEqual((await command('hoai.browser.navigation', { leaseId, action: 'stop' })).result, {})
+  await request.closed
+  assert.equal(request.completed, false, 'Stop must also abort an owner-clicked link')
   assert.equal(closes.length, 0)
   assert.equal(views.views.size, 1)
   assert.equal(f.page.isClosed(), false)
@@ -243,7 +270,7 @@ test('slow headers, slow documents and owner-clicked links accept Stop without b
     await command(action === 'navigate' ? 'hoai.browser.navigate' : 'hoai.browser.navigation', action === 'navigate'
       ? { leaseId, url: f.origin + '/plain#section' } : { leaseId, action })
     await views.views.get('slow-view').navigationPending
-    const deadline = Date.now() + 3000
+    const deadline = Date.now() + EVENT_WAIT_MS
     while (views.views.get('slow-view').loading) {
       if (Date.now() > deadline) throw new Error('Same-document/history navigation kept the loading indicator active')
       await new Promise(resolve => setTimeout(resolve, 10))
@@ -255,21 +282,21 @@ test('slow headers, slow documents and owner-clicked links accept Stop without b
   await command('hoai.input.pointer', { ...fragmentPointer, type: 'down' })
   await command('hoai.input.pointer', { ...fragmentPointer, type: 'up' })
   await f.page.waitForURL(f.origin + '/plain#anchor')
-  const fragmentDeadline = Date.now() + 3000
+  const fragmentDeadline = Date.now() + EVENT_WAIT_MS
   while (views.views.get('slow-view').loading) {
     if (Date.now() > fragmentDeadline) throw new Error('The physical same-document link kept the loading indicator active')
     await new Promise(resolve => setTimeout(resolve, 10))
   }
   const beforeFrames = frames.filter(frame => frame.method === 'Page.screencastFrame').length
   await f.page.evaluate(() => { document.body.style.background = 'blue'; document.body.textContent = 'Stream still changing after Stop' })
-  const paintDeadline = Date.now() + 3000
+  const paintDeadline = Date.now() + EVENT_WAIT_MS
   while (frames.filter(frame => frame.method === 'Page.screencastFrame').length === beforeFrames) {
     if (Date.now() > paintDeadline) throw new Error('Stream stopped after owner Stop')
     await new Promise(resolve => setTimeout(resolve, 10))
   }
 })
 
-test('ownerless agent tabs respect the same cap before a viewer attaches and legacy views keep their old wire', { timeout: 45000 }, async t => {
+test('ownerless agent tabs respect the same cap before a viewer attaches and legacy views keep their old wire', { timeout: TEST_TIMEOUT_MS }, async t => {
   const f = await fixture(t)
   await f.engine.callTool('browser_snapshot', {})
   for (let index = 1; index < 16; index++) await f.page.context().newPage()
@@ -296,7 +323,7 @@ test('ownerless agent tabs respect the same cap before a viewer attaches and leg
   assert.ok(state.activeIndex >= 0 && state.activeIndex < 16)
 })
 
-test('first native storage setup keeps the current completed sign-in and restores it encrypted after restart', { timeout: 45000 }, async t => {
+test('first native storage setup keeps the current completed sign-in and restores it encrypted after restart', { timeout: TEST_TIMEOUT_MS }, async t => {
   const f = await fixture(t)
   await f.page.goto(f.origin + '/plain')
   await f.page.context().addCookies([{ name: 'session', value: 'CANARY-fresh-signin-cookie', url: f.origin }])
@@ -345,7 +372,7 @@ test('first native storage setup keeps the current completed sign-in and restore
   assert.equal(await reopened.evaluate(idbValue), 'CANARY-fresh-signin-idb')
 })
 
-test('real sign-in with unrelated iframe, signup footer and alternative Email OTP fills and saves encrypted login', { timeout: 45000 }, async t => {
+test('real sign-in with unrelated iframe, signup footer and alternative Email OTP fills and saves encrypted login', { timeout: TEST_TIMEOUT_MS }, async t => {
   const f = await fixture(t)
   await f.page.goto(f.origin + '/login')
   await f.engine.vault.unlock('disposable vault passphrase 123')
@@ -365,7 +392,7 @@ test('real sign-in with unrelated iframe, signup footer and alternative Email OT
   assert.equal(saved.includes('fixture-user'), false)
 })
 
-test('JavaScript and password-only login pages keep exact capture checks and permit explicit login save', { timeout: 45000 }, async t => {
+test('JavaScript and password-only login pages keep exact capture checks and permit explicit login save', { timeout: TEST_TIMEOUT_MS }, async t => {
   const f = await fixture(t)
   await f.engine.vault.unlock('disposable vault passphrase 123')
   await f.engine.vault.restore(f.page.context())
@@ -386,7 +413,7 @@ test('JavaScript and password-only login pages keep exact capture checks and per
   }
 })
 
-test('native sealed field entry works while locked and manual Save login works without a form', { timeout: 45000 }, async t => {
+test('native sealed field entry works while locked and manual Save login works without a form', { timeout: TEST_TIMEOUT_MS }, async t => {
   const f = await fixture(t)
   await f.page.goto(f.origin + '/login')
   const view: any = { viewId: 'field-view', sessionId: 'fixture-session', tabId: 'fixture-tab', engine: f.engine, page: f.page, context: f.context }

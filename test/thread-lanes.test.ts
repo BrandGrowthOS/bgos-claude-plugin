@@ -12,6 +12,7 @@ import { test } from 'node:test'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 
 import {
+  THREAD_LANE_IDLE_MS,
   THREAD_ORPHAN_POLL_MS,
   THREAD_POST_RETRY_MS,
   THREAD_TURN_TIMEOUT_MS,
@@ -24,6 +25,8 @@ import {
 import { THREAD_TEXT_MAX, threadLaneArgs, threadTurnPrompt } from '../lib/thread-lane-args.ts'
 import { userMessageLine, type StreamJsonChild } from '../lib/stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
+import { authHeaders } from '../lib/agent-credentials.ts'
+import { lowerCaseHeaders, threadReplyRefused } from './helpers/keyed-assistant-rule.ts'
 
 const MAIN = '435f1f18-2716-4c27-bfd8-e2c48f28b3ac'
 const FORK_A = 'dbd3b62b-f099-4f95-be1d-4687b4af9042'
@@ -54,24 +57,29 @@ class FakeChild implements StreamJsonChild {
   frame(f: Record<string, unknown>) { for (const cb of this.out) cb(`${JSON.stringify(f)}\n`) }
   exit(code: number | null = 0) { this.exited = true; for (const cb of this.exits) cb(code, null) }
   init(id: string) { this.frame({ type: 'system', subtype: 'init', session_id: id }) }
+  /** A turn's end as the CLI sends it: an assistant frame first (a made up one when the turn errored), then the result. */
   result(text: string, isError = false) {
+    this.frame({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: isError ? 'API Error' : text }] } })
     this.frame(isError ? { type: 'result', subtype: 'error_during_execution', is_error: true } : { type: 'result', subtype: 'success', is_error: false, result: text })
   }
 }
 
 interface Timer { fn: () => void; ms: number; cleared: boolean; fired: boolean }
 
-function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null | (() => Promise<string | null>); platform?: NodeJS.Platform; git?: (sub: string[]) => { ok: boolean; stdout: string } | undefined } = {}) {
+function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; files?: Record<string, string>; shell?: boolean; failPosts?: (path: string, body: Record<string, unknown>) => boolean; refusePosts?: (path: string, body: Record<string, unknown>) => boolean; cliProblem?: string | null | (() => Promise<string | null>); platform?: NodeJS.Platform; git?: (sub: string[]) => { ok: boolean; stdout: string } | undefined } = {}) {
   const repo = opts.repo ?? true
   const files = new Map<string, string>(Object.entries(opts.files ?? {}))
   const dirs = new Set<string>()
   const spawned: Array<{ command: string; args: string[]; cwd: string; child: FakeChild }> = []
   const posts: Array<{ path: string; body: Record<string, unknown> }> = []
   const failedPosts: Array<{ path: string; body: Record<string, unknown> }> = []
+  const refusedPosts: Array<{ path: string; body: Record<string, unknown> }> = []
+  const modes = new Map<string, number>()
   const gitCalls: string[][] = []
   const removed: string[] = []
   const branchesDeleted: string[] = []
   const timers: Timer[] = []
+  const logs: string[] = []
   const clock = { now: opts.startAt ?? 1_000_000 }
   /** The machine's processes as the lanes see them: a stamp while alive, and what stops each. */
   const procs = new Map<number, { stamp: string; alive: boolean; dies: 'SIGTERM' | 'SIGKILL' | 'never' }>()
@@ -136,7 +144,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       mkdir: (p) => { dirs.add(p) },
       readFile: (p) => { const v = files.get(p); if (v === undefined) throw new Error(`ENOENT ${p}`); return v },
       writeFile: (p, s) => { files.set(p, s) },
-      appendFile: (p, s) => { files.set(p, (files.get(p) ?? '') + s) },
+      appendFile: (p, s, mode) => { files.set(p, (files.get(p) ?? '') + s); if (mode !== undefined) modes.set(p, mode) },
       copyFile: (a, b) => { const v = files.get(a); if (v === undefined) throw new Error(`ENOENT ${a}`); files.set(b, v) },
       unlink: (p) => { if (!files.delete(p)) throw new Error(`ENOENT ${p}`) },
       rmrf: (p) => { removed.push(p); dirs.delete(p) },
@@ -145,18 +153,22 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       list: (d) => [...files.keys()].filter((k) => dirname(k) === d).map((k) => k.slice(d.length + 1)),
     },
     post: async (path, body) => {
+      if (opts.refusePosts?.(path, body)) {
+        refusedPosts.push({ path, body })
+        throw Object.assign(new Error('POST 403: Invalid assistant credential.'), { name: 'HttpError', status: 403 })
+      }
       if (opts.failPosts?.(path, body)) { failedPosts.push({ path, body }); throw new Error('HTTP 500') }
       posts.push({ path, body })
     },
     now: () => clock.now,
     setTimer: (fn, ms) => { const t: Timer = { fn, ms, cleared: false, fired: false }; timers.push(t); return t },
     clearTimer: (h) => { (h as Timer).cleared = true },
-    log: () => {},
+    log: (line) => { logs.push(line) },
   }
   const manager = new ThreadLaneManager(deps)
   const live = (ms: number) => timers.filter((t) => t.ms === ms && !t.cleared && !t.fired)
   const fire = (t: Timer) => { t.fired = true; t.fn() }
-  return { manager, deps, files, dirs, spawned, posts, failedPosts, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc, procs, procKills, ctl, procCwd }
+  return { manager, deps, files, dirs, spawned, posts, failedPosts, refusedPosts, modes, gitCalls, removed, branchesDeleted, timers, logs, clock, live, fire, mainSrc, procs, procKills, ctl, procCwd }
 }
 
 /** The command the manager must build for a working lane in wt(root) (protected: the agent repo's own state). */
@@ -208,6 +220,23 @@ test('a first turn makes the worktree, copies the main transcript beside it, and
   assert.deepEqual(statePosts(r), ['101:working'])
 })
 
+test('only the active goal is cleared in the child transcript copy, preserving links, history and the parent', async () => {
+  const r = rig()
+  const retained = '{"type":"user","message":{"content":"goal_status is just text"}}\n' +
+    '{"type":"attachment","attachment":{"type":"other","value":"keep"}}\n'
+  const goal = '{"type":"attachment","attachment":{"type":"goal_status","met":false,"sentinel":true,"condition":"fixture goal"}}\n'
+  const source = retained + goal + goal.replace('"sentinel":true', '"sentinel":false')
+  r.files.set(r.mainSrc, source)
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const copied = r.files.get(sessionTranscriptPath(HOME, wt('101'), MAIN, ''))!
+  assert.ok(copied.startsWith(retained + goal), 'history and unrelated rows stay byte for byte')
+  assert.deepEqual(JSON.parse(copied.trim().split('\n').at(-1)!).attachment, {
+    type: 'goal_status', met: true, sentinel: true, condition: 'fixture goal',
+  }, 'the final goal record becomes the CLI clear sentinel')
+  assert.equal(r.files.get(r.mainSrc), source, 'the parent is untouched')
+})
+
 test('.hoai/ is excluded through .git/info/exclude, once, and the tracked .gitignore is never written', async () => {
   const exclude = join(AGENT, '.git', 'info', 'exclude')
   const r = rig({ files: { [exclude]: '# git ls-files --others --exclude-from=.git/info/exclude\n' } })
@@ -251,8 +280,8 @@ test('each result is posted as one thread reply, final unless it ends asking a q
   await r.manager.idle()
   const replies = r.posts.filter((p) => p.path === 'integrations/threads/reply').map((p) => p.body)
   assert.deepEqual(replies, [
-    { chatId: '55', rootId: '101', text: 'Done: the test is fixed.', final: true, clientId: 'thread-101-1010' },
-    { chatId: '55', rootId: '101', text: 'Shall I update the README too?', final: false, clientId: 'thread-101-1011' },
+    { chatId: '55', rootId: '101', text: 'Done: the test is fixed.', final: true },
+    { chatId: '55', rootId: '101', text: 'Shall I update the README too?', final: false },
   ])
 })
 
@@ -362,6 +391,28 @@ test('a lane idle for 20 minutes is stopped (SIGTERM, then SIGKILL after 10 s) a
   assert.deepEqual(r.spawned[1]!.args, workArgs('101', FORK_A))
   assert.equal(r.spawned[1]!.cwd, wt('101'))
   assert.equal(r.gitCalls.filter((g) => g[2] === 'worktree').length, 1, 'the worktree is made once')
+})
+
+test('a saved fork from the hooks-off version clears its inherited goal before a later process resumes', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.result('first answer')
+  await r.manager.idle()
+  r.fire(r.live(20 * MIN)[0]!)
+  c.exit(null)
+  const path = sessionTranscriptPath(HOME, wt('101'), FORK_A, '')
+  r.files.set(path, '{"type":"attachment","uuid":"fixture-row","parentUuid":"fixture-parent","attachment":{"type":"goal_status","met":false,"condition":"old parent goal"}}\n')
+  const parent = r.files.get(r.mainSrc)
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'later turn' }))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 2)
+  assert.equal(JSON.parse(r.files.get(path)!).attachment.met, true)
+  assert.equal(JSON.parse(r.files.get(path)!).uuid, 'fixture-row')
+  assert.equal(r.files.get(r.mainSrc), parent)
+  assert.deepEqual(r.spawned[1]!.args, workArgs('101', FORK_A))
 })
 
 test('a turn before the idle stop cancels it', async () => {
@@ -947,6 +998,81 @@ test('a turn with no result after 30 minutes is failed and its lane stopped, fre
   assert.equal(r.spawned.length, 3)
 })
 
+/** A Stop hook blocking the turn from ending, as the real CLI streams it (2.1.319, a /goal inherited by a fork). */
+const stopHookBlock = (c: FakeChild) => c.frame({
+  type: 'user',
+  message: { role: 'user', content: [{ type: 'text', text: 'Stop hook feedback:\n[the file done.txt contains GOALPROBE]: Not satisfied: done.txt is missing' }] },
+  parent_tool_use_id: null, session_id: FORK_A, isSynthetic: true,
+})
+
+test('a turn a Stop hook keeps blocking (an inherited /goal) is stopped on the third block with a failure that names the cause, never a loop', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  r.manager.turn(turn('102'))
+  r.manager.turn(turn('103'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  stopHookBlock(c)
+  stopHookBlock(c)
+  await r.manager.idle()
+  assert.deepEqual(c.killed, [], 'two blocks are tolerated')
+  stopHookBlock(c)
+  assert.deepEqual(c.killed, ['SIGTERM'], 'the third block signals synchronously, before any post completes')
+  await r.manager.idle()
+  assert.deepEqual(c.killed, ['SIGTERM'], 'the third block stops the lane')
+  const replies = r.posts.filter((p) => p.path === 'integrations/threads/reply' && p.body.rootId === '101').map((p) => p.body)
+  assert.equal(replies.length, 1)
+  assert.equal(replies[0]!.final, false)
+  assert.match(String(replies[0]!.text), /Stop hook/)
+  assert.match(String(replies[0]!.text), /\/goal/)
+  assert.doesNotMatch(String(replies[0]!.text), /failed before the agent could answer/)
+  assert.ok(statePosts(r).includes('101:open'))
+  // The CLI's own cap ends the blocked turn with an empty result: it is dropped, never a second failure.
+  stopHookBlock(c)
+  c.frame({ type: 'result', subtype: 'success', is_error: false, result: '' })
+  c.exit(null)
+  await r.manager.idle()
+  assert.equal(r.posts.filter((p) => p.path === 'integrations/threads/reply' && p.body.rootId === '101').length, 1, 'failed once')
+  assert.equal(r.spawned.length, 3, 'its slot went to the waiting thread')
+  assert.equal(r.live(THREAD_TURN_TIMEOUT_MS).filter((t) => r.timers.indexOf(t) === 0).length, 0, 'its turn timer is gone')
+})
+
+test('Stop hook blocks are counted per turn: two in each of two turns never stop the lane', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  stopHookBlock(c)
+  stopHookBlock(c)
+  c.result('First answer.')
+  await r.manager.idle()
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'and then?' }))
+  await r.manager.idle()
+  stopHookBlock(c)
+  stopHookBlock(c)
+  c.result('Second answer.')
+  await r.manager.idle()
+  assert.deepEqual(c.killed, [])
+  assert.deepEqual(r.posts.filter((p) => p.path === 'integrations/threads/reply').map((p) => p.body.text), ['First answer.', 'Second answer.'])
+})
+
+test('a user frame that is not Stop hook feedback (a tool result) never counts as a block', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  for (let i = 0; i < 5; i++) {
+    c.frame({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'Stop hook feedback: quoted in a file' }] } })
+  }
+  c.result('Done.')
+  await r.manager.idle()
+  assert.deepEqual(c.killed, [])
+  assert.deepEqual(r.posts.filter((p) => p.path === 'integrations/threads/reply').map((p) => p.body.text), ['Done.'])
+})
+
 test('a result ends its turn timer', async () => {
   const r = rig()
   r.manager.turn(turn('101'))
@@ -1124,7 +1250,7 @@ test('after a daemon restart a listed turn that already finished is never run ag
   assert.deepEqual(statePosts(r2), ['101:open'])
   const notice = r2.posts.find((p) => p.path === 'integrations/threads/reply')!.body
   assert.match(String(notice.text), /could not be delivered/)
-  assert.equal(notice.clientId, 'thread-101-1010', 'the same client id as the lost answer, so the server keeps one')
+  assert.equal('clientId' in notice, false, 'no client key: the server would refuse it')
   // A reply the person sent after it still runs.
   assert.equal(await r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1011', 'more')] }), { assistantIds: ['7'] }), 1)
   await r2.manager.idle()
@@ -1159,14 +1285,14 @@ test('a reconnect after every post of a finished turn failed puts the thread bac
 // -- gate review finding 2: a CLI that cannot run a lane says so --
 
 test('on a claude too old for a confined lane the turn fails with the real cause, and nothing is made or started', async () => {
-  const sentence = 'This turn failed because Claude Code on this computer cannot run threads: it is version 2.1.250 and threads need 2.1.301 or later. Update Claude Code, then send your reply again.'
+  const sentence = 'Claude Code on this computer cannot run threads: it is version 2.1.250 and threads need 2.1.301 or later. Update Claude Code, then send your reply again.'
   const r = rig({ cliProblem: sentence })
   r.manager.turn(turn('101'))
   await r.manager.idle()
   assert.equal(r.spawned.length, 0)
   assert.equal(r.gitCalls.some((a) => a.includes('worktree')), false, 'no worktree for a lane that cannot start')
   assert.deepEqual(statePosts(r), ['101:working', '101:open'])
-  assert.deepEqual(replyTexts(r), [sentence])
+  assert.deepEqual(replyTexts(r), [`I could not open this thread: ${sentence}`])
   assert.equal(r.manager.runningCount(), 0, 'its slot is free')
 })
 
@@ -1710,4 +1836,691 @@ test('activeWork counts a read of pending turns while it is out, and the turns i
   answer({ turns: [turn('101')] })
   assert.equal(await read, 1)
   assert.ok(r.manager.activeWork() > 0, 'the turn it found')
+})
+
+// -- THREADCRASH (0.87.1): nothing on a thread's start takes the daemon down, and every failure answers in the thread --
+
+test('THREADCRASH: a main transcript too large to hold in memory still opens its thread: it is copied on disk, never read whole', async () => {
+  const r = rig()
+  // What 0.87.0 did to a long lived agent: it read the whole main transcript
+  // into one string on the event loop. Here that read cannot succeed at all.
+  const read = r.deps.fs.readFile
+  r.deps.fs.readFile = (p) => {
+    if (p === r.mainSrc) throw new RangeError('Out of memory')
+    return read(p)
+  }
+  const copies: Array<[string, string]> = []
+  r.deps.transcripts = {
+    copyClearingGoal: async (from, to) => {
+      copies.push([from, to])
+      r.deps.fs.copyFile(from, to)
+    },
+    clearGoal: async () => false,
+  }
+  r.manager.turn(turn('101'))
+  await flush()
+  assert.equal(r.spawned.length, 1, 'the lane starts')
+  assert.deepEqual(copies, [[r.mainSrc, sessionTranscriptPath(HOME, wt('101'), MAIN, '')]])
+  assert.deepEqual(replyTexts(r), [], 'no failure')
+})
+
+test('THREADCRASH: a later start on the saved fork clears its goal on disk, never reading the fork whole', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const first = r.spawned[0]!.child
+  first.init(FORK_A)
+  first.result('First answer.')
+  await r.manager.idle()
+  r.fire(r.live(THREAD_LANE_IDLE_MS)[0]!)
+  first.exit()
+  await r.manager.idle()
+  assert.equal(saved(r).forkSessionId, FORK_A, 'the later start uses the saved fork')
+  const fork = sessionTranscriptPath(HOME, wt('101'), FORK_A, '')
+  r.files.set(fork, 'the thread history stays on disk\n')
+  const wholeReads: string[] = []
+  const read = r.deps.fs.readFile
+  r.deps.fs.readFile = (path) => {
+    if (path === fork) {
+      wholeReads.push(path)
+      throw new RangeError('Out of memory')
+    }
+    return read(path)
+  }
+  const cleared: string[] = []
+  r.deps.transcripts = {
+    copyClearingGoal: async () => assert.fail('a later start must not copy the main transcript again'),
+    clearGoal: async (path) => { cleared.push(path) },
+  }
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011' }))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 2, 'the fork starts again')
+  assert.deepEqual(cleared, [fork], 'the asynchronous goal clear gets the fork, not the main transcript')
+  assert.deepEqual(wholeReads, [], 'even a failed whole read must never be attempted')
+  assert.deepEqual(r.spawned[1]!.args, workArgs('101', FORK_A))
+  r.spawned[1]!.child.result('Second answer.')
+  await r.manager.idle()
+  assert.deepEqual(replyTexts(r), ['First answer.', 'Second answer.'])
+  assert.equal(r.files.get(fork), 'the thread history stays on disk\n')
+})
+
+test('THREADCRASH: closing while the main copy is in flight removes it when the copy finishes and never spawns', async () => {
+  const r = rig()
+  let release!: () => void
+  const copying = new Promise<void>((done) => { release = done })
+  const copied = sessionTranscriptPath(HOME, wt('101'), MAIN, '')
+  r.deps.transcripts = {
+    copyClearingGoal: async (from, to) => {
+      r.deps.fs.copyFile(from, to)
+      await copying
+    },
+    clearGoal: async () => false,
+  }
+  try {
+    r.manager.turn(turn('101'))
+    await flush()
+    assert.ok(r.files.has(copied), 'the copy is in flight')
+    await r.manager.close({ rootId: '101', removeWorktree: false })
+  } finally {
+    release()
+    await r.manager.idle()
+  }
+  assert.equal(r.spawned.length, 0, 'a closed lane never starts')
+  assert.equal(r.files.has(copied), false, 'a completed copy cannot leak after a close')
+  assert.equal(r.files.has(r.mainSrc), true, 'the parent stays')
+})
+
+test('THREADCRASH: a failed main copy removes its partial file and answers copy_failed, never no_session', async () => {
+  const r = rig()
+  const logs: string[] = []
+  r.deps.log = (line) => { logs.push(line) }
+  r.deps.transcripts = {
+    copyClearingGoal: async (_from, to) => {
+      r.files.set(to, 'partial transcript\n')
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' })
+    },
+    clearGoal: async () => false,
+  }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.equal(r.files.has(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), false, 'even a partial copy goes')
+  assert.equal(r.files.get(r.mainSrc), '{"main":true}\n', 'the parent stays intact')
+  assert.deepEqual(replyTexts(r), ['I could not open this thread: the main conversation could not be copied for it. Send your reply again to retry.'])
+  assert.ok(logs.includes('threads: turn 101 could not start (copy_failed)'))
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+})
+
+test('THREADCRASH: a lane that cannot be spawned answers in its own thread, removes its copy, and the next thread still opens', async () => {
+  const r = rig()
+  const spawn = r.deps.spawn
+  let fail = true
+  r.deps.spawn = (command, args, o) => {
+    if (fail) {
+      fail = false
+      throw Object.assign(new Error('spawn /bin/claude EAGAIN'), { code: 'EAGAIN' })
+    }
+    return spawn(command, args, o)
+  }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.match(String(replyTexts(r).at(-1)), /^I could not open this thread: Claude Code could not be started for it \(EAGAIN\)/)
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+  assert.equal(r.files.has(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), false, 'the copy of the main transcript went')
+  assert.equal(r.manager.runningCount(), 0, 'its slot is free')
+  r.manager.turn(turn('102'))
+  await flush()
+  assert.equal(r.spawned.length, 1, 'another thread opens')
+})
+
+for (const removeOk of [true, false]) {
+  test(`THREADCRASH: a failed checkout leaves no half folder when worktree remove ${removeOk ? 'succeeds' : 'fails'}`, async () => {
+    const holder: { dirs: Set<string> | null } = { dirs: null }
+    const r = rig({
+      git: (sub) => {
+        if (sub[0] === 'worktree' && sub[1] === 'add') {
+          holder.dirs?.add(join(AGENT, sub[2]!))
+          return { ok: false, stdout: '' }
+        }
+        if (!removeOk && sub[0] === 'worktree' && sub[1] === 'remove') return { ok: false, stdout: '' }
+        return undefined
+      },
+    })
+    holder.dirs = r.dirs
+    r.manager.turn(turn('101'))
+    await r.manager.idle()
+    assert.equal(r.spawned.length, 0)
+    assert.match(String(replyTexts(r).at(-1)), /^I could not open this thread: its working copy could not be made/)
+    assert.ok(r.gitCalls.some((a) => a[2] === 'worktree' && a[3] === 'remove' && a.includes('--force')), 'the half worktree is removed')
+    assert.ok(r.gitCalls.some((a) => a[2] === 'worktree' && a[3] === 'prune'))
+    assert.equal(r.dirs.has(wt('101')), false)
+    assert.ok(r.removed.includes(wt('101')), 'the half folder is removed, falling back to rmrf if git cannot remove it')
+  })
+}
+
+test('THREADCRASH: a lane that exits before it ever started says so in its thread, with its exit code', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await flush()
+  r.spawned[0]!.child.exit(1)
+  await r.manager.idle()
+  assert.match(String(replyTexts(r).at(-1)), /^I could not open this thread: Claude Code stopped before it could start the thread \(exit code 1\)/)
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+})
+
+test('THREADCRASH: a repository too large to copy gets a read only lane that reads the agent folder in place, never a worktree', async () => {
+  const r = rig()
+  const asked: string[] = []
+  r.deps.checkoutTooLarge = async (folder) => {
+    asked.push(folder)
+    return 'it holds more than 1.0 GB of files'
+  }
+  r.manager.turn(turn('101'))
+  await flush()
+  assert.deepEqual(asked, [AGENT])
+  assert.equal(r.gitCalls.some((a) => a[2] === 'worktree'), false, 'no checkout of the repository')
+  assert.ok(r.gitCalls.some((a) => a[2] === 'rev-parse' && a[3] === '--git-path'), '.hoai/ is still kept out of git status')
+  const s = r.spawned[0]!
+  assert.equal(s.cwd, wt('101'))
+  assert.deepEqual(s.args, threadLaneArgs({
+    mainSessionId: MAIN,
+    forkSessionId: null,
+    emptyMcpConfigPath: MCP,
+    confinement: { root: wt('101'), readOnly: true, shellSandbox: false, readDirs: [AGENT] },
+  }))
+  const prompt = JSON.parse(s.child.stdin[0]!).message.content[0].text
+  assert.ok(prompt.includes(`This thread is read only: read files in the agent folder ${JSON.stringify(AGENT)} and do not edit files.`))
+  assert.doesNotMatch(prompt, /not a git repository|Work on it in this folder only/)
+})
+
+test('THREADCRASH: a repository whose size cannot be measured gets a read only lane, never a checkout', async () => {
+  const r = rig()
+  const logs: string[] = []
+  r.deps.log = (line) => { logs.push(line) }
+  r.deps.checkoutTooLarge = async () => { throw new TypeError('size probe failed') }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 1)
+  assert.equal(r.gitCalls.some((a) => a[2] === 'worktree'), false)
+  assert.equal(saved(r).readOnly, true)
+  assert.equal(saved(r).worktree, false)
+  assert.ok(logs.some((line) => line.includes('its size could not be measured (TypeError)')))
+  assert.deepEqual(r.spawned[0]!.args, threadLaneArgs({
+    mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP,
+    confinement: { root: wt('101'), readOnly: true, shellSandbox: false, readDirs: [AGENT] },
+  }))
+})
+
+test('THREADCRASH: a read only lane whose plain folder cannot be made answers with the working copy failure', async () => {
+  const r = rig({ repo: false })
+  const mkdir = r.deps.fs.mkdir
+  r.deps.fs.mkdir = (path) => {
+    if (path === wt('101')) throw Object.assign(new Error(`cannot make ${path}`), { code: 'EACCES' })
+    mkdir(path)
+  }
+  const logs: string[] = []
+  r.deps.log = (line) => { logs.push(line) }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+  assert.deepEqual(replyTexts(r), ['I could not open this thread: its working copy could not be made. Send your reply again to retry.'])
+  assert.ok(logs.includes('threads: turn 101 could not start (worktree_failed)'))
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+})
+
+test('THREADCRASH: an unexpected start failure posts only its kind, keeping its message and paths in the local log', async () => {
+  const r = rig()
+  const message = `could not inspect ${join(AGENT, 'private', 'state.json')}\nprivate diagnostic`
+  r.deps.cliProblem = async () => { throw Object.assign(new Error(message), { code: 'EACCES' }) }
+  const logs: string[] = []
+  r.deps.log = (line) => { logs.push(line) }
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  assert.deepEqual(replyTexts(r), ['I could not open this thread: something went wrong while starting it (EACCES). Send your reply again to retry.'])
+  assert.equal(JSON.stringify(r.posts).includes(AGENT), false, 'no local path reaches the thread')
+  assert.equal(JSON.stringify(r.posts).includes('private diagnostic'), false, 'no error message reaches the thread')
+  assert.equal(logs.filter((line) => line.startsWith('threads: turn 101 could not start')).length, 1)
+  assert.ok(logs[0]!.includes(message.replace(/\s+/g, ' ')), 'the local log keeps the diagnostic on one line')
+})
+
+test('THREADCRASH: intentionally stopping before init posts only the timeout, never an opening failure on exit', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const child = r.spawned[0]!.child
+  r.fire(r.live(THREAD_TURN_TIMEOUT_MS)[0]!)
+  child.exit(null)
+  await r.manager.idle()
+  assert.deepEqual(child.killed, ['SIGTERM'])
+  assert.deepEqual(replyTexts(r), ['This turn took longer than 30 minutes, so it was stopped. Send your reply again to retry.'])
+  assert.equal(r.manager.runningCount(), 0)
+})
+
+test('THREADCRASH: an exit reported during an intentional stop before init is never misreported as a failure to open', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const child = r.spawned[0]!.child
+  // Node can emit an error synchronously from kill. The real spawner reports
+  // errors through onExit too, so the callback may run before kill returns.
+  child.kill = (signal) => { child.killed.push(signal); child.exit(null) }
+  r.fire(r.live(THREAD_TURN_TIMEOUT_MS)[0]!)
+  await r.manager.idle()
+  assert.deepEqual(child.killed, ['SIGTERM'])
+  assert.deepEqual(replyTexts(r), ['This turn failed before the agent could answer, so send your reply again to retry.'])
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+  assert.equal(r.manager.runningCount(), 0)
+})
+
+for (const callback of ['exit', 'turn timer', 'idle timer'] as const) {
+  test(`THREADCRASH: a fault in the lane ${callback} callback never reaches the event loop`, async () => {
+    const r = rig()
+    const logs: string[] = []
+    r.deps.log = (line) => { logs.push(line) }
+    r.manager.turn(turn('101'))
+    await r.manager.idle()
+    const child = r.spawned[0]!.child
+    if (callback !== 'turn timer') {
+      child.init(FORK_A)
+      child.result('First answer.')
+      await r.manager.idle()
+    }
+    let faults = 0
+    const fault = () => { faults++; throw new TypeError('callback fault') }
+    if (callback === 'exit') {
+      // An exit clears the idle timer even after a turn has finished.
+      const clear = r.deps.clearTimer
+      r.deps.clearTimer = () => { r.deps.clearTimer = clear; fault() }
+      assert.doesNotThrow(() => child.exit())
+    } else {
+      child.kill = fault
+      const ms = callback === 'turn timer' ? THREAD_TURN_TIMEOUT_MS : THREAD_LANE_IDLE_MS
+      assert.doesNotThrow(() => r.fire(r.live(ms)[0]!))
+    }
+    assert.equal(faults, 1, 'the callback reached the injected fault')
+    const what = callback === 'exit' ? 'lane 101 exit' : callback === 'turn timer' ? 'turn 101 timer' : 'lane 101 idle stop'
+    assert.ok(logs.includes(`threads: ${what} failed (TypeError: callback fault)`))
+    r.manager.turn(turn('102'))
+    await r.manager.idle()
+    assert.equal(r.spawned.length, 2, 'the daemon can still start another thread')
+  })
+}
+
+test('THREADCRASH: a fault while handling a lane frame stays in the lane and never reaches the event loop', async () => {
+  const r = rig()
+  r.ctl.stampDown = true
+  r.manager.turn(turn('101'))
+  await flush()
+  // The next stamp read (asked again on the init frame) throws where it is called.
+  r.deps.processes.stamp = () => {
+    throw new TypeError('ps vanished')
+  }
+  assert.doesNotThrow(() => r.spawned[0]!.child.init(FORK_A))
+  r.spawned[0]!.child.result('answer')
+  await r.manager.idle()
+  assert.equal(replyTexts(r).at(-1), 'answer', 'the lane goes on')
+})
+
+// -- THREADREPLY (0.87.2): the server refuses a keyed assistant write this daemon cannot prove --
+
+const REPLY = 'integrations/threads/reply'
+const SAVED = join(STATE, '101.undelivered.txt')
+// The real headers a pairing daemon sends, judged by the server's rule.
+const PAIRED = lowerCaseHeaders(authHeaders({ mode: 'pairing', pairingToken: 'TOKEN' } as Parameters<typeof authHeaders>[0]))
+const serverRule = (path: string, body: Record<string, unknown>) => path === REPLY && threadReplyRefused(PAIRED, body)
+const refuseAnswer = (path: string, body: Record<string, unknown>) => path === REPLY && body.text === 'the answer.'
+
+async function answered(r: ReturnType<typeof rig>, text = 'the answer.', input: ThreadTurnInput = turn('101')) {
+  r.manager.turn(input)
+  await r.manager.idle()
+  r.spawned[0]!.child.init(FORK_A)
+  r.spawned[0]!.child.result(text)
+  await flush()
+}
+
+test('THREADREPLY: the daemon sends the pairing token and no proof it does not hold', () => {
+  assert.deepEqual(PAIRED, { 'x-bgos-pairing': 'TOKEN' })
+})
+
+test('THREADREPLY: an answer passes the server rule on the pairing headers alone', async () => {
+  const r = rig({ refusePosts: serverRule })
+  await answered(r)
+  assert.deepEqual(r.refusedPosts, [])
+  assert.deepEqual(replyTexts(r), ['the answer.'])
+})
+
+test('THREADREPLY: a failed turn tells the owner through a write that passes the server rule', async () => {
+  const r = rig({ refusePosts: serverRule })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  r.spawned[0]!.child.init(FORK_A)
+  r.spawned[0]!.child.result('')
+  await flush()
+  assert.deepEqual(r.refusedPosts, [])
+  assert.match(String(replyTexts(r)[0]), /failed before the agent could answer/)
+})
+
+test('THREADREPLY: a refused answer is tried once, the thread goes back to open, and the owner is told', async () => {
+  const r = rig({ refusePosts: refuseAnswer })
+  await answered(r)
+  assert.equal(r.refusedPosts.length, 1, 'never tried again')
+  assert.equal(r.timers.filter((t) => THREAD_POST_RETRY_MS.includes(t.ms) && !t.cleared).length, 0, 'no retry is waiting')
+  assert.equal(statePosts(r).at(-1), '101:open')
+  assert.equal(replyTexts(r).length, 1, 'one sentence')
+  assert.match(String(replyTexts(r)[0]), /refused/)
+})
+
+test('THREADREPLY: a refused answer is saved where it can be read, and the notice says so', async () => {
+  const r = rig({ refusePosts: refuseAnswer })
+  await answered(r)
+  assert.match(r.files.get(SAVED) ?? '', /the answer\./)
+  assert.match(String(replyTexts(r)[0]), /saved/)
+})
+
+test('THREADREPLY: the notice never claims a save that failed', async () => {
+  const r = rig({ refusePosts: refuseAnswer })
+  r.deps.fs.appendFile = () => { throw new Error('ENOSPC') }
+  await answered(r)
+  assert.match(String(replyTexts(r)[0]), /refused/)
+  assert.doesNotMatch(String(replyTexts(r)[0]), /saved/)
+  assert.equal(replyTexts(r).length, 1)
+})
+
+test('THREADREPLY: a refused summary is saved and the owner is told', async () => {
+  const r = rig({ refusePosts: (path) => path === 'integrations/threads/summary' })
+  await answered(r, 'the draft.', turn('101', { mode: 'summary' }))
+  assert.equal(r.refusedPosts.length, 1)
+  assert.match(r.files.get(SAVED) ?? '', /the draft\./)
+  assert.match(String(replyTexts(r)[0]), /refused/)
+})
+
+test('THREADREPLY: when every reply is refused nothing loops, and a reconnect does not start it again', async () => {
+  const r = rig({ refusePosts: (path) => path === REPLY })
+  await answered(r)
+  assert.equal(r.refusedPosts.length, 2, 'the answer and the one notice')
+  assert.equal(await r.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
+  await flush()
+  assert.equal(r.refusedPosts.length, 2, 'a reconnect posts nothing more for that turn')
+  assert.equal(r.spawned[0]!.child.stdin.length, 1, 'never run again')
+})
+
+test('THREADREPLY: a refusal survives a restart, the next daemon does not post for that turn again', async () => {
+  const r1 = rig({ refusePosts: (path) => path === REPLY })
+  await answered(r1)
+  const r2 = rig({ files: Object.fromEntries(r1.files), refusePosts: (path) => path === REPLY })
+  assert.equal(await r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
+  await flush()
+  assert.deepEqual(r2.refusedPosts, [])
+})
+
+test('THREADREPLY: a server failure that is not a refusal still retries', async () => {
+  let down = true
+  const r = rig({ failPosts: (path) => down && path === REPLY })
+  await answered(r)
+  assert.equal(r.failedPosts.length, 1)
+  assert.equal(r.live(THREAD_POST_RETRY_MS[0]!).length, 1, 'waits to try again')
+  down = false
+  r.fire(r.live(THREAD_POST_RETRY_MS[0]!)[0]!)
+  await flush()
+  assert.deepEqual(replyTexts(r), ['the answer.'])
+})
+
+test('THREADREPLY: deleting the thread removes its saved answer', async () => {
+  const r = rig({ refusePosts: refuseAnswer })
+  await answered(r)
+  assert.ok(r.files.has(SAVED))
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  r.spawned[0]!.child.exit()
+  await flush()
+  assert.equal(r.files.has(SAVED), false)
+})
+
+const httpFailure = (status: number) => Object.assign(new Error(`POST ${status}`), { name: 'HttpError', status })
+
+test('THREADREPLY: reconnects while a notice waits to retry post one sentence, and a later reconnect can try again', async () => {
+  const r1 = rig({ failPosts: (path) => path === REPLY })
+  await answered(r1)
+  let down = true
+  const r2 = rig({ files: Object.fromEntries(r1.files), failPosts: (path) => down && path === REPLY })
+  const reconnect = () => r2.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] })
+  await reconnect()
+  await flush()
+  await reconnect()
+  await flush()
+  assert.equal(r2.failedPosts.length, 1, 'the second reconnect queued no second sentence')
+  for (const ms of THREAD_POST_RETRY_MS) {
+    r2.fire(r2.live(ms)[0]!)
+    await flush()
+  }
+  assert.equal(r2.failedPosts.length, 4, 'the one sentence ran out of retries')
+  down = false
+  await reconnect()
+  await flush()
+  assert.equal(replyTexts(r2).length, 1, 'a reconnect after it settled tries again')
+})
+
+test('THREADREPLY: a refusal that arrives after the thread was deleted leaves nothing on disk', async () => {
+  const r = rig()
+  let release: () => void = () => {}
+  const gate = new Promise<void>((done) => { release = done })
+  const post = r.deps.post
+  r.deps.post = async (path, body) => {
+    if (path === REPLY && body.text === 'the answer.') { await gate; throw httpFailure(403) }
+    return post(path, body)
+  }
+  await answered(r)
+  await r.manager.close({ rootId: '101', removeWorktree: true })
+  r.spawned[0]!.child.exit()
+  await flush()
+  assert.equal(r.files.has(join(STATE, '101.json')), false, 'the delete finished first')
+  release()
+  await flush()
+  assert.equal(r.files.has(SAVED), false)
+})
+
+test('THREADREPLY: an answer to a thread the owner closed stops at once, with no notice and no save', async () => {
+  const r = rig()
+  const post = r.deps.post
+  const conflicts: string[] = []
+  r.deps.post = async (path, body) => {
+    if (path === REPLY) { conflicts.push(String(body.text)); throw httpFailure(409) }
+    return post(path, body)
+  }
+  await answered(r)
+  assert.deepEqual(conflicts, ['the answer.'], 'tried once, and no sentence follows it')
+  assert.equal(r.files.has(SAVED), false)
+  assert.equal(await r.manager.reconcile(async () => ({ turns: [pendingRow('101', '1010', 'work on 101')] }), { assistantIds: ['7'] }), 0)
+  await flush()
+  assert.equal(conflicts.length, 1, 'a reconnect posts nothing more')
+})
+
+test('THREADREPLY: the saved answer is private to this user and the log names the file', async () => {
+  const r = rig({ refusePosts: refuseAnswer })
+  const logs: string[] = []
+  r.deps.log = (line) => logs.push(line)
+  await answered(r)
+  assert.equal(r.modes.get(SAVED), 0o600)
+  assert.ok(logs.some((l) => l.includes('101.undelivered.txt')), logs.join(' | '))
+  assert.equal(logs.some((l) => l.includes('the answer.')), false, 'the answer itself is never logged')
+})
+
+// -- THREADFIX: a result that is not the turn's answer never fails the turn, and a late answer is never lost --
+
+/** One assistant text frame, as the CLI sends it before every result a turn really produced. */
+const assistantFrame = (text: string) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] }, session_id: FORK_A })
+const resultFrame = (text: string, turns: number, over: Record<string, unknown> = {}) => ({ type: 'result', subtype: 'success', is_error: false, result: text, num_turns: turns, session_id: FORK_A, ...over })
+const replyBodies = (r: ReturnType<typeof rig>) => r.posts.filter((p) => p.path === REPLY).map((p) => p.body)
+const logged = (r: ReturnType<typeof rig>, what: RegExp) => r.logs.filter((l) => what.test(l))
+
+test('an empty num_turns 0 result before the turn\'s first assistant frame does not fail the turn, and the later answer is posted', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  // The frames a fork sends, in order, when the main session still had a background task (measured on CLI 2.1.322).
+  c.frame({ type: 'system', subtype: 'task_notification', task_id: 'b1', tool_use_id: 'tool_0', status: 'stopped', output_file: '', summary: 'Background shell command didn\'t finish before the previous session ended', session_id: FORK_A })
+  c.init(FORK_A)
+  c.frame(resultFrame('', 0))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r), [], 'the empty result of the notice is no failure')
+  assert.deepEqual(statePosts(r), ['101:working'], 'the thread is still working')
+  assert.equal(r.manager.runningCount(), 1, 'the turn still holds its slot')
+  assert.equal(r.live(THREAD_TURN_TIMEOUT_MS).length, 1, 'and its timer')
+  c.init(FORK_A)
+  c.frame(assistantFrame('PONG'))
+  c.frame(resultFrame('PONG', 1))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r), [{ chatId: '55', rootId: '101', text: 'PONG', final: true }], 'the real answer is the one reply')
+  assert.deepEqual(statePosts(r), ['101:working'], 'never back to open')
+  assert.equal(r.manager.runningCount(), 0)
+  assert.equal(logged(r, /skipped a result/).length, 1, r.logs.join(' | '))
+  assert.equal(saved(r).lastReplyId, '1010')
+  assert.equal(saved(r).lastDelivered, true)
+})
+
+test('any result before the turn\'s first assistant frame is skipped, on a later turn of the same process too', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame('first.'))
+  c.frame(resultFrame('first.', 1))
+  await r.manager.idle()
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'and then?' }))
+  await r.manager.idle()
+  // Not this turn's: the CLI has said nothing since the message was written to it.
+  c.frame(resultFrame('a background task finished.', 3))
+  c.frame(resultFrame('', 0, { subtype: 'error_during_execution', is_error: true }))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r).map((b) => b.text), ['first.'])
+  assert.equal(r.manager.runningCount(), 1, 'the second turn is still running')
+  c.frame(assistantFrame('second.'))
+  c.frame(resultFrame('second.', 1))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r).map((b) => b.text), ['first.', 'second.'])
+  assert.deepEqual(statePosts(r), ['101:working', '101:working'], 'no failure in between')
+  assert.equal(logged(r, /skipped a result/).length, 2, r.logs.join(' | '))
+  assert.equal(r.logs.some((l) => l.includes('a background task finished.')), false, 'what a result says is never logged')
+})
+
+test('an empty result after the assistant spoke is still a failed turn', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame('thinking aloud'))
+  c.frame(resultFrame('', 1))
+  await r.manager.idle()
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+  assert.match(String(replyBodies(r)[0]!.text), /^This turn failed/)
+})
+
+test('a result that arrives after a turn failed is delivered or logged, never dropped silently', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame('API Error: 500'))
+  c.frame(resultFrame('API Error: 500', 1, { is_error: true }))
+  await r.manager.idle()
+  assert.equal(replyBodies(r).length, 1)
+  assert.match(String(replyBodies(r)[0]!.text), /^This turn failed/)
+  // An empty one is no answer: logged, and the real one may still come.
+  c.frame(resultFrame('', 0))
+  await r.manager.idle()
+  assert.equal(replyBodies(r).length, 1)
+  assert.equal(logged(r, /dropped a result/).length, 1, r.logs.join(' | '))
+  // The same process answers after all: that is this turn's reply.
+  c.frame(assistantFrame('PONG'))
+  c.frame(resultFrame('PONG', 1))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r)[1], { chatId: '55', rootId: '101', text: 'PONG', final: true })
+  assert.equal(logged(r, /answered after it was reported failed/).length, 1, r.logs.join(' | '))
+  // One late answer per failed turn: anything after it belongs to no turn.
+  c.frame(resultFrame('and another thing.', 1))
+  await r.manager.idle()
+  assert.equal(replyBodies(r).length, 2)
+  assert.equal(logged(r, /dropped a result/).length, 2, r.logs.join(' | '))
+  assert.equal(r.logs.some((l) => l.includes('PONG') || l.includes('and another thing.')), false, 'what a result says is never logged')
+})
+
+test('a late result after a failed summary turn is posted as a reply too, the one route a late answer takes', async () => {
+  const r = rig()
+  r.manager.turn(turn('101', { mode: 'summary', replyId: '', text: '' }))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame(''))
+  c.frame(resultFrame('', 1))
+  await r.manager.idle()
+  assert.equal(replyBodies(r).length, 1, 'the failure sentence')
+  c.frame(assistantFrame('- asked X'))
+  c.frame(resultFrame('- asked X', 1))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r)[1], { chatId: '55', rootId: '101', text: '- asked X', final: true })
+  assert.deepEqual(r.posts.filter((p) => p.path === 'integrations/threads/summary'), [])
+})
+
+test('once the next turn has started, a late result is never taken for the failed turn\'s answer', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame('API Error: 500'))
+  c.frame(resultFrame('API Error: 500', 1, { is_error: true }))
+  await r.manager.idle()
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+  await r.manager.idle()
+  c.frame(resultFrame('stale.', 1))
+  await r.manager.idle()
+  assert.equal(r.posts.some((p) => p.body.text === 'stale.'), false)
+  assert.equal(logged(r, /skipped a result/).length, 1, r.logs.join(' | '))
+  c.frame(assistantFrame('fresh.'))
+  c.frame(resultFrame('fresh.', 1))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r).map((b) => b.text).slice(1), ['fresh.'])
+})
+
+test('a result with no turn to answer is logged, on an idle lane and on a closed one', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame('done.'))
+  c.frame(resultFrame('done.', 1))
+  await r.manager.idle()
+  c.frame(assistantFrame('unasked.'))
+  c.frame(resultFrame('unasked.', 1))
+  await r.manager.idle()
+  assert.equal(logged(r, /dropped a result/).length, 1, r.logs.join(' | '))
+  await r.manager.close({ rootId: '101', removeWorktree: false })
+  c.frame(resultFrame('after the close.', 1))
+  await flush()
+  assert.equal(logged(r, /dropped a result/).length, 2, r.logs.join(' | '))
+  assert.deepEqual(replyBodies(r).map((b) => b.text), ['done.'])
+  c.exit(null)
+  await r.manager.idle()
+})
+
+test('a turn whose only result was skipped still ends, at the turn timeout', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(resultFrame('', 0))
+  await r.manager.idle()
+  assert.deepEqual(statePosts(r), ['101:working'])
+  r.fire(r.live(THREAD_TURN_TIMEOUT_MS)[0]!)
+  await r.manager.idle()
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+  assert.equal(replyBodies(r).length, 1, 'one plain sentence, the timeout')
+  assert.deepEqual(c.killed, ['SIGTERM'])
+  c.exit(null)
+  await r.manager.idle()
 })

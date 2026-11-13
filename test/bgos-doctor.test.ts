@@ -2026,9 +2026,9 @@ test('doctor: probeCredentials reads the home, its source, and whether this fold
   mkdirSync(bare, { recursive: true })
   assert.equal(probeCredentials({ env: { BGOS_ASSISTANT_ID: '871' }, home: root, expectedAssistantId: '871', workdir: bare }).workdirRefused, false)
   assert.equal(probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: bare }).workdirRefused, true)
-  // As the daemon reads them: a pin or an env id counts only when that
-  // agent's credentials file exists (the daemon ignores a stale pin, and an
-  // env id with no file falls back to elimination).
+  // As the daemon reads them: a pin or an env id naming no file gives that
+  // session no pairing at all, so it never runs as this agent (helperwedge
+  // finding 4; it used to fall back to elimination, which the home refused).
   const stale = join(root, 'code', 'stale-pin')
   mkdirSync(stale, { recursive: true })
   writeFileSync(join(stale, '.bgos-agent-id'), '999\n')
