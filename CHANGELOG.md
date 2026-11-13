@@ -36,6 +36,12 @@ Where the HOAI server takes host offers (its flag `VAULT_ZERO_SETUP_ENABLED`), t
 - **A live setup keeps its lock.** It touches the lock every 10 seconds, because a setup slower than the minute after which a lock counts as abandoned would have it taken from under it, and two runs would again each make an identity.
 - Still true on a slow Windows PC: every vault tool call reads the key file's access list first, which is two PowerShell starts. That was so before this version and is not changed here.
 
+**From the review of 2026-11-13.** Only an owner app that carries the zero setup half (HOAI 5.28.3 or later) ever accepts an offer. Where the server takes offers and the owner's app is older, "finishes by itself" was a promise nobody could keep, and `hoai vault-host` stopped there.
+
+- The agent's answer while an offer waits now names what finishes it (HOAI 5.28.3 or later on the owner's side) and tells the owner to update if it stays that way. It still sends nobody to a terminal.
+- In a terminal, a waiting offer names the older way out: `hoai vault-host --new-signing-key`, with a signing key the owner mints in HOAI.
+- For whoever turns it on: the server flag goes on LAST, after every owner app carries the app half.
+
 Nothing changes on a server without the flag: the first request answers 404, no key is made and the older flow stands. `HOAI_VAULT_AUTO_HOST=0` keeps a machine out of it.
 
 The trade, stated in HOAI's design note (`docs/superpowers/specs/2026-11-12-vault-zero-setup-design.md`): the owner's app trusts the first key it sees for an agent, so a server that is already hostile at the minute of first setup could substitute its own. Item values stay end to end encrypted, and a later change is never trusted without the owner.

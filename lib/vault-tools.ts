@@ -21,7 +21,7 @@ const HOST_SETUP =
 // Zero setup (HOAI design 2026-11-12): where the server takes host offers this
 // machine sets itself up, so nobody is sent to a terminal.
 const HOST_PENDING =
-  'This computer has offered its vault key and HOAI finishes the setup by itself, in the background, the next time the owner has the app open with this agent\'s vault on. Nothing has to be typed or approved anywhere. Tell the owner the vault is still being set up, and try once more later; do not retry in a loop and do not ask the owner to run any command.'
+  'This computer has offered its vault key and HOAI finishes the setup by itself, in the background, the next time the owner has the app open with this agent\'s vault on. That needs HOAI 5.28.3 or later on the owner\'s side: an older app cannot finish it. Nothing has to be typed or approved anywhere. Tell the owner the vault is still being set up and that, if it stays that way, they should update HOAI; try once more later, do not retry in a loop and do not ask the owner to run any command.'
 const HOST_CHANGE =
   'This computer has a new vault key (the agent was reinstalled or moved), so the owner sees "this computer changed" in HOAI. Until the owner taps Use the new computer there, the vault stays blocked here. Tell the owner that, once; do not retry in a loop and do not ask for or relay any key or code.'
 

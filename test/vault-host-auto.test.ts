@@ -612,3 +612,28 @@ test('wiring: the daemon tries again by itself when this computer could not chec
   assert.match(source, /result\.status === 'unavailable' && result\.retry === true && vaultAutoHostRetries < VAULT_AUTO_HOST_RETRIES/)
   assert.match(source, /setTimeout\(\(\) => \{ void runVaultAutoHost\('retry'\) \}/)
 })
+
+// -- Review of 2026-11-13, finding 4 -----------------------------------------------------------------------------
+// Only an owner app that carries the zero setup half (HOAI 5.28.3 or later) ever accepts an offer. Where the server
+// takes offers and the owner's app is older, the words "finishes by itself" were a promise nobody could keep, and
+// `hoai vault-host` stopped there with no way on. The agent now names the app version it needs, and the terminal
+// names the older way out.
+test('review finding 4: a waiting offer says which HOAI app finishes it; the agent still sends nobody to a terminal', async () => {
+  const dir = tempDir()
+  const result = await handleVaultTool('vault_items', {}, toolDeps(dir, server().fetch, []))
+  const answer = JSON.parse(text(result))
+  assert.equal(answer.error, 'VAULT_HOST_SETUP_PENDING')
+  assert.match(answer.message, /HOAI 5\.28\.3 or later/)
+  assert.match(answer.message, /update HOAI/i)
+  assert.doesNotMatch(answer.message, /terminal|hoai vault-host|fingerprint|paste/i)
+})
+
+test('review finding 4: in a terminal, a waiting offer names the older setup as the way out for an older app', async () => {
+  const { AUTO_TEXT } = await import('../bin/hoai-vault-host.mjs')
+  for (const state of ['offered', 'change_offered'] as const) {
+    assert.match(AUTO_TEXT[state], /HOAI 5\.28\.3 or later/, state)
+    assert.match(AUTO_TEXT[state], /hoai vault-host --new-signing-key/, state)
+  }
+  // The states that need nothing from anyone say nothing of it.
+  assert.doesNotMatch(AUTO_TEXT.installed, /new-signing-key/)
+})

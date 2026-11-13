@@ -128,10 +128,11 @@ function askLine(prompt) {
   })
 }
 
-const AUTO_TEXT = {
+/** What each state reads as on a command line. Exported for its test. */
+export const AUTO_TEXT = {
   installed: 'This computer is set up for the vault. Nothing else to do.',
-  offered: 'This computer offered its vault key. HOAI finishes the setup by itself when the owner has the app open with this agent\'s vault on.',
-  change_offered: 'This computer offered a NEW vault key. In HOAI the owner sees "this computer changed" and taps Use the new computer.',
+  offered: 'This computer offered its vault key. HOAI finishes the setup by itself when the owner has the app open with this agent\'s vault on. That needs HOAI 5.28.3 or later on the owner\'s side. With an older app nothing will finish it: then run `hoai vault-host --new-signing-key` here for the older setup, with a signing key the owner mints in HOAI.',
+  change_offered: 'This computer offered a NEW vault key. In HOAI 5.28.3 or later the owner sees "this computer changed" and taps Use the new computer. With an older app nothing will show: then run `hoai vault-host --new-signing-key` here for the older setup.',
   off: 'This HOAI server does not set vault hosts up by itself yet.',
   disabled: 'Automatic vault host setup is switched off on this machine (HOAI_VAULT_AUTO_HOST).',
   unavailable: 'HOAI could not be reached. Nothing was changed.',
