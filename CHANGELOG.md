@@ -45,6 +45,13 @@ Not checked against a real server in this release: the server routes are built i
 **New capability `lane_threads`.** Declared on the pairing only where person lanes and threads can both run (`person_lanes` with `message_threads` and `thread_sessions`), on a pairing and not on Windows. The server offers a thread to a share recipient only when the pairing declares all three.
 
 Not checked against a real Claude Code process in this release: the unit tests drive the lane's thread manager with fakes.
+## 0.87.4 (2026-11-11)
+
+**A thread answers when the main session has a background task running.** A thread starts as a copy of the agent's main session. When that session still had a background task running (a shell command left in the background), Claude Code first told the copy that the task was gone, and closed that notice with an empty result before it read the thread's message. The daemon took the empty result for the thread's answer: the thread said `This turn failed before the agent could answer`, went back to Open, and the real answer, which came a second or two later, was dropped without a log line. A result that cannot be the answer to the thread's message is now skipped: an empty one with no model turn behind it, and any result that comes before Claude Code has said anything since the message went in. The turn keeps waiting for its own result.
+
+**An answer that comes after a turn was reported failed is posted.** If the same process still answers after `This turn failed`, and no newer message has started in that thread, the answer is posted in the thread as a reply. Every result the daemon drops is now logged, with its shape and never its text.
+
+**Tests:** the exact frames measured on Claude Code 2.1.322 in `test/thread-lanes.test.ts`, and a seventh live case in `test/thread-live.e2e.test.ts`: a throwaway main session with a `sleep` still running in the background, forked by the real daemon with the real CLI.
 
 ## 0.87.3 (2026-11-06)
 
