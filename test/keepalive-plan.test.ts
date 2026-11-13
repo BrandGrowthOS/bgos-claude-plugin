@@ -28,9 +28,13 @@ import {
   AGENT_STATE_FRESH_MS,
   CHANNEL_BEACON_FRESH_MS,
   CHANNEL_CORE_FILES,
+  CHANNEL_DEAF_CONFIRM_MS,
+  CHANNEL_DEAF_SEEN_GAP_MS,
   CHANNEL_DEAF_TARGET,
   CHANNEL_START_GRACE_MS,
   channelDeafDetail,
+  decideDeafConfirmed,
+  decideDeafExplained,
   channelFilesOf,
   decideChannelDeaf,
   CREATE_LAUNCH_REASONS,
@@ -1008,4 +1012,49 @@ test('decideSafeMoment (deafwatch, Ares 17:29Z): a deaf channel past its start g
   assert.deepEqual(decideSafeMoment({ ...base, stateFresh: true, state: { ...fresh, turnInFlight: false, pendingPermissions: 1 } } as any), { safe: false, reason: 'pending_permission' })
   // Quiet anyway: the usual answer.
   assert.deepEqual(decideSafeMoment({ ...base, activityMs: [now - 60 * 60_000] } as any), { safe: true, reason: 'idle' })
+})
+
+test('decideDeafConfirmed (deafwatch review F1): a deaf verdict is acted on only after a run of looks CHANNEL_DEAF_CONFIRM_MS long with no gap over CHANNEL_DEAF_SEEN_GAP_MS', () => {
+  const now = Date.parse('2026-11-13T18:00:00Z')
+  const MIN = 60_000
+  // A first look starts a run, never confirmed.
+  assert.deepEqual(decideDeafConfirmed({ sinceMs: null, seenAtMs: null, now }), { confirmed: false, sinceMs: now, seenAtMs: now })
+  // Inside the run, not long enough yet; the run keeps its start.
+  assert.deepEqual(decideDeafConfirmed({ sinceMs: now - MIN, seenAtMs: now - MIN, now }), { confirmed: false, sinceMs: now - MIN, seenAtMs: now })
+  // Long enough, exactly at the edge, every look within the gap: confirmed. ISO stamps (the record's) read the same.
+  assert.deepEqual(decideDeafConfirmed({ sinceMs: now - CHANNEL_DEAF_CONFIRM_MS, seenAtMs: now - MIN, now }), { confirmed: true, sinceMs: now - CHANNEL_DEAF_CONFIRM_MS, seenAtMs: now })
+  assert.equal(decideDeafConfirmed({ sinceMs: new Date(now - 10 * MIN).toISOString(), seenAtMs: new Date(now - MIN).toISOString(), now }).confirmed, true)
+  // A gap (a sleep, a watcher that was down) over the limit starts over, however old the run.
+  assert.deepEqual(decideDeafConfirmed({ sinceMs: now - 3 * 60 * MIN, seenAtMs: now - CHANNEL_DEAF_SEEN_GAP_MS - 1, now }), { confirmed: false, sinceMs: now, seenAtMs: now })
+  assert.equal(decideDeafConfirmed({ sinceMs: now - 10 * MIN, seenAtMs: now - CHANNEL_DEAF_SEEN_GAP_MS, now }).confirmed, true, 'a gap of exactly the limit is still one run')
+  // A stamp in the future, or a run that ends before it starts, proves nothing: start over.
+  assert.equal(decideDeafConfirmed({ sinceMs: now - 10 * MIN, seenAtMs: now + MIN, now }).confirmed, false)
+  assert.equal(decideDeafConfirmed({ sinceMs: now, seenAtMs: now - MIN, now }).confirmed, false)
+  assert.equal(decideDeafConfirmed({ sinceMs: 'garbage', seenAtMs: now - MIN, now }).confirmed, false)
+  // The confirmation is shorter than the grace hoai-core and the watcher give a start, and longer than one sweep.
+  assert.ok(CHANNEL_DEAF_CONFIRM_MS > MIN && CHANNEL_DEAF_CONFIRM_MS < CHANNEL_START_GRACE_MS)
+  assert.ok(CHANNEL_DEAF_SEEN_GAP_MS > MIN)
+})
+
+test('decideDeafExplained (deafwatch review F2): only a claude-login-expired status written during THIS claude\'s life explains a deaf channel; it reads as the login, never as no-channel-heartbeat', () => {
+  const started = Date.parse('2026-11-13T18:00:00Z')
+  const verdict = decideDeafExplained({ outcome: 'claude-login-expired', statusAtMs: started + 3 * 60_000, claudeStartedAtMs: started })
+  assert.ok(verdict)
+  assert.equal(verdict.state, 'failed')
+  assert.match(verdict.reason, /^claude-login-expired: /)
+  assert.ok(!verdict.reason.includes('no-channel-heartbeat'), 'the Helper table matches no-channel-heartbeat before claude-login-expired')
+  assert.ok(verdict.reason.length <= 120)
+  // Written as it started (same second) still counts.
+  assert.ok(decideDeafExplained({ outcome: 'claude-login-expired', statusAtMs: started, claudeStartedAtMs: started }))
+  // Anything else is not explained: an earlier launch's status, another outcome, an unknown time.
+  for (const input of [
+    { outcome: 'claude-login-expired', statusAtMs: started - 1, claudeStartedAtMs: started },
+    { outcome: 'no-channel-heartbeat', statusAtMs: started + 60_000, claudeStartedAtMs: started },
+    { outcome: 'health-relaunch', statusAtMs: started + 60_000, claudeStartedAtMs: started },
+    { outcome: null, statusAtMs: started + 60_000, claudeStartedAtMs: started },
+    { outcome: 'claude-login-expired', statusAtMs: null, claudeStartedAtMs: started },
+    { outcome: 'claude-login-expired', statusAtMs: started + 60_000, claudeStartedAtMs: null },
+  ]) {
+    assert.equal(decideDeafExplained(input), null, JSON.stringify(input))
+  }
 })

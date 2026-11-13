@@ -667,6 +667,22 @@ test('C3 (deafwatch, Ares 17:29Z): a daemon down past the start grace is restart
   assert.equal(checkupPass(obs({ ...deaf, claudeStartedAtMs: null })).actions[0].reason, 'recent_activity')
 })
 
+test('C8 (deafwatch review F2): the launcher found the shared Claude login failed under THIS claude, so the dead connector is the login: reported signed out, never restarted', () => {
+  // bin/hoai-core.mjs: the channel never beat and the login failed, so it wrote claude-login-expired and did not relaunch.
+  const loginFailed = { daemonAlive: false, claudeStartedAtMs: NOW - 20 * MIN, launchStatus: { outcome: 'claude-login-expired', atMs: NOW - 17 * MIN } }
+  const pass = checkupPass(obs(loginFailed))
+  const c8 = pass.findings.find((f: any) => f.cause === 'C8')
+  assert.ok(c8, 'named as the login')
+  assert.equal(c8.code, 'login_expired')
+  assert.match(c8.evidence, /claude-login-expired/)
+  assert.equal(plannedRestart(pass.actions), false, 'a restart meets the same login')
+  assert.equal(pass.actions.find((a: any) => a.action === 'restart')?.reason, 'blocked_by_login')
+  // A status an EARLIER launch wrote (before this claude started) says nothing about this one: C3 restarts as before.
+  const older = checkupPass(obs({ ...loginFailed, launchStatus: { outcome: 'claude-login-expired', atMs: NOW - 25 * MIN } }))
+  assert.equal(older.findings.some((f: any) => f.cause === 'C8'), false)
+  assert.equal(plannedRestart(older.actions), true)
+})
+
 test('a restart gate that says no is a skipped step with its reason and state', () => {
   const rateLimited = checkupPass(obs({ daemonAlive: false, lastRestartAtMs: NOW - RESTART_MIN_INTERVAL_MS + MIN }))
   assert.deepEqual(steps(rateLimited.actions), ['restart:skipped'])

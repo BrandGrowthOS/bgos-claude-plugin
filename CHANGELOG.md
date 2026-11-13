@@ -20,6 +20,12 @@ From Ares's Windows PC (2026-11-13): an antivirus removed three plugin files, am
 
 **No false alarm on a slow start.** A claude still inside its 5 minute start grace, one the watcher cannot prove is the agent's (a person's own session in the folder), a start time the process table does not give, and a running daemon that has not written a beacon yet are never called deaf. The check up uses the same grace: it no longer calls a starting agent's connector dead and restarts it, it names a missing plugin file in its `daemon_down` or `beacon_stale` finding, and past the grace the restart of that dead connector is not held by recent session activity. When the process table gives no start time, nothing proves the grace has passed, and recent activity still holds the restart.
 
+**One look is not enough (laptop wake).** After a computer sleeps, every file a healthy daemon writes is hours old, and the first check after wake can run before the daemon's first tick. So the watcher acts on a deaf channel only when every minute's check has seen it deaf for two minutes in a row. A gap of more than three minutes between two checks (a sleep, or a watcher that was not running) starts the two minutes over.
+
+**A failed Claude login is reported as the login.** When the channel never beat because the Claude login every agent on the computer shares has failed, the launcher says so (`claude-login-expired`) and does not relaunch, since a relaunch meets the same login. The watcher now reads that from the launcher, for the claude it is judging: it reports the agent `failed` with a reason starting `claude-login-expired`, which the Helper shows as Signed out with its sign in step, logs it once, and restarts nothing. The check up does the same: it names the login, and does not restart the dead connector.
+
+**A channel that keeps dying is one episode.** A channel that comes back after a restart and dies again within 30 minutes stays in the same episode, so it gets the same three restarts and then reads `attempts_exhausted`, instead of a restart every 30 minutes for ever. A channel live for 30 minutes ends the episode.
+
 ## 0.87.5 (2026-11-13)
 
 From the Helper's production test on a MacBook (2026-11-12): the Helper noticed a frozen agent and started a Fix every time, but never restarted it, and the app then said the agent was running again.

@@ -16,11 +16,15 @@
  * the missing file means never comes.
  *
  * The clock: the first sweep runs at the real now (the claude is seconds old: a slow start); the
- * second runs with now() six minutes ahead, which is how the sweep sees a claude that has run past its
- * five minute start grace (its start time is the real one the listing reports).
+ * next ones run with now() six, seven, eight and nine minutes ahead, which is how the sweep sees a claude
+ * that has run past its five minute start grace (its start time is the real one the listing reports).
+ * Round 2: one deaf look (6 min) is not acted on; deaf at every minute's sweep for two minutes (8 min)
+ * it is confirmed and restarted; then hoai's claude-login-expired status (9 min) is reported as the
+ * login, with no second restart.
  *
  * Run from the plugin root: node docs/evidence/2026-11-13-deafwatch/live-sweep.mjs
- * Against main (before the fix), the same script prints sweep 2 `supervised` and exits 1: live-sweep.main.out.txt.
+ * Against main (before the fix), the same script prints `supervised` throughout and exits 1: live-sweep.main.out.txt.
+ * Against 3b55728 (round 1), it restarts on the first deaf look and exits 1: live-sweep.round1.out.txt.
  * Paths are printed relative to the temporary HOME (~); nothing outside it is written.
  */
 import { spawn } from 'node:child_process'
@@ -119,20 +123,49 @@ try {
   console.log(`  heartbeat entry: ${JSON.stringify(first.agents)}`)
 
   skewMs = 6 * 60_000
+  console.log('\nsweep 2, six minutes on (past the five minute start grace): a first deaf look, acted on only if it holds (round 2, F1):')
+  const second = await runKeepAliveSweep(ctx)
+  console.log(`  heartbeat entry: ${JSON.stringify(second.agents)}`)
+  const actsAfterFirstLook = acts.length
+
+  skewMs = 7 * 60_000
+  console.log('\nsweep 3, a minute later (still deaf, one minute into the look):')
+  const third = await runKeepAliveSweep(ctx)
+  console.log(`  heartbeat entry: ${JSON.stringify(third.agents)}`)
+
+  skewMs = 8 * 60_000
   // Ares, 17:29Z: the session had been active minutes before (its transcript written), and the check up
-  // held the restart for that (recent_activity). Written here a minute before sweep 2.
+  // held the restart for that (recent_activity). Written here a minute before sweep 4.
   const transcript = join(CONFIG, 'projects', AVA.replace(/[^a-zA-Z0-9]/g, '-'), `${PIN}.jsonl`)
   fs.writeFile(transcript, '{"type":"assistant"}\n')
   utimesSync(transcript, (Date.now() + skewMs - 60_000) / 1000, (Date.now() + skewMs - 60_000) / 1000)
-  console.log('\nsweep 2, six minutes on (past the five minute start grace; its transcript written a minute ago):')
-  const second = await runKeepAliveSweep(ctx)
-  console.log(`  heartbeat entry: ${JSON.stringify(second.agents)}`)
+  console.log('\nsweep 4, eight minutes on (deaf for two minutes of sweeps: confirmed; its transcript written a minute ago):')
+  const fourth = await runKeepAliveSweep(ctx)
+  console.log(`  heartbeat entry: ${JSON.stringify(fourth.agents)}`)
   const record = JSON.parse(fs.readFile(keepAliveStatePath(HOME)) ?? '{}').agents?.[ID]
   console.log(`  keepalive-state.json record: ${JSON.stringify({ state: record?.state, reason: record?.reason, target: record?.target, attempts: record?.attempts, missingFiles: record?.missingFiles })}`)
+  const actsAfterRestart = acts.length
+
+  // Round 2, F2: hoai-core then finds the Claude login every agent here shares has failed, writes
+  // claude-login-expired for this claude and does not relaunch (bin/hoai-core.mjs). The sweep reads it.
+  skewMs = 9 * 60_000
+  const statusPath = join(HOME, '.bgos-agent', String(ID), 'launch-status')
+  fs.writeFile(statusPath, `${new Date(Date.now() + skewMs - 30_000).toISOString()} outcome=claude-login-expired waited=180s\n`)
+  utimesSync(statusPath, (Date.now() + skewMs - 30_000) / 1000, (Date.now() + skewMs - 30_000) / 1000)
+  console.log('\nsweep 5, nine minutes on (its launcher wrote claude-login-expired 30 s ago):')
+  const fifth = await runKeepAliveSweep(ctx)
+  console.log(`  heartbeat entry: ${JSON.stringify(fifth.agents)}`)
+
   console.log('\nthe watcher log:')
   for (const line of logs) console.log(`  ${show(line)}`)
-  const ok = first.agents[0]?.state === 'supervised' && second.agents[0]?.state === 'failed' && String(second.agents[0]?.reason).startsWith('no-channel-heartbeat: missing bin/bgos-launch.mjs') && acts.some((a) => a.startsWith('systemctl --user restart'))
-  console.log(`\n${ok ? 'PASS' : 'FAIL'}: slow start left alone, deaf channel flagged past the grace, restarted once through its service, reported not fixed, the missing file named`)
+  const ok =
+    first.agents[0]?.state === 'supervised' &&
+    second.agents[0]?.state === 'supervised' && actsAfterFirstLook === 0 &&
+    third.agents[0]?.state === 'supervised' &&
+    fourth.agents[0]?.state === 'failed' && String(fourth.agents[0]?.reason).startsWith('no-channel-heartbeat: missing bin/bgos-launch.mjs') &&
+    acts.some((a) => a.startsWith('systemctl --user restart')) &&
+    fifth.agents[0]?.state === 'failed' && String(fifth.agents[0]?.reason).startsWith('claude-login-expired: ') && acts.length === actsAfterRestart
+  console.log(`\n${ok ? 'PASS' : 'FAIL'}: slow start left alone, one deaf look not acted on, the deaf channel confirmed and restarted once through its service, reported not fixed with the missing file named, then the launcher's login verdict reported with no restart`)
   process.exitCode = ok ? 0 : 1
 } finally {
   claude.kill('SIGKILL')

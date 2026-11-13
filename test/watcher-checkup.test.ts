@@ -1431,6 +1431,23 @@ test('deafwatch (Ares 17:29Z): a daemon down past the grace is restarted though 
   assert.equal(terminal.state, 'done')
 })
 
+test('deafwatch review F2 (red on 3b55728): hoai wrote claude-login-expired under THIS claude: the check up names the login and restarts nothing', async () => {
+  const fs = agentFs()
+  writeTranscript(fs, [assistantTurn(T0 - 1 * MIN)], T0 - 1 * MIN)
+  // bin/hoai-core.mjs, 3 min into the claude that started 20 min ago: no heartbeat, the shared login failed, no relaunch.
+  fs.writeFile(`${STATE_DIR}/launch-status`, '2026-10-06T18:43:00.000Z outcome=claude-login-expired waited=180s\n')
+  fs.touch(`${STATE_DIR}/launch-status`, T0 - 17 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, deafPs(T0 - 20 * MIN), { alive: [3000, 5912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.ok(terminal.findings.some((f: any) => f.cause === 'login_expired'), JSON.stringify(terminal.findings))
+  assert.equal(restartRequested(fs), false, 'a restart meets the same login')
+  assert.ok(!terminal.actions.some((a: any) => a.did === 'restart_agent' && a.outcome === 'fixed'), JSON.stringify(terminal.actions))
+})
+
 test('deafwatch: a claude only a cwd lookup finds still gives its start time, so a deaf channel past the grace is restarted (Windows hand relaunch)', async () => {
   const fs = agentFs()
   writeTranscript(fs, [assistantTurn(T0 - 1 * MIN)], T0 - 1 * MIN)
