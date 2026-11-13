@@ -84,7 +84,11 @@ class FakeChild implements StreamJsonChild {
   frame(f: Record<string, unknown>) { for (const cb of this.out) cb(`${JSON.stringify(f)}\n`) }
   exit(code: number | null = 0) { for (const cb of this.exits) cb(code, null) }
   init(id: string) { this.frame({ type: 'system', subtype: 'init', session_id: id }) }
-  result(text: string) { this.frame({ type: 'result', subtype: 'success', is_error: false, result: text }) }
+  /** A turn's end as the CLI sends it: an assistant frame first, then the result (plugin main 0.87.4 skips a result before it). */
+  result(text: string) {
+    this.frame({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } })
+    this.frame({ type: 'result', subtype: 'success', is_error: false, result: text })
+  }
 }
 
 function rig(opts: { policy?: unknown; pin?: string | null; realpath?: (p: string) => string; loginEnv?: Record<string, string>; configDir?: string } = {}) {
