@@ -686,7 +686,7 @@ test("this agent's own browser host lists no profile choice either, in its tools
   }
 })
 
-test('the instructions the desktop serves are passed on without the choice, keeping everything else', async t => {
+test('the desktop instructions keep their guidance, remove profile choice and require a separate submission click', async t => {
   const f = await rig(t)
   const init = await f.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'refusal-fixture', version: '1' } })
   const said = init.result.instructions as string
@@ -702,7 +702,7 @@ test('the instructions the desktop serves are passed on without the choice, keep
   g.backend.resolve = 'active'
   g.backend.instructions = MANAGED_INSTRUCTIONS
   const managed = (await g.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'refusal-fixture', version: '1' } })).result.instructions
-  assert.equal(managed, 'HOAI managed desktop browser. If needed, call hoai_browser_open_session with a short purpose to use this already authorized managed profile.')
+  assert.equal(managed, 'HOAI managed desktop browser. If needed, call hoai_browser_open_session with a short purpose to use this already authorized managed profile.\n\nFill only enters text. To submit a form, make a separate browser_click on its current submit control, with its own approval and exact target check.')
 })
 
 test("the open call opens the agent's own browser on every HOAI route, whatever profile an older client still sends", async t => {

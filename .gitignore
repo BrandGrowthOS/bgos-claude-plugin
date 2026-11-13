@@ -6,3 +6,9 @@ dist/
 CLAUDE.md
 *.backup
 node_modules
+# Local lane runner output and test scratch
+.lane.log
+.laneenv5-tmp/
+.laneenv5-suite/
+.laneenv6-tmp/
+.laneenv6-suite/

@@ -1,0 +1,44 @@
+{
+  "branch": "fix/daemon-attach-scope-impl",
+  "branch_parent": "0c096eaadce0a9b439cbcc7be42b01b76fdbdf1c",
+  "main_parent": "309ef744bbb6d03ad771492df0af0e7df13ed5c9",
+  "version": "0.83.1",
+  "max_test_workers": 4,
+  "initial_integration": {
+    "tests": 626,
+    "pass": 616,
+    "fail": 1,
+    "cancelled": 0,
+    "skipped": 9,
+    "todo": 0
+  },
+  "final_affected_suites": {
+    "tests": 403,
+    "pass": 396,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 7,
+    "todo": 0
+  },
+  "unchanged_suites_passed_in_initial_run": [
+    "test/agent-inventory.launcher.test.ts",
+    "test/agent-service.home-scope.test.ts",
+    "test/agent-task-win32.home-scope.test.ts",
+    "test/bgos-agent.commands.test.ts",
+    "test/bgos-agent.gate.test.ts",
+    "test/bgos-agent.home-scope.test.ts",
+    "test/bgos-agent.install.test.ts",
+    "test/bgos-agent.lock.test.ts",
+    "test/bgos-agent.private-hook.test.ts",
+    "test/bgos-agent.runsh.test.ts",
+    "test/bgos-agent.static.test.ts",
+    "test/bgos-agent.update-reexec.test.ts",
+    "test/watcher-service.home-scope.test.ts"
+  ],
+  "typecheck_exit_code": 0,
+  "structural_checks_passed": true,
+  "review": "No actionable findings, including followup review of fixture cleanup.",
+  "production_changes_beyond_parent_merge": false,
+  "test_only_integration_fix": "Use main scratchDir helper for attach-scope temporary fixtures.",
+  "push_performed": false
+}

@@ -9,8 +9,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import {
@@ -29,6 +28,7 @@ import {
   refreshMarketplaceLatest,
   runMarketplaceUpdate,
 } from '../lib/marketplace-update.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const OBSERVATION = {
   marketplaceRegistered: true,
@@ -179,6 +179,44 @@ test('blocked plans map to blocked with the planner reason (or a generic token)'
   assert.deepEqual(blocked, { kind: 'blocked', reason: 'rollback_latched' })
   const bare = await runMarketplaceUpdate({ ...RUN_BASE, state: state(), modules: modulesWith({ planMachine: () => ({ verdict: 'blocked' }) }) })
   assert.deepEqual(bare, { kind: 'blocked', reason: 'blocked' })
+})
+
+const HELD_STOP = { ok: false, failedStep: { id: 's3', kind: 'update_plugin', message: 'update_failed:version_held_bad' }, rolledBack: false, steps: [] }
+const heldAt = (held: string) => (version: string) => version === held
+
+test('the mark reaches the executor, which reads the target after the refresh', async () => {
+  let given: any = null
+  const modules = modulesWith({ planMachine: () => PLAN, executePlan: async (_plan: any, deps: any) => ((given = deps), { ok: true, installedVersion: '0.39.1', steps: [] }) })
+  const held = heldAt('0.39.0')
+  const out = await runMarketplaceUpdate({ ...RUN_BASE, state: state(), modules, heldBad: held })
+  assert.equal(given.heldBad('0.39.0'), true)
+  assert.equal(given.heldBad('0.39.1'), false)
+  assert.deepEqual(out, { kind: 'installed', targetVersion: '0.39.1' }, 'a pin that is held is no reason to refuse: the refresh may have found a fix')
+})
+
+test('a version held bad on this computer: a click or a push is refused, and nothing is reported as failed', async () => {
+  const modules = modulesWith({ planMachine: () => PLAN, executePlan: async () => HELD_STOP })
+  assert.deepEqual(await runMarketplaceUpdate({ ...RUN_BASE, state: state(), modules, heldBad: heldAt('0.39.0') }), { kind: 'blocked', reason: 'version_held_bad' })
+})
+
+test('refused with a good build waiting on the install: a click restarts onto that, the one thing it was asked for', async () => {
+  const modules = modulesWith({ planMachine: () => PLAN, executePlan: async () => HELD_STOP })
+  const waiting = state({ observation: { ...OBSERVATION, installed: { present: true, version: '0.38.5', installPath: '/x' } } })
+  assert.deepEqual(await runMarketplaceUpdate({ ...RUN_BASE, state: waiting, modules, heldBad: heldAt('0.39.0') }), { kind: 'installed', targetVersion: '0.38.5' })
+  const heldToo = (version: string) => version === '0.39.0' || version === '0.38.5'
+  assert.deepEqual(await runMarketplaceUpdate({ ...RUN_BASE, state: waiting, modules, heldBad: heldToo }), { kind: 'blocked', reason: 'version_held_bad' })
+})
+
+test('a run that ends on a held version is never handed to the restart ladder, as a partial plan can', async () => {
+  const modules = modulesWith({ planMachine: () => ({ ...PLAN, targetVersion: null }), executePlan: async () => ({ ok: true, installedVersion: '0.39.0', steps: [] }) })
+  assert.deepEqual(await runMarketplaceUpdate({ ...RUN_BASE, state: state(), modules, heldBad: heldAt('0.39.0') }), { kind: 'blocked', reason: 'version_held_bad' })
+})
+
+test('already installed and held: a restart is all that is left, and that is what it must not do', async () => {
+  const nothing = modulesWith({ planMachine: () => ({ verdict: 'nothing_to_do', targetVersion: null, steps: [] }) })
+  const installedAlready = state({ observation: { ...OBSERVATION, installed: { present: true, version: '0.39.0', installPath: '/x' } } })
+  assert.deepEqual(await runMarketplaceUpdate({ ...RUN_BASE, state: installedAlready, modules: nothing, heldBad: heldAt('0.39.0') }), { kind: 'blocked', reason: 'version_held_bad' })
+  assert.deepEqual(await runMarketplaceUpdate({ ...RUN_BASE, state: installedAlready, modules: nothing, heldBad: () => false }), { kind: 'installed', targetVersion: '0.39.0' })
 })
 
 test('nothing_to_do maps to no-update with the latest version, unless a newer version is already installed', async () => {
@@ -334,7 +372,7 @@ test('a throwing report callback is logged and never breaks the update', async (
 // ── Latest version ───────────────────────────────────────────────────────────
 
 function configDirWithMarketplace(version: string | null): string {
-  const configDir = mkdtempSync(join(tmpdir(), 'mp-cfg-'))
+  const configDir = scratchDir('mp-cfg-')
   if (version !== null) {
     const path = marketplaceJsonPath(configDir)
     mkdirSync(dirname(path), { recursive: true })
@@ -512,7 +550,7 @@ test('createMarketplaceLatestTracker: current() is the local read, the network r
 
 test('executorFs exposes the executor surface over node fs', () => {
   const fs = executorFs()
-  const dir = mkdtempSync(join(tmpdir(), 'mp-fs-'))
+  const dir = scratchDir('mp-fs-')
   fs.mkdir(join(dir, 'a', 'b'))
   fs.writeFile(join(dir, 'a', 'b', 'f.txt'), 'hello')
   assert.equal(fs.exists(join(dir, 'a', 'b', 'f.txt')), true)

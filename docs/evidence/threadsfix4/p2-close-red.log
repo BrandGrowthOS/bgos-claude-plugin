@@ -1,0 +1,28 @@
+✖ a close during a sweep cannot release its root for an early reopen (17.986208ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 279.332708
+
+✖ failing tests:
+
+test at test/thread-lanes.test.ts:6:16942
+✖ a close during a sweep cannot release its root for an early reopen (17.986208ms)
+  AssertionError [ERR_ASSERTION]: close must not replace the pending sweep owner
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:564:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

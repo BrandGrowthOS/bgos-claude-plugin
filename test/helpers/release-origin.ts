@@ -11,10 +11,10 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { scratchDir } from './scratch-dirs.ts'
 
 /** git in `cwd`, stdout trimmed; throws on a non-zero exit. */
 export function git(cwd: string, ...args: string[]): string {
@@ -36,7 +36,7 @@ function writeVersion(dir: string, version: string, note: string, files: Record<
 }
 
 export function releaseOrigin(prefix = 'release-origin-') {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)))
+  const root = realpathSync(scratchDir(prefix))
   const bare = join(root, 'origin.git')
   const work = join(root, 'work')
   git(root, 'init', '--quiet', '--bare', '--initial-branch=main', bare)

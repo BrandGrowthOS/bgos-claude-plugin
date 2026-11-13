@@ -1,0 +1,1434 @@
+Command: TMPDIR=<checkout-temp> TSX_DISABLE_CACHE=1 RUN_TESTS_WORKERS=4 npm test
+macOS idle-sleep inhibitor: caffeinate -i
+Exit code: 0
+Evidence includes every runner file result and summary; fixture chatter is omitted.
+
+> claude-channel-bgos@0.86.3 test
+> node scripts/run-tests.mjs
+[run-tests] node:test family: 449 files, 4 workers
+[run-tests] START test/agent-browser-vault.test.ts
+[run-tests] START test/agent-checkup.test.ts
+[run-tests] START test/agent-credentials.test.ts
+[run-tests] START test/agent-email-files-admission.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-checkup.test.ts (0.450s)
+[run-tests] START test/agent-email-files.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-credentials.test.ts (0.470s)
+[run-tests] START test/agent-email-send.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-email-files.test.ts (0.849s)
+[run-tests] START test/agent-identity.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-email-files-admission.test.ts (1.411s)
+[run-tests] START test/agent-inventory.boot-clock.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-inventory.boot-clock.test.ts (0.250s)
+[run-tests] START test/agent-inventory.launcher.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-inventory.launcher.test.ts (0.794s)
+[run-tests] START test/agent-inventory.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-browser-vault.test.ts (2.788s)
+[run-tests] START test/agent-restart.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-inventory.test.ts (1.132s)
+[run-tests] START test/agent-service.home-scope.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-service.home-scope.test.ts (0.745s)
+[run-tests] START test/agent-state.ancestor-probe.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-state.ancestor-probe.test.ts (0.497s)
+[run-tests] START test/agent-state.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-restart.test.ts (2.188s)
+[run-tests] START test/agent-task-win32.home-scope.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-state.test.ts (0.509s)
+[run-tests] START test/agent-task-win32.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-task-win32.home-scope.test.ts (0.457s)
+[run-tests] START test/agent-unbound.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-task-win32.test.ts (0.276s)
+[run-tests] START test/agent-verify.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-verify.test.ts (0.214s)
+[run-tests] START test/agent-viewer-script.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-viewer-script.test.ts (0.182s)
+[run-tests] START test/agent-windows.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-windows.test.ts (0.292s)
+[run-tests] START test/always-on-grace.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/always-on-grace.test.ts (0.189s)
+[run-tests] START test/always-on-reconcile.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/always-on-reconcile.test.ts (0.348s)
+[run-tests] START test/artifacts-tools.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/artifacts-tools.test.ts (0.412s)
+[run-tests] START test/aside-fork.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/aside-fork.test.ts (0.306s)
+[run-tests] START test/ask-multi-select-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-email-send.test.ts (8.485s)
+[run-tests] START test/ask-review-282.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/ask-multi-select-wiring.test.ts (1.527s)
+[run-tests] START test/ask-review-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/ask-review-wiring.test.ts (0.296s)
+[run-tests] START test/ask-tracker.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/ask-review-282.test.ts (2.418s)
+[run-tests] START test/attach-scope.e2e.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/ask-tracker.test.ts (3.845s)
+[run-tests] START test/attach-scope.launcher.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/attach-scope.launcher.test.ts (0.688s)
+[run-tests] START test/attach-scope.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/attach-scope.test.ts (0.493s)
+[run-tests] START test/auth-login.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/auth-login.test.ts (2.154s)
+[run-tests] START test/auth-recheck.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/auth-recheck.test.ts (0.480s)
+[run-tests] START test/auth-rejection.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/auth-rejection.test.ts (0.555s)
+[run-tests] START test/bgos-agent.commands.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/attach-scope.e2e.test.ts (8.922s)
+[run-tests] START test/bgos-agent.gate.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-identity.test.ts (29.576s)
+[run-tests] START test/bgos-agent.home-scope.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-agent.commands.test.ts (37.861s)
+[run-tests] START test/bgos-agent.install.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-agent.gate.test.ts (41.085s)
+[run-tests] START test/bgos-agent.lock.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-agent.lock.test.ts (9.612s)
+[run-tests] START test/bgos-agent.private-hook.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-agent.private-hook.test.ts (0.954s)
+[run-tests] START test/bgos-agent.runsh.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-agent.runsh.test.ts (12.913s)
+[run-tests] START test/bgos-agent.static.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-agent.static.test.ts (0.274s)
+[run-tests] START test/bgos-agent.update-reexec.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-unbound.test.ts (79.989s)
+[run-tests] START test/bgos-claim.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-claim.test.ts (0.293s)
+[run-tests] START test/bgos-doctor.identity-resolver.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-doctor.identity-resolver.test.ts (0.254s)
+[run-tests] START test/bgos-doctor.identity.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-agent.install.test.ts (40.003s)
+[run-tests] START test/bgos-doctor.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-doctor.test.ts (0.417s)
+[run-tests] START test/bgos-install-method.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-install-method.test.ts (0.296s)
+[run-tests] START test/bgos-launch.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-launch.test.ts (0.275s)
+[run-tests] START test/bgos-pair.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-agent.update-reexec.test.ts (11.321s)
+[run-tests] START test/boards-download.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/boards-download.test.ts (0.663s)
+[run-tests] START test/boards-tools.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-doctor.identity.test.ts (11.294s)
+[run-tests] START test/boot-hello.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-pair.test.ts (0.986s)
+[run-tests] START test/bootstrap-askuserquestion-deny.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/boot-hello.test.ts (0.185s)
+[run-tests] START test/bootstrap-ps1.static.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/boards-tools.test.ts (0.379s)
+[run-tests] START test/bootstrap-sh.static.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bootstrap-ps1.static.test.ts (0.176s)
+[run-tests] START test/bounded-fetch.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bootstrap-sh.static.test.ts (0.215s)
+[run-tests] START test/browser-bootstrap.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bounded-fetch.test.ts (0.442s)
+[run-tests] START test/browser-downloads.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-bootstrap.test.ts (0.722s)
+[run-tests] START test/browser-env.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bootstrap-askuserquestion-deny.test.ts (1.539s)
+[run-tests] START test/browser-gate.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-env.test.ts (12.928s)
+[run-tests] START test/browser-host-core.vendor.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-host-core.vendor.test.ts (0.189s)
+[run-tests] START test/browser-host-supervisor.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-downloads.test.ts (25.892s)
+[run-tests] START test/browser-install-lifetime.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-install-lifetime.test.ts (0.201s)
+[run-tests] START test/browser-profile-active-backup.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-active-backup.test.ts (7.512s)
+[run-tests] START test/browser-profile-artifact-inventory.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-artifact-inventory.test.ts (0.174s)
+[run-tests] START test/browser-profile-artifacts.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-artifacts.test.ts (0.207s)
+[run-tests] START test/browser-profile-backup-workers.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-backup-workers.test.ts (0.396s)
+[run-tests] START test/browser-profile-cdp-targets.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-cdp-targets.test.ts (0.775s)
+[run-tests] START test/browser-profile-companion-backups.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-companion-backups.test.ts (0.472s)
+[run-tests] START test/browser-profile-companion-client.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-companion-client.test.ts (0.288s)
+[run-tests] START test/browser-profile-companion-downloads.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-companion-downloads.test.ts (0.402s)
+[run-tests] START test/browser-profile-companion-fields.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-companion-fields.test.ts (0.395s)
+[run-tests] START test/browser-profile-companion-files.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-companion-files.test.ts (0.388s)
+[run-tests] START test/browser-profile-companion-host.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-companion-host.test.ts (0.588s)
+[run-tests] START test/browser-profile-companion-permission.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-companion-permission.test.ts (0.733s)
+[run-tests] START test/browser-profile-companion-state.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-companion-state.test.ts (0.303s)
+[run-tests] START test/browser-profile-companion-transfer.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-companion-transfer.test.ts (0.245s)
+[run-tests] START test/browser-profile-companion.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-companion.test.ts (0.879s)
+[run-tests] START test/browser-profile-core.vendor.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-core.vendor.test.ts (0.187s)
+[run-tests] START test/browser-profile-daemon-stop.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-daemon-stop.test.ts (0.329s)
+[run-tests] START test/browser-profile-downloads-failure.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-downloads-failure.test.ts (2.614s)
+[run-tests] START test/browser-profile-downloads-runtime.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-downloads-runtime.test.ts (0.662s)
+[run-tests] START test/browser-profile-downloads.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-host-supervisor.test.ts (30.942s)
+[run-tests] START test/browser-profile-engine-selection.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-engine-selection.test.ts (0.608s)
+[run-tests] START test/browser-profile-field-input.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-field-input.test.ts (0.189s)
+[run-tests] START test/browser-profile-file-area.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-file-area.test.ts (0.168s)
+[run-tests] START test/browser-profile-files.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-files.test.ts (0.453s)
+[run-tests] START test/browser-profile-kdf.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-kdf.test.ts (0.155s)
+[run-tests] START test/browser-profile-live-capture.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-live-capture.test.ts (0.360s)
+[run-tests] START test/browser-profile-live-read.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-live-read.test.ts (0.181s)
+[run-tests] START test/browser-profile-managed-instructions.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-managed-instructions.test.ts (0.339s)
+[run-tests] START test/browser-profile-node-runtime.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-downloads.test.ts (4.086s)
+[run-tests] START test/browser-profile-pairing-client.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-pairing-client.test.ts (0.594s)
+[run-tests] START test/browser-profile-peer-pins.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-peer-pins.test.ts (0.371s)
+[run-tests] START test/browser-profile-peer-review.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-peer-review.test.ts (0.244s)
+[run-tests] START test/browser-profile-permission-client.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-permission-client.test.ts (0.333s)
+[run-tests] START test/browser-profile-portable-extras.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-node-runtime.test.ts (2.610s)
+[run-tests] START test/browser-profile-resume-ledger.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-resume-ledger.test.ts (0.208s)
+[run-tests] START test/browser-profile-resume-runtime.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-resume-runtime.test.ts (0.249s)
+[run-tests] START test/browser-profile-return-client.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-portable-extras.test.ts (0.696s)
+[run-tests] START test/browser-profile-return-handover.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-return-handover.test.ts (0.339s)
+[run-tests] START test/browser-profile-rtc-activity.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-return-client.test.ts (0.357s)
+[run-tests] START test/browser-profile-runtime-bootstrap.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-rtc-activity.test.ts (0.273s)
+[run-tests] START test/browser-profile-runtime-security.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-runtime-bootstrap.test.ts (0.564s)
+[run-tests] START test/browser-profile-runtime.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-runtime-security.test.ts (0.669s)
+[run-tests] START test/browser-profile-sdk-pin.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-sdk-pin.test.ts (0.286s)
+[run-tests] START test/browser-profile-sync-key-store.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-sync-key-store.test.ts (0.767s)
+[run-tests] START test/browser-runtime-folder.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-profile-runtime.test.ts (1.616s)
+[run-tests] START test/browser-secret-redactor.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-secret-redactor.test.ts (0.484s)
+[run-tests] START test/bundled-instructions.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bundled-instructions.test.ts (0.283s)
+[run-tests] START test/call-owner-private.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/call-owner-private.test.ts (1.270s)
+[run-tests] START test/call-owner.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/call-owner.test.ts (0.213s)
+[run-tests] START test/capabilities-fetch-path.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/capabilities-fetch-path.test.ts (0.327s)
+[run-tests] START test/capabilities.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/capabilities.test.ts (0.340s)
+[run-tests] START test/catch-up-after-deploy.e2e.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-runtime-folder.test.ts (14.981s)
+[run-tests] START test/catch-up-paging.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/catch-up-paging.test.ts (0.428s)
+[run-tests] START test/changes-rpc.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/changes-rpc.test.ts (0.246s)
+[run-tests] START test/changes-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/changes-wiring.test.ts (0.180s)
+[run-tests] START test/channel-ack.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/channel-ack.test.ts (0.211s)
+[run-tests] START test/channel-liveness.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/channel-liveness.test.ts (0.178s)
+[run-tests] START test/channel-presence.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/channel-presence.test.ts (0.857s)
+[run-tests] START test/channel-transport.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/channel-transport.test.ts (0.654s)
+[run-tests] START test/chromium-fixtures-exit.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/chromium-fixtures-exit.test.ts (1.967s)
+[run-tests] START test/claude-binary.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/claude-binary.test.ts (1.887s)
+[run-tests] START test/claude-capability-tokens.pin.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/claude-capability-tokens.pin.test.ts (0.258s)
+[run-tests] START test/claude-login.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/claude-login.test.ts (0.222s)
+[run-tests] START test/claude-preseed.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/claude-preseed.test.ts (0.373s)
+[run-tests] START test/clone-hooks.boot.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/clone-hooks.boot.test.ts (0.335s)
+[run-tests] START test/clone-hooks.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/clone-hooks.test.ts (0.440s)
+[run-tests] START test/compact-capability.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/compact-capability.test.ts (0.191s)
+[run-tests] START test/compact-confirm.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/compact-confirm.test.ts (0.165s)
+[run-tests] START test/compact-inject.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/compact-inject.test.ts (0.223s)
+[run-tests] START test/connection-texts.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/connection-texts.test.ts (0.167s)
+[run-tests] START test/cursor-store.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/cursor-store.test.ts (0.190s)
+[run-tests] START test/daemon-command-sender.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/daemon-command-sender.test.ts (0.231s)
+[run-tests] START test/daemon-wrapper.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/daemon-wrapper.test.ts (0.248s)
+[run-tests] START test/deaf-probe-group-silence.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/deaf-probe-group-silence.test.ts (1.365s)
+[run-tests] START test/declared-capabilities.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/declared-capabilities.test.ts (0.391s)
+[run-tests] START test/delivery-proof.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/delivery-proof.test.ts (0.385s)
+[run-tests] START test/denied-tools-reach.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/denied-tools-reach.test.ts (0.181s)
+[run-tests] START test/doctor-rpc.e2e.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/doctor-rpc.e2e.test.ts (1.686s)
+[run-tests] START test/doctor-rpc.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/doctor-rpc.test.ts (0.174s)
+[run-tests] START test/doctor-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/doctor-wiring.test.ts (0.249s)
+[run-tests] START test/duplicate-copy.e2e.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/duplicate-copy.e2e.test.ts (22.613s)
+[run-tests] START test/duplicate-copy.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/duplicate-copy.test.ts (0.359s)
+[run-tests] START test/email-files-channel.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/email-files-channel.test.ts (0.280s)
+[run-tests] START test/email-files.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/email-files.test.ts (0.517s)
+[run-tests] START test/email-outbound-files.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/browser-gate.test.ts (111.286s)
+[run-tests] START test/entry-guard.symlink.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/entry-guard.symlink.test.ts (1.265s)
+[run-tests] START test/error-body.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/error-body.test.ts (0.329s)
+[run-tests] START test/export-pack.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/export-pack.test.ts (0.652s)
+[run-tests] START test/external-email-label.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/external-email-label.test.ts (5.983s)
+[run-tests] START test/first-poll-gate.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/first-poll-gate.test.ts (0.280s)
+[run-tests] START test/first-read-cursor-zero.e2e.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/first-read-cursor-zero.e2e.test.ts (31.328s)
+[run-tests] START test/floor-check.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/floor-check.test.ts (0.717s)
+[run-tests] START test/floor-evidence.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/floor-evidence.test.ts (1.228s)
+[run-tests] START test/floor-state.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/floor-state.test.ts (0.311s)
+[run-tests] START test/forwarded-dedupe.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/forwarded-dedupe.test.ts (0.257s)
+[run-tests] START test/gate-block.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/email-outbound-files.test.ts (75.420s)
+[run-tests] START test/gate-proof.script.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/gate-proof.script.test.ts (0.200s)
+[run-tests] START test/git-changes.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/git-changes.test.ts (4.671s)
+[run-tests] START test/goal-cap.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/goal-cap.test.ts (0.180s)
+[run-tests] START test/goal-cap.transcript.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/goal-cap.transcript.test.ts (0.199s)
+[run-tests] START test/goal-marks.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/goal-marks.test.ts (1.177s)
+[run-tests] START test/goal-status.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/goal-status.test.ts (0.208s)
+[run-tests] START test/goal-tail.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/goal-tail.test.ts (0.208s)
+[run-tests] START test/goal-writes.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/goal-writes.test.ts (0.227s)
+[run-tests] START test/hard-floor-fixture.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hard-floor-fixture.test.ts (0.241s)
+[run-tests] START test/hard-floor-lane.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hard-floor-lane.test.ts (0.198s)
+[run-tests] START test/hard-floor.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hard-floor.test.ts (0.310s)
+[run-tests] START test/hoai-browser-host.card-wording.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-host.card-wording.test.ts (0.552s)
+[run-tests] START test/hoai-browser-host.downloads.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/catch-up-after-deploy.e2e.test.ts (166.781s)
+[run-tests] START test/hoai-browser-host.forget-sites.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-host.forget-sites.test.ts (0.500s)
+[run-tests] START test/hoai-browser-host.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/gate-block.test.ts (84.364s)
+[run-tests] START test/hoai-browser-host.trust-persist.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-host.trust-persist.test.ts (0.447s)
+[run-tests] START test/hoai-browser-launch.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-launch.test.ts (0.202s)
+[run-tests] START test/hoai-browser-mcp.managed-context.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-mcp.managed-context.test.ts (2.014s)
+[run-tests] START test/hoai-browser-mcp.profile-runtime.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-mcp.profile-runtime.test.ts (1.295s)
+[run-tests] START test/hoai-browser-mcp.recipient-host.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-mcp.recipient-host.test.ts (1.150s)
+[run-tests] START test/hoai-browser-mcp.refusals.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-mcp.refusals.test.ts (10.795s)
+[run-tests] START test/hoai-browser-mcp.relay.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-mcp.relay.test.ts (8.631s)
+[run-tests] START test/hoai-browser-mcp.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-mcp.test.ts (0.404s)
+[run-tests] START test/hoai-browser-mcp.vendor.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-mcp.vendor.test.ts (0.204s)
+[run-tests] START test/hoai-core.child-env.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-core.child-env.test.ts (0.542s)
+[run-tests] START test/hoai-core.gate-attach.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-core.gate-attach.test.ts (1.027s)
+[run-tests] START test/hoai-core.identity.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-core.identity.test.ts (0.245s)
+[run-tests] START test/hoai-core.keepalive.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-core.keepalive.test.ts (1.963s)
+[run-tests] START test/hoai-core.launcher-zombie.real.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-core.launcher-zombie.real.test.ts (0.175s)
+[run-tests] START test/hoai-core.launcher-zombie.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-core.launcher-zombie.test.ts (1.263s)
+[run-tests] START test/hoai-core.stop.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-core.stop.test.ts (1.141s)
+[run-tests] START test/hoai-core.supervised.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-core.supervised.test.ts (1.220s)
+[run-tests] START test/hoai-core.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-host.downloads.test.ts (90.741s)
+[run-tests] START test/hoai-core.win-relaunch.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-core.win-relaunch.test.ts (1.283s)
+[run-tests] START test/hoai-floor-hook.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-floor-hook.test.ts (2.597s)
+[run-tests] START test/hoai-hook.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-hook.test.ts (0.195s)
+[run-tests] START test/hoai-keepalive-marker.symlink.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-keepalive-marker.symlink.test.ts (0.354s)
+[run-tests] START test/hoai-supervise.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-core.test.ts (18.769s)
+[run-tests] START test/hoai-wrapper-install.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-wrapper-install.test.ts (0.174s)
+[run-tests] START test/home-binding.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/home-binding.test.ts (0.225s)
+[run-tests] START test/home-refused-server.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/home-refused-server.test.ts (0.325s)
+[run-tests] START test/hook-card-clock.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-card-clock.test.ts (0.180s)
+[run-tests] START test/hook-card-pending.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-card-pending.test.ts (0.188s)
+[run-tests] START test/hook-clock-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-clock-wiring.test.ts (0.180s)
+[run-tests] START test/hook-events.redaction.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-events.redaction.test.ts (0.195s)
+[run-tests] START test/hook-events.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-events.test.ts (0.203s)
+[run-tests] START test/hook-intake.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-intake.test.ts (0.202s)
+[run-tests] START test/hook-late-card-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-late-card-wiring.test.ts (0.194s)
+[run-tests] START test/hook-restart.integration.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-supervise.test.ts (10.568s)
+[run-tests] START test/hook-restart.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-restart.test.ts (0.531s)
+[run-tests] START test/hook-restart.wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-restart.wiring.test.ts (0.155s)
+[run-tests] START test/hook-subagent-rows.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-restart.integration.test.ts (2.962s)
+[run-tests] START test/hooks-manifest.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hook-subagent-rows.test.ts (0.190s)
+[run-tests] START test/identity-race.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hooks-manifest.test.ts (0.174s)
+[run-tests] START test/idle-update.controller.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/identity-race.test.ts (0.216s)
+[run-tests] START test/idle-update.host.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/idle-update.host.test.ts (0.238s)
+[run-tests] START test/idle-update.integration.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/idle-update.controller.test.ts (0.510s)
+[run-tests] START test/idle-update.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/idle-update.integration.test.ts (0.383s)
+[run-tests] START test/idle-update.wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/idle-update.test.ts (0.327s)
+[run-tests] START test/inbound-channel.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/idle-update.wiring.test.ts (0.222s)
+[run-tests] START test/inbound-files-meta.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/inbound-channel.test.ts (0.200s)
+[run-tests] START test/inbound-reply-context.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/inbound-files-meta.test.ts (0.238s)
+[run-tests] START test/keepalive-plan.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/inbound-reply-context.test.ts (0.209s)
+[run-tests] START test/known-good-store.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/known-good-store.test.ts (0.180s)
+[run-tests] START test/lane-admission.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/keepalive-plan.test.ts (0.225s)
+[run-tests] START test/lane-claude-ready.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-claude-ready.test.ts (0.200s)
+[run-tests] START test/lane-cli-probe.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-cli-probe.test.ts (0.265s)
+[run-tests] START test/lane-daemon.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-daemon.test.ts (0.226s)
+[run-tests] START test/lane-dedupe.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-admission.test.ts (2.204s)
+[run-tests] START test/lane-first-turn.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-first-turn.test.ts (7.956s)
+[run-tests] START test/lane-fixture-cleanup.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-fixture-cleanup.test.ts (0.527s)
+[run-tests] START test/lane-launch-options.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-launch-options.test.ts (0.160s)
+[run-tests] START test/lane-launch-safety.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-launch-safety.test.ts (4.870s)
+[run-tests] START test/lane-launch.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-launch.test.ts (0.180s)
+[run-tests] START test/lane-login-command.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-host.test.ts (92.747s)
+[run-tests] START test/lane-login.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-login.test.ts (0.195s)
+[run-tests] START test/lane-memory-rpc.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-memory-rpc.test.ts (0.238s)
+[run-tests] START test/lane-owner-controls.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-owner-controls.test.ts (0.706s)
+[run-tests] START test/lane-owner.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-owner.test.ts (0.478s)
+[run-tests] START test/lane-policy-watch.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-policy-watch.test.ts (0.184s)
+[run-tests] START test/lane-policy.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-policy.test.ts (0.189s)
+[run-tests] START test/lane-process.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-process.test.ts (1.419s)
+[run-tests] START test/lane-registry.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-registry.test.ts (0.220s)
+[run-tests] START test/lane-shell-refusal.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-shell-refusal.test.ts (0.400s)
+[run-tests] START test/lane-slash.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-slash.test.ts (0.248s)
+[run-tests] START test/lane-stamp.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-stamp.test.ts (0.176s)
+[run-tests] START test/lane-subprocess-env.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-login-command.test.ts (14.427s)
+[run-tests] START test/lane-supervisor-controls.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-supervisor-controls.test.ts (4.119s)
+[run-tests] START test/lane-supervisor.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-supervisor.test.ts (0.433s)
+[run-tests] START test/limit-notice.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/limit-notice.test.ts (0.190s)
+[run-tests] START test/limit-screen.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/limit-screen.test.ts (0.195s)
+[run-tests] START test/line-endings.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/line-endings.test.ts (1.416s)
+[run-tests] START test/list-chats-private.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/list-chats-private.test.ts (0.712s)
+[run-tests] START test/liveness-recency.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/liveness-recency.test.ts (0.176s)
+[run-tests] START test/log-path.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/log-path.test.ts (0.182s)
+[run-tests] START test/login-starter-binding.pin.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/login-starter-binding.pin.test.ts (0.174s)
+[run-tests] START test/machine-id.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/machine-id.test.ts (0.175s)
+[run-tests] START test/managed-launch-private.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/managed-launch-private.test.ts (1.177s)
+[run-tests] START test/marker-takeover.integration.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/marker-takeover.integration.test.ts (4.945s)
+[run-tests] START test/marker-takeover.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/marker-takeover.test.ts (0.255s)
+[run-tests] START test/marker-takeover.wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/marker-takeover.wiring.test.ts (0.224s)
+[run-tests] START test/marketplace-attach.e2e.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/marketplace-attach.e2e.test.ts (25.548s)
+[run-tests] START test/marketplace-attach.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/marketplace-attach.test.ts (0.209s)
+[run-tests] START test/marketplace-update.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/marketplace-update.test.ts (0.248s)
+[run-tests] START test/meeting-card.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/meeting-card.test.ts (0.214s)
+[run-tests] START test/memory-rpc.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/memory-rpc.test.ts (0.204s)
+[run-tests] START test/memory-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/memory-wiring.test.ts (0.201s)
+[run-tests] START test/memory.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/memory.test.ts (0.262s)
+[run-tests] START test/message-edits.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/message-edits.test.ts (16.607s)
+[run-tests] START test/message-text.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/message-text.test.ts (0.281s)
+[run-tests] START test/messages-caller-header.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/messages-caller-header.test.ts (0.280s)
+[run-tests] START test/mission-chat-scope.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-chat-scope.test.ts (0.274s)
+[run-tests] START test/mission-events.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-events.test.ts (0.462s)
+[run-tests] START test/mission-goal-checks-tools.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-goal-checks-tools.test.ts (0.304s)
+[run-tests] START test/mission-private.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-dedupe.test.ts (92.174s)
+[run-tests] START test/mission-turn-hook.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-private.test.ts (3.204s)
+[run-tests] START test/mission-turn-refresh.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-turn-refresh.test.ts (0.786s)
+[run-tests] START test/mission-turn-snapshots.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-turn-snapshots.test.ts (0.716s)
+[run-tests] START test/mission-turn-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-turn-wiring.test.ts (0.704s)
+[run-tests] START test/mission-turn.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-turn.test.ts (0.225s)
+[run-tests] START test/mission-working-hooks.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-working-hooks.test.ts (1.030s)
+[run-tests] START test/mission-working-lock.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-working-lock.test.ts (1.831s)
+[run-tests] START test/mission-working-ownership.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-turn-hook.test.ts (5.424s)
+[run-tests] START test/mission-working-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-working-ownership.test.ts (0.357s)
+[run-tests] START test/mission-ws-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-ws-wiring.test.ts (0.249s)
+[run-tests] START test/missions.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/missions.test.ts (0.249s)
+[run-tests] START test/model-control-store.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/mission-working-wiring.test.ts (1.389s)
+[run-tests] START test/model-effort-card-hold.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-control-store.test.ts (0.823s)
+[run-tests] START test/model-effort-catalog.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-effort-catalog.test.ts (0.204s)
+[run-tests] START test/model-effort-control.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-effort-card-hold.test.ts (0.696s)
+[run-tests] START test/model-effort-literals.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-effort-control.test.ts (0.241s)
+[run-tests] START test/model-effort-pane-live.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-effort-literals.test.ts (0.181s)
+[run-tests] START test/model-effort-pane.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-effort-pane-live.test.ts (0.181s)
+[run-tests] START test/model-effort-picker-contract.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-effort-pane.test.ts (0.189s)
+[run-tests] START test/model-effort-rpc.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-effort-picker-contract.test.ts (0.301s)
+[run-tests] START test/model-effort-tmux-rig.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-effort-rpc.test.ts (0.732s)
+[run-tests] START test/model-effort-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-effort-wiring.test.ts (0.275s)
+[run-tests] START test/owner-marker-lanes.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/owner-marker-lanes.test.ts (0.297s)
+[run-tests] START test/pack-zip.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/pack-zip.test.ts (0.174s)
+[run-tests] START test/pair-required-server.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/pair-required-server.test.ts (0.397s)
+[run-tests] START test/pairing-lock-channel.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/pairing-lock-channel.test.ts (0.201s)
+[run-tests] START test/pairing-lock-route.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/pairing-lock-route.test.ts (0.219s)
+[run-tests] START test/pairing-lock-standdown.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/pairing-lock-standdown.test.ts (0.226s)
+[run-tests] START test/pairing-lock.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/pairing-lock.test.ts (0.229s)
+[run-tests] START test/peer-403-loop.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/peer-403-loop.test.ts (2.169s)
+[run-tests] START test/peer-closed-reply.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/peer-closed-reply.test.ts (1.083s)
+[run-tests] START test/peer-refusal-counter.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/peer-refusal-counter.test.ts (0.269s)
+[run-tests] START test/peer-refusal.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/peer-refusal.test.ts (0.183s)
+[run-tests] START test/pending-empty-system.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/pending-empty-system.test.ts (0.161s)
+[run-tests] START test/pending-restart.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/pending-restart.test.ts (0.227s)
+[run-tests] START test/permission-card-email-send.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/permission-card-email-send.test.ts (0.881s)
+[run-tests] START test/permission-card-owner-chat.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/bgos-agent.home-scope.test.ts (473.153s)
+[run-tests] START test/permission-relay.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/permission-card-owner-chat.test.ts (0.838s)
+[run-tests] START test/plan-card.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/plan-card.test.ts (0.204s)
+[run-tests] START test/plan-tap-authority.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/permission-relay.test.ts (0.844s)
+[run-tests] START test/plan-verifier.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/plan-verifier.test.ts (0.190s)
+[run-tests] START test/plan-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/plan-wiring.test.ts (0.245s)
+[run-tests] START test/plugin-cli.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/plan-tap-authority.test.ts (0.708s)
+[run-tests] START test/poll-core.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/poll-core.test.ts (0.209s)
+[run-tests] START test/posix-bash.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/posix-bash.test.ts (0.191s)
+[run-tests] START test/private-tools-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-tools-wiring.test.ts (0.615s)
+[run-tests] START test/private-turn-254-lows.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-254-lows.test.ts (2.744s)
+[run-tests] START test/private-turn-consult-replay.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-consult-replay.test.ts (0.239s)
+[run-tests] START test/private-turn-cross-agent.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/model-effort-tmux-rig.test.ts (14.378s)
+[run-tests] START test/private-turn-duplicate-boundary.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/plugin-cli.test.ts (6.589s)
+[run-tests] START test/private-turn-email-batch.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-email-batch.test.ts (0.281s)
+[run-tests] START test/private-turn-hook-budget.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-cross-agent.test.ts (3.278s)
+[run-tests] START test/private-turn-late-line.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-duplicate-boundary.test.ts (2.530s)
+[run-tests] START test/private-turn-linked-folder.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-linked-folder.test.ts (1.154s)
+[run-tests] START test/private-turn-owner-authority.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-late-line.test.ts (2.195s)
+[run-tests] START test/private-turn-owner-tap.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-owner-authority.test.ts (2.770s)
+[run-tests] START test/private-turn-shared-spool.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-shared-spool.test.ts (0.334s)
+[run-tests] START test/private-turn-stranger-inside.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-owner-tap.test.ts (3.322s)
+[run-tests] START test/private-turn-two-admitted.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-two-admitted.test.ts (0.412s)
+[run-tests] START test/private-turn.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-stranger-inside.test.ts (3.727s)
+[run-tests] START test/process-lifecycle.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn.test.ts (2.444s)
+[run-tests] START test/process-tree.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/process-lifecycle.test.ts (0.219s)
+[run-tests] START test/processes.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/process-tree.test.ts (0.208s)
+[run-tests] START test/published-release.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/processes.test.ts (0.397s)
+[run-tests] START test/reachable-chats.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/reachable-chats.test.ts (0.232s)
+[run-tests] START test/reconnect-spread.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/reconnect-spread.test.ts (0.178s)
+[run-tests] START test/remote-credentials.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/remote-credentials.test.ts (0.281s)
+[run-tests] START test/remote-input.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/remote-input.test.ts (0.506s)
+[run-tests] START test/remote-private-profiles.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/remote-private-profiles.test.ts (0.941s)
+[run-tests] START test/remote-session-close.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/remote-session-close.test.ts (0.538s)
+[run-tests] START test/remote-view.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/remote-view.test.ts (0.687s)
+[run-tests] START test/reply-card-nudge.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/private-turn-hook-budget.test.ts (13.451s)
+[run-tests] START test/reply-card-shape.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/reply-card-nudge.test.ts (1.245s)
+[run-tests] START test/reply-decisions.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/reply-decisions.test.ts (0.180s)
+[run-tests] START test/reply-overdue-owner-inbound.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/reply-card-shape.test.ts (1.258s)
+[run-tests] START test/reply-overdue.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/reply-overdue-owner-inbound.test.ts (0.682s)
+[run-tests] START test/restart-deny-routing.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/reply-overdue.test.ts (0.200s)
+[run-tests] START test/restart-handoff.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/restart-deny-routing.test.ts (0.357s)
+[run-tests] START test/restart-recovery.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/published-release.test.ts (6.161s)
+[run-tests] START test/resting.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/restart-handoff.test.ts (0.285s)
+[run-tests] START test/room-agent-followup.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/restart-recovery.test.ts (0.223s)
+[run-tests] START test/run-tests-chromium-serial.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/resting.test.ts (0.268s)
+[run-tests] START test/run-tests-litter-guard.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/run-tests-litter-guard.test.ts (0.180s)
+[run-tests] START test/run-tests-tmpdir.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/run-tests-chromium-serial.test.ts (0.332s)
+[run-tests] START test/schedule.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/run-tests-tmpdir.test.ts (0.300s)
+[run-tests] START test/scratch-dirs.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/schedule.test.ts (0.227s)
+[run-tests] START test/scratch-folder-convention.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/room-agent-followup.test.ts (1.022s)
+[run-tests] START test/secret-scan-fixture.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/scratch-folder-convention.test.ts (0.320s)
+[run-tests] START test/secret-scan.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/secret-scan-fixture.test.ts (0.180s)
+[run-tests] START test/self-update.idle-rollback.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/self-update.idle-rollback.test.ts (0.276s)
+[run-tests] START test/sender-guardrail.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/secret-scan.test.ts (0.641s)
+[run-tests] START test/sender-may-login-gaps.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/sender-guardrail.test.ts (0.266s)
+[run-tests] START test/sender-may-login-wake-card.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/sender-may-login-gaps.test.ts (0.186s)
+[run-tests] START test/service-supervision.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/sender-may-login-wake-card.test.ts (0.253s)
+[run-tests] START test/session-binding.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/scratch-dirs.test.ts (1.352s)
+[run-tests] START test/session-controls-contract.pin.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/session-binding.test.ts (0.235s)
+[run-tests] START test/session-library.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/session-library.test.ts (0.272s)
+[run-tests] START test/session-mode.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/service-supervision.test.ts (0.659s)
+[run-tests] START test/session-pin.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/session-mode.test.ts (0.233s)
+[run-tests] START test/session-status-contract.pin.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/session-pin.test.ts (0.327s)
+[run-tests] START test/session-status-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/session-status-wiring.test.ts (0.206s)
+[run-tests] START test/session-status.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/session-controls-contract.pin.test.ts (0.996s)
+[run-tests] START test/skill-share-content-rules.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/session-status.test.ts (0.203s)
+[run-tests] START test/skills-inventory.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/skill-share-content-rules.test.ts (0.239s)
+[run-tests] START test/skills-rpc.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/session-status-contract.pin.test.ts (0.629s)
+[run-tests] START test/skills-share.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/skills-rpc.test.ts (0.182s)
+[run-tests] START test/skills-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/skills-wiring.test.ts (0.196s)
+[run-tests] START test/slash-catalog.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/skills-share.test.ts (0.461s)
+[run-tests] START test/slash-inbound-routing.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/slash-catalog.test.ts (0.344s)
+[run-tests] START test/slash-status.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/slash-inbound-routing.test.ts (0.233s)
+[run-tests] START test/socket-liveness.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/slash-status.test.ts (0.219s)
+[run-tests] START test/stand-down-report.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/skills-inventory.test.ts (1.168s)
+[run-tests] START test/stand-down-sites.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/socket-liveness.test.ts (0.446s)
+[run-tests] START test/startup-reaches-poll.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/startup-reaches-poll.test.ts (0.382s)
+[run-tests] START test/stdin-shutdown-runtime.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/lane-subprocess-env.test.ts (121.655s)
+[run-tests] START test/steer.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/stand-down-report.test.ts (7.970s)
+[run-tests] START test/steps-body.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/steps-body.test.ts (0.174s)
+[run-tests] START test/stop-pause-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/steer.test.ts (0.219s)
+[run-tests] START test/stop-pause.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/stop-pause-wiring.test.ts (0.160s)
+[run-tests] START test/stream-apply.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/stop-pause.test.ts (0.240s)
+[run-tests] START test/stream-client.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/stream-apply.test.ts (0.278s)
+[run-tests] START test/stream-cursor-store.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/stream-client.test.ts (0.225s)
+[run-tests] START test/stream-json-child.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/stream-cursor-store.test.ts (0.209s)
+[run-tests] START test/stream-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/stream-wiring.test.ts (0.182s)
+[run-tests] START test/thread-lane-args.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/stream-json-child.test.ts (0.416s)
+[run-tests] START test/thread-lane-goal.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/thread-lane-args.test.ts (0.202s)
+[run-tests] START test/thread-lane-sandbox.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/stand-down-sites.test.ts (9.115s)
+[run-tests] START test/thread-lanes-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/thread-lane-goal.test.ts (0.243s)
+[run-tests] START test/thread-lanes.git.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/thread-lane-sandbox.test.ts (0.228s)
+[run-tests] START test/thread-lanes.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/thread-lanes-wiring.test.ts (0.783s)
+[run-tests] START test/threads-cli.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/thread-lanes.test.ts (0.696s)
+[run-tests] START test/tool-outcome.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/tool-outcome.test.ts (0.192s)
+[run-tests] START test/turn-aware-tools.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/threads-cli.test.ts (0.677s)
+[run-tests] START test/turn-chat.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/turn-chat.test.ts (0.222s)
+[run-tests] START test/unresponsive-heartbeat.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/stdin-shutdown-runtime.test.ts (10.381s)
+[run-tests] START test/update-diagnostics.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/unresponsive-heartbeat.test.ts (0.243s)
+[run-tests] START test/update-executor.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/update-diagnostics.test.ts (0.265s)
+[run-tests] START test/update-planner.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/turn-aware-tools.test.ts (1.323s)
+[run-tests] START test/update-rpc.own-launcher.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/update-planner.test.ts (0.449s)
+[run-tests] START test/update-stream.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/thread-lanes.git.test.ts (2.466s)
+[run-tests] START test/usage-report.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/update-rpc.own-launcher.test.ts (0.266s)
+[run-tests] START test/vault-fill.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/update-stream.test.ts (0.220s)
+[run-tests] START test/vault-host-async.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/usage-report.test.ts (0.288s)
+[run-tests] START test/vault-host-cli.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/vault-fill.test.ts (0.681s)
+[run-tests] START test/vault-host-proof.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/vault-host-async.test.ts (0.643s)
+[run-tests] START test/vault-host-resolver.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/vault-host-cli.test.ts (0.613s)
+[run-tests] START test/vault-host-security.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/vault-host-proof.test.ts (0.299s)
+[run-tests] START test/verdict-sender.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/vault-host-resolver.test.ts (0.278s)
+[run-tests] START test/version-bump.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/vault-host-security.test.ts (0.338s)
+[run-tests] START test/voice-consult-private-turn.proof.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/verdict-sender.test.ts (0.197s)
+[run-tests] START test/voice-consult-private-turn.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/version-bump.test.ts (0.751s)
+[run-tests] START test/voice-rpc-model-effort.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/voice-consult-private-turn.proof.test.ts (1.071s)
+[run-tests] START test/voice-rpc-threads.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/voice-consult-private-turn.test.ts (1.231s)
+[run-tests] START test/voice-rpc.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/voice-rpc-threads.test.ts (0.238s)
+[run-tests] START test/watcher-bundle-repair.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/voice-rpc-model-effort.test.ts (0.852s)
+[run-tests] START test/watcher-bundle.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-bundle.test.ts (0.338s)
+[run-tests] START test/watcher-checkup.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/voice-rpc.test.ts (0.664s)
+[run-tests] START test/watcher-core.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-checkup.test.ts (1.064s)
+[run-tests] START test/watcher-health.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-health.test.ts (0.247s)
+[run-tests] START test/watcher-install.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-bundle-repair.test.ts (1.820s)
+[run-tests] START test/watcher-keepalive.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-install.test.ts (0.251s)
+[run-tests] START test/watcher-limit.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-keepalive.test.ts (0.549s)
+[run-tests] START test/watcher-real-os.guard.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/update-executor.test.ts (5.592s)
+[run-tests] START test/watcher-self-refresh.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-real-os.guard.test.ts (0.308s)
+[run-tests] START test/watcher-service.home-scope.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-self-refresh.test.ts (0.427s)
+[run-tests] START test/watcher-service.namespace.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-service.home-scope.test.ts (0.252s)
+[run-tests] START test/watcher-service.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-service.namespace.test.ts (0.160s)
+[run-tests] START test/win-commit-growth.soak.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-service.test.ts (0.168s)
+[run-tests] START test/win32-gate-helper.console.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/watcher-core.test.ts (2.509s)
+[run-tests] START test/win32-limit-screen.console.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/win32-gate-helper.console.test.ts (0.177s)
+[run-tests] START test/win32-relaunch.console.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/win32-limit-screen.console.test.ts (0.174s)
+[run-tests] START test/win32-script-text.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/win-commit-growth.soak.test.ts (0.339s)
+[run-tests] START test/withdraw-ask-wiring.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/win32-relaunch.console.test.ts (0.171s)
+[run-tests] START test/ws-inbound-meta.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/win32-script-text.test.ts (0.159s)
+[run-tests] file body finished
+[run-tests] PASS test/withdraw-ask-wiring.test.ts (0.148s)
+[run-tests] file body finished
+[run-tests] PASS test/ws-inbound-meta.test.ts (0.161s)
+[run-tests] file body finished
+[run-tests] PASS test/watcher-limit.test.ts (2.945s)
+[run-tests] runner regression tests: 1 files, 1 workers
+[run-tests] START test/run-tests-timeout.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/run-tests-timeout.test.ts (78.528s)
+[run-tests] real Chromium files, one at a time: 7 files, 1 workers
+[run-tests] START test/agent-browser-vault.chromium.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/agent-browser-vault.chromium.test.ts (13.540s)
+[run-tests] START test/hoai-browser-host.downloads.chromium.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/hoai-browser-host.downloads.chromium.test.ts (34.738s)
+[run-tests] START test/remote-browser-controls.chromium.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/remote-browser-controls.chromium.test.ts (18.872s)
+[run-tests] START test/remote-credentials.chromium.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/remote-credentials.chromium.test.ts (6.727s)
+[run-tests] START test/remote-input.chromium.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/remote-input.chromium.test.ts (0.378s)
+[run-tests] START test/remote-session-close.chromium.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/remote-session-close.chromium.test.ts (0.321s)
+[run-tests] START test/remote-view.chromium.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/remote-view.chromium.test.ts (0.295s)
+[run-tests] real daemon files, one at a time: 1 files, 1 workers
+[run-tests] START test/canary-delivery.daemon.test.ts
+[run-tests] file body finished
+[run-tests] PASS test/canary-delivery.daemon.test.ts (70.273s)
+[run-tests] bun:test family: 15 files, 4 workers
+[run-tests] START test/acting-user.test.ts
+[run-tests] START test/button-click-observability.test.ts
+[run-tests] START test/claude-project-cwd-bun.test.ts
+[run-tests] START test/health-log.test.ts
+[run-tests] PASS test/health-log.test.ts (0.031s)
+[run-tests] START test/peer-timeout-bound.test.ts
+[run-tests] PASS test/claude-project-cwd-bun.test.ts (0.039s)
+[run-tests] START test/reconcile-missing-binary.test.ts
+[run-tests] PASS test/button-click-observability.test.ts (0.042s)
+[run-tests] START test/renderables.test.ts
+[run-tests] PASS test/acting-user.test.ts (0.045s)
+[run-tests] START test/scheduled-restart.test.ts
+[run-tests] PASS test/renderables.test.ts (0.023s)
+[run-tests] START test/scratch-dirs.bun.test.ts
+[run-tests] PASS test/peer-timeout-bound.test.ts (0.030s)
+[run-tests] START test/self-update.published-release.test.ts
+[run-tests] PASS test/reconcile-missing-binary.test.ts (0.028s)
+[run-tests] START test/self-update.test.ts
+[run-tests] PASS test/scheduled-restart.test.ts (0.031s)
+[run-tests] START test/stand-down-bun.test.ts
+[run-tests] PASS test/scratch-dirs.bun.test.ts (0.098s)
+[run-tests] START test/update-readiness.test.ts
+[run-tests] PASS test/self-update.test.ts (0.177s)
+[run-tests] START test/update-rpc.test.ts
+[run-tests] PASS test/update-rpc.test.ts (0.039s)
+[run-tests] START test/version-heartbeat.test.ts
+[run-tests] PASS test/version-heartbeat.test.ts (0.075s)
+[run-tests] PASS test/update-readiness.test.ts (0.510s)
+[run-tests] PASS test/stand-down-bun.test.ts (2.165s)
+[run-tests] PASS test/self-update.published-release.test.ts (10.059s)
+[run-tests] 10054 passed, 0 failed, 60 skipped, 473 files, 784.8 s
+[run-tests] both families green
+
+Exact unique skip reasons:
+(no reason supplied)
+BGOS source checkout not present; local committed pin is always checked
+HOAI_BROWSER_SHIM_SOURCE is not set: the BGOS tree is a separate repo and is not on this runner, so the cross-tree hash cannot be checked here
+Set HOAI_KEYCHAIN_REAL_TEST=1 on a Mac to run against a throwaway keychain.
+Set HOAI_PROFILE_SYNC_CRYPTO_SOURCE to the shared committed or review source until vendoring lands.
+Windows only
+Windows only (the mocked cases above run everywhere)
+Windows processes and the Windows console
+an 8.3 name and a drive letter exist on Windows only
+powershell parser check runs on Windows
+set BGOS_CLAUDE_CAPABILITY_TOKENS_SOURCE to BGOS backend/src/integrations/claude-capability-tokens.ts
+set HOAI_BROWSER_HOST_CORE_SOURCE to the BGOS agent-browser directory
+the helper drives the Windows console API
+the proof script is PowerShell

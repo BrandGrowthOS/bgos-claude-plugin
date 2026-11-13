@@ -281,6 +281,7 @@ describe('UpdateRpcHandler decision table (clone)', () => {
   test('outcome mapping: no-update, dirty, not-ff, busy are all descriptive errors', async () => {
     const cases: Array<[UpdateNowOutcome, string]> = [
       [{ kind: 'no-update', latestVersion: '0.38.0', reason: 'not-newer' }, 'no_update_available'],
+      [{ kind: 'no-update', latestVersion: '0.38.0', reason: 'version_held_bad' }, 'version_held_bad'],
       [{ kind: 'dirty-tree' }, 'dirty_tree'],
       [{ kind: 'not-fast-forward' }, 'not_fast_forward'],
       [{ kind: 'busy' }, 'update_in_flight'],

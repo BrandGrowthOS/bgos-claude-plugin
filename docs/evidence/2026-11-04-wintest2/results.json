@@ -1,0 +1,15 @@
+{
+  "previous_commit": "d5dc1392be7d43b8b1a51350cbe48571b1ebf247",
+  "previous_mac": { "pass": 8973, "fail": 0, "skipped": 58, "files": 439, "seconds": 656.6 },
+  "final_mac": { "pass": 8986, "fail": 0, "skipped": 58, "files": 439, "seconds": 730.9, "new_tests": 13, "load_average_at_start": 217.01 },
+  "previous_windows_ci": { "pass": 8622, "fail": 1, "skipped": 408, "files": 439, "seconds": 517.6, "run": 41746594543, "job": 126301044388 },
+  "previous_linux_ci": { "pass": 8976, "fail": 0, "skipped": 55, "files": 439, "seconds": 429.7, "job": 126301043445 },
+  "hang_proof": {
+    "async_hang": { "failed_by": "test name", "seconds": 120 },
+    "blocked_event_loop": { "failed_by": "file name", "seconds": 270 }
+  },
+  "node": "v24.22.2",
+  "bun": "1.3.14",
+  "os": "Darwin arm64",
+  "windows_ci_run_of_this_commit": false
+}

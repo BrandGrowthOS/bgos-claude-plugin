@@ -1,0 +1,70 @@
+TAP version 13
+# Subtest: legacy report reconciliation: stable
+ok 1 - legacy report reconciliation: stable
+  ---
+  duration_ms: 5.642709
+  type: 'test'
+  ...
+# Subtest: legacy report reconciliation: write during check
+ok 2 - legacy report reconciliation: write during check
+  ---
+  duration_ms: 0.601542
+  type: 'test'
+  ...
+# Subtest: legacy report reconciliation: different goals
+ok 3 - legacy report reconciliation: different goals
+  ---
+  duration_ms: 0.484125
+  type: 'test'
+  ...
+# Subtest: legacy report reconciliation: wrong mission
+ok 4 - legacy report reconciliation: wrong mission
+  ---
+  duration_ms: 0.370375
+  type: 'test'
+  ...
+# Subtest: legacy report reconciliation: wrong chat
+ok 5 - legacy report reconciliation: wrong chat
+  ---
+  duration_ms: 0.363459
+  type: 'test'
+  ...
+# Subtest: legacy report reconciliation: missing revision
+ok 6 - legacy report reconciliation: missing revision
+  ---
+  duration_ms: 0.338833
+  type: 'test'
+  ...
+# Subtest: legacy report reconciliation: ambiguous
+ok 7 - legacy report reconciliation: ambiguous
+  ---
+  duration_ms: 0.468875
+  type: 'test'
+  ...
+# Subtest: equal report revisions refresh check evidence only for identical held goals
+ok 8 - equal report revisions refresh check evidence only for identical held goals
+  ---
+  duration_ms: 1.519375
+  type: 'test'
+  ...
+# Subtest: confirmed equal revision repairs tick after check reuse expires
+ok 9 - confirmed equal revision repairs tick after check reuse expires
+  ---
+  duration_ms: 0.906084
+  type: 'test'
+  ...
+# Subtest: confirmed equal revision repairs add check after check reuse expires
+ok 10 - confirmed equal revision repairs add check after check reuse expires
+  ---
+  duration_ms: 0.632334
+  type: 'test'
+  ...
+1..10
+# tests 10
+# suites 0
+# pass 10
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1033.351625

@@ -287,10 +287,13 @@ test('legacy single credentials file still resolves when no per-assistant file e
   // ~/.bgos-agent/credentials.json with no BGOS_CREDENTIALS_PATH and no
   // per-assistant file; this machine's assistant 900 is the identical shape.
   // If this fallback regresses, those agents silently drop to api-key.
+  // The legacy file is 872's own pairing: that is what makes it this agent's to read (helperwedge
+  // finding 4; another agent's legacy file is never read for 872).
   const path = resolveCredentialsPath({
     env: { BGOS_ASSISTANT_ID: '872' },
     defaultPath: '/home/kc/.bgos-agent/credentials.json',
-    exists: () => false,
+    exists: (p: string) => p === '/home/kc/.bgos-agent/credentials.json',
+    readText: (p: string) => (p === '/home/kc/.bgos-agent/credentials.json' ? JSON.stringify({ assistantId: 872, pairingToken: 'pair_secret' }) : null),
   })
   assert.equal(path, '/home/kc/.bgos-agent/credentials.json')
   const auth = resolveAuth({
@@ -500,7 +503,7 @@ test('server loads credentials from the folder-scoped selection and refuses the 
   // Phase two: boot resolves via the folder-scoped selection (with cwd), so a
   // <cwd>/.bgos-agent-id pin or a sole file self-resolves with no env var.
   assert.equal(
-    /const CREDENTIALS_SELECTION = resolveCredentialsSelection\(\{\s*env: process\.env,\s*defaultPath: DEFAULT_CREDENTIALS_FILE,\s*cwd: LAUNCH_CWD,\s*\}\)/.test(
+    /const CREDENTIALS_SELECTION = MARKETPLACE_ATTACH\?\.selection \?\? resolveCredentialsSelection\(\{\s*env: process\.env,\s*defaultPath: DEFAULT_CREDENTIALS_FILE,\s*cwd: LAUNCH_CWD,\s*\}\)/.test(
       serverSource,
     ),
     true,
@@ -520,7 +523,7 @@ test('server loads credentials from the folder-scoped selection and refuses the 
   // DIFFERENT file than the selection chose, which is the whole point of the
   // selection. Two separate loads would be two chances to diverge.
   assert.equal(
-    /const CREDENTIALS_FILE = loadCredentialsFile\(CREDENTIALS_PATH\)/.test(serverSource),
+    /const CREDENTIALS_FILE = MARKETPLACE_ATTACH && 'credentials' in MARKETPLACE_ATTACH\s*\? MARKETPLACE_ATTACH\.credentials \?\? null\s*: loadCredentialsFile\(CREDENTIALS_PATH\)/.test(serverSource),
     true,
   )
   assert.equal(/creds: CREDENTIALS_FILE/.test(serverSource), true)
@@ -533,7 +536,7 @@ test('server loads credentials from the folder-scoped selection and refuses the 
   // version would leave the stray speaking, which is the behaviour it exists
   // to stop. Scoped to the branch itself (test/home-refused-server.test.ts has
   // the notice): an exit found anywhere later in the file would prove nothing.
-  const refuseBranch = /if \(HOME_BINDING\.action === 'refuse'\) \{[\s\S]*?\n\}/.exec(serverSource)
+  const refuseBranch = /if \(HOME_BINDING\.action === 'refuse' && !MARKETPLACE_ATTACH\) \{[\s\S]*?\n\}/.exec(serverSource)
   assert.ok(refuseBranch, 'the refusal branch exists')
   assert.match(refuseBranch![0], /formatHomeBindingRefusal\(HOME_BINDING\)/)
   assert.match(refuseBranch![0], /\n\s*process\.exit\(served \? 0 : 1\)\n\}$/)
@@ -909,8 +912,8 @@ test('every identity call site uses the SAME directory', () => {
   const uses = serverSource.match(/cwd: LAUNCH_CWD/g) ?? []
   assert.equal(
     uses.length,
-    7,
-    `expected boot, recheck, boot-log, the env-only risk check, the deaf-notice route resolver, the home-folder binding and the duplicate-copy lookup to share LAUNCH_CWD, found ${uses.length}`,
+    8,
+    `expected boot, recheck, boot-log, the env-only risk check, the deaf-notice route resolver, the home-folder binding, the duplicate-copy lookup and the marketplace preflight to share LAUNCH_CWD, found ${uses.length}`,
   )
   // Scoped to the identity paths ON PURPOSE. Other call sites still pass
   // process.cwd() and should: the cursor-file path and the health report are
@@ -988,4 +991,48 @@ test('an unpinned host is never warned, since it cannot lose a pin it does not h
     listDir: () => ['credentials-888.json', 'credentials-972.json'],
   })
   assert.equal(warn, null, 'it is already refusing or resolving some other way; not this warning')
+})
+
+// -- helperwedge finding 4: an agent never borrows another agent's pairing -------------------------
+// Section 5's plant (production test, 2026-11-12) moved credentials-1175.json away. With the id named
+// (env or folder pin) the resolver fell back to the shared credentials.json, which was agent 900's
+// live pairing: any restart during the plant would have started 1175 as 900. When an id is named,
+// only that agent's own file counts; the shared one only when it is that same agent's.
+
+const credsOf = (assistantId: number) => JSON.stringify({ backendUrl: 'https://x', pairingToken: `pair_${assistantId}`, userId: 'u', assistantId })
+
+function hostWith(opts: { perAssistantIds?: number[]; legacyAssistantId?: number | null; folderPin?: { cwd: string; id: string } | null }) {
+  const base = stubHost({ agentDir: AGENT_DIR, perAssistantIds: opts.perAssistantIds, hasLegacy: opts.legacyAssistantId != null, folderPin: opts.folderPin ?? null })
+  return {
+    ...base,
+    readText: (p: string) => (p === DEFAULT_PATH && opts.legacyAssistantId != null ? credsOf(opts.legacyAssistantId) : base.readText(p)),
+  }
+}
+
+test('finding 4: an env pin whose own file is missing never falls back to the shared file of another agent', () => {
+  const sel = resolveCredentialsSelection({ env: { BGOS_ASSISTANT_ID: '1175' }, defaultPath: DEFAULT_PATH, ...hostWith({ perAssistantIds: [1081, 1090], legacyAssistantId: 900 }) })
+  assert.deepEqual(sel, { kind: 'ok', path: join(AGENT_DIR, 'credentials-1175.json'), via: 'env-assistant' })
+})
+
+test('finding 4: an env pin whose own file is missing still uses the shared file when it IS that agent (old layout)', () => {
+  const sel = resolveCredentialsSelection({ env: { BGOS_ASSISTANT_ID: '872' }, defaultPath: DEFAULT_PATH, ...hostWith({ legacyAssistantId: 872 }) })
+  assert.deepEqual(sel, { kind: 'ok', path: DEFAULT_PATH, via: 'legacy' })
+})
+
+test('finding 4: a folder pin whose own file is missing never lands on another agent (its sole file, or the shared one)', () => {
+  const pin = { cwd: '/work/agent-1175', id: '1175' }
+  const sole = resolveCredentialsSelection({ env: {}, cwd: pin.cwd, defaultPath: DEFAULT_PATH, ...hostWith({ perAssistantIds: [900], legacyAssistantId: null, folderPin: pin }) })
+  assert.deepEqual(sole, { kind: 'ok', path: join(AGENT_DIR, 'credentials-1175.json'), via: 'folder-pin' })
+  const shared = resolveCredentialsSelection({ env: {}, cwd: pin.cwd, defaultPath: DEFAULT_PATH, ...hostWith({ perAssistantIds: [], legacyAssistantId: 900, folderPin: pin }) })
+  assert.deepEqual(shared, { kind: 'ok', path: join(AGENT_DIR, 'credentials-1175.json'), via: 'folder-pin' })
+  const same = resolveCredentialsSelection({ env: {}, cwd: pin.cwd, defaultPath: DEFAULT_PATH, ...hostWith({ perAssistantIds: [900], legacyAssistantId: 1175, folderPin: pin }) })
+  assert.deepEqual(same, { kind: 'ok', path: DEFAULT_PATH, via: 'legacy' })
+})
+
+test('finding 4: the daemon with that selection has no identity at all rather than another agent\'s', () => {
+  // The own file is missing: nothing is read, so no pairing; an api key in the env stays this id's.
+  const auth = resolveAuth({ env: { BGOS_ASSISTANT_ID: '1175', BGOS_BACKEND_URL: 'https://x', BGOS_USER_ID: 'u' }, creds: null })
+  assert.equal(auth.assistantId, '1175')
+  assert.equal(auth.complete, false)
+  assert.notEqual(auth.pairingToken, 'pair_900')
 })

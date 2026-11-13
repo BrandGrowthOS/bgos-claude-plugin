@@ -24,8 +24,8 @@
 // agent keep working until a condition holds. Every other injected string is
 // still a fixed literal looked up by a TypeScript-narrowed key, and no second
 // parameter may be added. The owner's model and effort control (Route A) adds
-// none: set_model and set_effort type only entries of the frozen MODEL_LITERALS
-// and EFFORT_LITERALS tables, looked up by an exact own key, and anything else
+// none: set_model and set_effort type only entries of the frozen MODEL_LITERALS,
+// EXACT_MODEL_LITERALS and EFFORT_LITERALS tables, looked up by an exact own key, and anything else
 // builds no argv at all. buildGoalSetInjectionSteps refuses (returns null,
 // never throws) a condition that is empty, is more than one line, carries any
 // control character, is longer than the runtime's own 4000 character cap, or
@@ -85,6 +85,63 @@ export const MODEL_LITERALS = Object.freeze({
   haiku: '/model haiku',
   fable: '/model fable',
 } as const)
+
+/** Exact ids supported by Claude Code 2.1.319. No request text is interpolated. */
+export const EXACT_MODEL_LITERALS = Object.freeze({
+  'claude-fable-5-1': '/model claude-fable-5-1',
+  'claude-fable-5': '/model claude-fable-5',
+  'claude-opus-5-5': '/model claude-opus-5-5',
+  'claude-opus-5': '/model claude-opus-5',
+  'claude-opus-4-8': '/model claude-opus-4-8',
+  'claude-opus-4-7': '/model claude-opus-4-7',
+  'claude-opus-4-6': '/model claude-opus-4-6',
+  'claude-opus-4-5': '/model claude-opus-4-5',
+  'claude-opus-4-1': '/model claude-opus-4-1',
+  'claude-opus-4-0': '/model claude-opus-4-0',
+  'claude-sonnet-5-5': '/model claude-sonnet-5-5',
+  'claude-sonnet-5': '/model claude-sonnet-5',
+  'claude-sonnet-4-6': '/model claude-sonnet-4-6',
+  'claude-sonnet-4-5': '/model claude-sonnet-4-5',
+  'claude-sonnet-4-0': '/model claude-sonnet-4-0',
+  'claude-3-7-sonnet': '/model claude-3-7-sonnet',
+  'claude-3-5-sonnet': '/model claude-3-5-sonnet',
+  'claude-haiku-5-5': '/model claude-haiku-5-5',
+  'claude-haiku-4-5': '/model claude-haiku-4-5',
+  'claude-3-5-haiku': '/model claude-3-5-haiku',
+  'claude-mythos-5-1': '/model claude-mythos-5-1',
+  'claude-mythos-5': '/model claude-mythos-5',
+} as const)
+
+/** Display names copied from the same installed CLI model registry. */
+export const EXACT_MODEL_LABELS = Object.freeze({
+  'claude-fable-5-1': 'Fable 5.1',
+  'claude-fable-5': 'Fable 5',
+  'claude-opus-5-5': 'Opus 5.5',
+  'claude-opus-5': 'Opus 5',
+  'claude-opus-4-8': 'Opus 4.8',
+  'claude-opus-4-7': 'Opus 4.7',
+  'claude-opus-4-6': 'Opus 4.6',
+  'claude-opus-4-5': 'Opus 4.5',
+  'claude-opus-4-1': 'Opus 4.1',
+  'claude-opus-4-0': 'Opus 4',
+  'claude-sonnet-5-5': 'Sonnet 5.5',
+  'claude-sonnet-5': 'Sonnet 5',
+  'claude-sonnet-4-6': 'Sonnet 4.6',
+  'claude-sonnet-4-5': 'Sonnet 4.5',
+  'claude-sonnet-4-0': 'Sonnet 4',
+  'claude-3-7-sonnet': 'Sonnet 3.7',
+  'claude-3-5-sonnet': 'Sonnet 3.5',
+  'claude-haiku-5-5': 'Haiku 5.5',
+  'claude-haiku-4-5': 'Haiku 4.5',
+  'claude-3-5-haiku': 'Haiku 3.5',
+  'claude-mythos-5-1': 'Mythos 5.1',
+  'claude-mythos-5': 'Mythos 5',
+} as const)
+
+export function modelLiteral(value: unknown): string | null {
+  if (isModelFamily(value)) return MODEL_LITERALS[value]
+  return ownKey(EXACT_MODEL_LITERALS, value) ? EXACT_MODEL_LITERALS[value as keyof typeof EXACT_MODEL_LITERALS] : null
+}
 
 export const EFFORT_LITERALS = Object.freeze({
   low: '/effort low',
@@ -247,8 +304,13 @@ export function buildInterruptSteps(t: TmuxTarget): InjectionStep[] {
  * value outside the frozen table, before an argv exists.
  */
 export function buildSetModelInjectionSteps(t: TmuxTarget, family: unknown): InjectionStep[] | null {
-  if (!isModelFamily(family)) return null
-  return settingSteps(t, MODEL_LITERALS[family])
+  const literal = modelLiteral(family)
+  return literal === null ? null : settingSteps(t, literal)
+}
+
+/** Only the transaction's exact Switch model dialog gate may send this key. */
+export function buildModelSwitchConfirmArgs(t: TmuxTarget): string[] {
+  return ['tmux', ...t.socketArgs, 'send-keys', '-t', t.target, 'Enter']
 }
 
 export function buildSetEffortInjectionSteps(t: TmuxTarget, level: unknown): InjectionStep[] | null {
@@ -276,7 +338,7 @@ export function buildClearTypedArgs(t: TmuxTarget, literal: string): string[] {
 }
 
 /** The pane format lib/model-effort-pane.ts parsePaneState reads, tab separated. */
-export const PANE_STATE_FORMAT = '#{pane_id}\t#{pane_tty}\t#{pane_dead}\t#{pane_in_mode}\t#{pane_pid}'
+export const PANE_STATE_FORMAT = '#{pane_id}\t#{pane_tty}\t#{pane_dead}\t#{pane_in_mode}\t#{pane_pid}\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}'
 
 /** Read only: the pane's id, terminal, liveness, tmux mode and process. */
 export function buildPaneStateArgs(t: TmuxTarget): string[] {

@@ -20,8 +20,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -43,6 +42,7 @@ import {
   resolvedPathOrNull,
 } from '../lib/claude-preseed.mjs'
 import { claudeConfigDir } from '../bin/bgos-install-method.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 function memFs(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial))
@@ -264,7 +264,7 @@ test('preseedClaudeTrust on a REAL filesystem: garbage stays byte identical at i
   // The default fs seam (exists, modeOf, chmod, writeFile with a mode) had no
   // coverage at all: every other test here injects an in-memory one.
   if (process.platform === 'win32') return
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-preseed-'))
+  const dir = scratchDir('hoai-preseed-')
   const garbage = join(dir, 'garbage')
   const good = join(dir, 'good')
   mkdirSync(garbage)
@@ -521,6 +521,19 @@ test('an explicit autoUpdate:false is a decision, and a daemon boot must not ove
   assert.equal(r.changed, false)
   assert.equal(r.reason, 'declined')
   assert.equal(fs.files.get('/cfg/settings.json'), before, 'the file must not be rewritten at all')
+})
+
+test('a false the idle update rollback wrote is taken back only when its caller says so (reclaim)', () => {
+  // The rollback holds Claude Code's own update off so the relaunch does not reinstall the bad build
+  // (lib/idle-update-host.mjs rollbackMarketplaceInstall, which records the hold). Once a newer
+  // version is published the boot enrolment takes back ITS OWN false; a person's false never moves.
+  const held = JSON.stringify({ extraKnownMarketplaces: { hoai: { source: {}, autoUpdate: false } } })
+  const plain = memFs({ '/cfg/settings.json': held })
+  assert.equal(ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: plain }).reason, 'declined')
+  const fs = memFs({ '/cfg/settings.json': held })
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', reclaim: true, fs } as any)
+  assert.equal(r.changed, true, JSON.stringify(r))
+  assert.equal(JSON.parse(fs.files.get('/cfg/settings.json')!).extraKnownMarketplaces.hoai.autoUpdate, true)
 })
 
 test('a marketplace named __proto__ cannot reach Object.prototype', () => {
@@ -902,7 +915,7 @@ test('a corrupt settings file is replaced rather than failing the install', () =
     fs,
   })
   assert.equal(result.reason, 'set')
-  assert.equal(settingsOf(fs).hooks.Stop.length, 2)
+  assert.equal(settingsOf(fs).hooks.Stop.length, 3)
 })
 
 test('no forwarder path means no entries, never a half written hooks block', () => {

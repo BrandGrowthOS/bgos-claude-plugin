@@ -12,7 +12,7 @@
  *      any read of a secret or of another person's lane, judged here on the
  *      same bytes the backend judges (lib/hard-floor-lane-fixture.ts).
  *   2. The floor is ON whatever the owner's switch says, and a hold is a
- *      DENY: under `--permission-mode dontAsk` nothing could ask anyway.
+ *      DENY: nothing in a lane asks.
  *   3. It fails CLOSED. Unreadable input, a missing or unsafe person id, a
  *      classifier that throws or a hook that runs out of time all answer
  *      deny. In a lane a false hold refuses one action; a missed one hands
@@ -57,7 +57,7 @@ export function laneFromArgv(argv) {
 /**
  * Decide one hook call. Returns the line to print, or '' to let the call
  * through (no output means the CLI's own permission rules decide, which in a
- * lane is the allow list under dontAsk).
+ * lane is the allow list).
  *
  * @param {string} text the hook's stdin
  * @param {string | null} userId

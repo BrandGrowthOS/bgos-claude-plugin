@@ -8,6 +8,7 @@
  * Runs recordInbound and checkReplyOverdue out of server.ts (it cannot be imported), as test/peer-403-loop.test.ts does.
  */
 
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -53,6 +54,8 @@ function overdueSweep() {
     USER_ID: OWNER,
     log: () => undefined,
     trackMessageOperation: (op: () => Promise<unknown>) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (n: { params: Card }) => { cards.push(n.params) } },
   }
   const scope = new Proxy(known, {
@@ -113,12 +116,12 @@ test('Data\'s review (M1): every lane hands recordInbound the same actor it hand
     return null
   }
   const actors = SRC.split('\n').filter((line) => line.includes('content: privateTurns.deliver(')).map(actorOf)
-  assert.equal(actors.length, 3, 'the poll, the stream and the socket')
+  assert.equal(actors.length, 4, 'poll, stream, socket and edits')
   // The tracker's last argument is whether the message addressed this agent
   // (board row 59a6d097); the actor is the argument before it.
   const calls = [...SRC.matchAll(/\n\s*recordInbound\(([\s\S]*?)\)\n/g)]
     .map((m) => m[1].replace(/\s+/g, ' ').trim().replace(/,? inboundAddressesAgent\(\{[^}]*\}\),?$/, ''))
-  assert.equal(calls.length, 3, 'one recordInbound per lane')
+  assert.equal(calls.length, 4, 'one recordInbound per lane')
   for (const [index, actor] of actors.entries()) {
     assert.ok(actor, `lane ${index}: its deliver names an actor`)
     assert.ok(calls[index].endsWith(`, ${actor},`) || calls[index].endsWith(`, ${actor}`), `lane ${index}: recordInbound(${calls[index]}) ends with ${actor}`)

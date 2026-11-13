@@ -82,8 +82,27 @@ import {
 } from './session-controls-contract.ts'
 import { voiceConsultActor } from './private-turn.mjs'
 import { isModelEffortOp, rpcLogTag, type ModelEffortOp, type PickerAnswer, type PickerFrame } from './model-effort-rpc.ts'
+import {
+  ASIDE,
+  GROUP_THREAD_END,
+  GROUP_THREAD_LEVEL,
+  THREAD_CLOSE,
+  THREAD_TURN,
+  asidePayload,
+  groupThreadEndPayload,
+  groupThreadLevelPayload,
+  isThreadOp,
+  threadClosePayload,
+  threadRefusal,
+  threadTurnPayload,
+  type ThreadOp,
+  type ThreadRpcDeps,
+} from './thread-rpc.ts'
 
-export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn' | SessionOp | ModelEffortOp
+export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn' | SessionOp | ModelEffortOp | ThreadOp
+
+/** How long an aside's result waits for its progress frames to land first. */
+const ASIDE_PROGRESS_DRAIN_MS = 2_000
 
 /** True for the three Sessions ops the contract file names. */
 function isSessionOp(op: unknown): op is SessionOp {
@@ -125,7 +144,8 @@ export function normalizeVoiceRpc(raw: unknown): VoiceRpcFrame | null {
     r.op === 'dispatch' ||
     r.op === 'stop_turn' ||
     isSessionOp(r.op) ||
-    isModelEffortOp(r.op)
+    isModelEffortOp(r.op) ||
+    isThreadOp(r.op)
       ? r.op
       : null
   if (!rpcId || !op) return null
@@ -421,6 +441,12 @@ export interface VoiceRpcDeps {
     mine(frame: Pick<PickerFrame, 'assistantId'>): boolean
     answer(frame: PickerFrame): Promise<PickerAnswer>
   }
+  /** Threads phase 1 (lib/thread-rpc.ts): the thread lanes and the By the way
+   *  runner. Absent, the three thread ops answer unsupported. */
+  threads?: ThreadRpcDeps
+  /** POST integrations/voice-rpc/:rpcId/progress {seq, delta}: an aside's
+   *  streamed text, before its result. */
+  postProgress?(rpcId: string, body: { seq: number; delta: string }): Promise<unknown>
   log(msg: string): void
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch
@@ -808,11 +834,16 @@ export class VoiceRpcHandler {
         ? this.deps.modelEffort.mine(frame)
         : String(frame.assistantId) === String(this.deps.config.assistantId))
     ) return
+    // A thread op starts a process on this computer: another agent's frame
+    // (a shared pairing room) is not acked and not run.
+    if (isThreadOp(frame.op) && String(frame.assistantId) !== String(this.deps.config.assistantId)) return
     if (this.inFlight.has(frame.rpcId)) {
       this.deps.log(`voice_rpc duplicate frame ignored (rpc=${rpcLogTag(frame.rpcId)})`)
       return
     }
-    if (isSessionOp(frame.op) || isModelEffortOp(frame.op)) {
+    // A thread op answers in milliseconds too, and a second thread_turn would
+    // queue the same turn twice: run once per rpcId, like the Sessions ops.
+    if (isSessionOp(frame.op) || isModelEffortOp(frame.op) || isThreadOp(frame.op)) {
       if (this.sessionRpcsSeen.has(frame.rpcId)) {
         this.deps.log(`voice_rpc duplicate sessions frame ignored (rpc=${rpcLogTag(frame.rpcId)})`)
         return
@@ -869,6 +900,8 @@ export class VoiceRpcHandler {
         })
         if (!answer.ok) throw new VoiceRpcError(answer.code, answer.message)
         payload = answer.payload
+      } else if (isThreadOp(frame.op)) {
+        payload = await this.threadOp(frame)
       } else if (isSessionOp(frame.op)) {
         // resume_session and rename_session: a later slice (spec D20). The
         // per agent supervisor reads its pinned session once at start and
@@ -894,7 +927,7 @@ export class VoiceRpcHandler {
       const code =
         err instanceof VoiceRpcError
           ? err.code
-          : isSessionOp(frame.op) || isModelEffortOp(frame.op)
+          : isSessionOp(frame.op) || isModelEffortOp(frame.op) || isThreadOp(frame.op)
             ? 'failed'
             : 'PLUGIN_ERROR'
       await this.postResult(frame.rpcId, {
@@ -907,6 +940,69 @@ export class VoiceRpcHandler {
     } finally {
       this.inFlight.delete(frame.rpcId)
     }
+  }
+
+  // ── threads and By the way (lib/thread-rpc.ts) ────────────────────────────
+
+  private async threadOp(frame: VoiceRpcFrame): Promise<Record<string, unknown>> {
+    const threads = this.deps.threads
+    if (!threads) {
+      throw new VoiceRpcError('unsupported', 'Threads and By the way are not available on this agent.')
+    }
+    try {
+      if (frame.op === THREAD_TURN) {
+        const answer = await threads.turn(threadTurnPayload(frame.payload, frame.chatId))
+        return { accepted: true, state: answer.state }
+      }
+      if (frame.op === THREAD_CLOSE) {
+        await threads.close(threadClosePayload(frame.payload))
+        return { stopped: true }
+      }
+      if (frame.op === GROUP_THREAD_LEVEL) {
+        if (!threads.groupLevel) throw new VoiceRpcError('unsupported', 'Group threads are not available on this agent.')
+        await threads.groupLevel(groupThreadLevelPayload(frame.payload, frame.chatId))
+        return { ok: true }
+      }
+      if (frame.op === GROUP_THREAD_END) {
+        if (!threads.groupEnd) throw new VoiceRpcError('unsupported', 'Group threads are not available on this agent.')
+        const answer = await threads.groupEnd(groupThreadEndPayload(frame.payload, frame.chatId))
+        return { ok: true, ...(answer.summary ? { summary: answer.summary } : {}) }
+      }
+      if (frame.op === ASIDE) {
+        const input = asidePayload(frame.payload)
+        // Progress frames go out in order, one after another, and never hold
+        // the answer up: the result waits for them only briefly.
+        let progress: Promise<void> = Promise.resolve()
+        const onDelta = (seq: number, delta: string): void => {
+          const post = this.deps.postProgress
+          if (!post) return
+          progress = progress.then(() => post(frame.rpcId, { seq, delta })).then(
+            () => undefined,
+            () => undefined,
+          )
+        }
+        const drain = (): Promise<void> => {
+          let timer: ReturnType<typeof setTimeout> | undefined
+          const cap = new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, ASIDE_PROGRESS_DRAIN_MS)
+          })
+          return Promise.race([progress, cap]).finally(() => clearTimeout(timer))
+        }
+        try {
+          const answer = await threads.aside(input, onDelta)
+          await drain()
+          return { text: answer.text }
+        } catch (err) {
+          await drain()
+          throw err
+        }
+      }
+    } catch (err) {
+      const refusal = threadRefusal(err)
+      if (refusal) throw new VoiceRpcError(refusal.code, refusal.message)
+      throw err
+    }
+    throw new VoiceRpcError('unsupported', `unsupported thread op: ${String(frame.op)}`)
   }
 
   // ── mint ──────────────────────────────────────────────────────────────────

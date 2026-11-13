@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findOwnAttachedKey, floorKey, floorStateRoot, pidIsAlive, sessionFolders } from '../lib/floor-state.mjs'
-import { PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateTurnRecord, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
+import { GROUP_LANE_ENV, PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateTurnRecord, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 
 const envText = (env, name) => (env && typeof env[name] === 'string' ? env[name].trim() : '')
 
@@ -72,7 +72,7 @@ function managedMarker(payload, env) {
 }
 
 /** What a stale close keeps of the live marker it closes: the record of its CLI turn (privateTurnRecord). */
-const HELD_TURN_KEYS = ['cliTurn', 'after', 'afterLive', 'tags', 'tagsLost', 'untracked', 'prompts', 'daemon', 'lifeBefore']
+const HELD_TURN_KEYS = ['cliTurn', 'after', 'afterLive', 'tags', 'tagsLost', 'untracked', 'rawCard', 'prompts', 'daemon', 'lifeBefore']
 
 /** A session id safe to name a file by, or ''. */
 const fileSafeSession = (sessionId) => (/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ? sessionId : '')
@@ -133,6 +133,15 @@ const otherLifeRunning = (marker, life) => Number.isSafeInteger(marker?.daemon?.
   marker.daemon.pid !== life.pid && pidIsAlive(marker.daemon.pid)
 
 /**
+ * A group lane (lib/group-lanes.ts sets GROUP_LANE_ENV to its chat id): a headless session of the agent for one group,
+ * with no MCP server, so no private tool, and attached to no daemon on purpose. Its prompt has no private turn and
+ * that is the normal case, not an error to report. It stays fail closed: no marker is written for it.
+ */
+export function isGroupLaneSession(env) {
+  return /^[1-9][0-9]{0,18}$/.test(envText(env, GROUP_LANE_ENV))
+}
+
+/**
  * @param {(why: string) => void} [report] told why a prompt's marker was not written, when there is a reason to give
  */
 export function recordPrivateBoundary(payload, env = process.env, report = () => {}) {
@@ -146,7 +155,7 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
     else closeMarkers([...target.stale, ...target.holding], sessionId)
     // A standalone CLI session has no managed private tools; any other session's prompt says why it has no turn,
     // here and in a note its own daemon's refusal line quotes (lib/private-turn.mjs explain).
-    if (event === 'UserPromptSubmit' && target.why) {
+    if (event === 'UserPromptSubmit' && target.why && !isGroupLaneSession(env)) {
       try { report(target.why) } catch { /* Reporting is best effort. */ }
       const promptId = typeof payload?.prompt_id === 'string' ? payload.prompt_id.trim().slice(0, 128) : ''
       if (notePath) {
@@ -218,6 +227,12 @@ export function recordSubagentTurn(payload, env = process.env) {
   return true
 }
 
+/** Does this email_draft input name files? Anything but a missing, null or empty list counts, so a bad value is checked too. */
+function draftCarriesFiles(input) {
+  const files = input && typeof input === 'object' && !Array.isArray(input) ? input.files : undefined
+  return files !== undefined && files !== null && !(Array.isArray(files) && files.length === 0)
+}
+
 /**
  * PreToolUse on a private tool: a helper may act only inside the live turn that
  * started it. The main agent is left to the daemon and the browser shim, which
@@ -225,6 +240,9 @@ export function recordSubagentTurn(payload, env = process.env) {
  */
 export function privateToolRefusal(payload, env = process.env) {
   if (!new RegExp(PRIVATE_TOOL_MATCHER).test(String(payload?.tool_name ?? ''))) return null
+  // email_draft is private only with files (outbound email files, rule 2: a helper from an earlier turn may not
+  // attach a file on the next sender's say). A text draft never sends and carries no file, so it passes as before.
+  if (/(?:^|_)email_draft$/.test(String(payload?.tool_name ?? '')) && !draftCarriesFiles(payload?.tool_input)) return null
   if (String(payload?.agent_id ?? '').trim() === '') return null
   const target = managedMarker(payload, env)
   // A helper in a session whose own daemon is not attached: the turn that started it cannot be checked.

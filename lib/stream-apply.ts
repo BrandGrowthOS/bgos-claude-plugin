@@ -13,9 +13,10 @@
  *    pending-empty park: the id is remembered, nothing is forwarded, the
  *    per-chat cursor must not step past it. The later message_finalized for
  *    that id delivers AS the wake, not as an edit.
- *  - The per-chat cursor remains the dedup substrate forever: a row at or
- *    under it was handled in a previous run and only advances the stream
- *    cursor.
+ *  - The per-chat cursor dedupes original delivery: a row at or under it
+ *    was handled in a previous run. For human messages delivered by this
+ *    daemon, server.ts checks the shared edit ledger before these decisions
+ *    so a changed version is delivered as a replacement, not an original.
  *  - buttons_answered forwards iff the id is not in the announced-clicks
  *    dedup set shared with the poll's transition detector; the caller then
  *    marks it announced and consumes any live-tracked baseline entry so the
@@ -28,6 +29,7 @@
  */
 
 import type { StreamUpdate } from './update-stream.ts'
+export { HumanMessageEdits, humanEditTime } from './message-edits.ts'
 import {
   buildButtonClickedMeta,
   buildInboundChannel,
@@ -42,6 +44,10 @@ import {
   type RoomAgentSender,
 } from './inbound-channel.ts'
 import { senderUserIdCandidate } from './permission-relay.ts'
+import { cardAnswerClickOf, type CardAnswerClick } from './card-answer.ts'
+// Re-exported so every lane that reads a stream answer has the card answer's
+// reader and text from the module it already loads.
+export { cardAnswerClickOf, cardAnswerText } from './card-answer.ts'
 
 // ── Payload normalization ────────────────────────────────────────────────────
 
@@ -81,6 +87,12 @@ export interface StreamAnswerPayload {
    * Present only when the answer carries one.
    */
   emailSendApproval?: unknown
+  /**
+   * A press on a ui_card's button, read off the raw answer with its values
+   * (lib/card-answer.ts), or absent. Its messageId is the view's; it is read
+   * here with 0 because the answer alone does not carry it.
+   */
+  card?: CardAnswerClick
 }
 
 export interface StreamMessageView {
@@ -130,7 +142,13 @@ function answerPayloadOf(raw: unknown): StreamAnswerPayload | null {
     clickerUserId: senderUserIdCandidate(r),
     tapperUserId: readTapperUserId(r),
     ...(r.emailSendApproval !== undefined && r.emailSendApproval !== null ? { emailSendApproval: r.emailSendApproval } : {}),
+    ...cardOf(r),
   }
+}
+
+function cardOf(r: Record<string, unknown>): { card?: CardAnswerClick } {
+  const card = cardAnswerClickOf(0, r)
+  return card ? { card } : {}
 }
 
 /**
@@ -420,6 +438,8 @@ export function decideButtonsAnswered(opts: {
 export type StreamKindClass =
   | 'message_new'
   | 'message_finalized'
+  | 'message_edited'
+  | 'message_deleted'
   | 'buttons_answered'
   | 'chat_created'
   | 'chat_deleted'
@@ -441,6 +461,10 @@ export function classifyStreamKind(kind: string): StreamKindClass {
       return 'message_new'
     case 'message_finalized':
       return 'message_finalized'
+    case 'message_edited':
+      return 'message_edited'
+    case 'message_deleted':
+      return 'message_deleted'
     case 'buttons_answered':
       return 'buttons_answered'
     case 'chat_created':
@@ -518,6 +542,8 @@ export function buildStreamClickMeta(opts: {
   tapperUserId: string | null
   assistantId: string
   ts?: string
+  /** A card's answer: adds card_answer, action_id and answered_by_person (lib/card-answer.ts). */
+  card?: CardAnswerClick | null
 }): Record<string, string> {
   return buildButtonClickedMeta({ ...opts, transport: 'stream' })
 }

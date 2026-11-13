@@ -59,6 +59,19 @@
  *                       for a daemon declaring this, because that wake asks
  *                       the agent to write its goals. Every host: it is a
  *                       plain HTTP write the model makes itself.
+ *   mission_goal_working
+ *                       the model has set_goal_working, which marks the
+ *                       goals it is working on now (PATCH .../goals/:goalId/
+ *                       working, BGOS #3575). The served canon tells the
+ *                       working mark paragraph (the 30 minute refresh, who
+ *                       may set and clear, a mark is not progress) only to a
+ *                       caller declaring this (MISSION_GOAL_WORKING_TOKEN in
+ *                       BGOS capability-canon.ts). Every host: a plain HTTP
+ *                       write the model makes itself.
+ *   mission_server_checks
+ *                       goal tools carry server machine checks and waiting
+ *                       goals on every host. Distinct from mission_goal_checks,
+ *                       which promises the native goal checker's verdict.
  *   mission_pause       a pause truly stops the work. ONLY where the injector
  *                       answers, because the pause this daemon can enforce IS
  *                       clearing the native goal. It is honest about its
@@ -230,6 +243,20 @@
  *                       tools are plain code. Declared only while
  *                       shipsEmailTools(), the tools' own check, holds (the
  *                       email_label precedent).
+ *   email_files         the two email tools take `files: [{path}]` and this
+ *                       daemon runs the rule 4 checks (secret path refusal
+ *                       after every link, secret content scan) on each file
+ *                       before it uploads it (outbound email files, HOAI row
+ *                       5b141728 step 2; lib/agent-email-tools.ts EMAIL_FILES,
+ *                       the backend's EMAIL_FILES). The backend serves the
+ *                       files send line and the files paragraph only to a
+ *                       daemon that declares email_send AND this (email_send
+ *                       alone hears main's text only sentence), and refuses an
+ *                       upload, or a draft or send naming fileIds, from a
+ *                       pairing whose stored list lacks it (403
+ *                       files_not_declared). Declared right after email_send,
+ *                       only while shipsEmailFilesTools(), the files tools'
+ *                       own check, holds.
  *   ui_card             this daemon's show_component sends a card the agent
  *                       composes (kind ui_card, mission 168): the tool
  *                       fetches the live renderables catalog on every call
@@ -245,6 +272,21 @@
  *                       UI_CARD_TOKEN and uiCardTold), never by version, so
  *                       before 0.71.8 a Claude Code agent could send a card
  *                       it was never told about.
+ *
+ *   ui_card_answers     this daemon hands the agent a card's answer as one
+ *                       turn of quoted, bounded data under a line saying it
+ *                       is data, not instructions, and who entered it (a
+ *                       person, or a credential when the server marks the
+ *                       answer answeredByPerson false), on the poll, the
+ *                       stream and the direct read (lib/card-answer.ts).
+ *                       Before 0.87.0 it announced the answer as a plain
+ *                       `[button_clicked] Clicked: <summary>` line, so the
+ *                       backend tells the canon's sentence that promises a
+ *                       card's values only to a connection that declares
+ *                       this token (capability-canon.ts UI_CARD_ANSWERS_TOKEN
+ *                       and uiCardAnswersTold); every other connection told
+ *                       about cards reads that their answers do not reach it
+ *                       as data. Every host and connection, beside ui_card.
  *
  *   model_effort_picker
  *                       BGOS's own token (#3060, model-effort-picker.model.ts
@@ -281,10 +323,11 @@
  * agent silently untold.
  */
 
+import { groupLevelsEnabled } from './group-lane-args.ts'
 import { ASK_ANSWERED_TOKEN, ASK_MULTI_SELECT_TOKEN, HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
-import { EMAIL_SEND, shipsEmailTools } from './agent-email-tools.ts'
+import { EMAIL_FILES, EMAIL_SEND, shipsEmailFilesTools, shipsEmailTools } from './agent-email-tools.ts'
 import { LANE_MEMORY_RPC_TOKEN, PERSON_LANES_TOKEN } from './lane-core.mjs'
 
 /** Declared wherever this plugin runs, on every host and every connection. */
@@ -292,6 +335,8 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
   'mission_set_goals',
+  'mission_server_checks',
+  'mission_goal_working',
   PERMISSION_CARD,
   PLAN_CARD,
   'memory_rpc',
@@ -305,6 +350,11 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'skills_list',
   'skills_receive',
   'ui_card',
+  // A card's answer reaches the agent as quoted, bounded data under a line
+  // saying it is data and who entered it, on the poll, the stream and the
+  // direct read (lib/card-answer.ts). The served canon promises an agent its
+  // card's values only when its daemon declares this.
+  'ui_card_answers',
   // The async question card (lib/ask-tracker.ts): ask_user_input returns
   // pending, one ask_answered event carries every answer however late, and
   // withdraw_ask retires a card. Typed tools on any host, over pairing or an
@@ -342,6 +392,33 @@ export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([H
 
 /** The owner's model and effort picker (BGOS #3060), declared only while it can act. */
 export const MODEL_EFFORT_PICKER_TOKEN = 'model_effort_picker'
+
+/**
+ * Threads phase 1 (plan "Wire contract"): message_threads (this daemon answers
+ * thread_turn and thread_close), thread_sessions (its threads run as forked
+ * lanes, lib/thread-lanes.ts) and asides (it answers aside,
+ * lib/aside-fork.ts). Declared together, only where a lane can run.
+ */
+export const THREAD_CAPABILITY_TOKENS: readonly string[] = Object.freeze(['message_threads', 'thread_sessions', 'asides'])
+
+/**
+ * Group threads (the server's group threads contract): this daemon runs each
+ * group the agent sits in as its own paused and resumed lane
+ * (lib/group-lanes.ts) and answers group_thread_end. Declared only where a
+ * thread lane can run (the `threads` condition: a claude binary that passes
+ * the probe, not Windows) and only on a pairing: the server serves group
+ * threads to a pairing alone, and an older daemon never declares it, so it
+ * keeps today's frames.
+ */
+export const GROUP_THREADS_TOKEN = 'group_threads'
+
+/**
+ * Group levels above Talk only (round 5, B): declared only beside
+ * group_threads and only while this daemon's HOAI_GROUP_LEVELS switch is on
+ * (lib/group-lane-args.ts groupLevelsEnabled). Without it the server sends
+ * Talk only, and the daemon runs every group at Talk only whatever it says.
+ */
+export const GROUP_LEVELS_TOKEN = 'group_levels'
 
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
@@ -393,19 +470,36 @@ export function declaredCapabilities(input: {
    * observation, non empty catalog)? Absent reads as no.
    */
   modelEffortPicker?: boolean
+  /**
+   * Can this host run thread lanes and By the way forks (server.ts
+   * threadsDeclared: a claude binary resolves)? Absent reads as no. Never
+   * declared on win32 in phase 1. Also carries group_threads, on a pairing.
+   */
+  threads?: boolean
+  /**
+   * HOAI_GROUP_LEVELS is on (lib/group-lane-args.ts groupLevelsEnabled):
+   * group_levels beside group_threads. Absent, the daemon's own environment
+   * is read, as the email tokens read theirs.
+   */
+  groupLevels?: boolean
   authMode: 'pairing' | 'apikey'
-  /** The host platform; process.platform when absent. The picker is never declared on win32. */
+  /** The host platform; process.platform when absent. The picker and the thread tokens are never declared on win32. */
   platform?: NodeJS.Platform
 }): readonly string[] {
   return [
     ...DECLARED_CAPABILITIES_BASE,
     ...(labelsExternalEmail() ? [EMAIL_LABEL] : []),
     ...(shipsEmailTools() ? [EMAIL_SEND] : []),
+    ...(shipsEmailFilesTools() ? [EMAIL_FILES] : []),
     ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
     ...(input.authMode === 'pairing' && input.personLanes === true ? [PERSON_LANES_TOKEN, LANE_MEMORY_RPC_TOKEN] : []),
     ...(input.authMode === 'pairing' && input.modelEffortPicker === true && (input.platform ?? process.platform) !== 'win32'
       ? [MODEL_EFFORT_PICKER_TOKEN]
+      : []),
+    ...(input.threads === true && (input.platform ?? process.platform) !== 'win32' ? THREAD_CAPABILITY_TOKENS : []),
+    ...(input.authMode === 'pairing' && input.threads === true && (input.platform ?? process.platform) !== 'win32'
+      ? [GROUP_THREADS_TOKEN, ...((input.groupLevels ?? groupLevelsEnabled(process.env)) ? [GROUP_LEVELS_TOKEN] : [])]
       : []),
   ]
 }

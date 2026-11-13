@@ -1,0 +1,11 @@
+Independent read-only code review of the final production and test diff against 53092a5.
+
+No P1/P2 or new production regression found.
+
+The closure fix uses two explicit terminal reports agreeing on mission id, terminal status and normalized goals. It preserves the per-chat generation fence and requires a known mission in its original chat. Only confirmed unversioned closure latches a permanent tombstone; no updatedAt is manufactured. Existing versioned ordering behavior is preserved.
+
+Equal-time replacement is limited to reconciled stable reads. Inverted timestamps remain documented as a backend revision limitation.
+
+Tests exercise production functions, a real Stop subprocess, the actual waiting tool, both read races, multi-mission isolation, resurrection and eviction. Both independent production fix reverts and all ten targeted reverts/faults failed with assertions. Restored controls passed.
+
+The reviewer did not edit files or Git state and did not rerun tests. Requested evidence path redaction and design documentation corrections were applied before staging.

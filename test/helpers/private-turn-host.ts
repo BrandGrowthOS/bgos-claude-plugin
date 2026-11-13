@@ -10,14 +10,17 @@
  * peer conversation close, a meeting line) through the notification wrapper's rawCard, the fire keys the ledger was
  * asked to record, and the daemon's private turn log lines.
  */
+import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn } from '../../lib/schedule-grant-run.mjs'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import ts from 'typescript'
+import { emailToolNeedsTurn, emailTurnRefusalText } from '../../lib/agent-email-tools.ts'
 import { appendEvent } from '../../bin/hoai-hook.mjs'
 import { recordPrivateBoundary } from '../../bin/hoai-private-turn-hook.mjs'
+import { fileClockPast } from './file-clock.ts'
 import { startHookIntake, type SpoolLine } from '../../lib/hook-intake.ts'
 import { buildInboundChannel } from '../../lib/inbound-channel.ts'
 import { SessionTranscriptBinder } from '../../lib/session-binding.ts'
@@ -117,11 +120,25 @@ const admissionJs = ts.transpileModule(`${admissionSource}\nreturn { privateCall
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText
 
+// Exercise the production notification boundary with a local transport sink.
+const notificationStart = source.indexOf('const sendMcpNotification = mcp.notification.bind(mcp)')
+const notificationSource = source.slice(notificationStart, source.indexOf('// OUTERMOST', notificationStart))
+assert.ok(notificationStart > 0 && notificationSource.includes('privateTurns.rawCard'), 'the notification boundary was found')
+const notificationJs = ts.transpileModule(`${notificationSource}\nreturn mcp.notification;`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+}).outputText
+
 /**
  * The clock moves on past this instant, so a marker written before it and a time stamped after it never share one
- * millisecond (end() compares the two; on a real machine a hook's cold start keeps them seconds apart).
+ * millisecond (end() compares the two; on a real machine a hook's cold start keeps them seconds apart). The FILE clock
+ * too: a time stamped before it and a marker written after it, which Linux's coarse file clock could stamp earlier
+ * (test/helpers/file-clock.ts).
  */
-function settle() { const at = Date.now(); while (Date.now() < at + 2) { /* spin */ } }
+function settle() {
+  const at = Date.now()
+  while (Date.now() < at + 2) { /* spin */ }
+  fileClockPast(at)
+}
 
 /** One UserPromptSubmit (or Stop) as two steps the test orders: mark() the synchronous hook, spool() the forwarder line. */
 export interface Submission { mark: () => void; spool: () => void }
@@ -226,6 +243,13 @@ export function agentHost(t: any) {
   }
 
   let life = daemon()
+  const notify = (content: string, meta: Record<string, string>): string => {
+    const mcp = { notification: (notification: any) => String(notification.params.content) }
+    // The notification chain as server.ts builds it: group threads' step (summaries, lane verdicts) passes every card
+    // through with no group lane here, and the scheduled run hold (0.86.20) passes every card unchanged with no run open.
+    const notification = new Function('mcp', 'groupNotificationStep', 'privateTurns', 'holdChannelCardsDuringGrantedRun', 'scheduleGrantRuns', 'log', notificationJs)(mcp, () => null, life.tracker, holdChannelCardsDuringGrantedRun, createScheduleGrantRuns(), () => {})
+    return notification({ method: 'notifications/claude/channel', params: { content, meta } })
+  }
   const payloadOf = (event: string, extra: Record<string, unknown> = {}) =>
     ({ session_id: session, transcript_path: transcript, cwd: folder, hook_event_name: event, permission_mode: 'bypassPermissions', ...extra })
   /**
@@ -265,7 +289,7 @@ export function agentHost(t: any) {
         fireKey: privateFireKey({ senderType, eventMeta: frame.eventMeta, messageId: frame.messageId }),
         actingUserId: privateActor({ senderType, senderUserId: privateSenderUserId(frame), agentOrigin, eventMeta: frame.eventMeta }),
       })
-      return renderChannel(content, channel.meta)
+      return renderChannel(notify(content, channel.meta), channel.meta)
     },
     /**
      * A channel card server.ts pushes without deliver(): the notification wrapper (server.ts:9150) hands it to rawCard
@@ -273,7 +297,7 @@ export function agentHost(t: any) {
      */
     raw(content: string, meta: Record<string, string> = {}): string {
       // The push is its own moment, as each hook's is (settle): a Stop or prompt after it is later (turnBetween).
-      life.tracker.rawCard(content, meta); settle()
+      content = notify(content, meta); settle()
       return renderChannel(content, meta)
     },
     /** A button tap card, as server.ts's poll and boot sweep announce one with no delivery: noteTap's tag on its end. */
@@ -310,8 +334,8 @@ export function agentHost(t: any) {
         button_text: custom ? 'Custom reply' : opts.text ?? 'Yes, go ahead', ...(custom ? { custom_text: String(opts.customText) } : {}),
         user: 'User', ...(opts.tapperUserId ? { user_id: opts.tapperUserId } : {}), assistant_id: AGENT, ts: new Date().toISOString(),
       }
-      life.tracker.rawCard(card, meta); settle()
-      return renderChannel(card, meta)
+      const sent = notify(card, meta); settle()
+      return renderChannel(sent, meta)
     },
     /** server.ts's peer_conversation_closed card (server.ts:14596): the backend's fixed reason, no peer's words. */
     peerClose(reason = 'completed', conversationId = 4411): string {
@@ -456,23 +480,34 @@ export function toldTheServer(reason: unknown): unknown {
  * comes back as Promise.resolve({ isError }), an admitted call as the frozen privateCall and email_send reason.
  */
 export async function admit(host: Host, name: string): Promise<{ refused: string } | { actsFor: string; reason: unknown }> {
+  const result = await admitCall(host, name)
+  if ('refused' in result) return result
+  if (result.privateCall) return { actsFor: (result.privateCall as any).headers?.['X-BGOS-Acting-User'] ?? 'owner', reason: toldTheServer(result.emailSendReason) }
+  assert.ok(result.emailSendReason, `${name}: admitted with a reason`)
+  return { actsFor: 'owner', reason: toldTheServer(result.emailSendReason) }
+}
+
+/**
+ * The same admission block with the call's own arguments (outbound email files: an email_draft is admitted through
+ * the email_send turn check only when it carries files). A refusal comes back as its words, an admitted call as what
+ * the block froze for it, a call the block does not gate as two nulls.
+ */
+export async function admitCall(host: Host, name: string, args?: Record<string, unknown>): Promise<{ refused: string } | { privateCall: unknown; emailSendReason: unknown }> {
   const result = new Function(
     'req', 'lockHeld', 'privateTurns', 'PRIVATE_MARKER_PATHS', 'PRIVATE_HOOK', 'PRIVATE_HOOK_MISSING_REFUSAL', 'USER_ID', 'log',
     'requirePrivateTurn', 'turnAwarePrivateTurn', 'requireEmailSendTurn', 'PRIVATE_TURN_REFUSAL', 'recordPeerRefusal', 'pathDirname',
-    'CURSOR_FILE_PATH', 'ASSISTANT_ID', admissionJs,
+    'CURSOR_FILE_PATH', 'ASSISTANT_ID', 'emailToolNeedsTurn', 'emailTurnRefusalText', 'requireBoardsTurn', 'scheduleGrantRuns', admissionJs,
   )(
-    { params: { name } }, true, host.tracker, host.markerPaths, { registered: true }, 'hook missing', OWNER, () => {},
+    { params: { name, ...(args === undefined ? {} : { arguments: args }) } }, true, host.tracker, host.markerPaths, { registered: true }, 'hook missing', OWNER, () => {},
     requirePrivateTurn, turnAwarePrivateTurn, requireEmailSendTurn, PRIVATE_TURN_REFUSAL, () => ({ line: '' }), () => '/s',
-    '/s/c', AGENT,
+    '/s/c', AGENT, emailToolNeedsTurn, emailTurnRefusalText, requireBoardsTurn, createScheduleGrantRuns(),
   )
   if (typeof result?.then === 'function') {
     const settled = await result
     assert.equal(settled?.isError, true, `${name}: a refusal`)
     return { refused: String(settled.content[0].text) }
   }
-  if (result.privateCall) return { actsFor: result.privateCall.headers?.['X-BGOS-Acting-User'] ?? 'owner', reason: toldTheServer(result.emailSendReason) }
-  assert.ok(result.emailSendReason, `${name}: admitted with a reason`)
-  return { actsFor: 'owner', reason: toldTheServer(result.emailSendReason) }
+  return { privateCall: result.privateCall ?? null, emailSendReason: result.emailSendReason ?? null }
 }
 
 /** Who a private tool acts for: 'owner' (no acting user header), the header's person, or 'refused: <text>'. */

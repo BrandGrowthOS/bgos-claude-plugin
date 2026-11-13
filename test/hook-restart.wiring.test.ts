@@ -63,7 +63,7 @@ test('it waits for the safe moment the watcher waits for: the facts agent-state.
   const b = block()
   assert.match(b, /turnInFlight: hookTurnLive \|\| hookTurn\.carried\.size > 0/)
   assert.match(b, /turnSignal: hookTurnSignal\(\{ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId \}\)/)
-  assert.match(b, /\.\.\.updateDrainSnapshot\(\)/)
+  assert.match(b, /\.\.\.restartDrainSnapshot\(\)/)
   assert.match(b, /activityMs: \(\) => \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript\(\)\.activityMs\]/)
   assert.match(b, /claudePid: \(\) => agentClaudePid\(\)/)
   assert.match(b, /listProcesses\(\{ platform: process\.platform, exec: nodeExec\(\), env: process\.env \}\)/)
@@ -80,4 +80,8 @@ test('the shutdown path never names the hook restart: it is inert once shutdown 
   assert.ok(at >= 0)
   const end = server.indexOf('process.exit(code)', at)
   assert.doesNotMatch(server.slice(at, end), /hookRestart/, 'test/stand-down-sites.test.ts runs this site in a sandbox that names only the daemon state it needs')
+})
+
+test('a hook restart waits for thread work like any other operation', () => {
+  assert.match(block(), /\.\.\.restartDrainSnapshot\(\),\n\s*\}\),/)
 })

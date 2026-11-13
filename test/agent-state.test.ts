@@ -74,14 +74,16 @@ test('buildAgentState is exactly the section 7 contract, field for field, in ord
     pendingMessages: 0,
     pendingPermissions: 0,
     activeOperations: 0,
+    threadWork: 0,
     lastActivityAt: '2026-10-06T19:00:00.000Z',
+    ownerWaitingSince: null,
     sessionId: SESSION,
     updatedAt: '2026-10-06T19:00:30.000Z',
   })
   assert.deepEqual(Object.keys(state!), [
     'schemaVersion', 'assistantId', 'pid', 'claudePid', 'runningVersion', 'pendingRestartVersion',
-    'turnInFlight', 'turnSignal', 'pendingMessages', 'pendingPermissions', 'activeOperations', 'lastActivityAt',
-    'sessionId', 'updatedAt',
+    'turnInFlight', 'turnSignal', 'pendingMessages', 'pendingPermissions', 'activeOperations', 'threadWork', 'lastActivityAt',
+    'ownerWaitingSince', 'sessionId', 'updatedAt',
   ])
 })
 
@@ -100,6 +102,8 @@ test('buildAgentState fails closed on what it cannot vouch for', () => {
   assert.equal(s.pendingMessages, 2)
   assert.equal(s.pendingPermissions, 0)
   assert.equal(s.activeOperations, 0)
+  assert.equal(build({ threadWork: 2 })!.threadWork, 2, 'thread work is published')
+  assert.equal(build({ threadWork: -1 })!.threadWork, 0)
   assert.equal(build({ claudePid: 1 })!.claudePid, null)
   assert.equal(build({ runningVersion: '' })!.runningVersion, null)
   assert.equal(build({ pendingRestartVersion: undefined })!.pendingRestartVersion, null)
@@ -798,4 +802,39 @@ test('server.ts finds the claude ancestor through the platform aware walk', () =
     server,
     /const agentClaudePid = memoizeAncestorReading\(CLAUDE_ANCESTOR_RETRY_MS, CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS, Date\.now, \(\) =>\s*readClaudeAncestor\(\{ platform: process\.platform, ownPid: process\.pid, execSync: defaultExecSync \}\),?\s*\)/,
   )
+})
+
+// -- helperwedge finding 3: the stop then send freeze ---------------------------------------------
+// A claude frozen BEFORE the owner's message arrives writes neither Claude Code's queue line nor the
+// user entry, so the transcript never shows the delivery. The daemon pushed it and owes the reply:
+// it publishes since when (the first unanswered OWNER message, never a peer's or the system's).
+
+test('ownerWaitingSince: the first owed owner message, kept across newer ones in the same chat', async () => {
+  const mod = await import('../lib/agent-state.ts')
+  const oldest = (mod as any).oldestOwnerWaitMs as (entries: Iterable<Record<string, unknown>>) => number | null
+  assert.equal(typeof oldest, 'function', 'agent-state exports oldestOwnerWaitMs')
+  assert.equal(oldest([]), null)
+  assert.equal(oldest([{ ts: T0, ownerInbound: false }]), null, 'a peer or system message is not the owner waiting')
+  assert.equal(oldest([{ ts: T0 + 5_000, firstTs: T0, ownerInbound: true }, { ts: T0 - 1_000, ownerInbound: true }]), T0 - 1_000)
+  assert.equal(oldest([{ ts: T0 + 5_000, firstTs: T0, ownerInbound: true }]), T0, 'a newer message in the chat does not restart the wait')
+})
+
+test('buildAgentState publishes ownerWaitingSince, and the watcher reads it back', async () => {
+  const state = buildAgentState({ ...baseSnapshot(), ownerWaitingSinceMs: T0 - 15 * 60_000, pid: 4242, lastActivityAtMs: T0, nowMs: T0 + 30_000 } as any)
+  assert.equal((state as any).ownerWaitingSince, '2026-10-06T18:45:00.000Z')
+  assert.equal((buildAgentState({ ...baseSnapshot(), pid: 4242, lastActivityAtMs: T0, nowMs: T0 }) as any).ownerWaitingSince, null)
+  const { parseAgentState } = await import('../lib/keepalive-plan.mjs')
+  assert.equal((parseAgentState(JSON.stringify(state), '123') as any).ownerWaitingSinceMs, T0 - 15 * 60_000)
+  // A daemon from before the field is still a state, with nothing owed that it can date.
+  const { ownerWaitingSince: _drop, ...older } = state as any
+  assert.equal((parseAgentState(JSON.stringify(older), '123') as any).ownerWaitingSinceMs, null)
+})
+
+test('server.ts publishes ownerWaitingSince from its pending inbounds, and keeps the first owed time per chat', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const at = server.indexOf('const agentStatePublisher = new AgentStatePublisher(')
+  const wiring = server.slice(at, server.indexOf('\n})\n', at))
+  assert.match(wiring, /ownerWaitingSinceMs: oldestOwnerWaitMs\(pendingInbounds\.values\(\)\),/)
+  assert.match(server, /pendingInbounds\.set\(chatId, \{ messageId, ts: Date\.now\(\), firstTs: existing\?\.firstTs \?\? Date\.now\(\),/)
 })

@@ -1,6 +1,6 @@
 # Managed plaintext fields
 
-The agent can request `browser_type` without `slowly` or `submit`, or `browser_fill_form` containing textbox fields. Each request needs a fresh recipient approval labeled **Enter page text**. The permission carries the original RPC hash and fixed metadata; field contents remain in the existing authenticated RPC, not the approval document.
+The agent can request `browser_type`, or `browser_fill_form` containing textbox fields. Each request needs a fresh recipient approval labeled **Enter page text**. The permission carries the original RPC hash and fixed metadata; field contents remain in the existing authenticated RPC, not the approval document.
 
 The main-only `AgentProfileFieldInput` prepares exact current MCP snapshot handles before asking. Bounded `eN` and `fNeN` refs are accepted as syntax; the mapped native handle must still belong to the exact original Page and its main frame. There is no arbitrary selector, live locator execution, focus call or global keyboard path. The Playwright 1.64.1 bundle hash and private in-process utility APIs are qualified explicitly. A changed or unsupported dependency refuses this lane.
 
@@ -15,3 +15,5 @@ A native setter or dispatch failure, document/signature interruption, or lost ex
 Global key presses, per-character typing, automatic submit, contenteditable editors, custom elements, unknown purposes, subframes and non-textbox fill fields remain unsupported. Use human handover for those cases. Passwords and security codes continue through the protected native human login flow.
 
 `scripts/probe-browser-profile-fields.mjs` is an opt-in, disposable Linux qualification. Its permission and authority are synthetic. The actual shipped Companion plus HOAI permission composition and production rollout are separate acceptance gates.
+
+Filling only enters text. To submit a form, use a separate `browser_click` on the current submit control. That click requires its own approval and exact target check. The tool schemas expose neither `submit` nor `slowly`. Old composite calls and Enter, Return or Space key activation are refused before dispatch.

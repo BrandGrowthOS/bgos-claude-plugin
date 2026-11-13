@@ -24,6 +24,7 @@
  *
  * Run with: npx tsx --test test/mission-private.test.ts
  */
+import { createScheduleGrantRuns, requireBoardsTurn } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -39,8 +40,9 @@ import { PRIVATE_TOOL_MATCHER as PRESEED_MATCHER } from '../lib/claude-preseed.m
 import { markFloorAttached } from '../lib/floor-state.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 import * as missions from '../lib/missions.ts'
+import { createMissionWorkingTracker } from '../lib/mission-working.ts'
 
-const MISSION_TOOLS = ['create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'complete_mission']
+const MISSION_TOOLS = ['create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'set_goal_working', 'set_goal_waiting', 'complete_mission']
 const OWNER = 'user_owner'
 const RECIPIENT = 'user_recipient'
 const OWNER_CHAT = '4403'
@@ -101,7 +103,7 @@ test('the admission gate is turn aware for every mission tool: a verified turn f
     const run = (turn: unknown, senders: { prompt: string | null; people: string[] }) => execute(admissionSource + '\nreturn privateCall;', {
       req: { params: { name } }, lockHeld: true, privateTurns: { current: () => turn, turnSenders: () => senders }, PRIVATE_MARKER_PATHS: [],
       PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', log: () => {},
-      requirePrivateTurn, turnAwarePrivateTurn,
+      requirePrivateTurn, turnAwarePrivateTurn, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
     })
     const frozen = await run({ actingUserId: 'user_recipient', chatId: '20', turnId: 't' }, { prompt: 'user_recipient', people: [] })
     assert.deepEqual([frozen.actingUserId, frozen.chatId, frozen.headers], ['user_recipient', '20', { 'X-BGOS-Acting-User': 'user_recipient' }], name)
@@ -172,7 +174,17 @@ function rig(privateCall: { actingUserId: string; chatId: string; headers: Recor
   const sent: Sent[] = []
   const answer = { mission: { id: 77, title: 'Launch', status: 'active', miniGoals: [] } }
   const headersOf = (value: unknown) => ({ ...((value ?? {}) as Record<string, string>) })
+  let now = 1_000_000
+  let onPatch: ((scope: any, working: boolean) => void) | undefined
+  let onRead: (() => void) | undefined
+  const patch = async (scope: any, working: boolean) => {
+    sent.push({ method: 'PATCH', path: `integrations/assistants/900/missions/${scope.missionId}/goals/${scope.goalId}/working`, body: { working }, headers: headersOf(scope.headers) })
+    onPatch?.(scope, working)
+    return answer
+  }
+  const missionWorking = createMissionWorkingTracker({ now: () => now, isArmed: () => true, patch })
   const bindings: Record<string, unknown> = {
+    missionWorking, hookIntake: { bound: () => 'session-a' },
     ...missions, privateCall, ASSISTANT_ID: '900', USER_ID: OWNER, log: () => {},
     monitoredChatIds: [OWNER_CHAT, RECIPIENT_CHAT],
     meetingIdByChatId: new Map(),
@@ -181,8 +193,8 @@ function rig(privateCall: { actingUserId: string; chatId: string; headers: Recor
     resolveAuthorizedChat: (chatId: string) => ({ ok: true, chatId }),
     formatMissionSummary: () => 'summary',
     rememberMissionSelfWrite: () => {}, noteMissionPendingSelfWrite: () => {},
-    bgosGetCachedOn304: async (path: string) => { sent.push({ method: 'GET cached', path, headers: {} }); return answer },
-    bgosGet: async (path: string, opts?: { headers?: Record<string, string> }) => { sent.push({ method: 'GET', path, headers: headersOf(opts?.headers) }); return answer },
+    bgosGetCachedOn304: async (path: string) => { sent.push({ method: 'GET cached', path, headers: {} }); onRead?.(); return answer },
+    bgosGet: async (path: string, opts?: { headers?: Record<string, string> }) => { sent.push({ method: 'GET', path, headers: headersOf(opts?.headers) }); onRead?.(); return answer },
     bgosPost: async (path: string, body: unknown, opts?: { headers?: Record<string, string> }) => { sent.push({ method: 'POST', path, body, headers: headersOf(opts?.headers) }); return answer },
     bgosPatch: async (path: string, body: unknown, headers?: Record<string, string>) => { sent.push({ method: 'PATCH', path, body, headers: headersOf(headers) }); return answer },
     bgosPut: async (path: string, body: unknown, headers?: Record<string, string>) => { sent.push({ method: 'PUT', path, body, headers: headersOf(headers) }); return answer },
@@ -190,7 +202,7 @@ function rig(privateCall: { actingUserId: string; chatId: string; headers: Recor
   }
   const run = async (name: string, rawArgs: Record<string, unknown>) =>
     execute(`${missionHelpers}\nreturn (async () => { switch(name) { ${missionCases} } })();`, { ...bindings, name, rawArgs })
-  return { sent, run }
+  return { sent, run, missionWorking, onPatch: (fn: typeof onPatch) => { onPatch = fn }, onRead: (fn: typeof onRead) => { onRead = fn }, advance: (ms: number) => { now += ms }, now: () => now }
 }
 
 const ARGS: Record<string, Record<string, unknown>> = {
@@ -199,6 +211,8 @@ const ARGS: Record<string, Record<string, unknown>> = {
   set_mission_goals: { mini_goals: [{ name: 'Draft', done_when: 'a draft exists' }, { name: 'Review', done_when: 'it was reviewed' }] },
   add_mission_goals: { mini_goals: [{ name: 'Ship', done_when: 'it shipped' }] },
   cancel_mission_goal: { goal_id: 3 },
+  set_goal_working: { goal_ids: [3], working: true },
+  set_goal_waiting: { goal_id: 3, on: 'owner', who: 'Kc', why: 'needs the key' },
   complete_mission: { summary: 'All done' },
 }
 
@@ -301,4 +315,56 @@ test('bgosGet with a private turn headers never rides the shared ETag cache; wit
   assert.deepEqual(owner.recorded, ['assistants/900/missions/active?chatId=7788 W/"fresh"'])
   const empty = await run({ headers: {} })
   assert.deepEqual(empty.sent, owner.sent, 'empty headers are the owner path')
+})
+
+
+test('successful working tool selections feed hook refreshes with the admitted session and actor', async () => {
+  const r = rig({ actingUserId: RECIPIENT, chatId: RECIPIENT_CHAT, headers: { 'X-BGOS-Acting-User': RECIPIENT } })
+  await r.run('set_goal_working', { goal_ids: [3, 4], working: true })
+  r.advance(600_000)
+  await r.missionWorking.onHook({ hook_event_name: 'PreToolUse', session_id: 'session-a' }, r.now())
+  assert.equal(r.sent.filter(call => call.method === 'PATCH').length, 4)
+  await r.missionWorking.onHook({ hook_event_name: 'Stop', session_id: 'session-a' }, r.now())
+  const clears = r.sent.filter(call => (call.body as any)?.working === false)
+  assert.equal(clears.length, 2)
+  for (const clear of clears) assert.deepEqual(clear.headers, { 'X-BGOS-Acting-User': RECIPIENT })
+})
+
+
+test('Stop during the first goal write prevents later goals of the same tool call from starting', async () => {
+  const r = rig({ actingUserId: OWNER, chatId: OWNER_CHAT, headers: {} })
+  r.onPatch((scope, working) => {
+    if (scope.goalId === 3 && working) void r.missionWorking.onHook({ hook_event_name: 'Stop', session_id: 'session-a' }, r.now())
+  })
+  const result = await r.run('set_goal_working', { goal_ids: [3, 4], working: true })
+  await r.missionWorking.sweep()
+  assert.equal(result.isError, true)
+  const writes = r.sent.filter(call => call.method === 'PATCH')
+  assert.deepEqual(writes.map(call => [call.path, call.body]), [
+    ['integrations/assistants/900/missions/77/goals/3/working', { working: true }],
+    ['integrations/assistants/900/missions/77/goals/3/working', { working: false }],
+  ])
+})
+
+test('Stop during mission lookup prevents the waiting tool call from making a working mark', async () => {
+  const r = rig({ actingUserId: OWNER, chatId: OWNER_CHAT, headers: {} })
+  r.onRead(() => { void r.missionWorking.onHook({ hook_event_name: 'Stop', session_id: 'session-a' }, r.now()) })
+  const result = await r.run('set_goal_working', { goal_ids: [3], working: true })
+  assert.equal(result.isError, true)
+  assert.equal(r.sent.filter(call => call.method === 'PATCH').length, 0)
+})
+
+
+test('nested waiting reaches the admitted recipient mission with their headers, and null clears it', async () => {
+  for (const waiting of [{ on: 'agent', who: 'Demo Agent', why: 'review' }, null]) {
+    const r = rig({ actingUserId: RECIPIENT, chatId: RECIPIENT_CHAT, headers: { 'X-BGOS-Acting-User': RECIPIENT } })
+    const result = await r.run('set_goal_waiting', { goal_id: 3, waiting })
+    assert.notEqual(result?.isError, true, JSON.stringify(result))
+    assert.deepEqual(r.sent.map(c => [c.method, c.path]), [
+      ['GET', `assistants/900/missions/active?chatId=${RECIPIENT_CHAT}`],
+      ['PATCH', 'integrations/assistants/900/missions/77/goals/3/waiting'],
+    ])
+    assert.deepEqual(r.sent[1]!.body, { waiting })
+    assert.deepEqual(r.sent[1]!.headers, { 'X-BGOS-Acting-User': RECIPIENT })
+  }
 })

@@ -21,7 +21,7 @@
  */
 
 /** The causes that can end this daemon, all of which must be named in the log. */
-export type ShutdownCause = 'stdin-end' | 'stdin-close' | 'stdout-epipe' | 'SIGINT' | 'SIGTERM'
+export type ShutdownCause = 'stdin-end' | 'stdin-close' | 'stdout-epipe' | 'broken-pipe' | 'SIGINT' | 'SIGTERM' | 'SIGHUP'
 
 /**
  * Does this stdin event mean the parent is gone?
@@ -32,6 +32,38 @@ export type ShutdownCause = 'stdin-end' | 'stdin-close' | 'stdout-epipe' | 'SIGI
  */
 export function shouldShutdownOnStdin(event: string): boolean {
   return event === 'end' || event === 'close'
+}
+
+/**
+ * What a daemon proving a new build needs from its signals, and no other daemon does. The idle update reads a
+ * restarted build's second boot as a failed build unless the first one ended cleanly (docs/idle-update/DESIGN.md).
+ * hoai relaunching a slow start ends claude, and under expect claude leads its pty's session, so the kernel hangs up
+ * the whole process group, this daemon included. A systemd stop signals the control group and the launch shim
+ * forwards it, so a second SIGTERM can land mid shutdown, when server.ts's one shot has gone.
+ *
+ * So, only while open: a hangup goes through shutdown, and SIGINT and SIGTERM keep a listener past that one shot.
+ * Shut, every daemon has main's signals: a repeated signal can still end a stuck shutdown, and a hangup its default
+ * action. The idle update opens this from a restart's arrival to its first live proof, and no other daemon opens it.
+ */
+export function createCleanEndSignals({ platform, on, off, shutdown }: {
+  platform: string
+  on: (signal: string, listener: () => void) => void
+  off: (signal: string, listener: () => void) => void
+  shutdown: (cause: ShutdownCause, code: number) => void
+}): { set: (open: boolean) => void } {
+  const hangup = (): void => shutdown('SIGHUP', 129)
+  const keep = (): void => {}
+  let opened = false
+  return {
+    set: (open) => {
+      if (open === opened) return
+      opened = open
+      const apply = open ? on : off
+      apply('SIGINT', keep)
+      apply('SIGTERM', keep)
+      if (platform !== 'win32') apply('SIGHUP', hangup)
+    },
+  }
 }
 
 /**
@@ -46,6 +78,10 @@ export function describeShutdownCause(cause: ShutdownCause | string): string {
       return 'the launching Claude Code session closed our input, so it is gone: shutting down'
     case 'stdout-epipe':
       return 'our output pipe broke, so whoever was reading it is gone: shutting down'
+    case 'broken-pipe':
+      return 'a write went to a stream that had already ended or been destroyed, not to a reader that left: shutting down'
+    case 'SIGHUP':
+      return 'received SIGHUP (the session\'s terminal went away): shutting down'
     case 'SIGINT':
     case 'SIGTERM':
       return `received ${cause}: shutting down`
@@ -80,6 +116,17 @@ export function isBrokenPipe(err: unknown): boolean {
   ) {
     return true
   }
+  const message = (err as { message?: unknown }).message
+  return typeof message === 'string' && /\bEPIPE\b/.test(message)
+}
+
+/**
+ * The reader of a pipe gone (EPIPE, with or without its code, as bun surfaces it), and nothing else of
+ * isBrokenPipe: a write after end or to a destroyed stream is this process's own doing, never a clean end.
+ */
+export function isReaderGone(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  if ((err as { code?: unknown }).code === 'EPIPE') return true
   const message = (err as { message?: unknown }).message
   return typeof message === 'string' && /\bEPIPE\b/.test(message)
 }

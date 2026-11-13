@@ -1,0 +1,226 @@
+✖ a live process has an unknown stamp when ps is unavailable (3.281375ms)
+✖ a live process has an unknown stamp when ps is failed (0.227625ms)
+✖ a live process has an unknown stamp when ps is timed out (0.115958ms)
+✖ a live process has an unknown stamp when ps is empty (0.117708ms)
+✖ a live process has an unknown stamp when ps is malformed (0.141959ms)
+✖ a live process has an unknown stamp when proc stat is unreadable (0.1465ms)
+✖ a live process has an unknown stamp when proc stat is malformed (0.118208ms)
+✖ unknown stamp inspection preserves a live stamped PID during replacement (93.844209ms)
+✖ unknown stamp inspection preserves a live stamped PID during delete (4.171542ms)
+✖ unknown stamp inspection preserves a live stamped PID during sweep (3.916416ms)
+✖ stamp inspection lost after SIGTERM preserves the PID and does not signal an unverified process again (4.506459ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 0
+ℹ fail 11
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 361.681417
+
+✖ failing tests:
+
+test at test/lane-process.test.ts:2:1025
+✖ a live process has an unknown stamp when ps is unavailable (3.281375ms)
+  AssertionError [ERR_ASSERTION]: inspection failure is not affirmative exit
+  + actual - expected
+
+  + null
+  - undefined
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/lane-process.test.ts:98:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: undefined,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/lane-process.test.ts:2:1025
+✖ a live process has an unknown stamp when ps is failed (0.227625ms)
+  AssertionError [ERR_ASSERTION]: inspection failure is not affirmative exit
+  + actual - expected
+
+  + null
+  - undefined
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/lane-process.test.ts:98:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: undefined,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/lane-process.test.ts:2:1025
+✖ a live process has an unknown stamp when ps is timed out (0.115958ms)
+  AssertionError [ERR_ASSERTION]: inspection failure is not affirmative exit
+  + actual - expected
+
+  + null
+  - undefined
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/lane-process.test.ts:98:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: undefined,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/lane-process.test.ts:2:1025
+✖ a live process has an unknown stamp when ps is empty (0.117708ms)
+  AssertionError [ERR_ASSERTION]: inspection failure is not affirmative exit
+  + actual - expected
+
+  + null
+  - undefined
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/lane-process.test.ts:98:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: undefined,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/lane-process.test.ts:2:1025
+✖ a live process has an unknown stamp when ps is malformed (0.141959ms)
+  AssertionError [ERR_ASSERTION]: inspection failure is not affirmative exit
+  + actual - expected
+
+  + null
+  - undefined
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/lane-process.test.ts:98:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: undefined,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/lane-process.test.ts:2:1639
+✖ a live process has an unknown stamp when proc stat is unreadable (0.1465ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + null
+  - undefined
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/lane-process.test.ts:109:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: undefined,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/lane-process.test.ts:2:1639
+✖ a live process has an unknown stamp when proc stat is malformed (0.118208ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + null
+  - undefined
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/lane-process.test.ts:109:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: undefined,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/thread-lanes.test.ts:13:7202
+✖ unknown stamp inspection preserves a live stamped PID during replacement (93.844209ms)
+  AssertionError [ERR_ASSERTION]: do not replace an unverified live process
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:1462:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/thread-lanes.test.ts:13:7202
+✖ unknown stamp inspection preserves a live stamped PID during delete (4.171542ms)
+  AssertionError [ERR_ASSERTION]: keep the uncertain process state
+
+  false !== true
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:1463:12)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test/thread-lanes.test.ts:13:7202
+✖ unknown stamp inspection preserves a live stamped PID during sweep (3.916416ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+
+  + [
+  +   '101'
+  + ]
+  - []
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:1460:17)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ '101' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at test/thread-lanes.test.ts:13:8687
+✖ stamp inspection lost after SIGTERM preserves the PID and does not signal an unverified process again (4.506459ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 0
+
+      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:1491:10)
+      at async Test.run (node:internal/test_runner/test:1208:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

@@ -455,6 +455,20 @@ test('consent: the owner Show agent windows setting rides the sweep report wheth
   }
 })
 
+test('consent: agentWindows (one On or Off per agent) rides the sweep report beside showAgentWindows whether the switch is on or off; an answer without it adds no field', async () => {
+  for (const enabled of [true, false]) {
+    const fs = machine([])
+    const per = consent({ enabled, enabledAt: enabled ? 'e' : null, assistantIds: [], showAgentWindows: false, agentWindows: { '912': true, '7': false } })
+    const report = await runKeepAliveSweep(ctxFor(fs, recorder(), fakeClock(), { fetchKeepAlive: per.fetchKeepAlive }).ctx as any)
+    assert.deepEqual(report.agentWindows, { '7': false, '912': true }, `switch ${enabled}`)
+    assert.equal(report.showAgentWindows, false)
+    assert.deepEqual(JSON.parse(fs.files.get(keepAliveCachePath(HOME))!).agentWindows, { '7': false, '912': true }, `switch ${enabled}: cached`)
+    const older = consent({ enabled, enabledAt: enabled ? 'e' : null, assistantIds: [], showAgentWindows: true })
+    const plain = await runKeepAliveSweep(ctxFor(machine([]), recorder(), fakeClock(), { fetchKeepAlive: older.fetchKeepAlive }).ctx as any)
+    assert.equal('agentWindows' in plain, false, `switch ${enabled}, older server`)
+  }
+})
+
 // -- supervise -----------------------------------------------------------------------------------
 
 test('installProductSupervisor (shared by the sweep and create_agent): win32 registers the agent task (hidden launcher) and starts it only when asked; posix runs bgos-agent install --always-on from the given root, node dirs first on PATH; no root is a named failure', async () => {
@@ -641,6 +655,32 @@ test('safe moment: a turn in flight waits; after 24 h of waiting the entry carri
   // The heartbeat between sweeps reads the same entry from the saved state.
   assert.deepEqual(readKeepAliveReport({ home: HOME, fs, now: clock.now() }).agents[0], later.agents[0])
   assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
+})
+
+test('safe moment: a running thread turn or By the way fork holds an update, and the restart goes ahead once the work is over', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { threadWork: 1 } }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock)
+  const held = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(held.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'thread_work']])
+  assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
+  assert.deepEqual(rec.kills, [])
+  fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now(), { threadWork: 0 }))
+  const free = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(free.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
+})
+
+test('safe moment: a daemon from before thread work publishes no count, and the sweep reads that as none, as it always has', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock)
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
 })
 
 test('safe moment: a turn flag that has been quiet for 3 h with no job under claude is stale: the NORMAL restart path, never a kill', async () => {

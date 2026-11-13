@@ -1,0 +1,18 @@
+✔ marketplace: a non agent folder is dormant even with an inherited agent identity (1.346875ms)
+✔ marketplace: the agent home attaches without launcher scope (0.145916ms)
+✔ marketplace: two agents attach only in their own home (0.587291ms)
+✔ marketplace: a matching launcher scope opts in outside the home, inherited scope does not (0.145083ms)
+✔ marketplace: explicit opt-ins and malformed settings fail open (0.228416ms)
+✔ marketplace: unreadable evidence fails open and symlink homes match (0.103459ms)
+✔ marketplace: an unsubstituted assistant setting is absent on unpaired and multi-agent hosts (0.109541ms)
+✔ marketplace: a rejected credentials file cannot lend its home to another agent (0.07025ms)
+✔ marketplace: two recorded homes resolve without pins or environment, but a shared home is ambiguous (0.196375ms)
+✔ marketplace: canonical home proof reaches downstream home confirmation (1.199209ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 136.979459

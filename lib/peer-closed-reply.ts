@@ -1,27 +1,9 @@
 /**
- * HOAI's word on a reply into a peer side thread: did the other agent get it
- * (board row 28fed1cd)?
- *
- * On 2026-10-27 the conversation between Data and Ares closed on timeout, and
- * five of Data's later replies into that side thread were answered "Sent" and
- * never reached Ares, who asked the same questions four times.
- *
- * WHY "Sent" WAS NOT TRUE. HOAI holds the conversation's state. A participant's
- * /send-message into a closed side thread is accepted: the backend reopens the
- * conversation (ChatParticipationService.reviveClosedPeerConversation, BGOS
- * #1265, Kc's rule) and saves the reply, then forwards it to the other agent
- * best effort (SendMessageService.bridgePeerReplyIfApplicable). The answer was
- * 201 with the saved message either way, so the daemon could only ever say the
- * reply was saved, never that the peer got it.
- *
- * WHAT THE DAEMON DOES. A reply into a closed conversation still goes to HOAI,
- * which reopens it (Data, 2026-10-28: the reopen rule holds). HOAI now says
- * whether it forwarded the reply (`peerDelivery` on the /send-message answer,
- * BGOS #3420). `not_forwarded` is an error that says why and offers only a
- * remedy that works; `forwarded`, or no field at all (a backend without
- * #3420), is the Sent it always was.
- *
- * The words are plain on purpose: an agent may pass them to its owner.
+ * A saved side thread reply is not proof it reached the other agent.
+ * The backend may revive a closed conversation on write, but the forward is
+ * best effort. Only peerDelivery.state='forwarded' confirms that handoff.
+ * An explicit refusal or an absent delivery report is a tool error with a
+ * plain remedy. Keep posting replies so the backend can apply its reopen rule.
  */
 
 /** What HOAI said about forwarding a side thread reply to the other agent. */
@@ -31,7 +13,7 @@ export type PeerDeliveryState = 'forwarded' | 'not_forwarded'
  * HOAI's own word on the forward, read off the /send-message answer, or null
  * when it gave none (a backend without the field, or a chat that is not a side
  * thread). Only the two exact states count; anything else is no word at all,
- * so an unknown value never turns a reply into an error.
+ * so a known side thread with an unknown value has no delivery confirmation.
  */
 export function peerDeliveryOf(answer: unknown): PeerDeliveryState | null {
   if (answer === null || typeof answer !== 'object') return null
@@ -93,6 +75,31 @@ export function peerReplyNotForwardedResult(
         text:
           `Not delivered: HOAI saved this reply in the side conversation in chat ${chatId}${saved}, ` +
           `but that conversation has ended, so it was not passed on to the other agent. ${sendToPeerInstead(withFiles)}`,
+      },
+    ],
+    isError: true,
+  }
+}
+
+/** A known or possible side thread write has no usable peer delivery report. */
+export function peerReplyUnconfirmedResult(
+  chatId: string,
+  messageId: unknown,
+  withFiles: boolean,
+  isSideThread = true,
+): {
+  content: Array<{ type: 'text'; text: string }>
+  isError: true
+} {
+  const saved = messageId != null ? ` (message ${String(messageId)})` : ''
+  const destination = isSideThread ? `the side conversation in chat ${chatId}` : `chat ${chatId}`
+  return {
+    content: [
+      {
+        type: 'text',
+        text:
+          `Delivery unconfirmed: HOAI saved this reply in ${destination}${saved}, ` +
+          `but did not confirm delivery to the other agent. ${sendToPeerInstead(withFiles)}`,
       },
     ],
     isError: true,

@@ -52,9 +52,12 @@ test('every declared token matches the grammar the backend accepts', () => {
   }
 })
 
-test('the list stays inside the backend ArrayMaxSize of 32', () => {
+test('the list stays inside the backend ArrayMaxSize of 64 (raised from 32 on 2026-10-30: heartbeat.dto.ts, pair-exchange.dto.ts)', () => {
   for (const canInjectGoal of SHAPES) {
-    assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).length <= 32)
+    assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).length <= 64)
+    // The fullest shape this daemon can be in: every optional token on.
+    const fullest = declaredCapabilities({ canInjectGoal, floorHook: true, personLanes: true, modelEffortPicker: true, threads: true, authMode: 'pairing', platform: 'darwin' })
+    assert.ok(fullest.length <= 64, `${fullest.length} tokens`)
   }
 })
 
@@ -102,7 +105,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ui_card_answers', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -129,6 +132,8 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
+      'mission_goal_working',
       'permission_card',
       'plan_card',
       'memory_rpc',
@@ -142,10 +147,12 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'skills_list',
       'skills_receive',
       'ui_card',
+      'ui_card_answers',
       'ask_answered',
       'ask_multi_select',
       'email_label',
       'email_send',
+      'email_files',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -236,6 +243,8 @@ test('permission_card is declared on every host, because the relay has no platfo
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
+      'mission_goal_working',
       'permission_card',
       'plan_card',
       'memory_rpc',
@@ -249,10 +258,12 @@ test('permission_card is declared on every host, because the relay has no platfo
       'skills_list',
       'skills_receive',
       'ui_card',
+      'ui_card_answers',
       'ask_answered',
       'ask_multi_select',
       'email_label',
       'email_send',
+      'email_files',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -707,6 +718,8 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'mission_server_checks',
+      'mission_goal_working',
       'permission_card',
       'plan_card',
       'memory_rpc',
@@ -720,10 +733,12 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'skills_list',
       'skills_receive',
       'ui_card',
+      'ui_card_answers',
       'ask_answered',
       'ask_multi_select',
       'email_label',
       'email_send',
+      'email_files',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -833,4 +848,90 @@ test('hard_floor_rules_2 rides with hard_floor, and only with it', () => {
       }
     }
   }
+})
+
+// -- Threads phase 1: message_threads, thread_sessions, asides ----------------
+
+/**
+ * Threads and By the way on Claude Code (plan "Wire contract"): a daemon that
+ * can run a forked lane declares message_threads (it answers thread_turn and
+ * thread_close), thread_sessions (its threads run as forked lanes) and asides
+ * (it answers aside). server.ts passes `threads` true only where a claude
+ * binary resolves; Windows is out in phase 1, so it never declares them there.
+ *
+ * MUTATION PROOF: see the table in the PR report (the win32 check removed, and
+ * the `threads === true` check removed, each turns a case below red).
+ */
+test('the three thread tokens are declared together where threads can run, after every other token', () => {
+  for (const authMode of ['pairing', 'apikey'] as const) {
+    // group_threads (a pairing only) rides after them: lib/declared-capabilities.ts GROUP_THREADS_TOKEN.
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: true, threads: true, authMode, platform: 'darwin' })
+      .filter((token) => token !== 'group_threads')
+    assert.deepEqual(declared.slice(-3), ['message_threads', 'thread_sessions', 'asides'])
+    assert.deepEqual(
+      [...declared.slice(0, -3)],
+      [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode, platform: 'darwin' })],
+      'nothing else moves',
+    )
+  }
+})
+
+test('no thread token on Windows in phase 1, nor where threads cannot run', () => {
+  for (const shape of [
+    { threads: true, platform: 'win32' as const },
+    { threads: false, platform: 'darwin' as const },
+    { platform: 'linux' as const },
+  ]) {
+    const declared = declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing', ...shape })
+    for (const token of ['message_threads', 'thread_sessions', 'asides']) {
+      assert.equal(declared.includes(token), false, `${token} ${JSON.stringify(shape)}`)
+    }
+  }
+})
+
+test('the fullest declaration, every token in its place, is exactly this list', () => {
+  assert.deepEqual(
+    [...declaredCapabilities({ canInjectGoal: true, floorHook: true, personLanes: true, modelEffortPicker: true, threads: true, authMode: 'pairing', platform: 'darwin' })],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ui_card_answers', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides', 'group_threads'],
+  )
+})
+
+test('server.ts declares threads from the live claude lookup, its threads CLI probe and the platform, at every declaration', () => {
+  const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const calls = server.match(/declaredCapabilities\(\{[^}]*\}\)/g) ?? []
+  assert.equal(calls.length, 4)
+  for (const call of calls) assert.match(call, /threads: threadsDeclared\(\),/)
+  // Gate review finding 2: a binary alone is not enough, it must pass the probe.
+  assert.match(server, /function threadsDeclared\(\): boolean \{\n\s*return process\.platform !== 'win32' && threadsCli\(\)\.ok\n\}/)
+  assert.match(server, /claudePath: \(\) => resolveClaude\(\),/)
+})
+
+test('mission_server_checks is declared on every host, beside and distinct from mission_goal_checks', () => {
+  for (const canInjectGoal of SHAPES) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode })
+      assert.ok(declared.includes('mission_server_checks'), `${authMode} canInjectGoal=${canInjectGoal}`)
+      assert.ok(declared.includes('mission_goal_checks'))
+    }
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('mission_server_checks'))
+})
+
+/**
+ * ui_card_answers: this daemon hands the agent a card's answer as quoted,
+ * bounded data under a line saying it is data, not instructions, and who
+ * entered it (lib/card-answer.ts, on the poll, the stream and the direct
+ * read). The served canon promises an agent its card's values only when its
+ * daemon declares this token, so it rides beside ui_card on every host and
+ * connection, right after it: a daemon that sends cards reads their answers.
+ */
+test('ui_card_answers is declared on every host, once, right after ui_card', () => {
+  for (const { host, canInjectGoal, personLanes } of HOSTS) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      const declared = [...declaredCapabilities({ canInjectGoal, floorHook: true, personLanes, authMode })]
+      assert.equal(declared.filter((t) => t === 'ui_card_answers').length, 1, `once on ${host}, ${authMode}`)
+      assert.equal(declared.indexOf('ui_card_answers'), declared.indexOf('ui_card') + 1, `after ui_card on ${host}, ${authMode}`)
+    }
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('ui_card_answers'))
 })

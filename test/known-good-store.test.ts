@@ -22,8 +22,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 import {
@@ -32,6 +31,7 @@ import {
   readKnownGood,
   recordKnownGood,
 } from '../lib/known-good-store.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const HOME = '/home/kc'
 
@@ -110,7 +110,7 @@ test('the recovery message is still useful when nothing was ever recorded', () =
 // home, which is cheap and is the only thing that can catch them.
 
 test('the default fs really lands the record on disk and reads it back', () => {
-  const home = mkdtempSync(join(tmpdir(), 'kg-'))
+  const home = scratchDir('kg-')
   assert.equal(recordKnownGood({ home, version: '0.38.10' }).changed, true)
   // Read through a FRESH default fs, not the one that wrote it, so a store that only ever existed
   // in a closure would fail here.
@@ -127,13 +127,13 @@ test('the record is written owner-only, like every other file this repo puts in 
   // Skipped on win32, where chmod is a no-op: an unguarded assert here would only add to the
   // known Windows-only baseline failures rather than catch anything.
   if (process.platform === 'win32') return
-  const home = mkdtempSync(join(tmpdir(), 'kg-mode-'))
+  const home = scratchDir('kg-mode-')
   recordKnownGood({ home, version: '0.38.10' })
   assert.equal(statSync(knownGoodPath(home)).mode & 0o777, 0o600)
 })
 
 test('a second version replaces the first, and the file stays a single record', () => {
-  const home = mkdtempSync(join(tmpdir(), 'kg-two-'))
+  const home = scratchDir('kg-two-')
   recordKnownGood({ home, version: '0.38.10' })
   recordKnownGood({ home, version: '0.38.11' })
   assert.equal(readKnownGood({ home })?.version, '0.38.11')

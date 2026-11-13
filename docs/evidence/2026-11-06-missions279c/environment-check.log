@@ -1,0 +1,679 @@
+Doctor tests with corrected local TMPDIR outside node_modules; one worker
+Exit code: 0
+
+TAP version 13
+# Subtest: buildDoctorRows: healthy probes produce all-pass rows in the documented order
+ok 1 - buildDoctorRows: healthy probes produce all-pass rows in the documented order
+  ---
+  duration_ms: 2.547416
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: every failure shape yields ok:false plus the right fix command (table driven)
+ok 2 - buildDoctorRows: every failure shape yields ok:false plus the right fix command (table driven)
+  ---
+  duration_ms: 0.527792
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: posix platform swaps the claude install one-liner
+ok 3 - buildDoctorRows: posix platform swaps the claude install one-liner
+  ---
+  duration_ms: 0.067041
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: found Node must meet the browser minimum and failures name supported patched releases
+ok 4 - buildDoctorRows: found Node must meet the browser minimum and failures name supported patched releases
+  ---
+  duration_ms: 0.217167
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: a handshake and an mcp-list that never ran render UNPROVEN, saying WHY
+ok 5 - buildDoctorRows: a handshake and an mcp-list that never ran render UNPROVEN, saying WHY
+  ---
+  duration_ms: 0.265791
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: an mcp-list that never ran because the claude CLI is missing names that reason
+ok 6 - buildDoctorRows: an mcp-list that never ran because the claude CLI is missing names that reason
+  ---
+  duration_ms: 0.063
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: an UNPROVEN handshake or mcp-list gates exactly as the old ok:null did
+ok 7 - preflightVerdict: an UNPROVEN handshake or mcp-list gates exactly as the old ok:null did
+  ---
+  duration_ms: 0.19975
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: with no probed install method the mcp list fix names NO channel spec
+ok 8 - buildDoctorRows: with no probed install method the mcp list fix names NO channel spec
+  ---
+  duration_ms: 0.115417
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: the mcp list fix uses the spec DETECTION resolved, marketplace name included
+ok 9 - buildDoctorRows: the mcp list fix uses the spec DETECTION resolved, marketplace name included
+  ---
+  duration_ms: 0.065209
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: an UNDETERMINED install method is a FAIL row carrying its reason
+ok 10 - buildDoctorRows: an UNDETERMINED install method is a FAIL row carrying its reason
+  ---
+  duration_ms: 0.102666
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: the log row is always ok with the path as detail
+ok 11 - buildDoctorRows: the log row is always ok with the path as detail
+  ---
+  duration_ms: 0.050292
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: no em or en dashes anywhere in rows
+ok 12 - buildDoctorRows: no em or en dashes anywhere in rows
+  ---
+  duration_ms: 0.1175
+  type: 'test'
+  ...
+# Subtest: renderDoctorTable: aligned columns, PASS/FAIL/SKIP statuses, fixes only for failing rows in order
+ok 13 - renderDoctorTable: aligned columns, PASS/FAIL/SKIP statuses, fixes only for failing rows in order
+  ---
+  duration_ms: 0.1285
+  type: 'test'
+  ...
+# Subtest: renderDoctorTable: a healthy table has no Fix lines at all
+ok 14 - renderDoctorTable: a healthy table has no Fix lines at all
+  ---
+  duration_ms: 0.150917
+  type: 'test'
+  ...
+# Subtest: parseMcpListOutput: a Connected line for bgos
+ok 15 - parseMcpListOutput: a Connected line for bgos
+  ---
+  duration_ms: 0.299
+  type: 'test'
+  ...
+# Subtest: parseMcpListOutput: plugin-prefixed name with colons still matches as the name before the separator
+ok 16 - parseMcpListOutput: plugin-prefixed name with colons still matches as the name before the separator
+  ---
+  duration_ms: 0.051625
+  type: 'test'
+  ...
+# Subtest: parseMcpListOutput: Failed and Needs authentication classify correctly
+ok 17 - parseMcpListOutput: Failed and Needs authentication classify correctly
+  ---
+  duration_ms: 0.364834
+  type: 'test'
+  ...
+# Subtest: parseMcpListOutput: a missing row reports found:false
+ok 18 - parseMcpListOutput: a missing row reports found:false
+  ---
+  duration_ms: 0.046417
+  type: 'test'
+  ...
+# Subtest: parseMcpListOutput: ANSI escape codes are stripped before matching
+ok 19 - parseMcpListOutput: ANSI escape codes are stripped before matching
+  ---
+  duration_ms: 0.034209
+  type: 'test'
+  ...
+# Subtest: parseMcpListOutput: a name match with no recognized status word is unknown but found
+ok 20 - parseMcpListOutput: a name match with no recognized status word is unknown but found
+  ---
+  duration_ms: 0.044625
+  type: 'test'
+  ...
+# Subtest: parseMcpListOutput: bgosX is not bgos (the name must end at the separator)
+ok 21 - parseMcpListOutput: bgosX is not bgos (the name must end at the separator)
+  ---
+  duration_ms: 0.032041
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: a failing startup-gate row reports but does NOT abort the install
+ok 22 - preflightVerdict: a failing startup-gate row reports but does NOT abort the install
+  ---
+  duration_ms: 0.110083
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: the advisory exemption is narrow, trust and bypass still gate
+ok 23 - preflightVerdict: the advisory exemption is narrow, trust and bypass still gate
+  ---
+  duration_ms: 0.622125
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: an incumbent claude reports but does NOT abort the install
+ok 24 - preflightVerdict: an incumbent claude reports but does NOT abort the install
+  ---
+  duration_ms: 0.224875
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: all green passes
+ok 25 - preflightVerdict: all green passes
+  ---
+  duration_ms: 0.078958
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: each required row failing (or skipped) fails the gate
+ok 26 - preflightVerdict: each required row failing (or skipped) fails the gate
+  ---
+  duration_ms: 0.219958
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: a non-required row failing fails the gate too
+ok 27 - preflightVerdict: a non-required row failing fails the gate too
+  ---
+  duration_ms: 0.060833
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: backend failure is exempt when handshake AND mcp list passed
+ok 28 - preflightVerdict: backend failure is exempt when handshake AND mcp list passed
+  ---
+  duration_ms: 0.069167
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: backend failure is NOT exempt when the handshake also failed
+ok 29 - preflightVerdict: backend failure is NOT exempt when the handshake also failed
+  ---
+  duration_ms: 0.0375
+  type: 'test'
+  ...
+# Subtest: encodeJsonRpcMessage: one JSON document per newline-terminated line (MCP stdio framing)
+ok 30 - encodeJsonRpcMessage: one JSON document per newline-terminated line (MCP stdio framing)
+  ---
+  duration_ms: 0.157541
+  type: 'test'
+  ...
+# Subtest: McpFrameParser: parses joined messages in one chunk
+ok 31 - McpFrameParser: parses joined messages in one chunk
+  ---
+  duration_ms: 0.291042
+  type: 'test'
+  ...
+# Subtest: McpFrameParser: reassembles a message split across chunks
+ok 32 - McpFrameParser: reassembles a message split across chunks
+  ---
+  duration_ms: 0.081042
+  type: 'test'
+  ...
+# Subtest: McpFrameParser: tolerates CRLF line endings and skips non-JSON noise lines
+ok 33 - McpFrameParser: tolerates CRLF line endings and skips non-JSON noise lines
+  ---
+  duration_ms: 0.042666
+  type: 'test'
+  ...
+# Subtest: McpFrameParser: also accepts a Content-Length framed message (LSP-style fallback)
+ok 34 - McpFrameParser: also accepts a Content-Length framed message (LSP-style fallback)
+  ---
+  duration_ms: 0.1765
+  type: 'test'
+  ...
+# Subtest: parseAuthStatusOutput: real claude auth status JSON
+ok 35 - parseAuthStatusOutput: real claude auth status JSON
+  ---
+  duration_ms: 0.113042
+  type: 'test'
+  ...
+# Subtest: parseAuthStatusOutput: JSON with a non-JSON preamble still parses
+ok 36 - parseAuthStatusOutput: JSON with a non-JSON preamble still parses
+  ---
+  duration_ms: 0.038292
+  type: 'test'
+  ...
+# Subtest: parseAuthStatusOutput: plain-text outputs fall back to heuristics
+ok 37 - parseAuthStatusOutput: plain-text outputs fall back to heuristics
+  ---
+  duration_ms: 0.16425
+  type: 'test'
+  ...
+# Subtest: isSubscriptionAuth: claude.ai counts, API key / console do not
+ok 38 - isSubscriptionAuth: claude.ai counts, API key / console do not
+  ---
+  duration_ms: 0.038375
+  type: 'test'
+  ...
+# Subtest: doctorLogPath: BGOS_LOG_FILE wins, else the stable home-rooted default keyed by assistant id
+ok 39 - doctorLogPath: BGOS_LOG_FILE wins, else the stable home-rooted default keyed by assistant id
+  ---
+  duration_ms: 0.070875
+  type: 'test'
+  ...
+# Subtest: readFolderPin: numeric pin file wins, junk and absence read as empty
+ok 40 - readFolderPin: numeric pin file wins, junk and absence read as empty
+  ---
+  duration_ms: 0.109333
+  type: 'test'
+  ...
+# Subtest: parseDoctorArgs: flags parse, defaults hold, unknown flags error
+ok 41 - parseDoctorArgs: flags parse, defaults hold, unknown flags error
+  ---
+  duration_ms: 0.1515
+  type: 'test'
+  ...
+# Subtest: isRunAsMain: importing the module does not run main
+ok 42 - isRunAsMain: importing the module does not run main
+  ---
+  duration_ms: 0.217708
+  type: 'test'
+  ...
+# Subtest: liveMarkerPathFor: assistant id keys the state dir, junk falls to cwd hash
+ok 43 - liveMarkerPathFor: assistant id keys the state dir, junk falls to cwd hash
+  ---
+  duration_ms: 0.758208
+  type: 'test'
+  ...
+# Subtest: waitForLiveMarker: resolves on a fresh mtime, times out on stale or absent
+ok 44 - waitForLiveMarker: resolves on a fresh mtime, times out on stale or absent
+  ---
+  duration_ms: 0.27
+  type: 'test'
+  ...
+# Subtest: parseDoctorArgs: wait-live flags parse and validate
+ok 45 - parseDoctorArgs: wait-live flags parse and validate
+  ---
+  duration_ms: 0.051542
+  type: 'test'
+  ...
+# Subtest: doctor route row: a workspace .mcp.json server plus the marketplace install is WARN, the supported shape, never "remove the marketplace install"
+ok 46 - doctor route row: a workspace .mcp.json server plus the marketplace install is WARN, the supported shape, never "remove the marketplace install"
+  ---
+  duration_ms: 0.288541
+  type: 'test'
+  ...
+# Subtest: doctor route row: a real duplicate (a clone install beside a workspace server of another name) still FAILs with its fix
+ok 47 - doctor route row: a real duplicate (a clone install beside a workspace server of another name) still FAILs with its fix
+  ---
+  duration_ms: 0.100834
+  type: 'test'
+  ...
+# Subtest: doctor route row: workspace and a clone install agree on one spec, PASS naming the workspace route
+ok 48 - doctor route row: workspace and a clone install agree on one spec, PASS naming the workspace route
+  ---
+  duration_ms: 0.048791
+  type: 'test'
+  ...
+# Subtest: doctor route row: no workspace server, the install method is the only route, PASS
+ok 49 - doctor route row: no workspace server, the install method is the only route, PASS
+  ---
+  duration_ms: 0.051125
+  type: 'test'
+  ...
+# Subtest: doctor route row: a .mcp.json that declares more than one HOAI server is a FAIL with a fix
+ok 50 - doctor route row: a .mcp.json that declares more than one HOAI server is a FAIL with a fix
+  ---
+  duration_ms: 0.039708
+  type: 'test'
+  ...
+# Subtest: doctor route row: without a route probe the row is SKIP, never a guess
+ok 51 - doctor route row: without a route probe the row is SKIP, never a guess
+  ---
+  duration_ms: 0.040875
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: the four launch rows appear together between the route and the credentials rows
+ok 52 - buildDoctorRows: the four launch rows appear together between the route and the credentials rows
+  ---
+  duration_ms: 0.060583
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: an older caller that passes no launch probes still gets its old table
+ok 53 - buildDoctorRows: an older caller that passes no launch probes still gets its old table
+  ---
+  duration_ms: 0.035458
+  type: 'test'
+  ...
+# Subtest: doctor trust row: no entry for this folder is a FAIL whose fix names the command that seeds it
+ok 54 - doctor trust row: no entry for this folder is a FAIL whose fix names the command that seeds it
+  ---
+  duration_ms: 0.048791
+  type: 'test'
+  ...
+# Subtest: doctor trust row: an entry whose hasTrustDialogAccepted is not true is still a FAIL
+ok 55 - doctor trust row: an entry whose hasTrustDialogAccepted is not true is still a FAIL
+  ---
+  duration_ms: 0.058708
+  type: 'test'
+  ...
+# Subtest: doctor trust row: a config file that is not there at all fails naming the path it looked at
+ok 56 - doctor trust row: a config file that is not there at all fails naming the path it looked at
+  ---
+  duration_ms: 0.122291
+  type: 'test'
+  ...
+# Subtest: doctor trust row: a config file that could not be LOCATED at all is a FAIL, not a pass
+ok 57 - doctor trust row: a config file that could not be LOCATED at all is a FAIL, not a pass
+  ---
+  duration_ms: 0.197333
+  type: 'test'
+  ...
+# Subtest: doctor trust row: a config file that is not readable JSON is a FAIL, not a pass
+ok 58 - doctor trust row: a config file that is not readable JSON is a FAIL, not a pass
+  ---
+  duration_ms: 0.095209
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: the trust flag is read from the file BESIDE the config dir, not the one inside it
+ok 59 - probeFolderTrust: the trust flag is read from the file BESIDE the config dir, not the one inside it
+  ---
+  duration_ms: 0.34075
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: a win32 cwd counts as trusted under either slash spelling
+ok 60 - probeFolderTrust: a win32 cwd counts as trusted under either slash spelling
+  ---
+  duration_ms: 0.096834
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: an absent or corrupt config file reports why, never a cheerful false pass
+ok 61 - probeFolderTrust: an absent or corrupt config file reports why, never a cheerful false pass
+  ---
+  duration_ms: 0.063584
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: a config path that cannot even be NAMED reports the unknown, never an acceptance
+ok 62 - probeFolderTrust: a config path that cannot even be NAMED reports the unknown, never an acceptance
+  ---
+  duration_ms: 0.047708
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: the entry the seed wrote under the REALPATH is found from the symlinked spelling
+ok 63 - probeFolderTrust: the entry the seed wrote under the REALPATH is found from the symlinked spelling
+  ---
+  duration_ms: 0.082417
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: the literal spelling still wins when the config carries it
+ok 64 - probeFolderTrust: the literal spelling still wins when the config carries it
+  ---
+  duration_ms: 0.039125
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: a resolved entry that is NOT accepted reports not-accepted, not no-entry
+ok 65 - probeFolderTrust: a resolved entry that is NOT accepted reports not-accepted, not no-entry
+  ---
+  duration_ms: 0.088916
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: an unresolvable cwd compares as itself, and the default resolver never throws
+ok 66 - probeFolderTrust: an unresolvable cwd compares as itself, and the default resolver never throws
+  ---
+  duration_ms: 0.185042
+  type: 'test'
+  ...
+# Subtest: doctor trust row: a symlinked workdir no longer renders FAIL, so preflight no longer aborts the install
+ok 67 - doctor trust row: a symlinked workdir no longer renders FAIL, so preflight no longer aborts the install
+  ---
+  duration_ms: 0.212458
+  type: 'test'
+  ...
+# Subtest: doctor bypass row: an unsuppressed bypass warning is a FAIL naming settings.json and the fix
+ok 68 - doctor bypass row: an unsuppressed bypass warning is a FAIL naming settings.json and the fix
+  ---
+  duration_ms: 0.069
+  type: 'test'
+  ...
+# Subtest: probeBypassPrompt: settings.json is read from the config dir, CLAUDE_CONFIG_DIR included
+ok 69 - probeBypassPrompt: settings.json is read from the config dir, CLAUDE_CONFIG_DIR included
+  ---
+  duration_ms: 0.107167
+  type: 'test'
+  ...
+# Subtest: probeBypassPrompt: only skipDangerousModePermissionPrompt === true counts as suppressed
+ok 70 - probeBypassPrompt: only skipDangerousModePermissionPrompt === true counts as suppressed
+  ---
+  duration_ms: 0.089334
+  type: 'test'
+  ...
+# Subtest: doctor gate row: a posix install that needs the wrapper with no expect is a FAIL naming the install command
+ok 71 - doctor gate row: a posix install that needs the wrapper with no expect is a FAIL naming the install command
+  ---
+  duration_ms: 0.068792
+  type: 'test'
+  ...
+# Subtest: doctor gate row: expect present on posix PASSes and says plainly that the expect wrapper is the one used
+ok 72 - doctor gate row: expect present on posix PASSes and says plainly that the expect wrapper is the one used
+  ---
+  duration_ms: 0.045291
+  type: 'test'
+  ...
+# Subtest: doctor gate row: win32 names the console helper and never fails for a missing expect
+ok 73 - doctor gate row: win32 names the console helper and never fails for a missing expect
+  ---
+  duration_ms: 0.034084
+  type: 'test'
+  ...
+# Subtest: doctor gate row: an undetermined install method is SKIP, because the strategy is not known
+ok 74 - doctor gate row: an undetermined install method is SKIP, because the strategy is not known
+  ---
+  duration_ms: 0.03175
+  type: 'test'
+  ...
+# Subtest: expectInstallHint: brew on darwin, apt everywhere else
+ok 75 - expectInstallHint: brew on darwin, apt everywhere else
+  ---
+  duration_ms: 0.017917
+  type: 'test'
+  ...
+# Subtest: probeGateStrategy: the decision is relaunchNeedsGateAutoAccept and the paths are the ones hoai-core probes
+ok 76 - probeGateStrategy: the decision is relaunchNeedsGateAutoAccept and the paths are the ones hoai-core probes
+  ---
+  duration_ms: 0.08575
+  type: 'test'
+  ...
+# Subtest: probeGateStrategy: win32 reports the console helper and never looks for expect
+ok 77 - probeGateStrategy: win32 reports the console helper and never looks for expect
+  ---
+  duration_ms: 0.025166
+  type: 'test'
+  ...
+# Subtest: doctor incumbent row: a blocking same-cwd claude is a FAIL naming the pid and how to clear it
+ok 78 - doctor incumbent row: a blocking same-cwd claude is a FAIL naming the pid and how to clear it
+  ---
+  duration_ms: 0.037917
+  type: 'test'
+  ...
+# Subtest: doctor incumbent row: an unreadable-cwd hit does NOT fail the row and is mentioned in the detail
+ok 79 - doctor incumbent row: an unreadable-cwd hit does NOT fail the row and is mentioned in the detail
+  ---
+  duration_ms: 0.15675
+  type: 'test'
+  ...
+# Subtest: doctor incumbent row: the unreadable-cwd branch never promises a wait, because F8 removed it
+ok 80 - doctor incumbent row: the unreadable-cwd branch never promises a wait, because F8 removed it
+  ---
+  duration_ms: 0.144375
+  type: 'test'
+  ...
+# Subtest: probeIncumbent: an injected process table classifies through incumbentBlocks
+ok 81 - probeIncumbent: an injected process table classifies through incumbentBlocks
+  ---
+  duration_ms: 0.382375
+  type: 'test'
+  ...
+# Subtest: probeIncumbent: the doctor never reports its OWN claude session as the incumbent
+ok 82 - probeIncumbent: the doctor never reports its OWN claude session as the incumbent
+  ---
+  duration_ms: 0.177333
+  type: 'test'
+  ...
+# Subtest: probeIncumbent: a process list that cannot be read is not evidence of an incumbent
+ok 83 - probeIncumbent: a process list that cannot be read is not evidence of an incumbent
+  ---
+  duration_ms: 0.064084
+  type: 'test'
+  ...
+# Subtest: renderDoctorTable: an UNPROVEN row prints UNPROVEN, never SKIP, and the columns stay aligned
+ok 84 - renderDoctorTable: an UNPROVEN row prints UNPROVEN, never SKIP, and the columns stay aligned
+  ---
+  duration_ms: 0.088084
+  type: 'test'
+  ...
+# Subtest: doctor live row: UNPROVEN when never proven, PASS once a session has acted on a channel event
+ok 85 - doctor live row: UNPROVEN when never proven, PASS once a session has acted on a channel event
+  ---
+  duration_ms: 0.176959
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: an UNPROVEN row gates exactly as ok:null always did
+ok 86 - preflightVerdict: an UNPROVEN row gates exactly as ok:null always did
+  ---
+  duration_ms: 0.19325
+  type: 'test'
+  ...
+# Subtest: preflightVerdict: a failing launch row fails the gate like any other non-required row
+ok 87 - preflightVerdict: a failing launch row fails the gate like any other non-required row
+  ---
+  duration_ms: 0.050166
+  type: 'test'
+  ...
+# Subtest: buildDoctorRows: no em or en dashes in the launch rows or an unproven table
+ok 88 - buildDoctorRows: no em or en dashes in the launch rows or an unproven table
+  ---
+  duration_ms: 0.104375
+  type: 'test'
+  ...
+# Subtest: ancestorDirs: nearest first, root included, in the path own separator style
+ok 89 - ancestorDirs: nearest first, root included, in the path own separator style
+  ---
+  duration_ms: 0.063833
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: a folder under a TRUSTED ANCESTOR is trusted, because that is how Claude Code behaves
+ok 90 - probeFolderTrust: a folder under a TRUSTED ANCESTOR is trusted, because that is how Claude Code behaves
+  ---
+  duration_ms: 0.064667
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: a trusted ancestor wins even over an EXPLICIT false entry on the folder itself
+ok 91 - probeFolderTrust: a trusted ancestor wins even over an EXPLICIT false entry on the folder itself
+  ---
+  duration_ms: 0.041292
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: the ancestor walk also runs on the RESOLVED spelling, and a merely SIBLING folder inherits nothing
+ok 92 - probeFolderTrust: the ancestor walk also runs on the RESOLVED spelling, and a merely SIBLING folder inherits nothing
+  ---
+  duration_ms: 0.089417
+  type: 'test'
+  ...
+# Subtest: probeFolderTrust: an ancestor that is present but NOT accepted grants nothing
+ok 93 - probeFolderTrust: an ancestor that is present but NOT accepted grants nothing
+  ---
+  duration_ms: 0.03975
+  type: 'test'
+  ...
+# Subtest: resolveLaunchFolder: flag, then a cwd pinned to THIS agent, then the pinned default workspace for the id, else an unnamed cwd
+ok 94 - resolveLaunchFolder: flag, then a cwd pinned to THIS agent, then the pinned default workspace for the id, else an unnamed cwd
+  ---
+  duration_ms: 0.105084
+  type: 'test'
+  ...
+# Subtest: resolveLaunchFolder: a STALE pin in cwd for another agent does not outrank the id that was asked about
+ok 95 - resolveLaunchFolder: a STALE pin in cwd for another agent does not outrank the id that was asked about
+  ---
+  duration_ms: 0.037875
+  type: 'test'
+  ...
+# Subtest: doctor trust row: an UNNAMED folder renders UNPROVEN with what was seen, and does not abort the install
+ok 96 - doctor trust row: an UNNAMED folder renders UNPROVEN with what was seen, and does not abort the install
+  ---
+  duration_ms: 0.142375
+  type: 'test'
+  ...
+# Subtest: doctor trust row: a NAMED folder that is not trusted still FAILs and still gates, whatever named it
+ok 97 - doctor trust row: a NAMED folder that is not trusted still FAILs and still gates, whatever named it
+  ---
+  duration_ms: 0.10075
+  type: 'test'
+  ...
+# Subtest: doctor trust row: inherited trust PASSes and says which parent it came through
+ok 98 - doctor trust row: inherited trust PASSes and says which parent it came through
+  ---
+  duration_ms: 0.041708
+  type: 'test'
+  ...
+# Subtest: the desktop one-click preflight, end to end through the pure parts: HOME as cwd, only the id known, workspace seeded by pairing
+ok 99 - the desktop one-click preflight, end to end through the pure parts: HOME as cwd, only the id known, workspace seeded by pairing
+  ---
+  duration_ms: 0.093
+  type: 'test'
+  ...
+# Subtest: provePairedTopology: pin, credentials and a marketplace route together prove it, and the channel is the RESOLVER spec, never one typed here
+ok 100 - provePairedTopology: pin, credentials and a marketplace route together prove it, and the channel is the RESOLVER spec, never one typed here
+  ---
+  duration_ms: 0.280083
+  type: 'test'
+  ...
+# Subtest: provePairedTopology: each missing proof is a NAMED refusal, and no channel is ever returned with one
+ok 101 - provePairedTopology: each missing proof is a NAMED refusal, and no channel is ever returned with one
+  ---
+  duration_ms: 1.07875
+  type: 'test'
+  ...
+# Subtest: provePairedTopology: both verifiers are asked about the SUPERVISED environment, which keeps CLAUDE_CONFIG_DIR and drops the rest
+ok 102 - provePairedTopology: both verifiers are asked about the SUPERVISED environment, which keeps CLAUDE_CONFIG_DIR and drops the rest
+  ---
+  duration_ms: 0.260375
+  type: 'test'
+  ...
+# Subtest: provePairedTopology, with the REAL verifiers on a real folder: what pairing and the plugin step leave behind is proven, from where npx runs it
+ok 103 - provePairedTopology, with the REAL verifiers on a real folder: what pairing and the plugin step leave behind is proven, from where npx runs it
+  ---
+  duration_ms: 7.305667
+  type: 'test'
+  ...
+# Subtest: provePairedTopology, with the REAL verifiers: the same folder is refused when any one of the three is taken away
+ok 104 - provePairedTopology, with the REAL verifiers: the same folder is refused when any one of the three is taken away
+  ---
+  duration_ms: 9.338375
+  type: 'test'
+  ...
+# Subtest: provePairedTopology, with the REAL verifiers: a plugin installed ONLY under the custom CLAUDE_CONFIG_DIR the service will carry is proven
+ok 105 - provePairedTopology, with the REAL verifiers: a plugin installed ONLY under the custom CLAUDE_CONFIG_DIR the service will carry is proven
+  ---
+  duration_ms: 2.150541
+  type: 'test'
+  ...
+# Subtest: bgos-doctor --prove-paired-topology: one line, exit 0 or 1, and none of the doctor table machinery runs
+ok 106 - bgos-doctor --prove-paired-topology: one line, exit 0 or 1, and none of the doctor table machinery runs
+  ---
+  duration_ms: 1.84025
+  type: 'test'
+  ...
+# Subtest: provePairedTopology: an installer running from a marketplace install under a CUSTOM config dir is proven, because the service carries that config dir
+ok 107 - provePairedTopology: an installer running from a marketplace install under a CUSTOM config dir is proven, because the service carries that config dir
+  ---
+  duration_ms: 0.092208
+  type: 'test'
+  ...
+# Subtest: provePairedTopology: a route only the installing SHELL sees (a session variable the service does not carry) is named as that, not as a clone
+ok 108 - provePairedTopology: a route only the installing SHELL sees (a session variable the service does not carry) is named as that, not as a clone
+  ---
+  duration_ms: 0.071833
+  type: 'test'
+  ...
+# Subtest: doctor: the credentials row prints the home and where it came from, in every state
+ok 109 - doctor: the credentials row prints the home and where it came from, in every state
+  ---
+  duration_ms: 0.12175
+  type: 'test'
+  ...
+# Subtest: doctor: probeCredentials reads the home, its source, and whether this folder would be refused
+ok 110 - doctor: probeCredentials reads the home, its source, and whether this folder would be refused
+  ---
+  duration_ms: 2.195875
+  type: 'test'
+  ...
+# Subtest: doctor: the handshake passes a real channel and fails a one tool notice (a refused or unpaired daemon)
+ok 111 - doctor: the handshake passes a real channel and fails a one tool notice (a refused or unpaired daemon)
+  ---
+  duration_ms: 1.638958
+  type: 'test'
+  ...
+1..111
+# tests 111
+# suites 0
+# pass 111
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 274.127875

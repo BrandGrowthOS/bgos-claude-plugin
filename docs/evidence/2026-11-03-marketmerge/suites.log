@@ -1,0 +1,550 @@
+✔ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (231.95575ms)
+✔ wrong agent, setting OFF (the default): the full daemon as before, counted as a would-refuse (863.807584ms)
+✔ right agent, strict: the full daemon (670.104167ms)
+✔ an unreadable scope, strict: FAILS OPEN to the full daemon (746.762083ms)
+✔ THE BOARD ROW: a worker in agent 42's folder that inherited agent 41's env pin and scope is the wrong agent (by folder) and is refused when on (892.62775ms)
+✔ unscoped, strict: refused; the machine file sets the mode for every agent here (135.966459ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ run plan: a folder pin scopes the launch to that agent (38.2205ms)
+✔ run plan: a BGOS_ASSISTANT_ID env pin scopes the launch to that agent (38.292958ms)
+✔ run plan: a supervised launch with a pinless folder scopes to the service agent (35.701125ms)
+✔ run plan: an unpinned launch carries its folder without guessing an agent from credentials (98.466291ms)
+✔ applyAttachScope: the scope folder is set and overridden with the scope, and cleared with nothing to name (0.155084ms)
+✔ applyAttachScope: the launcher OVERRIDES an inherited scope, and clears one it cannot name (0.05325ms)
+✔ main: a supervised launch hands the daemon its scope, over an inherited one (74.237375ms)
+✔ readAttachScope: no variable is an unscoped session (1.384833ms)
+✔ readAttachScope: digits name the agent the launcher meant (0.122334ms)
+✔ readAttachScope: anything else is unreadable, never a guess (0.080458ms)
+✔ readAttachScope: an env object that throws is unreadable (0.059084ms)
+✔ right agent attaches in every mode (0.251042ms)
+✔ wrong agent is REFUSED when the setting is on (wrong-agent and strict) (0.058875ms)
+✔ wrong agent still attaches when the setting is OFF, and is counted as a would-refuse (0.049209ms)
+✔ an unscoped session is refused only in strict, and counted as a strict would-refuse (0.062833ms)
+✔ FAIL OPEN: a scope that cannot be read attaches in every mode, strict included (0.075916ms)
+✔ FAIL OPEN: an env that throws attaches in every mode (0.104042ms)
+✔ FAIL OPEN: an agent identity that cannot be read attaches, even with a scope, in every mode (0.078834ms)
+✔ an unknown mode is OFF: nothing is refused (0.050958ms)
+✔ the default mode is off, so shipping this changes nothing for anyone (0.028875ms)
+✔ resolveAttachScopeMode: nothing set is the default, off (0.092209ms)
+✔ resolveAttachScopeMode: the env var sets it for one process (0.063084ms)
+✔ resolveAttachScopeMode: the machine file sets it for every agent on this computer (0.056625ms)
+✔ resolveAttachScopeMode: the env var wins over the file (0.03475ms)
+✔ resolveAttachScopeMode: an unreadable setting is OFF and says why (0.2205ms)
+✔ recordAttachScopeEvent appends one line per evaluation, and the summary counts would-refuses (2.273125ms)
+✔ summarizeAttachScopeEvents counts only the window, and counts real refusals (0.152292ms)
+✔ readAttachScopeEvents skips torn lines and reads a missing file as empty (0.303791ms)
+✔ the events file is rotated at its cap, so it can never grow without bound (0.498292ms)
+✔ telemetry NEVER throws: an unwritable folder answers false (0.156333ms)
+✔ the boot line names the mode, the scope, the agent and what it would do (0.226042ms)
+✔ the refusal names both agents and the way out (0.096042ms)
+✔ the check up row is OK for a match, WARN for a wrong agent, and carries the machine tally (0.146875ms)
+✔ nothing a person reads carries an em or en dash (0.115541ms)
+✔ bin/hoai-attach-scope.mjs prints the machine tally: what each mode WOULD refuse (141.883959ms)
+✔ a scope carried into ANOTHER folder was inherited: unscoped, launcher inherited, a strict would-refuse (0.419458ms)
+✔ the scope folder compares as a folder: trailing separator, and case on macOS and Windows (0.175ms)
+✔ the scope folder compares through realpath (a symlinked spelling is the same folder) (0.12025ms)
+✔ a folder pin naming ANOTHER agent is the wrong agent, even when the inherited scope agrees with the env (0.112916ms)
+✔ a folder pin naming THIS agent, or no usable pin, changes nothing (0.067292ms)
+✔ the scope names a wrong agent "by scope" (0.042459ms)
+✔ ids compare as numbers: a leading zero is the same agent (0.037167ms)
+✔ the launcher is recorded: hoai (its folder), generation one (BGOS_CONTINUE), or none (0.056375ms)
+✔ market3 scope: folder-only launch intent uses the resolved agent without bypassing wrong-agent checks (0.112875ms)
+✔ the summary splits by launcher and by signal, and counts distinct sessions, not boots (0.88225ms)
+✔ no source file of this change carries an em or en dash (0.459542ms)
+✔ with CLAUDE_CONFIG_DIR unset, both scripts pre-seed $HOME/.claude (the owner's own folder) (1.108583ms)
+✔ hoai-bootstrap.sh: the owner's own $HOME/.claude/settings.json is never given the deny, whatever it held (64.655292ms)
+✔ hoai-bootstrap.sh: with no settings anywhere, the deny lands in the agent folder only, and the owner's file gains no permissions (70.294042ms)
+✔ hoai-bootstrap.sh: the agent folder's existing settings (hooks, allow, deny, mode) are kept, the entry added once (63.877334ms)
+✔ hoai-bootstrap.sh: a list that already denies it is not doubled, and a second run changes neither file (130.777291ms)
+✔ hoai-bootstrap.sh: an agent settings file that does not parse is left byte for byte, and the run still succeeds (58.6425ms)
+✔ hoai-bootstrap.sh: the activity hook registration that follows keeps the deny (same file, run in the bootstrap's order) (67.391291ms)
+✔ hoai-bootstrap.ps1: the owner's own $HOME/.claude/settings.json is never given the deny, whatever it held (73.926708ms)
+✔ hoai-bootstrap.ps1: with no settings anywhere, the deny lands in the agent folder only, and the owner's file gains no permissions (70.143167ms)
+✔ hoai-bootstrap.ps1: the agent folder's existing settings (hooks, allow, deny, mode) are kept, the entry added once (58.781583ms)
+✔ hoai-bootstrap.ps1: a list that already denies it is not doubled, and a second run changes neither file (111.993459ms)
+✔ hoai-bootstrap.ps1: an agent settings file that does not parse is left byte for byte, and the run still succeeds (60.787709ms)
+✔ hoai-bootstrap.ps1: the activity hook registration that follows keeps the deny (same file, run in the bootstrap's order) (57.515125ms)
+✔ childEnvWithoutSupervision: drops exactly the two supervision variables (any case on win32), keeps everything else, never mutates the input (1.128042ms)
+✔ supervised, posix: expect (and the claude under it) is started WITHOUT the supervision variables, with everything else (37.664667ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 111 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ supervised, win32 (the agent task's --keep-alive launch path): claude is started without them too (33.422375ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 222 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ the finding's scenario: `hoai` typed inside agent A's session, in agent B's folder, launches B and leaves A's launch-status alone (133.135ms)
+✔ the 888 shape: the gate helper pressed Enter without having recorded attached (exit 6), so hoai relaunches claude on the agents own session (10.261166ms)
+✔ the 888 shape without --keep-alive (a supervised launch on its own) relaunches the same way (4.834958ms)
+✔ the relaunch for an unproven gate spends the restart budget: after 3 in an hour the next is refused and reported, never a loop (46.113583ms)
+✔ a helper exit belongs to its own launch: an exit 6 from an earlier launchs helper never ends the current claude (41.161875ms)
+✔ a helper exit belongs to its own launch: one arriving after that claude exited by itself (the keep-alive relaunch) changes nothing (41.887291ms)
+✔ a person at the terminal (not supervised, no --keep-alive): an exit 6 relaunches nothing and no heartbeat check is armed (35.700625ms)
+✔ attached then accepted (exit 0) changes nothing, and neither does any other helper exit (236.92325ms)
+✔ no channel heartbeat 3 minutes after launch: relaunched ONCE, then the next launch without one is reported and left running (39.881667ms)
+✔ a channel heartbeat in time does nothing (36.497ms)
+✔ a beacon from before this launch is not its heartbeat (the last boot left it behind) (4.6475ms)
+✔ a beacon dated before the launch counts for nothing even when there was none at launch (a restored file, a writer whose clock is behind) (4.514458ms)
+✔ channelHeartbeatSince and parseChannelBeacon, on their own (0.191375ms)
+✔ a beacon the predecessor daemon wrote after this launch started is not its heartbeat either (4.737833ms)
+✔ a daemon that was beaconing before the launch and still is a minute on is a live channel (another session of the agent holds it): nothing relaunched (39.885167ms)
+✔ a launch that did send a heartbeat earns the one relaunch back for a later launch (52.259083ms)
+✔ the heartbeat check is cleared when claude ends first: a dead launch is never judged (8.693375ms)
+✔ a stop request that comes before the check fires: nothing is relaunched or recorded, the launcher just ends (3.332417ms)
+✔ a heartbeat relaunch past the restart budget is refused and reported, and claude is left as it is (46.972708ms)
+✔ posix, supervised under expect: no heartbeat at 3 minutes relaunches the expect session once, on the agents own session (72.213791ms)
+✔ hoai reads the beacon in the folder the daemon writes it to (pluginStateDirFor = dirname of resolveCursorFilePath) (0.393459ms)
+✔ the helper and hoai agree on exit 6, and the helper documents it (0.3335ms)
+✔ the helper appends without refusing readers (append-only, sharing ReadWrite and Delete), and says when a line is lost (0.160875ms)
+✔ the helper exits 0 only when attached AND accepted are both on record (0.106708ms)
+✔ hoai looks for the beacon the daemon writes: the file name mirrors lib/pairing-lock.ts (0.02625ms)
+✔ the proof Mark runs for 888 passes a start only on start, attached AND accepted from ONE helper, never on accepted alone (0.274417ms)
+✔ decideSupervisorArming: a live pid that still runs hoai-core.mjs refuses; a live pid running something else is a stale file, reclaimed (1.701791ms)
+✔ defaultPidProcess: posix asks ps for that pid at unlimited width with its etime, bounded by a timeout, and answers the command line and start (0.574292ms)
+✔ defaultPidProcess: win32 asks Win32_Process for that pid's CommandLine and creation time (0.185458ms)
+✔ defaultPidProcess: anything it cannot read is null (gone, failed, timed out, thrown, not a pid) (0.3035ms)
+✔ superviseClaude: a supervisor.json left by an unclean stop, whose pid is now an unrelated process, no longer keeps the agent down (42.549791ms)
+✔ superviseClaude: the same file whose pid still runs hoai-core.mjs is a live owner: no second session (0.257041ms)
+✔ F1: decideSupervisorArming proves the writer: a pid that started after the file was written is reused, whatever it runs (0.148166ms)
+✔ F1: decideSupervisorArming anchors the script on argv[1]: another agent's tmux server never owns this agent (0.091041ms)
+✔ F1: superviseClaude after a reboot: the stale file's pid is another agent's hoai, so this agent arms and launches (35.177375ms)
+✔ F3: decideSupervisorArming: the daemon's declared-launcher record refuses while its pid is that daemon, and is reclaimed once the pid is reused (0.278875ms)
+✔ decideKeepAliveBackoff: 5 s, 10 s, 20 s, 40 s, then 60 s, and a 10 minute healthy run starts again at 5 s (1.559ms)
+✔ decideCrashLoop: three or more exits inside five minutes is a crash loop; older exits fall out of the window (0.139666ms)
+✔ --keep-alive is a run flag: routes to run, combines with --force, and leaves every other route exactly as it was (0.204666ms)
+✔ keep-alive: an exit on its own relaunches after 5 s RESUMING the pinned session, and supervisor.json stays valid across it (95.19925ms)
+✔ review 3 F1: the arm and every keep-alive relaunch stamp supervisor.json with the boot clock, read through hoai's own reader (80.247333ms)
+✔ keep-alive: quick exits back off 5, 10, 20, 40, 60, 60 s, and a session that stayed up 10 minutes starts again at 5 s (318.455333ms)
+✔ keep-alive: three exits inside five minutes are recorded in launch-status as a crash loop (127.5ms)
+✔ keep-alive: the one-shot fresh fallback for a fast-dying resume still applies, then the backoff, and the pin stays on the real session (87.9285ms)
+✔ keep-alive: a session that stayed up past the health window earns the fresh fallback again, so a later rejected resume is retried at once (125.809042ms)
+✔ keep-alive: a stop request during the backoff wait ends the loop there, and nothing is relaunched (24.427792ms)
+✔ keep-alive: a restart marker still relaunches at once (no backoff), exactly as without the flag (72.849916ms)
+✔ daemon F6: a pin the daemon rewrote while claude ran is what the marker relaunch AND the keep-alive relaunch resume, never the id hoai read at launch (147.657708ms)
+✔ daemon F6: a `hoai --new` whose repin could not be written never takes the abandoned pin back on a relaunch; a pin the daemon writes later is taken (96.8275ms)
+✔ the file's own bound: a loop that never ends is stopped and named within the bound, never awaited for ever (224.148666ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ the restart-marker poller never holds the process open by itself (claude's own handle does while it runs), so a loop a failed test left behind cannot hang the run (32.076917ms)
+✔ keep-alive: a launch with no identity at all is REFUSED by name, because every relaunch would be a fresh unpinned session (finding 7) (0.292ms)
+✔ main(): --keep-alive reaches the loop (an exit is relaunched), and the stop signal ends it (105.659792ms)
+﹣ real processes, agent 867: a wedged launcher whose claude is a zombie and that ignores TERM is ended with KILL, and the agent launches (0.536458ms) # SKIP
+﹣ real processes, control: a wedged launcher whose claude is ALIVE stays the owner: exit 3, never signalled (0.04375ms) # SKIP
+﹣ real processes, control: the same wedged idle holder running in ANOTHER folder (a reused pid) is never signalled (0.028042ms) # SKIP
+﹣ real processes, watchdog: a wedged launcher whose claude has exited releases its own claim and ends itself (0.025084ms) # SKIP
+﹣ real processes, watchdog control: a wedged launcher whose claude is alive is left running with its claim (0.027375ms) # SKIP
+﹣ real processes, Windows watchdog: a wedged launcher whose claude has exited releases its own claim and ends itself (0.022459ms) # SKIP
+﹣ real processes, Windows watchdog control: a wedged launcher whose claude is alive is left running with its claim (0.024375ms) # SKIP
+✔ agent 867: a live holder whose claude is a zombie and which ignores TERM is ended with KILL, then the agent launches (47.357041ms)
+✔ a live holder with no child at all is ended (TERM is enough when it takes it) and the agent launches (30.677542ms)
+✔ control: a holder whose claude is alive stays the owner: exit 3, no signal, no second session (1.881334ms)
+✔ control: a holder whose children cannot be read keeps the claim (unknown is never stale) (1.303083ms)
+✔ control: a holder whose command line cannot be read is never signalled, whatever its children (1.3755ms)
+✔ control: a holder that is only between two children (its claude comes back inside the confirm window) is never signalled (2.167041ms)
+✔ never another agent's launcher: an idle hoai holder that runs in another folder (a reused pid) is never signalled (1.494708ms)
+✔ where the folder cannot be read, only a holder that started before its own stamp is taken over (0.119875ms)
+✔ never a double launch: a holder that survives KILL keeps the agent (named outcome, exit 3, nothing spawned) (3.68825ms)
+✔ never a double launch: while another launcher holds the takeover lock, this one stands down without a signal (1.841666ms)
+✔ an empty takeover lock (a launcher that died before writing it) is stale: the takeover proceeds and the lock is gone after (28.624708ms)
+✔ an empty, blank or zero-filled supervisor.json is stale: the agent launches (88.219834ms)
+✔ a keep-alive launcher in its backoff names its relaunch deadline, so a reader never takes it over for having no child (30.516625ms)
+✔ a relaunch deadline is honoured only inside the backoff it can be: one past its time, or further out than any backoff (a clock that jumped), is not (0.181417ms)
+✔ agent 867 second bug: a fresh session the launcher started and that outlived the health window is what the next launch resumes, even when the launcher never got to pin it (88.990875ms)
+✔ control (zaid 2026-09-02): a fresh session that died inside the health window never takes the pin; the next launch resumes the old session (77.047875ms)
+✔ decideWatchdogAction: only a launcher whose loop has stopped AND whose claude is gone releases its claim (0.143292ms)
+✔ superviseClaude arms the watchdog once it holds the claim, and stops it on the way out (23.036667ms)
+✔ the ps or PowerShell that lists the children is never counted as one of them (a watchdog asking about its own launcher) (0.399541ms)
+✔ a pending pin loses to a pin rewritten after it (the daemon pinned the live session, a /clear): the next launch resumes that newer pin (83.737375ms)
+✔ never a double launch: a takeover lock that another launcher replaced right after this one made it is not ours, and is left alone (1.641958ms)
+✔ never a double launch: a claim another launcher armed after this one judged it stale is never overwritten (2.011625ms)
+✔ a stop that comes while a holder is being ended stops there: no SIGKILL, no claude (1.543583ms)
+✔ the watchdog acts on two stale looks in a row, never one (a VM resumed, a host woke up) (0.11525ms)
+✔ in this agent's folder is not proof enough on its own: a holder that started after its stamp (another agent's launcher in a shared folder) is left alone (0.083375ms)
+✔ a takeover lock that cannot be made (a read-only or full disk) is not someone else's takeover: a dead holder's claim is replaced as before (25.588917ms)
+✔ never a double launch: where no takeover lock can be made, a claim another launcher armed after this one judged it is never overwritten (1.430292ms)
+✔ control: a holder that ignores TERM but has a live claude again by the end of the TERM wait is never sent KILL (2.166792ms)
+✔ agent 867 (2 Nov): a live expect over a zombie claude is not supervising: takeover, reason claude-zombie, the expect named (0.128583ms)
+✔ control: an expect over a LIVE claude is supervising: no takeover (0.05725ms)
+✔ control: an expect whose own children cannot be read keeps the claim (unknown is never stale) (0.051458ms)
+✔ a childless expect is not supervising either (mutant: an expect with no children read as alive) (0.04975ms)
+✔ agent 867 (2 Nov), end to end: holder KILLed, then the orphaned expect KILLed, then the agent launches (27.673209ms)
+✔ the expect is also ended when the holder takes SIGTERM (mutant: no expect kill on the TERM path) (26.395416ms)
+✔ an expect already gone by kill time gets no signal (mutant: no pidAlive skip) (27.043417ms)
+✔ pid reuse: an expect pid that reads as another program at kill time is never signalled (23.950416ms)
+✔ an expect whose command line cannot be read at kill time is never signalled (36.508584ms)
+✔ an expect that has a live child again at kill time is never signalled (47.738708ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ supervised: SIGHUP (run.sh killed the tmux server) stops claude, relaunches nothing, and REMOVES supervisor.json (69.282958ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ supervised: SIGTERM (no tmux, systemd or launchd stop) stops claude, relaunches nothing, and REMOVES supervisor.json (50.784041ms)
+✔ a person-facing hoai (not supervised, no --keep-alive) still leaves both signals to their default action (51.562417ms)
+✔ a stop that lands before anything is armed returns at once: no supervisor.json, no claude (0.218ms)
+✔ a stop during the incumbent wait ends the wait at once instead of sitting out its timeout, and arms nothing (50.2105ms)
+✔ a stop that ends a wait already polling for a while never claims the incumbent has exited or that it is taking over (702.858792ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900, the agent this supervisor was installed for (HOAI_SUPERVISED_ASSISTANT_ID); this folder declares none, so the daemon is handed BGOS_ASSISTANT_ID=900.
+✔ isSupervisedLaunch and supervisedServiceId: exactly "1", and digits only (0.70425ms)
+✔ supervised expect script: fail-count settle first, then spawn, trap, the shared block VERBATIM, then a tail that names every failure and never waits for a person (0.360417ms)
+✔ supervised expect script: inside tmux the live session is relayed with interact (what /compact is typed into), and the compact state is on (0.113208ms)
+✔ supervised expect script: a state dir with Tcl specials is quoted, never evaluated (0.049875ms)
+✔ the person-facing script is unchanged: no launch-status, no supervised exits, interact at the end (0.096875ms)
+[hoai] this host has 2 paired agents (ids: 7, 8) and this folder declares no assistant (no .bgos-agent-id pin and no BGOS_ASSISTANT_ID in .mcp.json), so hoai cannot tell which one to launch. Run hoai from the agent's own folder (pairing bakes the pin there, and bgos-agent / bgos-claim write the id into .mcp.json), or set BGOS_ASSISTANT_ID=7 in this agent's environment.
+[hoai] this command is running from a temporary package-runner directory (/Users/kc/hoai-work/mbmarket/.tmp/marketmerge/hoai-sup-home-X6v4hb/.npm/_npx/c00bcfc5e22688dd/node_modules/claude-channel-bgos), which is not an install, and /Users/kc/hoai-work/mbmarket/.tmp/marketmerge/hoai-sup-home-X6v4hb/.claude/plugins/installed_plugins.json records no HOAI plugin install, so the channel this machine listens on cannot be determined. Run hoai from the folder the agent was set up in (a clone checkout), or install the plugin with hoai setup, rather than guessing a channel flag. hoai will not launch on a guessed channel: a wrong one starts an agent that looks connected and never receives a message.
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] install method: clone; channel server:bgos
+[hoai] no pairing on this host yet; if the agent cannot connect, run: hoai pair <CODE> (code from the HOAI app).
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900, the agent this supervisor was installed for (HOAI_SUPERVISED_ASSISTANT_ID); this folder declares none, so the daemon is handed BGOS_ASSISTANT_ID=900.
+✔ supervised: a pinless folder on a MULTI-agent host launches as the SERVICE agent, on its own pin, and hands the daemon BGOS_ASSISTANT_ID (52.348542ms)
+✔ unattended with NO service id (two paired agents and nothing saying which) still stops with exit 6 instead of guessing (23.785708ms)
+✔ supervised: an undetermined channel stops with EXIT_CHANNEL_UNRESOLVED and says so in launch-status (1.545ms)
+✔ supervised: a folder pinned to ANOTHER agent than the service is refused (exit 7), never launched as either (24.281792ms)
+✔ supervised: no identity anywhere (never paired, so no pair code was ever given) stops with exit 6 instead of a fresh unpinned session (42.114417ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ supervised: a folder that declares no id launches as the SERVICE agent, on that agent's own pinned session (71.7625ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ supervised: the spawned script is the SUPERVISED one (launch-status, named exits, expect eof without a terminal) (70.382417ms)
+[hoai] channel server:bgos (declared by this folder's .mcp.json; install method unknown)
+[hoai] launching as assistant 900 via the BGOS_ASSISTANT_ID this folder's .mcp.json declares; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ supervised: inside tmux (BGOS_TMUX_SESSION set) the status line says compact=on (76.105208ms)
+[hoai] channel server:bgos (declared by this folder's .mcp.json; install method unknown)
+[hoai] launching as assistant 900 via the BGOS_ASSISTANT_ID this folder's .mcp.json declares; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ supervised: the gate is answered under expect even when detection says "unknown" (a workspace .mcp.json run from an npx root) (10.281541ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ supervised: a gate nobody can answer (exit 9) on a RESUME is not retried fresh; a resume that dies during startup (exit 10) still gets the one-shot fresh fallback (204.589625ms)
+✔ supervised: with no expect on a posix host the launch is refused (exit 8), because claude would sit on its first screen forever (1.859333ms)
+✔ main() hands its expect answer to the launch: hasExpect false, or an expectExists that finds none, stops it with exit 8 (83.456417ms)
+✔ hostHasExpect: the well-known paths AND every PATH directory, because the installer only required `command -v expect` and baked its directory into the service PATH (0.352ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 900 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] this host has 2 paired agents (ids: 7, 8) and this folder declares no assistant (no .bgos-agent-id pin and no BGOS_ASSISTANT_ID in .mcp.json), so hoai cannot tell which one to launch. Run hoai from the agent's own folder (pairing bakes the pin there, and bgos-agent / bgos-claim write the id into .mcp.json), or set BGOS_ASSISTANT_ID=7 in this agent's environment.
+✔ supervised: the launch finds expect through ITS OWN PATH (the service PATH), and refuses only when that PATH has none either (32.788083ms)
+✔ supervised: a live launcher already owning the agent is a named outcome in launch-status, not a silent exit (32.921375ms)
+✔ NOT supervised: the same refusals stay exactly as they were (exit 1, no launch-status written) (27.269166ms)
+✔ resolveHoaiAction: the routing table (2.011125ms)
+✔ resolveHoaiAction: -c, --continue and --resume are synonyms of a bare hoai (0.159ms)
+✔ resolveHoaiAction: --new routes to run and asks for a fresh session (0.092417ms)
+✔ classifyRunFlag: only the documented flags classify (0.06825ms)
+✔ resolveHoaiAction: a bare pair code routes to pair with itself prepended (0.137042ms)
+✔ resolveHoaiAction: anything else routes to help, keeping the tokens (0.06925ms)
+✔ USAGE: says the run flags are the same thing, and gives the short restart line (0.1845ms)
+✔ buildRunPlan: folder pin + marketplace-shaped scriptDir launches plugin:hoai@hoai and needs no env pin (1.140542ms)
+✔ buildRunPlan: clone-shaped scriptDir launches server:bgos (25.985ms)
+✔ buildRunPlan: a clone launch carries the task tools flag AND the hook entries (26.044875ms)
+✔ buildRunPlan: a marketplace launch registers nothing, so no hook fires twice (0.236917ms)
+✔ hookRegistrationFor names the workspace settings file and this checkout’s forwarder (0.050584ms)
+✔ buildRunPlan: no pin + several credentials files refuses, naming both remedies (23.541834ms)
+✔ buildRunPlan: no pin + a single credentials file launches (the daemon self-resolves) (47.755333ms)
+✔ buildRunPlan: launching the sole agent from a folder that is not its home says the daemon will refuse there (fc75c7c3) (238.799667ms)
+✔ buildRunPlan: no pin + no credentials at all still launches, hinting at pairing (44.511208ms)
+✔ buildRunPlan: an explicit BGOS_ASSISTANT_ID env pin suppresses the multi-agent refusal (28.819833ms)
+✔ buildRunPlan: a junk folder pin is ignored, never obeyed (31.103042ms)
+✔ readFolderPin: trimmed digits only (0.111625ms)
+✔ configuredAssistantId: trims and ignores the unsubstituted placeholder (0.056083ms)
+✔ listPairedAssistantIds: credentials-<id>.json only, ascending (0.051209ms)
+✔ hoaiLogPath mirrors lib/log-path.ts: BGOS_LOG_FILE wins, else the stable home-rooted default (0.070917ms)
+✔ logsAssistantId: folder pin beats env pin beats unknown (0.054958ms)
+✔ lastLines: tails at most n lines, dropping the trailing blank (0.112667ms)
+✔ joinDir preserves the separator style of the directory (0.032ms)
+✔ claudeSpawnCandidates: posix is a single bare claude; win32 chains claude, ComSpec /c claude.cmd, claude.exe (0.125958ms)
+✔ exitCodeForChild: plain codes pass through, signals map to 128 + n (0.0535ms)
+✔ EXIT_NOT_FOUND is the POSIX 127 (0.023208ms)
+✔ isRunAsMain is false when imported by the test runner (0.106667ms)
+✔ resolveHoaiAction: setup routes with its argv intact (0.044958ms)
+✔ parseSetupArgs: the code leads, everything after it passes through in order (0.065916ms)
+✔ parseSetupArgs: a value with a space or a shell metacharacter stays ONE argv entry (0.026625ms)
+✔ parseSetupArgs: refuses a missing code and a flag standing where the code goes (0.0485ms)
+✔ runSetup: marketplace, install, PATH, pair, in that order and with no shell (8.798ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+✔ runSetup: a marketplace already added does NOT abort the run (the && chain did) (0.57525ms)
+✔ runSetup: a failed install stops before pairing and says so (0.16175ms)
+✔ runSetup: no claude on this machine stops at step one with 127 (0.082542ms)
+✔ resolveWrapperPluginRoot: the MARKETPLACE install path wins over this script own root (0.097792ms)
+✔ resolveWrapperPluginRoot: falls back to this script own root when nothing is recorded (14.297625ms)
+✔ resolveWrapperPluginRoot: an install path recorded but no longer on disk is not used (13.53975ms)
+✔ resolveWrapperPluginRoot: an unreadable config dir never throws (14.074625ms)
+✔ installHoaiCli: hands the resolved root to the installer and reports the bin dir (0.272958ms)
+✔ installHoaiCli: a shim left alone is ANNOUNCED, never passed over in silence (1.196791ms)
+✔ installHoaiCli: a file the owner wrote gets its own wording, not a link's (0.149333ms)
+✔ installHoaiCli: nothing in the way means nothing is announced (0.053208ms)
+✔ installHoaiCli: force is carried through to the installer, not swallowed (0.03875ms)
+✔ main(): install-cli --force is the deliberate ask, and a bare install-cli is not (0.344417ms)
+✔ installHoaiCli: no resolvable plugin root says so instead of writing a broken shim (0.151917ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] --new: starting a brand new conversation for this agent. The previous one stays on disk; it is simply not the one being resumed from now on.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+✔ the run path never passes a bare --continue to claude, for ANY of the new forms (3985.527625ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] --new: starting a brand new conversation for this agent. The previous one stays on disk; it is simply not the one being resumed from now on.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+✔ hoai -c resumes THIS agent own pinned session, and --new leaves it for a brand new one (2662.407291ms)
+✔ freshPinnedSessionId: repins to a NEW id and never falls back to the old one (0.339875ms)
+✔ winPathHelperArgs: runs the repo helper non-interactively for one directory (0.24ms)
+✔ channel: a workspace .mcp.json WINS over marketplace file detection (the deaf-agent bug) (18.08375ms)
+✔ channel: with no .mcp.json the install method still decides, exactly as before (29.90725ms)
+✔ channel: the spec is the entry NAME, so a renamed server still works (16.38125ms)
+✔ channel: somebody else MCP servers are not mistaken for ours (13.283208ms)
+✔ channel: ours alongside foreign servers is still found (23.293ms)
+✔ channel: TWO of our servers is a conflict that falls back and SAYS so (14.853792ms)
+✔ channel: unreadable or junk .mcp.json never throws, it falls back (59.332917ms)
+✔ channel: a server name that could not be spelled on a command line is refused (10.296958ms)
+✔ channel: the note names the source, so an operator can see WHY (20.8645ms)
+✔ buildRunPlan: an .mcp.json workspace on a marketplace host launches the WORKSPACE channel (28.2605ms)
+✔ relaunchClaudeArgs: a restart resolves the channel the SAME way as the launch (41.511083ms)
+✔ superviseAssistantId: an agent declared only in .mcp.json IS supervised (0.221375ms)
+✔ superviseAssistantId: a folder declaring TWO different ids supervises neither (0.047875ms)
+✔ buildRunPlan: launches an agent declared only in .mcp.json, and names that source (44.555958ms)
+✔ buildRunPlan: a folder declaring two different ids is refused as a CONFLICT, not a missing pin (39.146875ms)
+✔ buildRunPlan: the multi-agent refusal names BOTH folder sources, not only the pin (26.773584ms)
+✔ logsAssistantId: keyed by what the folder declares, from either source (0.165209ms)
+✔ channel: hoai reached through npx with no install on disk resolves NO spec (0.240959ms)
+✔ channel: a workspace .mcp.json still decides even under npx (nothing regresses for a claimed folder) (0.07575ms)
+✔ launchArgsFor THROWS on an unresolved channel rather than spelling an empty flag (0.165167ms)
+✔ buildRunPlan: REFUSES to launch when the channel is undetermined, and says why (0.074042ms)
+✔ relaunchClaudeArgs: returns null on an unresolved channel, never a bare flag pair (13.277209ms)
+✔ unresolvedChannelMessage: names the reason and says nothing was launched (0.117167ms)
+✔ resolveWrapperPluginRoot: never points the hoai shim at an npx dir that is about to be deleted (11.491542ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ setup enrols auto-update AFTER the marketplace add, never before (1.955458ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ a fresh retry that dies inside the health window leaves the pin on the previous session (752.099334ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] waiting for an incumbent claude (pid 4242) in /Users/kc/hoai-work/mbmarket/.tmp/marketmerge/hoai-agent-YI9nPr to exit before taking over; a pinned session can only be resumed once
+[hoai] the incumbent claude (pid 4242) has exited; taking over assistant 871
+[hoai] restart supervisor armed for assistant 871
+✔ a fresh retry that stays up past the health window becomes the pinned session (989.162916ms)
+✔ findIncumbentClaude: same cwd, same uid, not our own pid (0.165083ms)
+✔ findIncumbentClaude: an unreadable cwd within our uid is still REPORTED; another uid never is (0.050208ms)
+✔ findIncumbentClaude: claude.exe and a full-path comm both count; a windows-style cwd matches case-insensitively (0.035791ms)
+✔ waitForIncumbent: returns at once when the folder is clear, otherwise polls until it is and says so (0.134375ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ superviseClaude does not spawn while a hand-started claude owns the folder, and spawns once it exits (74.072458ms)
+✔ incumbentBlocks: only a same-cwd hit holds a launch back (0.114958ms)
+✔ findIncumbentClaude: a real same-cwd process wins over an earlier unreadable one (0.059916ms)
+✔ waitForIncumbent: an unreadable cwd warns once, waits for nothing and lets the launch through (0.118042ms)
+✔ waitForIncumbent: a same-cwd incumbent still holds the launch until it leaves (0.091334ms)
+✔ waitForIncumbent: an incumbent that never leaves ends the wait at the deadline (0.161667ms)
+✔ main(): an incumbent hit at the deadline stops the launch with EXIT_INCUMBENT_TIMEOUT, naming the pid (31.876583ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ main(): an incumbent whose cwd cannot be read no longer blocks the launch, it warns (67.908958ms)
+✔ selfAndAncestorPids: the walk collects self and every ancestor, and stops at the root (0.159375ms)
+✔ selfAndAncestorPids: a ppid cycle and a missing parent end the walk instead of spinning (0.056417ms)
+✔ findIncumbentClaude: the claude we are running inside is not an incumbent; an unrelated one still is (0.102125ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+✔ main(): hoai typed inside a claude session in this folder launches at once instead of waiting it out (51.113042ms)
+✔ main(): an unrelated claude in the folder still stops the launch, and names it and not our own ancestor (23.971041ms)
+✔ defaultListProcesses: ps is asked for ppid, a comm with spaces stays whole, and our ancestry is kept (0.194667ms)
+✔ defaultListProcesses: ps and every lsof carry a deadline, and a timed-out lsof reads as an unreadable cwd (0.10475ms)
+✔ the exit codes are pinned to their literal values, and no two of them collide (0.1975ms)
+✔ resolveHoaiAction: --force routes to run, combines with --new, and lookalikes still reach help (0.05275ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+✔ main(): --force launches at once and never even asks what is running (49.040417ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+✔ main(): the launch environment gains the task tools flag, and the hooks are registered (603.127875ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] --new: starting a brand new conversation for this agent. The previous one stays on disk; it is simply not the one being resumed from now on.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] could not pre-seed the one-time prompts: EACCES: read-only file system
+[hoai] restart supervisor armed for assistant 871
+✔ main(): EVERY launch form pre-seeds the one-time prompts for the launch folder (3902.052917ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] restart supervisor armed for assistant 871
+✔ main(): the preseed runs BEFORE claude is spawned, and a preseed that throws never stops the launch (615.104416ms)
+[hoai] install method: clone; channel server:bgos
+[hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
+[hoai] could not register the activity hooks: EACCES: a read only workspace
+[hoai] restart supervisor armed for assistant 871
+✔ main(): the preseed is handed the LAUNCH folder and this host's config dir (601.774167ms)
+✔ main(): a registration that throws never stops the launch (605.463417ms)
+✔ the harness is the npm shim shape: claude runs as cmd.exe /c claude.cmd (16.203791ms)
+✔ a restart marker on Windows ends claudes whole process tree, not only the cmd.exe of its npm shim (12.635333ms)
+✔ an unproven gate (exit 6) on Windows ends the whole tree before the relaunch (8.2275ms)
+✔ no channel heartbeat at 3 minutes on Windows ends the whole tree before the relaunch (4.910333ms)
+✔ a stop request on Windows ends the whole tree too: the launcher never leaves the real claude behind (4.163542ms)
+✔ a tree that cannot be ended still gets its first process ended, and the launcher says so (9.626667ms)
+✔ a claude that already exited is never sent to the tree ender (its pid may belong to someone else now) (8.838292ms)
+✔ a claude whose exit is already recorded (node sets exitCode just before it emits exit) is never sent to the tree ender (8.072875ms)
+✔ posix is unchanged: a marker relaunch is a plain kill, no tree ender (72.594167ms)
+✔ a native claude.exe is ended by its own kill(): no listing, its children end with its job as on main (9.212916ms)
+✔ a launch through an injected spawn never reaches the real process listing or kill: the default tree ender is for real children only (7.941667ms)
+✔ win32ShimTargets: the shim s own children, born after it, through further cmd.exe layers only, never deeper (0.714791ms)
+✔ win32ShimTargets: a root that is no cmd.exe shim (a native claude.exe) has its children left to its own job, as on main (0.991292ms)
+✔ endWin32ShimTree: lists processes with System32 powershell, ends the claude under the shim and then the shim, nothing deeper (0.657708ms)
+✔ endWin32ShimTree fails closed: no SystemRoot, a failed or timed out listing, a shim not listed, a junk pid: false, nothing ended (0.157375ms)
+✔ a relaunch clears the console before the new claude starts: the new helper never reads the killed claudes gate (8.094917ms)
+✔ every relaunch path clears first: unproven gate, no heartbeat, keep-alive after an exit (12.584291ms)
+✔ the first launch never clears: a person running hoai keeps their screen (2.03375ms)
+✔ clearWin32Console: leaves a stale alternate screen, erases the screen and the scrollback, homes the cursor; a TTY only (0.265708ms)
+✔ an unproven gate inside the fresh sessions window relaunches the FRESH session, not the rejected one (7.961875ms)
+✔ an update restart inside the window resumes the fresh session once it has a transcript (10.531334ms)
+✔ the fresh session carried through a relaunch is judged again: pinned once THAT launch outlives the window (9.569792ms)
+✔ the window still does its job: a fresh session that dies by itself inside it leaves the previous pin (6.794375ms)
+✔ a pin the daemon rewrote inside the window names the live session, and wins over the carry (12.115125ms)
+✔ after the window committed the fresh session, a relaunch resumes the pin as always (9.434916ms)
+✔ health relaunches have their own budget: 3 of them in an hour leave the update restarts theirs (17.605667ms)
+✔ update restarts have their own budget: 3 of them in an hour leave the health relaunches theirs (22.177334ms)
+✔ the health budget still bounds itself: the fourth health relaunch in an hour is refused, and names its own budget (45.5945ms)
+✔ the health budget is a rolling hour too (14.958334ms)
+✔ no heartbeat at 3 minutes while the shared Claude login has failed: an alert, no relaunch (37.724417ms)
+✔ the login alert spends nothing: once the login works again, a launch without a heartbeat is relaunched once (51.907208ms)
+✔ the check comes back after a login alert: alerted once while the login stays failed, then the one relaunch once it works (75.483458ms)
+✔ a failure stays a failure: once it is older than 10 minutes and nobody has answered since, still no relaunch (219.434292ms)
+✔ a heartbeat that arrives after a login alert ends the checks: nothing relaunched, nothing armed (77.4955ms)
+✔ the login alert names the failure it was made for, first seen when, and says hoai looks again (38.37325ms)
+✔ a heartbeat in time never asks about the login (40.93975ms)
+✔ fleetClaudeLoginFailure: the newest login record across every agent here is a failure: failing, with the CLIs words (0.493625ms)
+✔ fleetClaudeLoginFailure: any agent that answered after the newest failure proves the login works (0.097917ms)
+✔ fleetClaudeLoginFailure: only fresh records count (10 minutes, the daemons rule), and stale files are not even read (0.158792ms)
+✔ fleetClaudeLoginFailure: a sidechain or synthetic turn is no proof the login works; a usage cap is not a login failure (0.215625ms)
+✔ fleetClaudeLoginFailure: nothing to read (no projects folder, junk lines) is no failure (0.139292ms)
+✔ claudeSignedInSince: the CLI rewrote its credentials file after the failure (a /login, a refresh); only its time is looked at (0.1035ms)
+✔ fleetClaudeLoginAnswered: an agent answered after the failure, at any age; a newer failure, or nothing, is no answer (0.258958ms)
+✔ loginSignalOf mirrors lib/claude-login.ts extractLoginSignal on every record shape (hoai runs under bare node, no TS import) (0.230584ms)
+✔ superviseClaude reads the store the CLI signs in through: CLAUDE_CONFIG_DIR when set, else <home>\.claude (12.861917ms)
+✔ the default detector reads real transcripts: an expired login another agent recorded on disk is an alert, not a relaunch, until an agent answers after it (80.095125ms)
+✔ the default detector sees a sign-in on disk: the CLI rewrote the store s credentials file after the failure, so the one relaunch follows (40.576959ms)
+✔ readFileTail and fileMtimeMs on real files: the tail starts at a whole line, a missing file is null (0.637083ms)
+✔ marketplace real boot: a non agent folder stays dormant with no tools, channel or lock (362.292334ms)
+✔ marketplace real boot: both agents attach in their own home and never as the other agent (1106.338542ms)
+✔ marketplace real boot: explicit scope opts in outside home, inherited scope does not (791.819667ms)
+✔ marketplace real boot: unreadable scope fails open (670.116375ms)
+✔ marketplace real boot: a sole agent in its recorded home needs no folder pin (768.759166ms)
+✔ marketplace real boot: two unpinned recorded homes select only their own agent (1036.224458ms)
+[hoai] install method: marketplace; channel plugin:hoai@hoai
+[hoai] launching with legacy credentials available; the daemon self-resolves from its effective configuration.
+✔ marketplace real boot: unsubstituted manifest identity stays dormant (352.186541ms)
+[hoai] install method: marketplace; channel plugin:hoai@hoai
+[hoai] launching with explicit credentials available; the daemon self-resolves from its effective configuration.
+✔ market2 launcher: legacy plus numbered launches the effective agent 42 (817.465875ms)
+✔ market2 launcher: explicit path plus numbered launches the effective agent 42 (762.8325ms)
+[hoai] install method: marketplace; channel plugin:hoai@hoai
+[hoai] launching with legacy credentials available; the daemon self-resolves from its effective configuration.
+✔ market2 launcher: legacy without home launches the effective agent 42 (899.71675ms)
+[hoai] install method: marketplace; channel plugin:hoai@hoai
+[hoai] launching with explicit credentials available; the daemon self-resolves from its effective configuration.
+[hoai] install method: marketplace; channel plugin:hoai@hoai
+[hoai] launching with legacy credentials available; the daemon self-resolves from its effective configuration.
+✔ market2 launcher: explicit legacy without home launches the effective agent 42 (812.383625ms)
+✔ market3 launcher: manifest agent 42 overrides legacy 41 without losing reply (806.536791ms)
+✔ market2 diagnostics: installed marketplace CLI reports effective home and the legacy setting (180.132542ms)
+✔ marketplace: a non agent folder is dormant even with an inherited agent identity (1.325333ms)
+✔ marketplace: the agent home attaches without launcher scope (0.122583ms)
+✔ marketplace: two agents attach only in their own home (0.301417ms)
+✔ marketplace: a matching launcher scope opts in outside the home, inherited scope does not (0.158125ms)
+✔ marketplace: explicit opt-ins and malformed settings fail open (0.275542ms)
+✔ marketplace: unreadable evidence fails open and symlink homes match (0.107417ms)
+✔ marketplace: an unsubstituted assistant setting is absent on unpaired and multi-agent hosts (0.120958ms)
+✔ marketplace: a rejected credentials file cannot lend its home to another agent (0.090958ms)
+✔ marketplace: two recorded homes resolve without pins or environment, but a shared home is ambiguous (0.702667ms)
+✔ marketplace: canonical home proof reaches downstream home confirmation (1.482542ms)
+✔ market2 forecast: pin admission still forecasts its strict refusal (1.7095ms)
+✔ market2 forecast: recorded home admission still forecasts its strict refusal (0.489166ms)
+✔ market2 diagnostics: doctor preserves the effective marketplace home mode (0.17525ms)
+✔ mapSupervisedKind: launcher is live, service files are service, anything else is none (0.635042ms)
+✔ buildObservedMarketplaceState: a marketplace ObservedMachineState with exactly one agent, this daemon (0.6825ms)
+✔ buildObservedMarketplaceState: tolerates a string latest, a missing latest, and no observation at all (0.092292ms)
+✔ observeMarketplaceState: hands plugin-cli a null-on-missing readFile and a never-throwing exists (0.17025ms)
+✔ pendingMarketplaceRestartVersion: installed differs from running means a restart is all that is missing (0.062375ms)
+✔ blocked plans map to blocked with the planner reason (or a generic token) (0.175583ms)
+✔ nothing_to_do maps to no-update with the latest version, unless a newer version is already installed (0.084875ms)
+✔ a plan runs through executePlan with the daemon-ladder stubs and maps progress to {id, kind, state, targetVersion} (0.193334ms)
+✔ installed falls back to the plan target when the executor names no version (0.084542ms)
+✔ an executor failure maps to failed with the step, the rollback flag, and scrubbed diagnostics (1.591916ms)
+✔ a throwing executor, a throwing planner, or a missing module never escape: they are named failures (3.417792ms)
+✔ a throwing report callback is logged and never breaks the update (0.1515ms)
+✔ marketplaceJsonPath follows the Claude Code layout for the hoai marketplace (0.044042ms)
+✔ readLocalMarketplaceLatestSync: the parser decides, a missing or unparseable file is null (1.407ms)
+✔ observeMarketplaceLatest: the full observation wins (a directory-source marketplace outside the config dir), the fixed path is the fallback (0.605667ms)
+✔ refreshMarketplaceLatest: runs the marketplace update with a timeout, then observes the local files; the CLI can fail freely (0.741375ms)
+✔ createMarketplaceLatestTracker: current() is the local read, the network refresh is delayed, periodic, single-flight, and quiet on failure (0.237458ms)
+✔ executorFs exposes the executor surface over node fs (1.808667ms)
+✔ a temp folder reached through a link is handed over as its real path (1.042958ms)
+✔ on Windows the temp folder is left alone, and a folder that cannot be resolved changes nothing (0.591125ms)
+✔ the runner resolves the temp folder before it starts any test family (0.336209ms)
+✔ a scratch folder is made under the OS temp folder, and a test that finishes leaves none (134.646875ms)
+✔ a test that throws still leaves none (120.763959ms)
+✔ a test that calls process.exit still leaves none (109.639292ms)
+✔ removeScratchDir removes at once, twice is fine, and the exit sweep then has nothing to trip over (114.77375ms)
+✔ a folder the test already removed itself, or turned into a file, does not fail the exit sweep (115.727625ms)
+✔ a test that chdir-ed into its scratch folder still leaves none (121.436375ms)
+✔ a link inside a scratch folder is removed as a link, never followed into what it points at (113.361167ms)
+✔ every test file that calls mkdtemp uses scratchDir or removes what it made (35.813125ms)
+✔ the convention check can fail: a source with a bare mkdtemp and no removal is an offender (0.237042ms)
+ℹ tests 403
+ℹ suites 0
+ℹ pass 396
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 7
+ℹ todo 0
+ℹ duration_ms 18438.550833

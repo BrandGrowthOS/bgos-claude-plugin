@@ -1,0 +1,5 @@
+Independent read-only review of the production diff and real cache reproductions.
+Finding: legacy matching reports for multiple missions were discarded because implicit active lookup can return 409. A regression failed before the exact-state observation branch and passes afterward. The final test asserts both mission ids contribute passing goals.
+Correction reviewed: identical mission id/status/normalized goals attach only passing and checkedAt at the existing revision, behind the per-chat fence. No remaining correctness finding in versioned ordering, tombstones, equal-revision metadata, chat fences or eviction.
+Contract limit: unversioned changed goals need stable versioned snapshots. Unversioned completion cannot establish a closure revision through an empty active lookup; it is rejected until a versioned report or snapshot arrives. No timestamp is synthesized.
+Reviewer ran controlled in-memory checks, not the full suite. Full suite evidence is separate.

@@ -1,0 +1,883 @@
+/**
+ * lib/agent-checkup.mjs: the PURE classifier and planner of the check up pass
+ * (PLAN-doctor.md section 4.2, packet P2). One table per cause C3 to C9, then
+ * the two invariants that must never break:
+ *
+ *   never a restart or a start for C8 (signed out) or C9 (usage limit); only the C3 connector restart (P3)
+ *   never a restart or a start when the safe table says unsafe, or a gate says no
+ *
+ * Every observation is a fixture; nothing here reads a disk, a process or the
+ * network. A one-line mutant of a guard in the module turns a named row red.
+ *
+ * Run: npx tsx --test test/agent-checkup.test.ts
+ */
+
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+import {
+  BEACON_STALE_MS,
+  DRAIN_MAX_MS,
+  LIMIT_ENTER_MIN_INTERVAL_MS,
+  PASS_DEADLINE_MS,
+  VALIDATION_WINDOW_MS,
+  WEDGE_WINDOW_MS,
+  checkupPass,
+  diagnoseAgent,
+  planRepairs,
+} from '../lib/agent-checkup.mjs'
+import { MAX_ATTEMPTS_PER_TARGET, RESTART_MIN_INTERVAL_MS } from '../lib/keepalive-plan.mjs'
+
+const NOW = Date.parse('2026-10-23T12:00:00Z')
+const MIN = 60_000
+
+/** A healthy agent: claude and daemon up, versions equal, nothing owed, no gate spent. */
+function healthy(): Record<string, any> {
+  return {
+    now: NOW,
+    assistantId: '42',
+    claudeAlive: true,
+    daemonAlive: true,
+    descendants: [],
+    agentState: null,
+    stateFresh: false,
+    activityMs: [NOW - 60 * MIN],
+    beaconHeartbeatAtMs: NOW - 10_000,
+    launchStatus: null,
+    hasSupervisor: true,
+    hasLaunchRecipe: false,
+    messagesDeliveredAtMs: null,
+    lastTranscriptActivityAtMs: NOW - 60 * MIN,
+    stuckScreen: null,
+    runningVersion: '0.74.0',
+    installedVersion: '0.74.0',
+    publishedVersion: '0.74.0',
+    belowFloor: false,
+    update: { jobDeadlineAtMs: null, validationPendingSinceMs: null, drainSinceMs: null, stagedNeverApplied: false },
+    transcriptError: null,
+    lastRestartAtMs: null,
+    attempts: 0,
+  }
+}
+
+function obs(over: Record<string, any> = {}): any {
+  return { ...healthy(), ...over }
+}
+
+/** A fresh agent-state.json as the daemon publishes it (turnSignal hooks). */
+function freshState(over: Record<string, any> = {}): Record<string, any> {
+  return {
+    assistantId: '42',
+    pid: 4242,
+    claudePid: 4243,
+    runningVersion: '0.74.0',
+    pendingRestartVersion: null,
+    turnInFlight: false,
+    pendingMessages: 0,
+    pendingPermissions: 0,
+    activeOperations: 0,
+    lastActivityAtMs: NOW - 60 * MIN,
+    sessionId: null,
+    updatedAtMs: NOW - 5_000,
+    turnSignal: 'hooks',
+    ...over,
+  }
+}
+
+function causes(findings: Array<{ cause: string }>): string[] {
+  return findings.map((f) => f.cause)
+}
+
+function steps(actions: Array<{ action: string; outcome: string }>): string[] {
+  return actions.map((a) => `${a.action}:${a.outcome}`)
+}
+
+const MUTATING = new Set(['restart', 'start'])
+
+function plannedRestart(actions: Array<{ action: string; outcome: string }>): boolean {
+  return actions.some((a) => MUTATING.has(a.action) && a.outcome === 'planned')
+}
+
+// -- Healthy and unreadable ------------------------------------------------------------------
+
+test('healthy agent: no findings, no actions', () => {
+  const pass = checkupPass(obs())
+  assert.deepEqual(pass.findings, [])
+  assert.deepEqual(pass.actions, [])
+})
+
+test('an unreadable process table names no process cause (unknown is not a diagnosis)', () => {
+  for (const over of [{ claudeAlive: null }, { daemonAlive: null }, { claudeAlive: null, daemonAlive: null }]) {
+    const findings = diagnoseAgent(obs(over))
+    assert.deepEqual(causes(findings).filter((c) => ['C3', 'C4', 'C5'].includes(c)), [], JSON.stringify(over))
+  }
+})
+
+// -- C3: daemon down, session alive ----------------------------------------------------------
+
+test('C3: a live claude with no live daemon is daemon_down, fixable', () => {
+  const findings = diagnoseAgent(obs({ daemonAlive: false }))
+  assert.deepEqual(causes(findings), ['C3'])
+  assert.equal(findings[0].code, 'daemon_down')
+  assert.equal(findings[0].fixable, true)
+})
+
+test('C3: a stale beacon heartbeat while claude runs is beacon_stale', () => {
+  const findings = diagnoseAgent(obs({ beaconHeartbeatAtMs: NOW - BEACON_STALE_MS - 1 }))
+  assert.deepEqual(causes(findings), ['C3'])
+  assert.equal(findings[0].code, 'beacon_stale')
+})
+
+test('C3: a fresh beacon and an unknown beacon are not stale', () => {
+  assert.deepEqual(diagnoseAgent(obs({ beaconHeartbeatAtMs: NOW - BEACON_STALE_MS + 1 })), [])
+  assert.deepEqual(diagnoseAgent(obs({ beaconHeartbeatAtMs: null })), [])
+})
+
+test('C3 plan: restart then verify, when the safe table says safe', () => {
+  const pass = checkupPass(obs({ daemonAlive: false }))
+  assert.deepEqual(steps(pass.actions), ['restart:planned', 'verify:planned'])
+  assert.deepEqual(pass.actions[0].causes, ['C3'])
+  assert.equal(pass.actions[1].via, 'boot_hello')
+  assert.equal(pass.actions[1].deadlineMs, PASS_DEADLINE_MS)
+})
+
+test('C3 plan: a turn in flight holds the restart as waiting_idle with the reason', () => {
+  const pass = checkupPass(obs({ daemonAlive: false, stateFresh: true, agentState: freshState({ turnInFlight: true }) }))
+  assert.deepEqual(steps(pass.actions), ['restart:skipped'])
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+  assert.equal(pass.actions[0].state, 'waiting_idle')
+})
+
+// -- C4: dead session --------------------------------------------------------------------------
+
+test('C4: no claude and no daemon is not_running, fixable with a supervisor', () => {
+  const findings = diagnoseAgent(obs({ claudeAlive: false, daemonAlive: false }))
+  assert.deepEqual(causes(findings), ['C4'])
+  assert.equal(findings[0].code, 'not_running')
+  assert.equal(findings[0].fixable, true)
+})
+
+test('C4: a launch recipe is as good as a supervisor', () => {
+  const findings = diagnoseAgent(obs({ claudeAlive: false, daemonAlive: false, hasSupervisor: false, hasLaunchRecipe: true }))
+  assert.equal(findings[0].fixable, true)
+})
+
+test('C4 plan: a dead session is started, then verified', () => {
+  const pass = checkupPass(obs({ claudeAlive: false, daemonAlive: false }))
+  assert.deepEqual(steps(pass.actions), ['start:planned', 'verify:planned'])
+  assert.deepEqual(pass.actions[0].causes, ['C4'])
+})
+
+test('C4: a named launch failure is reported, never retried in a loop', () => {
+  for (const outcome of ['exited-during-startup', 'plugin-root-missing', 'node-missing', 'gate-trust', 'hoai-exited-without-status']) {
+    const over = { claudeAlive: false, daemonAlive: false, launchStatus: { outcome } }
+    const findings = diagnoseAgent(obs(over))
+    assert.deepEqual(causes(findings), ['C4'], outcome)
+    assert.equal(findings[0].code, 'launch_failed', outcome)
+    assert.equal(findings[0].fixable, false, outcome)
+    assert.match(findings[0].evidence, new RegExp(outcome), outcome)
+    const pass = checkupPass(obs(over))
+    assert.deepEqual(steps(pass.actions), ['report:planned'], outcome)
+    assert.equal(pass.actions[0].ownerAction?.kind, 'fix_launch', outcome)
+  }
+})
+
+test('C4: a launch that is merely starting or waiting is not a failure', () => {
+  for (const outcome of ['starting', 'waiting-for-incumbent']) {
+    const findings = diagnoseAgent(obs({ claudeAlive: false, daemonAlive: false, launchStatus: { outcome } }))
+    assert.equal(findings[0].code, 'not_running', outcome)
+  }
+})
+
+test('C4: no supervisor and no recipe is needs_first_launch, reported not started', () => {
+  const over = { claudeAlive: false, daemonAlive: false, hasSupervisor: false, hasLaunchRecipe: false }
+  const findings = diagnoseAgent(obs(over))
+  assert.equal(findings[0].code, 'needs_first_launch')
+  assert.equal(findings[0].fixable, false)
+  assert.deepEqual(steps(checkupPass(obs(over)).actions), ['report:planned'])
+})
+
+test('C4: live-but-not-signed-in is the login cause C8, not a dead session', () => {
+  const findings = diagnoseAgent(obs({ claudeAlive: false, daemonAlive: false, launchStatus: { outcome: 'live-but-not-signed-in' } }))
+  assert.deepEqual(causes(findings), ['C8'])
+})
+
+// -- C5: wedged session ------------------------------------------------------------------------
+
+test('C5: owner messages delivered and no transcript activity for the wedge window', () => {
+  const findings = diagnoseAgent(
+    obs({ messagesDeliveredAtMs: NOW - WEDGE_WINDOW_MS - MIN, lastTranscriptActivityAtMs: NOW - WEDGE_WINDOW_MS - 2 * MIN }),
+  )
+  assert.deepEqual(causes(findings), ['C5'])
+  assert.equal(findings[0].code, 'no_reply')
+  assert.equal(findings[0].fixable, true)
+})
+
+test('C5: delivered less than the wedge window ago is a think, not a wedge', () => {
+  const findings = diagnoseAgent(obs({ messagesDeliveredAtMs: NOW - WEDGE_WINDOW_MS + MIN, lastTranscriptActivityAtMs: NOW - 30 * MIN }))
+  assert.deepEqual(findings, [])
+})
+
+test('C5: transcript activity after the delivery is an agent that answered', () => {
+  const findings = diagnoseAgent(obs({ messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 2 * MIN }))
+  assert.deepEqual(findings, [])
+})
+
+test('C5: nothing delivered means nothing is owed', () => {
+  assert.deepEqual(diagnoseAgent(obs({ messagesDeliveredAtMs: null, lastTranscriptActivityAtMs: null })), [])
+})
+
+test('C5: an unanswerable screen is stuck_screen, with the screen named', () => {
+  const findings = diagnoseAgent(obs({ stuckScreen: 'trust this folder' }))
+  assert.deepEqual(causes(findings), ['C5'])
+  assert.equal(findings[0].code, 'stuck_screen')
+  assert.match(findings[0].evidence, /trust this folder/)
+})
+
+test('C5 plan: a wedged idle session is restarted and verified', () => {
+  const pass = checkupPass(
+    obs({
+      messagesDeliveredAtMs: NOW - 30 * MIN,
+      lastTranscriptActivityAtMs: NOW - 40 * MIN,
+      stateFresh: true,
+      agentState: freshState({ turnSignal: 'hooks' }),
+      activityMs: [NOW - 25 * MIN],
+    }),
+  )
+  assert.deepEqual(steps(pass.actions), ['restart:planned', 'verify:planned'])
+})
+
+test('C5 plan: it looks busy, so it is not interrupted (waiting_idle, reason named)', () => {
+  const pass = checkupPass(
+    obs({
+      messagesDeliveredAtMs: NOW - 30 * MIN,
+      lastTranscriptActivityAtMs: NOW - 40 * MIN,
+      stateFresh: true,
+      agentState: freshState({ turnInFlight: true, lastActivityAtMs: NOW - 3 * MIN }),
+      activityMs: [NOW - 3 * MIN],
+    }),
+  )
+  assert.deepEqual(steps(pass.actions), ['restart:skipped'])
+  assert.equal(pass.actions[0].state, 'waiting_idle')
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+})
+
+test('C5: a silence that the login or the usage limit explains is not also called a wedge', () => {
+  const wedged = { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN }
+  assert.deepEqual(causes(diagnoseAgent(obs({ ...wedged, transcriptError: { kind: 'authentication_failed', resetAt: null } }))), ['C8'])
+  assert.deepEqual(causes(diagnoseAgent(obs({ ...wedged, transcriptError: { kind: 'rate_limit', resetAt: '2026-10-23T15:00:00Z' } }))), ['C9'])
+})
+
+// -- C6: stale plugin --------------------------------------------------------------------------
+
+test('C6: a daemon running below the installed version is stale_plugin', () => {
+  const findings = diagnoseAgent(obs({ runningVersion: '0.73.0', installedVersion: '0.74.0', publishedVersion: '0.74.0' }))
+  assert.deepEqual(causes(findings), ['C6'])
+  assert.equal(findings[0].code, 'stale_plugin')
+  assert.equal(findings[0].fixable, true)
+  assert.equal(findings[0].from, '0.73.0')
+  assert.equal(findings[0].to, '0.74.0')
+})
+
+test('C6: the published version counts when it is newer than the installed one', () => {
+  const findings = diagnoseAgent(obs({ runningVersion: '0.74.0', installedVersion: '0.74.0', publishedVersion: '0.75.0' }))
+  assert.equal(findings[0].to, '0.75.0')
+})
+
+test('C6: versions compare as numbers, not text (0.9.0 is below 0.10.0)', () => {
+  const findings = diagnoseAgent(obs({ runningVersion: '0.9.0', installedVersion: '0.10.0', publishedVersion: '0.10.0' }))
+  assert.deepEqual(causes(findings), ['C6'])
+})
+
+test('C6: a running version at or above everything known is current', () => {
+  assert.deepEqual(diagnoseAgent(obs({ runningVersion: '0.75.0', installedVersion: '0.74.0', publishedVersion: '0.74.0' })), [])
+})
+
+test('C6: a restart the daemon says is pending, and the backend floor, also name it', () => {
+  assert.deepEqual(
+    causes(diagnoseAgent(obs({ stateFresh: true, agentState: freshState({ pendingRestartVersion: '0.75.0' }) }))),
+    ['C6'],
+  )
+  assert.deepEqual(causes(diagnoseAgent(obs({ belowFloor: true }))), ['C6'])
+})
+
+test('C6: an unparseable version is unknown, not stale', () => {
+  assert.deepEqual(diagnoseAgent(obs({ runningVersion: 'banana', installedVersion: '0.74.0' })), [])
+  assert.deepEqual(diagnoseAgent(obs({ runningVersion: null })), [])
+})
+
+test('C6 plan: update, then restart to apply it, then verify', () => {
+  const pass = checkupPass(obs({ runningVersion: '0.73.0', installedVersion: '0.74.0' }))
+  assert.deepEqual(steps(pass.actions), ['update:planned', 'restart:planned', 'verify:planned'])
+  assert.deepEqual(pass.actions[0].causes, ['C6'])
+})
+
+test('C6 plan: an unsafe moment still stages the update but holds the restart', () => {
+  const pass = checkupPass(
+    obs({ runningVersion: '0.73.0', installedVersion: '0.74.0', stateFresh: true, agentState: freshState({ pendingMessages: 2 }) }),
+  )
+  assert.deepEqual(steps(pass.actions), ['update:planned', 'restart:skipped'])
+  assert.equal(pass.actions[1].reason, 'pending_messages')
+})
+
+// -- C7: stuck update --------------------------------------------------------------------------
+
+const STUCK: Array<[string, Record<string, any>]> = [
+  ['job_past_deadline', { jobDeadlineAtMs: NOW - 1 }],
+  ['validation_stalled', { validationPendingSinceMs: NOW - VALIDATION_WINDOW_MS - 1 }],
+  ['drain_too_long', { drainSinceMs: NOW - DRAIN_MAX_MS - 1 }],
+  ['staged_not_applied', { stagedNeverApplied: true }],
+]
+
+for (const [code, update] of STUCK) {
+  test(`C7: ${code} is a stuck update, repaired`, () => {
+    const findings = diagnoseAgent(obs({ update: { ...healthy().update, ...update } }))
+    assert.deepEqual(causes(findings), ['C7'])
+    assert.equal(findings[0].code, code)
+    assert.equal(findings[0].fixable, true)
+    const pass = checkupPass(obs({ update: { ...healthy().update, ...update } }))
+    assert.deepEqual(steps(pass.actions), ['repair:planned', 'restart:planned', 'verify:planned'])
+  })
+}
+
+test('C7: an update inside its windows is in progress, not stuck', () => {
+  const update = {
+    jobDeadlineAtMs: NOW + MIN,
+    validationPendingSinceMs: NOW - VALIDATION_WINDOW_MS + MIN,
+    drainSinceMs: NOW - DRAIN_MAX_MS + MIN,
+    stagedNeverApplied: false,
+  }
+  assert.deepEqual(diagnoseAgent(obs({ update })), [])
+})
+
+test('C6 and C7 together get ONE repair, not an update and a repair', () => {
+  const pass = checkupPass(
+    obs({ runningVersion: '0.73.0', installedVersion: '0.74.0', update: { ...healthy().update, stagedNeverApplied: true } }),
+  )
+  assert.deepEqual(causes(pass.findings), ['C6', 'C7'])
+  assert.deepEqual(steps(pass.actions), ['repair:planned', 'restart:planned', 'verify:planned'])
+  assert.deepEqual(pass.actions[0].causes, ['C6', 'C7'])
+})
+
+// -- C8 and C9: reported, never restarted -----------------------------------------------------
+
+test('C8: authentication_failed in the transcript is login_expired, not fixable', () => {
+  const findings = diagnoseAgent(obs({ transcriptError: { kind: 'authentication_failed', resetAt: null } }))
+  assert.deepEqual(causes(findings), ['C8'])
+  assert.equal(findings[0].code, 'login_expired')
+  assert.equal(findings[0].fixable, false)
+})
+
+test('C8 plan: report only, the owner types /login', () => {
+  const pass = checkupPass(obs({ transcriptError: { kind: 'authentication_failed', resetAt: null } }))
+  assert.deepEqual(steps(pass.actions), ['report:planned'])
+  assert.equal(pass.actions[0].ownerAction?.kind, 'login')
+  assert.match(pass.actions[0].ownerAction?.text, /\/login/)
+})
+
+test('C9: rate_limit in the transcript is usage_limit, with the reset time', () => {
+  const findings = diagnoseAgent(obs({ transcriptError: { kind: 'rate_limit', resetAt: '2026-10-23T15:00:00Z' } }))
+  assert.deepEqual(causes(findings), ['C9'])
+  assert.equal(findings[0].code, 'usage_limit')
+  assert.equal(findings[0].fixable, false)
+  assert.equal(findings[0].resetAt, '2026-10-23T15:00:00Z')
+})
+
+test('C9 plan: report only, the reset time is in the words', () => {
+  const pass = checkupPass(obs({ transcriptError: { kind: 'rate_limit', resetAt: '2026-10-23T15:00:00Z' } }))
+  assert.deepEqual(steps(pass.actions), ['report:planned'])
+  assert.equal(pass.actions[0].ownerAction?.kind, 'wait')
+  assert.match(pass.actions[0].ownerAction?.text, /2026-10-23T15:00:00Z/)
+})
+
+test('C9: a limit with no known reset time still reports', () => {
+  const pass = checkupPass(obs({ transcriptError: { kind: 'rate_limit', resetAt: null } }))
+  assert.deepEqual(steps(pass.actions), ['report:planned'])
+  assert.equal(pass.actions[0].ownerAction?.kind, 'wait')
+})
+
+// -- C9 with usage back: ONE Enter on the limit screen (Kc 2026-11-01, msg 180081) -------------------
+//
+// The limit picker ("What do you want to do?") holds every queued message until someone presses
+// Enter. While usage is still out, C9 stays a report. Once usage is back (the reset time passed, or
+// the login on this computer changed after the limit), the safe fix is `free_limit`: one Enter on a
+// screen the watcher has read, at most once an hour. It is not a restart: C9 still blocks those.
+
+const LIMITED = { transcriptError: { kind: 'rate_limit', resetAt: 'Nov 6, 8pm (Asia/Dubai)' } }
+const back = (over: Record<string, any> = {}) => ({
+  ...LIMITED,
+  limitFree: { usageBack: true, how: 'login_changed', keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null, ...over },
+})
+
+test('C9 still limited: reported as before, no free_limit, whatever the key path', () => {
+  for (const limitFree of [
+    undefined,
+    null,
+    { usageBack: false, how: null, keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null },
+    // A proof word without the proof is not usage back: the planner trusts usageBack, never `how` alone.
+    { usageBack: false, how: 'login_changed', keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null },
+    { usageBack: 'yes', how: 'reset_passed', keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null },
+  ]) {
+    const pass = checkupPass(obs({ ...LIMITED, limitFree }))
+    assert.deepEqual(steps(pass.actions), ['report:planned'], JSON.stringify(limitFree))
+    assert.equal(pass.findings[0].fixable, false)
+    assert.equal(pass.actions[0].ownerAction?.kind, 'wait')
+  }
+})
+
+test('C9 with usage back and a key path: fixable, ONE free_limit planned, nothing reported, nothing restarted', () => {
+  for (const how of ['login_changed', 'reset_passed']) {
+    const pass = checkupPass(obs(back({ how })))
+    assert.deepEqual(causes(pass.findings), ['C9'])
+    assert.equal(pass.findings[0].fixable, true, how)
+    assert.equal(pass.findings[0].how, how)
+    assert.deepEqual(steps(pass.actions), ['free_limit:planned'], how)
+    assert.deepEqual(pass.actions[0].causes, ['C9'])
+  }
+})
+
+test('C9 free_limit: a second Enter inside the hour is held, with the time it may run', () => {
+  const held = checkupPass(obs(back({ lastEnterAtMs: NOW - 20 * MIN })))
+  assert.deepEqual(steps(held.actions), ['free_limit:skipped'])
+  assert.deepEqual([held.actions[0].reason, held.actions[0].state], ['one_enter_per_hour', 'waiting_idle'])
+  assert.equal(held.actions[0].retryAtMs, NOW + 40 * MIN)
+  // Exactly an hour after the last Enter it may run again.
+  assert.deepEqual(steps(checkupPass(obs(back({ lastEnterAtMs: NOW - LIMIT_ENTER_MIN_INTERVAL_MS }))).actions), ['free_limit:planned'])
+})
+
+test('C9 with usage back but no way to press here: reported with the one tap fix (Restart now, or Enter in the window)', () => {
+  for (const reason of ['no_tmux', 'no_console', 'unsupported']) {
+    const pass = checkupPass(obs(back({ keyPath: { ok: false, reason } })))
+    assert.equal(pass.findings[0].fixable, false)
+    assert.deepEqual(steps(pass.actions), ['report:planned'], reason)
+    assert.equal(pass.actions[0].ownerAction?.kind, 'press_enter')
+    assert.match(pass.actions[0].ownerAction?.text, /Restart now/)
+    assert.match(pass.actions[0].ownerAction?.text, /Stop and wait for limit to reset/)
+    assert.ok(pass.actions[0].ownerAction!.text.length <= 240)
+  }
+})
+
+test('C9 with usage back still blocks every restart and start but the C3 connector restart', () => {
+  for (const over of [
+    { claudeAlive: false, daemonAlive: false },
+    { runningVersion: '0.73.0', installedVersion: '0.74.0' },
+    { update: { ...healthy().update, stagedNeverApplied: true } },
+  ]) {
+    const pass = checkupPass(obs({ ...over, ...back() }))
+    assert.equal(plannedRestart(pass.actions), false, JSON.stringify(over))
+    for (const a of pass.actions) if (MUTATING.has(a.action)) assert.equal(a.reason, 'blocked_by_usage_limit', JSON.stringify(over))
+  }
+  const connector = checkupPass(obs({ daemonAlive: false, ...back() }))
+  assert.deepEqual(steps(connector.actions), ['free_limit:planned', 'restart:planned', 'verify:planned'])
+})
+
+test('free_limit is only ever planned for C9 with usage back and a key path (every combination)', () => {
+  const kinds = [null, 'rate_limit', 'authentication_failed']
+  const backs = [undefined, null, false, true]
+  const paths = [true, false]
+  const lasts = [null, NOW - 10 * MIN, NOW - 2 * 60 * MIN]
+  let cases = 0
+  for (const kind of kinds)
+    for (const usageBack of backs)
+      for (const ok of paths)
+        for (const lastEnterAtMs of lasts) {
+          const limitFree = usageBack === undefined ? undefined : { usageBack, how: usageBack ? 'reset_passed' : null, keyPath: { ok, reason: ok ? 'tmux' : 'no_tmux' }, lastEnterAtMs }
+          const pass = checkupPass(obs({ transcriptError: kind ? { kind, resetAt: null } : null, limitFree }))
+          const frees = pass.actions.filter((a: any) => a.action === 'free_limit')
+          const allowed = kind === 'rate_limit' && usageBack === true && ok
+          assert.equal(frees.length, allowed ? 1 : 0, JSON.stringify({ kind, limitFree }))
+          if (allowed) assert.equal(frees[0].outcome, lastEnterAtMs === NOW - 10 * MIN ? 'skipped' : 'planned')
+          cases++
+        }
+  assert.equal(cases, 72)
+})
+
+test('the hour between two Enters is the same in the planner and in the limit screen module', async () => {
+  // Both modules are pure and import nothing of each other, so the one number is pinned here.
+  const screen = await import('../lib/limit-screen.mjs')
+  assert.equal(LIMIT_ENTER_MIN_INTERVAL_MS, screen.LIMIT_ENTER_MIN_INTERVAL_MS)
+  assert.equal(LIMIT_ENTER_MIN_INTERVAL_MS, 60 * MIN)
+})
+
+test('C8 and C9 are reported FIRST, before any other action, in the same pass', () => {
+  const pass = checkupPass(
+    obs({ daemonAlive: false, runningVersion: '0.73.0', installedVersion: '0.74.0', transcriptError: { kind: 'authentication_failed', resetAt: null } }),
+  )
+  assert.equal(pass.actions[0].action, 'report')
+  assert.deepEqual(pass.actions[0].causes, ['C8'])
+})
+
+// -- Never a restart for C8 or C9 --------------------------------------------------------------
+
+test('never a restart or a start for C8: even when every other gate is open', () => {
+  for (const over of [
+    {},
+    { claudeAlive: false, daemonAlive: false },
+    { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN },
+    { runningVersion: '0.73.0', installedVersion: '0.74.0' },
+    { update: { ...healthy().update, stagedNeverApplied: true } },
+  ]) {
+    const pass = checkupPass(obs({ ...over, transcriptError: { kind: 'authentication_failed', resetAt: null } }))
+    assert.equal(plannedRestart(pass.actions), false, JSON.stringify(over))
+    for (const a of pass.actions) {
+      if (MUTATING.has(a.action)) assert.equal(a.reason, 'blocked_by_login', JSON.stringify(over))
+    }
+  }
+})
+
+test('never a restart or a start for C9: even when every other gate is open', () => {
+  for (const over of [
+    {},
+    { claudeAlive: false, daemonAlive: false },
+    { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN },
+    { runningVersion: '0.73.0', installedVersion: '0.74.0' },
+    { update: { ...healthy().update, stagedNeverApplied: true } },
+  ]) {
+    const pass = checkupPass(obs({ ...over, transcriptError: { kind: 'rate_limit', resetAt: null } }))
+    assert.equal(plannedRestart(pass.actions), false, JSON.stringify(over))
+    for (const a of pass.actions) {
+      if (MUTATING.has(a.action)) assert.equal(a.reason, 'blocked_by_usage_limit', JSON.stringify(over))
+    }
+  }
+})
+
+// P3 (brief decision): the connector is not the model. Restarting a dead daemon needs no login and
+// no quota, and the daemon is what carries the login or limit report, so C3 is fixed in the same pass
+// that reports C8 or C9. Nothing else is restarted or started for them.
+test('C3 under C8 or C9: the dead connector is restarted and verified, the login or limit still reported first', () => {
+  for (const [kind, code] of [['authentication_failed', 'login_expired'], ['rate_limit', 'usage_limit']] as const) {
+    for (const over of [{ daemonAlive: false }, { beaconHeartbeatAtMs: NOW - 10 * MIN }]) {
+      const pass = checkupPass(obs({ ...over, transcriptError: { kind, resetAt: null } }))
+      assert.deepEqual(steps(pass.actions), ['report:planned', 'restart:planned', 'verify:planned'], `${kind} ${JSON.stringify(over)}`)
+      assert.equal(pass.actions[0].code, code)
+      assert.deepEqual(pass.actions[1].causes, ['C3'])
+    }
+  }
+})
+
+test('C3 under C8 still goes through the safe table and the restart budget', () => {
+  const login = { transcriptError: { kind: 'authentication_failed', resetAt: null } }
+  const busy = checkupPass(obs({ ...login, daemonAlive: false, stateFresh: true, agentState: freshState({ turnInFlight: true }) }))
+  assert.deepEqual(steps(busy.actions), ['report:planned', 'restart:skipped'])
+  assert.equal(busy.actions[1].reason, 'turn_in_flight')
+  const spent = checkupPass(obs({ ...login, daemonAlive: false, lastRestartAtMs: NOW - MIN }))
+  assert.deepEqual(steps(spent.actions), ['report:planned', 'restart:skipped'])
+  assert.equal(spent.actions[1].reason, 'restart_rate_limited')
+})
+
+test('C3 under C8 with a stale plugin: the restart that fixes the connector applies the staged update too', () => {
+  const pass = checkupPass(
+    obs({ daemonAlive: false, runningVersion: '0.73.0', installedVersion: '0.74.0', transcriptError: { kind: 'authentication_failed', resetAt: null } }),
+  )
+  assert.deepEqual(steps(pass.actions), ['report:planned', 'update:planned', 'restart:planned', 'verify:planned'])
+  assert.deepEqual(pass.actions[2].causes, ['C3', 'C6'])
+})
+
+test('C8 with a stale plugin: the update is still staged, nothing is restarted', () => {
+  const pass = checkupPass(
+    obs({ runningVersion: '0.73.0', installedVersion: '0.74.0', transcriptError: { kind: 'authentication_failed', resetAt: null } }),
+  )
+  assert.deepEqual(steps(pass.actions), ['report:planned', 'update:planned', 'restart:skipped'])
+})
+
+test('a named launch failure with a stale plugin: the update is staged, the agent is not restarted into the same failure', () => {
+  for (const [outcome, code] of [['exited-during-startup', 'launch_failed']]) {
+    const pass = checkupPass(
+      obs({ claudeAlive: false, daemonAlive: false, launchStatus: { outcome }, runningVersion: '0.73.0', installedVersion: '0.74.0' }),
+    )
+    assert.deepEqual(steps(pass.actions), ['report:planned', 'update:planned', 'restart:skipped'])
+    assert.equal(pass.actions[2].reason, code)
+  }
+  const first = checkupPass(
+    obs({ claudeAlive: false, daemonAlive: false, hasSupervisor: false, runningVersion: '0.73.0', installedVersion: '0.74.0' }),
+  )
+  assert.equal(plannedRestart(first.actions), false)
+  assert.equal(first.actions.find((a) => MUTATING.has(a.action))?.reason, 'needs_first_launch')
+})
+
+test('a signed out launch is C8 and starts nothing, even with a supervisor', () => {
+  const pass = checkupPass(obs({ claudeAlive: false, daemonAlive: false, launchStatus: { outcome: 'live-but-not-signed-in' } }))
+  assert.deepEqual(causes(pass.findings), ['C8'])
+  assert.equal(plannedRestart(pass.actions), false)
+})
+
+// -- Never a kill when unsafe, and the gates ---------------------------------------------------
+
+const UNSAFE: Array<[string, Record<string, any>]> = [
+  ['turn_in_flight', { stateFresh: true, agentState: freshState({ turnInFlight: true }) }],
+  ['pending_messages', { stateFresh: true, agentState: freshState({ pendingMessages: 1 }) }],
+  ['pending_permission', { stateFresh: true, agentState: freshState({ pendingPermissions: 1 }) }],
+  ['background_job', { descendants: ['/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh && sleep 900'] }],
+  ['process_tree_unreadable', { descendants: null }],
+  ['recent_activity', { activityMs: [NOW - 2 * MIN] }],
+]
+
+for (const [reason, unsafe] of UNSAFE) {
+  test(`never a kill when unsafe: ${reason} holds a C3 restart, waiting_idle`, () => {
+    const pass = checkupPass(obs({ daemonAlive: false, ...unsafe }))
+    assert.equal(plannedRestart(pass.actions), false)
+    assert.deepEqual(steps(pass.actions), ['restart:skipped'])
+    assert.equal(pass.actions[0].reason, reason)
+    assert.equal(pass.actions[0].state, 'waiting_idle')
+  })
+}
+
+test('a restart gate that says no is a skipped step with its reason and state', () => {
+  const rateLimited = checkupPass(obs({ daemonAlive: false, lastRestartAtMs: NOW - RESTART_MIN_INTERVAL_MS + MIN }))
+  assert.deepEqual(steps(rateLimited.actions), ['restart:skipped'])
+  assert.equal(rateLimited.actions[0].reason, 'restart_rate_limited')
+
+  const exhausted = checkupPass(obs({ daemonAlive: false, attempts: MAX_ATTEMPTS_PER_TARGET }))
+  assert.deepEqual(steps(exhausted.actions), ['restart:skipped'])
+  assert.equal(exhausted.actions[0].reason, 'attempts_exhausted')
+  assert.equal(exhausted.actions[0].state, 'failed')
+})
+
+test('a restart exactly at the rate limit edge is allowed', () => {
+  const pass = checkupPass(obs({ daemonAlive: false, lastRestartAtMs: NOW - RESTART_MIN_INTERVAL_MS }))
+  assert.equal(plannedRestart(pass.actions), true)
+})
+
+test('one restart per pass, however many causes want one', () => {
+  const pass = checkupPass(
+    obs({
+      daemonAlive: false,
+      messagesDeliveredAtMs: NOW - 30 * MIN,
+      lastTranscriptActivityAtMs: NOW - 40 * MIN,
+      runningVersion: '0.73.0',
+      installedVersion: '0.74.0',
+      update: { ...healthy().update, stagedNeverApplied: true },
+    }),
+  )
+  assert.equal(pass.actions.filter((a: any) => MUTATING.has(a.action)).length, 1)
+  assert.equal(pass.actions.filter((a: any) => a.action === 'verify').length, 1)
+  const restart = pass.actions.find((a) => a.action === 'restart')
+  assert.deepEqual(restart?.causes, ['C3', 'C5', 'C6', 'C7'])
+})
+
+test('the order is: reports, then update or repair, then restart or start, then verify', () => {
+  const pass = checkupPass(
+    obs({
+      daemonAlive: false,
+      runningVersion: '0.73.0',
+      installedVersion: '0.74.0',
+      transcriptError: { kind: 'rate_limit', resetAt: null },
+    }),
+  )
+  // The dead connector (C3) is restarted under the usage limit too (P3), so the verify follows it.
+  assert.deepEqual(pass.actions.map((a: any) => a.action), ['report', 'update', 'restart', 'verify'])
+  const clean = checkupPass(obs({ daemonAlive: false, runningVersion: '0.73.0', installedVersion: '0.74.0' }))
+  assert.deepEqual(clean.actions.map((a: any) => a.action), ['update', 'restart', 'verify'])
+})
+
+test('verify is planned only when something was actually changed', () => {
+  assert.equal(checkupPass(obs({ transcriptError: { kind: 'rate_limit', resetAt: null } })).actions.some((a: any) => a.action === 'verify'), false)
+  assert.equal(checkupPass(obs({ daemonAlive: false, stateFresh: true, agentState: freshState({ turnInFlight: true }) })).actions.some((a: any) => a.action === 'verify'), false)
+})
+
+// -- The invariants, over the whole cross product ----------------------------------------------
+
+test('invariant: no planned restart or start under C8 or C9 (but the C3 connector restart), an unsafe moment or a closed gate (every combination)', () => {
+  const flags: Array<[string, Record<string, any>]> = [
+    ['login', { transcriptError: { kind: 'authentication_failed', resetAt: null } }],
+    ['limit', { transcriptError: { kind: 'rate_limit', resetAt: null } }],
+    // Usage back (one Enter may free the limit screen) changes nothing about restarts.
+    ['back', { limitFree: { usageBack: true, how: 'reset_passed', keyPath: { ok: true, reason: 'tmux' }, lastEnterAtMs: null } }],
+    ['daemon', { daemonAlive: false }],
+    ['dead', { claudeAlive: false, daemonAlive: false }],
+    ['wedged', { messagesDeliveredAtMs: NOW - 30 * MIN, lastTranscriptActivityAtMs: NOW - 40 * MIN }],
+    ['stale', { runningVersion: '0.73.0', installedVersion: '0.74.0' }],
+    ['stuck', { update: { ...healthy().update, stagedNeverApplied: true } }],
+  ]
+  const safety: Array<[string, boolean, Record<string, any>]> = [
+    ['idle', true, {}],
+    ...UNSAFE.map(([name, over]): [string, boolean, Record<string, any>] => [name, false, over]),
+  ]
+  const budgets: Array<[string, boolean, Record<string, any>]> = [
+    ['open', true, {}],
+    ['rate', false, { lastRestartAtMs: NOW - MIN }],
+    ['exhausted', false, { attempts: MAX_ATTEMPTS_PER_TARGET }],
+  ]
+  let cases = 0
+  for (let mask = 0; mask < 1 << flags.length; mask++) {
+    let base: Record<string, any> = {}
+    const on = new Set<string>()
+    flags.forEach(([name, over], i) => {
+      if (mask & (1 << i)) {
+        base = { ...base, ...over }
+        on.add(name)
+      }
+    })
+    for (const [safeName, safe, safeOver] of safety) {
+      for (const [budgetName, open, budgetOver] of budgets) {
+        const input = obs({ ...base, ...safeOver, ...budgetOver })
+        const label = `${[...on].join('+') || 'none'} / ${safeName} / ${budgetName}`
+        const pass = checkupPass(structuredClone(input))
+        cases++
+        for (const a of pass.actions) {
+          if (!MUTATING.has(a.action) || a.outcome !== 'planned') continue
+          // Under C8 or C9 only the connector (C3: claude alive, daemon dead) is ever restarted, never started.
+          if (on.has('login') || on.has('limit')) {
+            assert.equal(a.action, 'restart', `start under C8 or C9: ${label}`)
+            assert.equal(pass.findings.some((f: { cause: string }) => f.cause === 'C3'), true, `restart under C8 or C9 without C3: ${label}`)
+          }
+          assert.equal(open, true, `restart through a closed gate: ${label}`)
+          // A start of a session that is not running is no kill; every other restart needs the safe table.
+          if (a.action === 'restart') assert.equal(safe, true, `kill when unsafe: ${label}`)
+        }
+      }
+    }
+  }
+  assert.ok(cases > 1600, `expected the full cross product, got ${cases}`)
+})
+
+// -- Purity ------------------------------------------------------------------------------------
+
+test('purity: the input is not mutated, and the same input gives the same answer', () => {
+  const input = obs({ daemonAlive: false, runningVersion: '0.73.0', installedVersion: '0.74.0', agentState: freshState(), stateFresh: true })
+  const frozen = JSON.stringify(input)
+  const first = checkupPass(input)
+  const second = checkupPass(input)
+  assert.equal(JSON.stringify(input), frozen)
+  assert.deepEqual(first, second)
+})
+
+test('planRepairs takes findings and gates alone (the planner is separable from the classifier)', () => {
+  const findings = diagnoseAgent(obs({ daemonAlive: false }))
+  const actions = planRepairs(findings, { now: NOW, lastRestartAtMs: null, attempts: 0, safeMoment: { safe: true, reason: 'idle' } })
+  assert.deepEqual(steps(actions), ['restart:planned', 'verify:planned'])
+  const held = planRepairs(findings, { now: NOW, lastRestartAtMs: null, attempts: 0, safeMoment: { safe: false, reason: 'turn_in_flight' } })
+  assert.deepEqual(steps(held), ['restart:skipped'])
+})
+
+test('purity: the module imports nothing but the pure keepalive plan, and uses no I/O', () => {
+  const source = readFileSync(fileURLToPath(new URL('../lib/agent-checkup.mjs', import.meta.url)), 'utf8')
+  const imports = [...source.matchAll(/^\s*import\s[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1])
+  assert.deepEqual(imports, ['./keepalive-plan.mjs'])
+  assert.doesNotMatch(source, /child_process|node:fs|node:net|node:http|fetch\(|process\.env|Date\.now\(|setTimeout/)
+})
+
+test('house style: no em or en dashes anywhere in the module or this test', () => {
+  for (const path of ['../lib/agent-checkup.mjs', './agent-checkup.test.ts']) {
+    const source = readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
+    assert.doesNotMatch(source, new RegExp('[\\u2013\\u2014]'), path)
+  }
+})
+
+test('every report string is bounded for the backend', () => {
+  const pass = checkupPass(
+    obs({ daemonAlive: false, runningVersion: '0.73.0', installedVersion: '0.74.0', transcriptError: { kind: 'rate_limit', resetAt: '2026-10-23T15:00:00Z' } }),
+  )
+  for (const f of pass.findings) assert.ok(f.evidence.length <= 120, f.evidence)
+  for (const a of pass.actions) {
+    if (a.ownerAction) assert.ok(a.ownerAction.text.length <= 240, a.ownerAction.text)
+  }
+})
+
+// -- helperwedge finding 1: a wedge is a turn in flight (production test, KC's MacBook, 2026-11-12) --
+//
+// Run C: the owner's message reached the transcript at 20:48:41, claude froze 0.3 s later, and the
+// check up 15 minutes on found C5:no_reply, then held the restart for turn_in_flight until the turn
+// would be 2 hours stale. The daemon also still owed the reply (pendingMessages 1). Progress is what
+// the SESSION did: its newest model turn and its newest hook event (`progressMs`).
+
+/** Run C, as the check up observed it: delivered 15 min ago, the turn flag up, the reply owed. */
+function runC(over: Record<string, any> = {}): any {
+  return obs({
+    messagesDeliveredAtMs: NOW - 15 * MIN,
+    lastTranscriptActivityAtMs: NOW - 16 * MIN,
+    stateFresh: true,
+    agentState: freshState({ turnInFlight: true, pendingMessages: 1, activeOperations: 1, lastActivityAtMs: NOW - 15 * MIN }),
+    // lastActivityAt, the hook spool, the transcript: every one of them at the delivery.
+    activityMs: [NOW - 15 * MIN, NOW - 15 * MIN, NOW - 15 * MIN],
+    // The session's own progress: its newest model turn, its newest hook event (UserPromptSubmit).
+    progressMs: [NOW - 16 * MIN, NOW - 15 * MIN],
+    ...over,
+  })
+}
+
+test('wedge: a turn in flight with no progress for the wedge window is restarted in this pass, never held for 2 hours', () => {
+  const pass = checkupPass(runC())
+  assert.deepEqual(causes(pass.findings), ['C5'])
+  assert.deepEqual(steps(pass.actions), ['restart:planned', 'verify:planned'])
+})
+
+test('wedge: the reply the daemon still owes and a newer owner message do not hold it (they are not progress)', () => {
+  // The owner wrote again 2 min ago: the daemon's lastActivityAt and the transcript mtime moved, the session did not.
+  const pass = checkupPass(
+    runC({
+      agentState: freshState({ turnInFlight: true, pendingMessages: 2, lastActivityAtMs: NOW - 2 * MIN }),
+      activityMs: [NOW - 2 * MIN, NOW - 15 * MIN, NOW - 2 * MIN],
+    }),
+  )
+  assert.deepEqual(steps(pass.actions), ['restart:planned', 'verify:planned'])
+})
+
+test('wedge: a turn that is still making progress keeps the hold (its hook events are inside the window)', () => {
+  const pass = checkupPass(runC({ progressMs: [NOW - 16 * MIN, NOW - 2 * MIN] }))
+  assert.deepEqual(steps(pass.actions), ['restart:skipped'])
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+})
+
+test('wedge: progress that was never read is unknown, and unknown keeps the hold', () => {
+  const pass = checkupPass(runC({ progressMs: undefined }))
+  assert.deepEqual(steps(pass.actions), ['restart:skipped'])
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+})
+
+test('wedge: a question for the owner, a job under claude, an unreadable tree and the budget still hold it', () => {
+  const rows: Array<[string, Record<string, any>]> = [
+    ['pending_permission', { agentState: freshState({ turnInFlight: true, pendingMessages: 1, pendingPermissions: 1 }) }],
+    ['background_job', { descendants: ['/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh && npm test'] }],
+    ['process_tree_unreadable', { descendants: null }],
+    ['restart_rate_limited', { lastRestartAtMs: NOW - 5 * MIN }],
+    ['attempts_exhausted', { attempts: MAX_ATTEMPTS_PER_TARGET }],
+  ]
+  for (const [reason, over] of rows) {
+    const pass = checkupPass(runC(over))
+    assert.equal(plannedRestart(pass.actions), false, reason)
+    assert.equal(pass.actions.at(-1)!.reason, reason, reason)
+  }
+})
+
+test('wedge: only a wedge lifts the turn hold; a dead connector under a live turn still waits for it', () => {
+  const pass = checkupPass(runC({ messagesDeliveredAtMs: null, daemonAlive: false }))
+  assert.deepEqual(causes(pass.findings), ['C3'])
+  assert.deepEqual(steps(pass.actions), ['restart:skipped'])
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+})
+
+// -- REVIEW-0432 F1: the reviewer's two scenarios -----------------------------------------------------
+
+test('review F1 scenario A: a 25 minute task whose transcript and spool the watcher cannot read is never restarted', () => {
+  const pass = checkupPass(
+    obs({
+      messagesDeliveredAtMs: NOW - 25 * MIN, // the daemon owes the reply from minute 0
+      lastTranscriptActivityAtMs: null,
+      stateFresh: true,
+      agentState: freshState({ turnInFlight: true, pendingMessages: 1, lastActivityAtMs: NOW - 25 * MIN }),
+      activityMs: [NOW - 25 * MIN, null, null],
+      progressMs: [null, null],
+    }),
+  )
+  assert.deepEqual(causes(pass.findings), ['C5'])
+  assert.equal(plannedRestart(pass.actions), false)
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+})
+
+test('review F1 scenario B: hooks that never reach the daemon, a long subagent and a queued follow-up are never restarted', () => {
+  const pass = checkupPass(
+    obs({
+      messagesDeliveredAtMs: NOW - 11 * MIN, // the follow-up's queue line
+      lastTranscriptActivityAtMs: NOW - 20 * MIN, // the Agent tool_use; sidechain entries are not read
+      stateFresh: true,
+      agentState: freshState({ turnInFlight: false, turnSignal: 'none', pendingMessages: 1, lastActivityAtMs: NOW - 11 * MIN }),
+      activityMs: [NOW - 11 * MIN, null, NOW - 11 * MIN],
+      progressMs: [NOW - 20 * MIN, null],
+    }),
+  )
+  assert.deepEqual(causes(pass.findings), ['C5'])
+  assert.equal(plannedRestart(pass.actions), false)
+})

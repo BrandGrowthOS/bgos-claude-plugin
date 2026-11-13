@@ -1,0 +1,28 @@
+Mac process proof: full plugin suite
+
+Command:
+TMPDIR="$PWD/.lane-macproof/tmp" TSX_DISABLE_CACHE=1 RUN_TESTS_WORKERS=4 caffeinate -i -s npm test
+
+[run-tests] node:test family: 444 files, 4 workers
+[run-tests] runner regression tests: 1 files, 1 workers
+[run-tests] real Chromium files, one at a time: 7 files, 1 workers
+[run-tests] real daemon files, one at a time: 1 files, 1 workers
+[run-tests] bun:test family: 15 files, 4 workers
+[run-tests] 9992 passed, 0 failed, 60 skipped, 468 files, 800.8 s
+[run-tests] both families green
+
+New Darwin and Windows regressions in this full run:
+ok 1 - Darwin proof distinguishes a live identity, a reused pid and an exited process
+ok 2 - Darwin proof fails closed when the helper is missing or its output is unproved
+ok 3 - Darwin proof validates calendar dates and does not normalize malformed timestamps
+ok 4 - Darwin proof rejects untrusted pids before invoking the reader
+ok 5 - Darwin proof uses an absolute helper, fixed locale and timezone, bounded argv execution
+ok 6 - Darwin group inventory carries start identities and refuses partial or empty tables
+ok 7 - real Darwin reader proves a child is alive and then proves its exit
+ok 6 - real Darwin runtime normal close proves its owned child exited
+ok 7 - real Darwin runtime emergency group stop proves its owned child exited
+ok 8 - Windows keeps the unavailable process exit proof code and closes the new browser
+
+Exit status: 0
+The working-tree check passed with no new paths reported.
+The three native Darwin child-process tests ran without skips.

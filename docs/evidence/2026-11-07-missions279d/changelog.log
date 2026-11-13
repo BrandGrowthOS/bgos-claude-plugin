@@ -1,0 +1,9 @@
+Reviewed public main: 56fa2589d97269cc3cd0031b8b5bfdd290964d59
+Source: https://raw.githubusercontent.com/BrandGrowthOS/bgos-claude-plugin/56fa2589d97269cc3cd0031b8b5bfdd290964d59/CHANGELOG.md
+Common changelog base: de15eda31cb6ec8e0ba4d17035a7c48c9b361999
+Before: three-way git merge-file reports conflict markers at the mission notes/release-history boundary.
+After: same three-way file merge exits 0, no conflict markers.
+Reviewed main release history 0.86.9 and earlier is byte-identical in the resolved file.
+Mission notes have their own Unreleased mission changes section, apart from main additions. Package and manifest versions unchanged.
+Reviewed main file SHA256: 6c6e93d75000f6feb7342824800c3db8e5a37a9d63ea360f7a07c0d7fbf80238
+Only the changelog was reconciled; no main code merge is claimed.

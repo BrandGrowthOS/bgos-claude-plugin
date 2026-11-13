@@ -15,7 +15,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { dirname, join } from 'node:path'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 import {
@@ -25,6 +25,7 @@ import {
   preflightVerdict,
 } from '../bin/bgos-doctor.mjs'
 import { resolveCredentialsSelection } from '../lib/agent-credentials.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const HOME = join(tmpdir(), 'doctor-resolver-fake-home')
 const AGENT_DIR = join(HOME, '.bgos-agent')
@@ -309,7 +310,7 @@ test('a refusal says which places the doctor looked, so a pin set somewhere it c
 // ── The row ──────────────────────────────────────────────────────────────────
 
 test('probeCredentials on disk, kc-server shape: the .mcp.json id names the file, the home is read, no refusal is reported', () => {
-  const root = mkdtempSync(join(tmpdir(), 'doctor-resolver-'))
+  const root = scratchDir('doctor-resolver-')
   const folder = join(root, 'agents', '867')
   mkdirSync(folder, { recursive: true })
   mkdirSync(join(root, '.bgos-agent'), { recursive: true })
@@ -333,7 +334,7 @@ test('probeCredentials on disk, kc-server shape: the .mcp.json id names the file
 })
 
 test('probeCredentials on a folder nothing names, 3 agents paired: no path, a refusal that names the ids and both remedies', () => {
-  const root = mkdtempSync(join(tmpdir(), 'doctor-resolver-'))
+  const root = scratchDir('doctor-resolver-')
   const folder = join(root, 'agents', 'stray')
   mkdirSync(folder, { recursive: true })
   mkdirSync(join(root, '.bgos-agent'), { recursive: true })
@@ -410,4 +411,17 @@ test('buildDoctorRows: a refused identity fails the credentials row with its fix
   const ok = found.find((r: { id: string }) => r.id === 'credentials')
   assert.equal(ok?.ok, true)
   assert.match(String(ok?.detail), /identity: BGOS_ASSISTANT_ID=867 in the env block of \/a\/867\/\.mcp\.json/)
+})
+
+// REVIEW-0432 F2 (M22): the doctor reads the shared file for a named agent only when it is that agent's.
+test('the doctor never names another agent\'s shared credentials.json for a named agent whose own file is missing', () => {
+  const ownPath = join(AGENT_DIR, 'credentials-1175.json')
+  const legacyOf = (assistantId: number) => ({ [DEFAULT_PATH]: JSON.stringify({ assistantId, pairingToken: 't' }) })
+  const other = resolveDoctorIdentity({ env: { BGOS_ASSISTANT_ID: '1175' }, home: HOME, folder: FOLDER, ...fakeFs(legacyOf(900)) })
+  assert.equal(other.via, 'env-assistant')
+  assert.equal(other.path, ownPath)
+  assert.match(other.source, /does not exist, so the daemon has no pairing/)
+  const own = resolveDoctorIdentity({ env: { BGOS_ASSISTANT_ID: '1175' }, home: HOME, folder: FOLDER, ...fakeFs(legacyOf(1175)) })
+  assert.equal(own.via, 'legacy')
+  assert.equal(own.path, DEFAULT_PATH)
 })

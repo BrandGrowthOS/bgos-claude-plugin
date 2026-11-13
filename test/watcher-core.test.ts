@@ -580,6 +580,27 @@ test('runWatcher reconcile: blocked plans fail with the reason; nothing_to_do is
   }
 })
 
+test('runWatcher reconcile: the executor reads the marks the agents wrote, so a job never takes the fleet onto a build held bad here', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  fs.files.set(`${HOME}/.bgos-agent/idle-update/0.39.0/bad`, JSON.stringify({ assistantId: '913', reason: 'canaries_silent' }))
+  fs.files.set(`${HOME}/.bgos-agent/idle-update/../0.39.0/bad`, 'a file the shape check must keep out of reach')
+  const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'update', targets: [] } } })
+  const clock = fakeClock()
+  let given: any = null
+  const execute = async (_plan: any, deps: any) => {
+    given = deps
+    return { ok: false, verdict: 'failed', failedStep: { id: 's03', kind: 'update_plugin', message: 'update_failed:version_held_bad' }, rolledBack: false, steps: [] }
+  }
+  const { deps } = baseDeps(fs, backend, clock, { modules: stubModules({ plan: updatePlan, execute }) })
+  await runWatcher(deps as any)
+  assert.equal(await given.heldBad('0.39.0'), true)
+  assert.equal(await given.heldBad('0.39.1'), false)
+  assert.equal(await given.heldBad(null), false)
+  assert.equal(await given.heldBad('../0.39.0'), false, 'a version from a plan never names a path')
+  assert.equal(backend.progress('j').at(-1)!.state, 'failed')
+})
+
 test('runWatcher reconcile: a verify failure rolls back, names the step, posts scrubbed diagnostics', async () => {
   const fs = machineFs()
   manifestFor(fs)
@@ -1059,6 +1080,17 @@ test('runWatcher win32: with Show agent windows OFF (or a backend without the fi
   }
 })
 
+test('runWatcher win32: agentWindows in the keep-alive answer reaches the windows pass; the agent its own value decides, not showAgentWindows', async () => {
+  const on = await twoCycles({ platform: 'win32', keepAlive: { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: false, agentWindows: { '912': true } } })
+  assert.deepEqual(on.spawns.map((s) => s.args.slice(2)), [['-ConsolePid', '4242', '-AssistantId', '912']])
+  assert.deepEqual(on.beats[1]!.windows, { mode: 'viewer', reason: 'showing' })
+  const off = await twoCycles({ platform: 'win32', keepAlive: { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: true, agentWindows: { '912': false } } })
+  assert.deepEqual(off.spawns, [])
+  assert.deepEqual(off.beats[1]!.windows, { mode: 'viewer', reason: 'setting_off' })
+  const unknown = await twoCycles({ platform: 'win32', keepAlive: { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: true, agentWindows: { '7': true } } })
+  assert.deepEqual(unknown.spawns, [], 'agent 912 is not listed yet: it stays Off')
+})
+
 test('runWatcher win32 (review): a viewer the owner closed stays closed across a watcher restart (the memory rides state.json)', async () => {
   const keepAlive = { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: true }
   const first = await twoCycles({ platform: 'win32', keepAlive })
@@ -1379,6 +1411,81 @@ test('runWatcher: a sweep that throws is logged and the loop goes on polling', a
   })
   assert.equal(await runWatcher(deps as any), 0)
   assert.ok(logs.some((l) => l.includes('keep-alive sweep failed: boom')))
+  assert.ok(backend.calls.some((c) => c.path.includes('/machine-rpc/pending')))
+})
+
+// -- the limit watch in the loop (lib/watcher-limit.mjs runLimitPass). The pass here is a fake that only
+// records what it is handed: no screen is read and no key can be sent from these tests.
+
+const windowsNone = async () => ({ memory: {}, report: { mode: 'none', reason: 'unsupported' } })
+
+test('runWatcher: the limit pass runs right after the sweep, for the agents the sweep cleared (valid ids only), with the watcher effects', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const order: string[] = []
+  const passes: any[] = []
+  const { deps } = baseDeps(fs, fakeBackend(), fakeClock(), {
+    modules: stubModules(),
+    keepAliveSweep: async () => {
+      order.push('sweep')
+      return { enabled: true, agents: [{ id: '912' }, { id: 913 }, { id: '91 2; rm -rf' }, { id: '' }, {}, null] }
+    },
+    limitPass: async (ctx: any) => {
+      order.push('limit')
+      passes.push(ctx)
+      return { agents: [] }
+    },
+    windowsPass: async () => {
+      order.push('windows')
+      return windowsNone()
+    },
+  })
+  assert.equal(await runWatcher(deps as any), 0)
+  assert.deepEqual(order.slice(0, 2), ['sweep', 'limit'], 'after the sweep, before anything else')
+  assert.equal(passes.length, 1, 'once per heartbeat')
+  assert.deepEqual(passes[0].assistantIds, ['912', '913'], 'only the ids the sweep cleared, and only well formed ones')
+  for (const key of ['exec', 'execSync', 'now', 'sleep', 'log', 'keepOnline', 'pidAlive']) assert.equal(typeof passes[0][key], 'function', key)
+  assert.equal(passes[0].home, HOME)
+  assert.equal(passes[0].platform, 'linux')
+})
+
+test('runWatcher: the limit pass never runs when the keep-alive switch is off, or when the sweep cleared no agent', async () => {
+  for (const report of [
+    { enabled: false, agents: [{ id: '912' }] },
+    { enabled: true, agents: [] },
+    { enabled: true, agents: [{ id: 'not-an-id' }] },
+  ]) {
+    const fs = machineFs()
+    manifestFor(fs)
+    let passes = 0
+    const { deps } = baseDeps(fs, fakeBackend(), fakeClock(), {
+      modules: stubModules(),
+      keepAliveSweep: async () => report,
+      limitPass: async () => {
+        passes += 1
+        return { agents: [] }
+      },
+      windowsPass: windowsNone,
+    })
+    assert.equal(await runWatcher(deps as any), 0)
+    assert.equal(passes, 0, JSON.stringify(report))
+  }
+})
+
+test('runWatcher: a limit pass that throws is logged and the loop goes on polling', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend()
+  const { deps, logs } = baseDeps(fs, backend, fakeClock(), {
+    modules: stubModules(),
+    keepAliveSweep: async () => ({ enabled: true, agents: [{ id: '912' }] }),
+    limitPass: async () => {
+      throw new Error('boom')
+    },
+    windowsPass: windowsNone,
+  })
+  assert.equal(await runWatcher(deps as any), 0)
+  assert.ok(logs.some((l) => l.includes('limit watch failed: boom')))
   assert.ok(backend.calls.some((c) => c.path.includes('/machine-rpc/pending')))
 })
 

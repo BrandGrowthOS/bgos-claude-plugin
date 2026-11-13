@@ -12,8 +12,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import {
@@ -30,6 +29,7 @@ import {
 } from '../lib/resting.ts'
 import type { RestingEpisode, RestingSignal } from '../lib/resting.ts'
 import { mungeCwd } from '../lib/usage-report.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 // 2026-07-17T10:00:00Z = 14:00 in Asia/Dubai (UTC+4, no DST).
 const NOW = Date.UTC(2026, 6, 17, 10, 0, 0)
@@ -525,7 +525,7 @@ test('a failed PATCH retries on the next sweep', () => {
 // ── RestingWatcher (fs walk + cursors) ───────────────────────────────────────
 
 function makeProject(): { cwd: string; claudeHome: string; dir: string } {
-  const claudeHome = mkdtempSync(join(tmpdir(), 'resting-test-'))
+  const claudeHome = scratchDir('resting-test-')
   const cwd = '/tmp/fake-workspace'
   const dir = join(claudeHome, 'projects', mungeCwd(cwd))
   mkdirSync(dir, { recursive: true })
@@ -595,7 +595,7 @@ test('watcher leaves a partial tail line for the next scan', () => {
 })
 
 test('watcher survives a missing project dir', () => {
-  const watcher = new RestingWatcher('/tmp/nonexistent-workspace', mkdtempSync(join(tmpdir(), 'resting-none-')))
+  const watcher = new RestingWatcher('/tmp/nonexistent-workspace', scratchDir('resting-none-'))
   assert.equal(watcher.scan(NOW), null)
 })
 

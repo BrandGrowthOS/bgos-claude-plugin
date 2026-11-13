@@ -81,7 +81,7 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf8').trim()
 }
 
-export async function main(argv = process.argv.slice(2), { env = process.env, home = env.HOME || homedir(), platform = process.platform } = {}) {
+export async function main(argv = process.argv.slice(2), { env = process.env, home = env.HOME || homedir(), platform = process.platform, supervise = superviseLane } = {}) {
   const args = parseLaneArgs(argv)
   const assistantId = args.flags.assistant
   const userId = args.flags.lane
@@ -202,7 +202,7 @@ export async function main(argv = process.argv.slice(2), { env = process.env, ho
   process.on('SIGTERM', () => askStop('requested'))
   process.on('SIGINT', () => askStop('requested'))
   process.on('SIGHUP', () => {})
-  const result = await superviseLane({
+  const result = await supervise({
     assistantId: String(assistantId),
     userId,
     home,

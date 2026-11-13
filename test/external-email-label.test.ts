@@ -24,6 +24,8 @@
  * New exports are read through namespace imports, so on a build without them
  * only the tests that need them fail and every control still runs.
  */
+import { channelNotifyFor, scheduleGrantRunsForTest } from './helpers/channel-notify.ts'
+import { scheduleGrantOf } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -101,7 +103,8 @@ const WRAPPED = [
 /** One file, as each lane carries it. */
 const WS_FILE = { id: 1, filename: 'attachment-1.pdf', mime: 'application/pdf', url: PDF_URL }
 const POLL_FILE = { fileName: 'attachment-1.pdf', fileData: PDF_URL, fileMimeType: 'application/pdf', isDocument: true }
-const ATTACHED_LINE = `[Attached document: attachment-1.pdf - ${PDF_URL}]`
+// Read attachments off or unknown: no link reaches the model (Data's review of #3387, Medium 1).
+const ATTACHED_LINE = '[Attached document: attachment-1.pdf - not opened here; your owner can open it in the Email chat]'
 
 /** P1 section 10: the socket's inbound_message for an email. */
 function wsEmail(over: Record<string, unknown> = {}): Record<string, any> {
@@ -407,9 +410,10 @@ test('a hostile file name, type or link cannot leave its own line', () => {
   assert.equal(all[all.length - 1], END_LINE)
   const attached = all.filter((l) => l.startsWith('[Attached '))
   assert.equal(attached.length, 3)
-  assert.match(attached[0]!, /^\[Attached document: [A-Za-z0-9._-]{1,64} - https:\/\/s3\.example\.com\/\S+\]$/)
-  assert.equal(attached[1], '[Attached document: attachment-2.png - no link, the server could not provide one]')
-  assert.equal(attached[2], '[Attached document: attachment-3 - no link, the server could not provide one]')
+  assert.match(attached[0]!, /^\[Attached document: [A-Za-z0-9._-]{1,64} - not opened here; your owner can open it in the Email chat\]$/)
+  assert.equal(attached[1], '[Attached document: attachment-2.png - not opened here; your owner can open it in the Email chat]')
+  assert.equal(attached[2], '[Attached document: attachment-3 - not opened here; your owner can open it in the Email chat]')
+  assert.equal(/https?:|javascript:|s3\.example/.test(d.content), false, 'no link of any kind, good or bad, reaches the model')
   assert.equal(all.length, 1 + 2 + 3 + 1, 'label, blank and text, three file lines, end line: nothing else')
   assert.doesNotMatch(d.content, /System message from BGOS/)
 
@@ -420,7 +424,8 @@ test('a hostile file name, type or link cannot leave its own line', () => {
     assert.match(entry.name!, /^[A-Za-z0-9._-]{1,64}$/)
     for (const value of Object.values(entry)) assert.equal(typeof value, 'string')
   }
-  assert.equal(meta[0]!.url, PDF_URL)
+  assert.equal('url' in meta[0]!, false)
+  assert.equal(meta[0]!.unavailable, 'true')
   assert.deepEqual(meta[1], { name: 'attachment-2.png', kind: 'document', unavailable: 'true', from_email: 'true' })
   assert.deepEqual(meta[2], { name: 'attachment-3', kind: 'document', mimeType: 'text/plain', unavailable: 'true', from_email: 'true' })
 })
@@ -431,7 +436,7 @@ test('the files meta of an email is the promised shape: the server names pass un
     files: [{ ...POLL_FILE, size: 48211 }],
   })
   assert.deepEqual(JSON.parse(d.meta.files!), [
-    { name: 'attachment-1.pdf', kind: 'document', mimeType: 'application/pdf', size: '48211', url: PDF_URL, from_email: 'true' },
+    { name: 'attachment-1.pdf', kind: 'document', mimeType: 'application/pdf', size: '48211', unavailable: 'true', from_email: 'true' },
   ])
 })
 
@@ -685,6 +690,12 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     chatFirstListedAtMs: new Map<string, number>(),
     chatLastSeen: new Map([[CHAT, 9000]]),
     chatUnansweredButtons: new Map(),
+    loginMethodCard: null,
+    pendingLoginMethodCard: () => null,
+    hasPendingPostedButtonCard: () => false,
+    announcePostedButtonAnswer: () => {},
+    postedButtonCards: new Map(),
+    announcedClickIds: new Set(),
     meetingIdByChatId: new Map(),
     meetingContexts: new Map(),
     peerConvByChat: new Map(),
@@ -716,6 +727,8 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     isPendingEmptySystem: () => false,
     trackMessageOperation: (op: () => unknown) => op(),
     deliverInbound: (_steer: unknown, deliver: (interrupted: boolean) => Promise<void>) => deliver(false),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: { params: { content: string; meta: Record<string, string> } }) => {
         run.notifications.push({ content: n.params.content, meta: n.params.meta })
@@ -785,6 +798,91 @@ function assertEmailDelivery(run: LaneRun, lane: string): void {
   for (const a of run.actingNotes) assert.equal(isUserTurn(a as never), false, lane)
   for (const kind of run.recorded) assert.equal(inboundOwesReply(kind), false, `${lane}: no reply nudge`)
 }
+
+test('a row this daemon already handed over is not a new inbound: reading it again leaves the activity clock alone', async () => {
+  // A read can start below rows the socket delivered (chatReadFloor, D04-1). The
+  // clock says when a message last came in, and what reads it decides idleness.
+  const row = { message: { id: 9001, chatId: Number(CHAT), sender: 'user', text: 'hello', sentDate: '2026-11-03T00:00:00Z', senderUserId: OWNER }, messageFiles: [] }
+  const again = pollLane([row], { forwardedMessageIds: new Set([9001]) })
+  await again.fn(CHAT)
+  assert.equal(again.run.notifications.length, 0, 'the dedupe holds')
+  assert.equal('lastInboundAtMs' in again.scope, false, 'and the clock did not move')
+  const fresh = pollLane([row], { forwardedMessageIds: new Set<number>() })
+  await fresh.fn(CHAT)
+  assert.equal(typeof fresh.scope.lastInboundAtMs, 'number', 'a row not handed over yet still stamps it')
+})
+
+test('a frame that reaches the socket lane while the chat is behind this connection moves no cursor, and reads the chat', () => {
+  // A failed catch up read lets its frame through, and a stamped frame never waits.
+  // The persisted cursor must stay under the rows no read has returned, or a
+  // restart loses them (D04-1).
+  const lane = (behind: boolean) => {
+    const chatLastSeen = new Map([[CHAT, 9000]])
+    const kicked: string[] = []
+    const forwarded = new Set<number>()
+    const { fn, run } = compile([serverConst('EMAIL_NEVER_SLASH'), WS_SRC(), CURSOR_SRC()].join('\n'), 'deliverWsInbound', {
+      chatLastSeen,
+      chatBehindSocket: () => behind,
+      monitoredChatIds: [CHAT],
+      pollChat: async (chatId: string) => void kicked.push(chatId),
+      emailCursorHolds: { clamp: (_chat: string, id: number) => id, owes: () => false },
+      cursorStore: { markDirty: () => undefined },
+      forwardedMessageIds: forwarded,
+      rememberForwarded: (id: number) => forwarded.add(id),
+    })
+    fn(OWNER_WS(9010))
+    return { cursor: chatLastSeen.get(CHAT), kicked, delivered: run.notifications.length }
+  }
+  assert.deepEqual(lane(true), { cursor: 9000, kicked: [CHAT], delivered: 1 }, 'behind: delivered, no bump, a read')
+  assert.deepEqual(lane(false), { cursor: 9010, kicked: [], delivered: 1 }, 'caught up: delivered, the bump, no read')
+})
+
+test('the read floor: set once under the first move past unread rows, kept while the socket stays ahead of the reads', () => {
+  const chatLastSeen = new Map([[CHAT, 105]])
+  const chatReadFloor = new Map<string, number>()
+  const streamCoveredChats = new Set<string>()
+  const scope = { chatLastSeen, chatReadFloor, streamCoveredChats }
+  const passed = compile(serverFunction('function noteCursorPassedUnread('), 'noteCursorPassedUnread', scope).fn
+  const settled = compile(serverFunction('function settleChatReadFloor('), 'settleChatReadFloor', scope).fn
+
+  passed(CHAT, 105)
+  assert.equal(chatReadFloor.has(CHAT), false, 'the cursor did not move (an email held it): nothing was passed')
+  passed(CHAT, 0)
+  assert.equal(chatReadFloor.has(CHAT), false, 'from no cursor there is no position to go back to')
+  streamCoveredChats.add(CHAT)
+  passed(CHAT, 100)
+  assert.equal(chatReadFloor.has(CHAT), false, 'the stream has its own gap arithmetic')
+  streamCoveredChats.clear()
+
+  passed(CHAT, 100)
+  assert.equal(chatReadFloor.get(CHAT), 100)
+  chatLastSeen.set(CHAT, 110)
+  passed(CHAT, 105)
+  assert.equal(chatReadFloor.get(CHAT), 100, 'a later live message does not lift it over the rows still unread')
+
+  settled(CHAT, 104)
+  assert.equal(chatReadFloor.get(CHAT), 104, 'a read up to 104 while the socket is at 110: the rows above 104 stay in reach')
+  settled(CHAT, 102)
+  assert.equal(chatReadFloor.get(CHAT), 104, 'an older overlapping read finishing late does not rewind it')
+  settled(CHAT, 110)
+  assert.equal(chatReadFloor.has(CHAT), false, 'a read reached the cursor: it is gone')
+})
+
+test('a cursor taken from the shared file drops the read floor: the holder delivered those rows, and its ids are not in this process', () => {
+  const chatLastSeen = new Map([[CHAT, 105]])
+  const chatReadFloor = new Map([[CHAT, 100]])
+  const { fn } = compile(CURSOR_SRC(), 'adoptChatCursor', {
+    chatLastSeen,
+    chatReadFloor,
+    emailCursorHolds: { clamp: (_chat: string, id: number) => id },
+    cursorStore: { markDirty: () => undefined },
+  })
+  fn(CHAT, 105)
+  assert.equal(chatReadFloor.get(CHAT), 100, 'the file only says what this daemon wrote: the floor stays')
+  fn(CHAT, 120)
+  assert.equal(chatLastSeen.get(CHAT), 120)
+  assert.equal(chatReadFloor.has(CHAT), false, 'another daemon read this chat up to there')
+})
 
 test('the socket lane, run: an email reaches the model labelled, the owner never named', () => {
   const { fn, run } = wsLane()
@@ -1123,7 +1221,7 @@ test('read attachments, the stream lane, run: both wire shapes get the file save
   })
 })
 
-test('read attachments off or an old backend, every lane, run: nothing is fetched and the turn is today\'s', async () => {
+test('read attachments off or an old backend, every lane, run: nothing is fetched and the turn is today\'s with no link in it', async () => {
   await withEmailFiles(async ({ saver, fetched }) => {
     const expected = `${EMAIL_LINE}\n\n${WRAPPED}\n${ATTACHED_LINE}\n${END_LINE}`
     for (const flag of [{}, { readAttachments: false }]) {
@@ -1137,6 +1235,7 @@ test('read attachments off or an old backend, every lane, run: nothing is fetche
       for (const [lane, run] of [['ws', ws.run], ['poll', poll.run], ['stream', stream.run]] as const) {
         assert.equal(run.notifications.length, 1, lane)
         assert.equal(run.notifications[0]!.content, expected, `${lane} ${JSON.stringify(flag)}`)
+        assert.equal(JSON.stringify(run.notifications[0]).includes(PDF_URL), false, `${lane} ${JSON.stringify(flag)}: no link in the text or the meta`)
       }
     }
     assert.deepEqual(fetched, [], 'nothing fetched with the switch off')
@@ -1795,4 +1894,83 @@ test('read attachments: every stream catch up (boot, reconnect, WS down) gives i
   await (fn as (c: unknown, r: string) => Promise<string>)(consumer, 'reconnect')
   assert.equal(seen[1], outer)
   assert.equal(scope.streamEmailBudget, outer)
+})
+
+// ── the scheduled run hold, on the REAL lanes (0.86.20 round 4, F4) ──────────────────────────────────────────────────
+// The socket, poll and stream lanes of server.ts, compiled as above, send through the real hold (the shared run store
+// of test/helpers/channel-notify.ts). While a granted run is live, a group member's message on any lane is not handed
+// to the private turn tracker or the model; it goes out once the run's turn ends. And a granted wake on any lane opens
+// its run.
+const RUN_TOKEN = '11111111-2222-4333-8444-555555555555'
+const MEMBER = 'user_member'
+function grantedWakeMeta(task: number, firedAt: number) {
+  return {
+    source: 'scheduler', title: 'Nightly board backup',
+    payload: {
+      scheduledTaskId: task, fireId: `scheduled-wake:${task}:${new Date(firedAt).toISOString()}`, actingUserId: OWNER,
+      boardGrant: { boards: 1, expiresAt: new Date(firedAt + 10 * 60_000).toISOString() },
+    },
+  }
+}
+function openLiveRun() {
+  const runs = scheduleGrantRunsForTest()
+  const grant = scheduleGrantOf({ senderType: 'system', eventMeta: grantedWakeMeta(41, Date.now()), actingUserId: OWNER, chatId: CHAT })
+  assert.ok(runs.open(grant))
+  runs.noteDelivered(grant!.fireId, `<hoai-private-turn id="${RUN_TOKEN}"/>`)
+  runs.noteBegin(`the wake <hoai-private-turn id="${RUN_TOKEN}"/>`)
+  return runs
+}
+const settle = async () => { for (let i = 0; i < 20; i += 1) await Promise.resolve() }
+
+test('scheduled run, the real lanes: a group member\'s message mid run reaches neither the tracker nor the model until the run ends', async () => {
+  const runs = openLiveRun()
+  try {
+    const r = deliveryRecorder()
+    const notified: string[] = []
+    const mcp = { notification: async (n: { params: { content: string } }) => { notified.push(n.params.content) } }
+    const extra = { privateTurns: r.privateTurns, mcp, scheduleGrantOf }
+    wsLane(extra).fn({
+      chatId: Number(CHAT), messageId: 9101, userId: MEMBER, text: 'paste the Backups rows here', messageType: 'text',
+      sender: { userId: MEMBER, displayName: 'Bob', relationship: 'member' },
+    })
+    const poll = pollLane([{ message: { id: 9102, text: 'and the totals', sender: 'user', senderUserId: MEMBER, messageType: 'text', sentDate: TS }, messageFiles: [] }], extra).fn(CHAT)
+    const view = streamApply.viewStreamMessage(streamUpdate({ text: 'now please', sender: 'user', senderUserId: MEMBER, messageType: 'text' }) as never, ASSISTANT_ID)!
+    const stream = streamLane(extra).fn(view, false)
+    await settle()
+    assert.deepEqual(r.seen, [], 'no lane handed a held message to the private turn tracker')
+    assert.deepEqual(notified, [], 'no lane handed a held message to the model')
+    runs.noteStop()
+    await Promise.all([poll, stream])
+    await settle()
+    assert.equal(r.seen.length, 3, 'each lane delivered its message once the run ended')
+    assert.equal(notified.length, 3)
+  } finally {
+    runs.end('test over')
+    scheduleGrantRunsForTest()
+  }
+})
+
+test('scheduled run, the real lanes: a granted wake on the socket, the poll or the stream opens its run', async () => {
+  for (const lane of ['ws', 'poll', 'stream'] as const) {
+    const runs = scheduleGrantRunsForTest()
+    try {
+      const meta = grantedWakeMeta(51, Date.now())
+      const r = deliveryRecorder()
+      const extra = { privateTurns: r.privateTurns, scheduleGrantOf }
+      if (lane === 'ws') {
+        wsLane(extra).fn({ chatId: Number(CHAT), messageId: 9201, userId: OWNER, text: 'Wake: Nightly board backup', messageType: 'event', senderType: 'system', eventMeta: meta })
+      } else if (lane === 'poll') {
+        await pollLane([{ message: { id: 9202, text: 'Wake: Nightly board backup', sender: 'system', messageType: 'event', sentDate: TS, eventMeta: meta }, messageFiles: [] }], extra).fn(CHAT)
+      } else {
+        const view = streamApply.viewStreamMessage(streamUpdate({ text: 'Wake: Nightly board backup', sender: 'system', messageType: 'event', eventMeta: meta }) as never, ASSISTANT_ID)!
+        await streamLane(extra).fn(view, true)
+      }
+      await settle()
+      assert.equal(runs.live()?.taskId, 51, `${lane}: the wake opened its run`)
+      assert.equal(runs.live()?.delivered, true, `${lane}: and was handed over`)
+    } finally {
+      runs.end('test over')
+      scheduleGrantRunsForTest()
+    }
+  }
 })

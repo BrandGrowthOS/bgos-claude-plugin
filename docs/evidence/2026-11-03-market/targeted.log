@@ -1,0 +1,38 @@
+✔ wrong agent, setting ON (wrong-agent): REFUSED with the one notice tool, and the refusal is counted (193.922375ms)
+✔ wrong agent, setting OFF (the default): the full daemon as before, counted as a would-refuse (866.235125ms)
+✔ right agent, strict: the full daemon (732.920125ms)
+✔ an unreadable scope, strict: FAILS OPEN to the full daemon (742.887416ms)
+✔ THE BOARD ROW: a worker in agent 42's folder that inherited agent 41's env pin and scope is the wrong agent (by folder) and is refused when on (943.484125ms)
+✔ unscoped, strict: refused; the machine file sets the mode for every agent here (184.701333ms)
+✔ the plugin copy of a session that loads server:bgos serves ONE notice tool, declares no channel and takes no lock (6656.735583ms)
+✔ control: a session that names THIS copy as its channel gets the full daemon, a channel capability and the lock (6599.652916ms)
+✔ control: with no checkout registered in the folder the copy keeps running whatever the session loads (6601.138ms)
+✔ the kc-server shape is a duplicate: marketplace copy, session loads server:bgos only, a checkout registered (0.77425ms)
+✔ every doubt keeps the daemon: it is a duplicate only when ALL the proofs hold (0.135ms)
+✔ findSiblingClone reads the checkout the folder registers as its bgos server (1.749458ms)
+✔ a relative server.ts path resolves against the folder, and a symlinked checkout counts as the same real directory (1.551541ms)
+✔ no sibling when there is no .mcp.json, it is not JSON, it names no bgos server, or its server.ts is gone (3.34875ms)
+✔ the duplicate answers initialize as a notice: tools only, NO channel capability, no instructions (8.31875ms)
+✔ it lists EXACTLY one tool, names the server to use, and refuses every other name with the same explanation (5.055792ms)
+✔ serveDuplicateCopy says it stands aside, serves until the host goes, and ends with stdin (22.68875ms)
+✔ probeSessionChannelSpecs reads the specs off the claude ancestor, and answers null where it cannot prove them (0.536791ms)
+✔ server.ts asks the duplicate question FIRST in preflight, and a duplicate exits before the lock, the supervisor record and any poll (0.111458ms)
+✔ a clone is never asked to stand aside: both probes are gated on the marketplace install (0.051875ms)
+✔ marketplace real boot: a non agent folder stays dormant with no tools, channel or lock (681.450417ms)
+✔ marketplace real boot: both agents attach in their own home and never as the other agent (1439.156791ms)
+✔ marketplace real boot: explicit scope opts in outside home, inherited scope does not (930.508666ms)
+✔ marketplace real boot: unreadable scope fails open (794.240541ms)
+✔ marketplace: a non agent folder is dormant even with an inherited agent identity (1.286417ms)
+✔ marketplace: the agent home attaches without launcher scope (0.200208ms)
+✔ marketplace: two agents attach only in their own home (0.401583ms)
+✔ marketplace: a matching launcher scope opts in outside the home, inherited scope does not (0.179ms)
+✔ marketplace: explicit opt-ins and malformed settings fail open (0.266875ms)
+✔ marketplace: unreadable evidence fails open and symlink homes match (0.156ms)
+ℹ tests 30
+ℹ suites 0
+ℹ pass 30
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 22841.699792

@@ -62,6 +62,7 @@ import {
   type EmailSendApprovalClick,
 } from './email-send-approval.js'
 import { isEmailSendBlock } from './email-send-binding.mjs'
+import { hideEmailFilePaths } from './email-outbound-files.js'
 
 export type PermissionBehavior = 'allow' | 'deny'
 export type PermissionChoice = 'once' | 'session' | 'permanent' | 'deny'
@@ -524,8 +525,15 @@ function floorLeadRule(name: string, key: string, evidence: string): string | nu
  * backend's whitelist shadow log caught coming from a daemon in July.
  */
 export function buildPermissionRequestBody(
-  input: PermissionRequestBodyInput,
+  raw: PermissionRequestBodyInput,
 ): Record<string, unknown> {
+  // G9: an email tool call's file paths never reach a chat row or a push. The
+  // preview keeps a count only, and the CLI's own words, which may repeat the
+  // paths, give way to one line that names none.
+  const inputPreview = hideEmailFilePaths(raw.toolName, raw.inputPreview)
+  const input: PermissionRequestBodyInput = inputPreview === raw.inputPreview
+    ? raw
+    : { ...raw, inputPreview, description: `Claude Code wants to use ${raw.toolName} for an email with files (their paths stay on this computer).` }
   return {
     chatId: Number(input.chatId),
     sender: 'assistant',
