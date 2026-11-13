@@ -433,12 +433,15 @@ The shipped [HOAI browser skill](skills/hoai-browser/SKILL.md) explains this own
 cd ~
 git clone https://github.com/BrandGrowthOS/bgos-claude-plugin.git
 cd bgos-claude-plugin
+bun bin/hoai-published-release.mjs follow . --fresh
 bun install
 bun bin/bgos-daemon-wrapper.mjs --install "$HOME/.bgos-agent/runtime/bgos-daemon-wrapper.mjs"
 ```
 
-This creates `~/bgos-claude-plugin/` and atomically installs a stable daemon
-wrapper outside that mutable checkout. Run the wrapper install command again
+This creates `~/bgos-claude-plugin/` at the published release (the clone
+takes main, and `follow . --fresh` moves it to the tag the marketplace names,
+so a hand install never starts on merged code nobody published) and atomically
+installs a stable daemon wrapper outside that mutable checkout. Run the wrapper install command again
 after a manual plugin update.
 
 ### Step 2: Create `.mcp.json` in your project
@@ -1359,7 +1362,8 @@ says so at each check (`running X is ahead of the published release vY`).
 Every other way a clone checkout is made or moved follows the same release
 (`lib/follow-published.mjs`, `bin/hoai-published-release.mjs`):
 `hoai-agent update`, the clone `hoai-agent install` makes, `bgos-claim`'s shared
-checkout, and the clone method of `hoai-bootstrap.sh` and `.ps1`. A new clone is
+checkout, the clone method of `hoai-bootstrap.sh` and `.ps1`, and the hand
+install and hand update below (Step 1 and Manual updates). A new clone is
 pinned to the published tag before it is put in place; a release that cannot
 be read leaves no checkout at all, rather than one of main. An existing
 checkout moves only forward to a newer published release, never back, and never
@@ -1442,13 +1446,15 @@ Manual updates remain supported:
 
 ```bash
 cd ~/bgos-claude-plugin
-git pull origin main
+bun bin/hoai-published-release.mjs follow .
 bun install
 bun bin/bgos-daemon-wrapper.mjs --install "$HOME/.bgos-agent/runtime/bgos-daemon-wrapper.mjs"
 ```
 
-Then restart the agent: type `/exit` in its session and run `hoai` from the
-same folder. The wrapper path in `.mcp.json` stays unchanged.
+`follow .` moves the checkout only to a newer published release, never to
+plugin main and never back; it leaves a checkout with local changes alone and
+says why. Then restart the agent: type `/exit` in its session and run `hoai`
+from the same folder. The wrapper path in `.mcp.json` stays unchanged.
 
 ## Running the tests
 

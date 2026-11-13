@@ -229,3 +229,35 @@ test('hoai-bootstrap.ps1 (clone method) pins its new clone to the published rele
   // an existing folder is removed only after the clone was pinned
   assert.ok(code.indexOf('Remove-Item -Force -ErrorAction SilentlyContinue $PluginRoot') > code.indexOf('--fresh'))
 })
+
+// ---- README.md, the manual clone install and the manual update -------------------------------------------------
+// A person following the README by hand is a clone path too: Step 1 cloned main and the manual update ran
+// `git pull origin main`, so a hand install took merged, unpublished code exactly as the scripts used to.
+
+function readmeBashBlock(readme: string, heading: string): string {
+  const at = readme.indexOf(heading)
+  assert.ok(at > -1, `README.md has "${heading}"`)
+  const open = readme.indexOf('```bash\n', at)
+  assert.ok(open > -1, `README.md has a bash block after "${heading}"`)
+  const body = open + '```bash\n'.length
+  return readme.slice(body, readme.indexOf('\n```', body))
+}
+
+test('README.md: the manual clone install and the manual update follow the published release, never plugin main', () => {
+  const readme = readFileSync(join(repoRoot, 'README.md'), 'utf8').replace(/\r\n/g, '\n')
+  for (const [heading, follow] of [
+    ['### Step 1: Install the plugin', 'bun bin/hoai-published-release.mjs follow . --fresh'],
+    ['Manual updates remain supported:', 'bun bin/hoai-published-release.mjs follow .'],
+  ] as const) {
+    const block = readmeBashBlock(readme, heading)
+    assert.doesNotMatch(block, /git (pull|reset|checkout)|origin\/?\s*main/, `${heading}: no step takes plugin main`)
+    const lines = block.split('\n')
+    const followAt = lines.findIndex((l) => l.trim() === follow)
+    assert.ok(followAt > -1, `${heading}: the checkout is moved with \`${follow}\``)
+    // pinned before anything is installed from it
+    assert.ok(followAt < lines.findIndex((l) => l.trim() === 'bun install'), `${heading}: pinned before bun install`)
+  }
+  // the CLI the README names is the one the scripts use, with that exact command shape
+  const cli = readFileSync(join(repoRoot, 'bin', 'hoai-published-release.mjs'), 'utf8')
+  assert.match(cli, /follow <checkout> \[--fresh\]/)
+})
