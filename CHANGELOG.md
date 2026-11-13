@@ -10,6 +10,43 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.88.0 (2026-11-12)
+
+**The agent vault needs no setup on this machine (HOAI board row f375d4f2f621).** Until now the only way to let an agent use its HOAI vault was `hoai vault-host` in a terminal on the agent's computer: paste a private signing key the owner minted on the server, compare a twenty digit fingerprint, type `PINNED`. An owner who was not sitting at that computer could not finish it, and the vault tools answered `VAULT_HOST_SETUP_REQUIRED` for good.
+
+Where the HOAI server takes host offers (its flag `VAULT_ZERO_SETUP_ENABLED`), the daemon now does all of it by itself, with no terminal and no question:
+
+- **It makes its own keys.** The existing host key, and its own Ed25519 agent identity, generated on this machine and kept in the same owner only file (0600 in a 0700 folder; on Windows a protected access list owned by the account, written and read back before any key is). Nobody mints a private key on the server and pastes it any more: no private key crosses the server at all.
+- **It offers the public halves.** `POST /api/v1/vault/agent/<id>/host-offer {identityPublic, publicKey, keySignature}` under the pairing credential, with the unchanged host key proof. It offers when the daemon arms, when the server sends `vault_host_setup` to its pairing room, and on a vault tool's first use. The same keys are offered every time; a second key is never made while the key file is good.
+- **HOAI finishes it.** The owner's app verifies the proof, accepts the offer from the owner's own session and pins the key in the background. The machine records its registration and pin only when the server names ITS OWN keys as the installed host; a server that says "installed" for other keys changes nothing here.
+- **A changed key is the owner's call.** A machine with a new key (the agent was reinstalled or moved) is told `change_offered`: the owner sees "this computer changed" in HOAI and decides there. Until then the vault tools say so once and stay blocked.
+- **A key another account could read is never used.** The file is removed and a fresh key made, which the owner then sees as a changed computer. A folder that cannot be made private makes no key, and the owner's app is told why with a fixed code (`key_exposed`, `key_invalid`, `storage_failed`), never a path.
+- **The vault tools no longer send anyone to a terminal.** While the setup is finishing they answer `VAULT_HOST_SETUP_PENDING`; for a changed computer `VAULT_HOST_CHANGE_PENDING`. Neither names a command, a key or a fingerprint.
+- `hoai vault-host auto` shows the state from a command line and needs no terminal. Plain `hoai vault-host` with no signing key now tries this first and only falls back to the pasted key where the server does not take offers.
+
+- **One setup at a time.** The daemon, a tool call and `hoai vault-host auto` take turns through a lock file beside the vault folder, so two of them can never each make an identity and offer different ones. A lock left by a run that died is taken over after a minute.
+- **A key file is removed only when it is known to be unusable.** Damaged, or read as readable by another account. A file whose protection could not be read (a slow or blocked PowerShell on Windows), one another account owns, a link, or another agent's file is left exactly as it is and the run answers `unavailable`.
+- **While HOAI cannot be reached** the vault tools answer `VAULT_HOST_SETUP_RETRY` (try later, nothing to type), make no key and name no command.
+
+**Found by running it on a real Windows 11 PC (2026-11-12), and fixed before release.** The first run there ended in `key_exposed` after 57 seconds, with a perfectly private key file: each PowerShell access list call took 4 to 6 seconds on that machine, one passed the 10 second limit while the identity was being stored, and a check that could not run was read as "exposed".
+
+- **A check that could not run is not an exposed key.** Only a protection that was read and names someone else is reported as `key_exposed`. Anything else leaves the key file as it is, reports nothing, and is tried again: twice more in the same run, then by the daemon by itself (30 seconds later, then further apart, five times).
+- **The Windows access list command waits 30 seconds, not 10,** and a run that was cut off at the limit or never started is tried once more. A PowerShell that answered "no" is not asked again.
+- **Protecting a path and reading it back is one PowerShell start, not two.** A first host key now costs four starts instead of seven.
+- **A live setup keeps its lock.** It touches the lock every 10 seconds, because a setup slower than the minute after which a lock counts as abandoned would have it taken from under it, and two runs would again each make an identity.
+- Still true on a slow Windows PC: every vault tool call reads the key file's access list first, which is two PowerShell starts. That was so before this version and is not changed here.
+
+**From the review of 2026-11-13.** Only an owner app that carries the zero setup half (HOAI 5.28.3 or later) ever accepts an offer. Where the server takes offers and the owner's app is older, "finishes by itself" was a promise nobody could keep, and `hoai vault-host` stopped there.
+
+- The agent's answer while an offer waits now names what finishes it (HOAI 5.28.3 or later on the owner's side) and tells the owner to update if it stays that way. It still sends nobody to a terminal.
+- In a terminal, a waiting offer names the older way out: `hoai vault-host --new-signing-key`, with a signing key the owner mints in HOAI.
+- For whoever turns it on: the server flag goes on LAST, after every owner app carries the app half.
+
+Nothing changes on a server without the flag: the first request answers 404, no key is made and the older flow stands. `HOAI_VAULT_AUTO_HOST=0` keeps a machine out of it.
+
+The trade, stated in HOAI's design note (`docs/superpowers/specs/2026-11-12-vault-zero-setup-design.md`): the owner's app trusts the first key it sees for an agent, so a server that is already hostile at the minute of first setup could substitute its own. Item values stay end to end encrypted, and a later change is never trusted without the owner.
+
+**Tests:** `test/vault-host-auto.test.ts` (30): keys made with no terminal and only public halves on the wire, the file modes, the pin only for this machine's own keys, a lying server, the 404 and kill switch paths, a damaged and an exposed key file, the Windows access list written before any key (with the injected reader on every OS, and for real in the Windows CI job), the tool answers, the daemon wiring, and the nine cases a cold review of the first build added (two and three runs at once, a stale lock, an unreadable access list, a file owned by another account, another agent's file, the server asked before any key exists). `test/pairing-lock-standdown.test.ts` lists `vault_host_setup` as a frame only the lock holder acts on.
 ## 0.87.5 (2026-11-13)
 
 From the Helper's production test on a MacBook (2026-11-12): the Helper noticed a frozen agent and started a Fix every time, but never restarted it, and the app then said the agent was running again.

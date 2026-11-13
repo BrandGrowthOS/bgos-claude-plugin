@@ -41,6 +41,8 @@ const PAIRING_FRAMES = [
   'lane_wake',
   'lane_revoked',
   'voice_rpc',
+  // Zero setup: only the lock holder makes or offers this machine's vault keys.
+  'vault_host_setup',
   'export_pack',
   'export_pack_manifest',
   'voice_task_dispatch',
