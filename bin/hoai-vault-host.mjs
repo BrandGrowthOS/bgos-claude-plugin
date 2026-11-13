@@ -31,9 +31,10 @@ import {
   VaultError,
   anchorOwnerAccount,
   confirmHostPin,
+  clearFillTrust,
   fetchOwnerAccount,
+  ownerAccountCode,
   readOwnerAnchor,
-  showOwnerAccountCodeOnTerminal,
   hostPinStatus,
   loadOrCreateHostKey,
   provisionSigningIdentity,
@@ -47,12 +48,13 @@ const NEED_TERMINAL =
   'hoai vault-host must run in a terminal on this agent machine. The host fingerprint is shown only there, never in a pipe, a log or chat.\n'
 
 export function parseArgs(argv) {
-  const out = { command: 'setup', assistant: '', stateDir: '', newSigningKey: false, error: '' }
+  const out = { command: 'setup', assistant: '', stateDir: '', newSigningKey: false, resetFillTrust: false, error: '' }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--assistant') out.assistant = argv[++i] ?? ''
     else if (a === '--state-dir') out.stateDir = argv[++i] ?? ''
     else if (a === '--new-signing-key') out.newSigningKey = true
+    else if (a === '--reset-fill-trust') out.resetFillTrust = true
     else if (a === 'status' || a === 'setup') out.command = a
     else out.error = `unknown argument: ${a}`
   }
@@ -155,6 +157,19 @@ export async function main(argv = process.argv.slice(2), { security = undefined 
       showFingerprintOnTerminal(record, process.stderr)
       return status === 'pinned' ? 0 : 1
     }
+    if (args.resetFillTrust) {
+      // V3: what this computer trusted for fills (account keys pinned before an
+      // anchor, revision floors, used approvals), never the host keys or the anchor.
+      process.stderr.write('This clears what this computer remembered about earlier fills for people you share this agent with. The host keys and your confirmed account stay.\n')
+      const answer = await askLine('Type RESET to clear it (anything else stops here): ')
+      if (answer !== 'RESET') {
+        process.stderr.write('Not confirmed. Nothing was changed.\n')
+        return 1
+      }
+      await clearFillTrust(stateDir, undefined, security)
+      process.stderr.write('Cleared.\n')
+      return 0
+    }
     if (agent.error) {
       process.stderr.write(`[hoai vault-host] ${agent.error}\n`)
       return 1
@@ -179,9 +194,10 @@ export async function main(argv = process.argv.slice(2), { security = undefined 
       process.stderr.write('Host key registered with HOAI.\n')
     }
     showFingerprintOnTerminal(record, process.stderr)
-    // H2: the owner's account key is anchored here only by a channel the
-    // server cannot forge. Here, the owner compares this account code with
-    // the one HOAI's pin screen computes from their own key.
+    // H2 and V1: the owner's account key is anchored here only by a channel
+    // the server cannot forge. The owner TYPES the account code HOAI shows
+    // (computed there from their own key); it must equal the code of the key
+    // the server names here. The code is never printed on this side.
     let owner = null
     if (!(await readOwnerAnchor(stateDir, undefined, security))) {
       try {
@@ -190,25 +206,28 @@ export async function main(argv = process.argv.slice(2), { security = undefined 
         owner = null
       }
       if (owner && owner.ownerId !== agent.ownerId) owner = null
-      if (!owner || !showOwnerAccountCodeOnTerminal(owner, process.stderr)) {
-        owner = null
-        process.stderr.write('HOAI did not give your account code just now, so this computer cannot fill your logins for people you share this agent with yet. Run hoai vault-host again later to confirm it.\n')
+      if (!owner) process.stderr.write('HOAI did not give your account key just now, so this computer cannot fill your logins for people you share this agent with yet. Run hoai vault-host again later to confirm it.\n')
+    }
+    if (hostPinStatus(record) !== 'pinned') {
+      process.stderr.write('In HOAI, open this agent\'s vault, compare the host fingerprint with the one above, and pin this host only if they match.\n')
+      const answer = await askLine('Type PINNED once you have done that (anything else stops here): ')
+      if (answer !== 'PINNED') {
+        process.stderr.write('Not confirmed. Run hoai vault-host again after you pinned the host.\n')
+        return 1
       }
+      await confirmHostPin(stateDir, undefined, security)
     }
-    if (hostPinStatus(record) === 'pinned' && !owner) {
-      process.stderr.write(`${STATUS_TEXT.pinned}\n`)
-      return 0
+    if (owner) {
+      process.stderr.write('To let this computer fill your logins for people you share this agent with, confirm your HOAI account.\n')
+      const typed = await askLine('Type the account code shown in HOAI, under This agent\'s computer: ')
+      const squeeze = (text) => String(text ?? '').replace(/\s+/g, '').toLowerCase()
+      if (!typed || squeeze(typed) !== squeeze(ownerAccountCode(owner.ownerId, owner.accountPublic))) {
+        process.stderr.write('The code does not match. Do not continue: your HOAI account key on this computer could not be confirmed.\n')
+        return 1
+      }
+      await anchorOwnerAccount(stateDir, { ...owner, via: 'terminal' }, undefined, security)
+      process.stderr.write('Your HOAI account is confirmed on this computer.\n')
     }
-    process.stderr.write(owner
-      ? 'In HOAI, open this agent\'s vault, compare the host fingerprint AND your account code with the ones HOAI shows, and pin this host only if both match.\n'
-      : 'In HOAI, open this agent\'s vault, compare the host fingerprint with the one above, and pin this host only if they match.\n')
-    const answer = await askLine('Type PINNED once you have done that (anything else stops here): ')
-    if (answer !== 'PINNED') {
-      process.stderr.write('Not confirmed. Run hoai vault-host again after you pinned the host.\n')
-      return 1
-    }
-    if (hostPinStatus(record) !== 'pinned') await confirmHostPin(stateDir, undefined, security)
-    if (owner) await anchorOwnerAccount(stateDir, { ...owner, via: 'terminal' }, undefined, security)
     process.stderr.write(`${STATUS_TEXT.pinned}\n`)
     return 0
   } catch (error) {

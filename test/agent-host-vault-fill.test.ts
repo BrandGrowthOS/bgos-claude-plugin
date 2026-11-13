@@ -391,3 +391,12 @@ test('M5: commits to the fill trust at the same moment are not lost', async () =
 test('H2: the account code test vector', () => {
   assert.equal(ownerAccountCode('user_2xKc0wner', 'dCdN_F83ybX_Kh5E_bt8cmqPb6TKY3Gut1DFn0zX9jM'), 'f0e4 3307 6e27 42b2 ebb7')
 })
+
+test('a fill of a person\'s own login raises the owner\'s revision floor to the owner vault it verified, so an older one cannot come back', async () => {
+  const r = ownRig('match')
+  assert.equal(await code(openPersonFill(r.redeemed, r.ctx)), 'ok')
+  assert.equal(r.trust.floors.get(OWNER), r.ownerState.revision)
+  const older = signedState({ ownerId: OWNER, assistantId: AGENT, hostSeed: r.hostSeed, acct: r.owner, revision: r.ownerState.revision - 1,
+    people: [{ userId: LEO, askMode: 'never', items: [{ itemId: null, ask: false }], accountPublic: r.leo.accountPublic }], items: [] })
+  assert.equal(await code(openPersonFill({ ...r.redeemed, ownerVault: { ...r.redeemed.ownerVault, state: older } }, r.ctx)), 'vault_own_logins_unconfirmed')
+})

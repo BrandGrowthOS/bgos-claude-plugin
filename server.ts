@@ -212,7 +212,7 @@ import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
-import { queueAccessChange } from './lib/person-access.mjs'
+import { queueAccessChange, queueAccessReconcile } from './lib/person-access.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
@@ -18310,6 +18310,9 @@ function connectWebsocket(): void {
     // Threads phase 1: a turn the person sent while this daemon was away is
     // run now (also when the channel arms, for the first connect after boot).
     reconcilePendingThreads('ws connect')
+    // Shared agent vault V2: the browser host compares who may still use the
+    // owner's sites with the server after every (re)connect of this daemon.
+    try { queueAccessReconcile({ agentRoot: joinPath(homedir(), '.bgos-agent'), assistantId: String(ASSISTANT_ID) }) } catch { /* the host's own timer and connect cover it */ }
     // Pending ask groups are read again on every connect: an answer given
     // while this daemon was down or disconnected is due now, and a stream
     // entry for it may be behind a cursor this life never reads.

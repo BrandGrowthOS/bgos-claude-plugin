@@ -72,7 +72,7 @@
 
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, rmdirSync, unlinkSync } from 'node:fs'
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readdir, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir, hostname, tmpdir } from 'node:os'
@@ -225,6 +225,8 @@ export const REFUSED_RETRY_MAX_MS = 15 * 60_000
 export const CREDENTIALS_RESCAN_MS = 60_000
 /** How often the host looks for a person whose share ended (their lane's revoke marker). */
 export const ENDED_SHARE_SWEEP_MS = 10_000
+/** How often a running host compares the people who may use the owner's sites with the server (V2). */
+export const PEOPLE_ACCESS_RECONCILE_MS = 10 * 60_000
 /** How often a daemon-started host checks that its daemon is still alive. */
 export const PARENT_CHECK_MS = 2_000
 
@@ -993,6 +995,27 @@ export function chromeArgs({ profileDir, headless = true, platform = process.pla
   if (headless) args.push('--headless=new')
   args.push('about:blank')
   return args
+}
+
+/**
+ * S3: the preferences that keep Chrome's own password manager and autofill off
+ * in the profile it starts with, merged into `<userDataDir>/Default/Preferences`
+ * before launch. Every browser this host runs, a person's included, so no
+ * saved password prompt or store ever holds a login the vault typed.
+ */
+export function writeQuietBrowserPrefs(userDataDir) {
+  const dir = join(userDataDir, 'Default')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const path = join(dir, 'Preferences')
+  let prefs = {}
+  try { prefs = JSON.parse(readFileSync(path, 'utf8')) ?? {} } catch {}
+  const next = {
+    ...prefs,
+    credentials_enable_service: false,
+    profile: { ...(prefs.profile ?? {}), password_manager_enabled: false },
+    autofill: { ...(prefs.autofill ?? {}), profile_enabled: false, credit_card_enabled: false },
+  }
+  writeFileSync(path, JSON.stringify(next), { mode: 0o600 })
 }
 
 /** The CDP endpoint a live Chrome on this profile wrote, if any. */
@@ -1951,6 +1974,8 @@ export class ChromiumEngine {
     }
     this._acceptDownloads = acceptDownloads
     if (!this._engine) {
+      // S3: Chrome's own password saving and autofill stay off, written before it starts.
+      writeQuietBrowserPrefs(this._runtimeDir)
       const { child, browser } = await this._launch({ executable: this._executable, profileDir: this._runtimeDir, headless: this._headless, platform: this._platform, artifactsDir: acceptDownloads ? this.heldDir : null })
       this._child = child
       child.on('exit', () => this._gone())
@@ -2465,6 +2490,14 @@ export async function runPersonVaultFill({ pairing, agentRoot, assistantId, acti
   try {
     // Every later answer of this browser hides the value, whatever a page does with it.
     engine?.registerSecret?.(values.password)
+    // V2: a fill of the owner's login goes ahead only while the server still
+    // lists this person for this site. No answer, no fill.
+    if (!values.own) {
+      const access = await fetchPeopleAccess({ backendUrl: pairing.backendUrl, token: pairing.token, assistantId, fetchImpl })
+      if (!access) return { filled: false, reason: 'vault_access_unconfirmed' }
+      const person = access.people.find((p) => p && p.userId === actingUserId)
+      if (!person || !Array.isArray(person.origins) || !person.origins.includes(origin)) return { filled: false, reason: 'vault_access_ended' }
+    }
     // M2: which sites a person had the owner's logins filled on (no value), so
     // losing access later can clear them from that person's browser.
     if (!values.own) {
@@ -3867,6 +3900,9 @@ export class BrowserHost {
       void this._drainAccessChanges().catch(() => {})
     }, ENDED_SHARE_SWEEP_MS)
     this._sharesTimer.unref?.()
+    // V2: and every 10 minutes while running, besides each connect and each daemon reconnect.
+    this._accessTimer = setInterval(() => { for (const conn of this.connections.values()) for (const id of conn.pairing.assistantIds) void this._reconcilePeopleAccess(id).catch(() => {}) }, PEOPLE_ACCESS_RECONCILE_MS)
+    this._accessTimer.unref?.()
     return this
   }
 
@@ -3917,7 +3953,7 @@ export class BrowserHost {
     for (const conn of this.connections.values()) {
       for (const id of conn.pairing.assistantIds) {
         try {
-          await drainAccessChanges({ agentRoot: this.agentRoot, assistantId: id, ownerUserId: conn.pairing.ownerUserId, ...this._accessEffects(id) })
+          await drainAccessChanges({ agentRoot: this.agentRoot, assistantId: id, ownerUserId: conn.pairing.ownerUserId, ...this._accessEffects(id), reconcile: () => this._reconcilePeopleAccess(id) })
         } catch (err) { this._log(`people access: a queued change did not apply (${err?.message ?? err})`) }
       }
     }
@@ -3982,6 +4018,8 @@ export class BrowserHost {
     this._profileTimer = null
     if (this._sharesTimer) clearInterval(this._sharesTimer)
     this._sharesTimer = null
+    if (this._accessTimer) clearInterval(this._accessTimer)
+    this._accessTimer = null
     if (this._rescanTimer) clearInterval(this._rescanTimer)
     this._rescanTimer = null
     if (this._downloadsTimer) clearInterval(this._downloadsTimer)
