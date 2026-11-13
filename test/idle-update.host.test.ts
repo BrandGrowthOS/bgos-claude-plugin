@@ -57,7 +57,7 @@ function memFs(files: Record<string, { text: string; mtimeMs?: number } | string
       return true
     },
     /** Through this fake's own writeAtomic (`this`), so a test that swaps writeAtomic sees these writes too. */
-    replaceIfUnchanged(this: any, p: string, expected: string | null, text: string): 'ok' | 'changed' | 'error' {
+    replaceIfUnchanged(this: any, p: string, expected: string | null, text: string): 'ok' | 'changed' | 'busy' | 'error' {
       if ((this.readFile(p) ?? null) !== expected) return 'changed'
       return this.writeAtomic(p, text) === true ? 'ok' : 'error'
     },
@@ -769,6 +769,28 @@ test('Claude Code writing installed_plugins.json at every try: the rollback neve
   } finally {
     w.done()
   }
+})
+
+test('a rename refused for a moment (Windows, the file open elsewhere) is tried again; one refused at every try fails as not moved', async () => {
+  const m = need()
+  const once = rollbackWorld()
+  let refusals = 1
+  const replace = once.fs.replaceIfUnchanged
+  once.fs.replaceIfUnchanged = function (this: any, p: string, expected: string | null, text: string) {
+    if (p === INSTALLED && refusals > 0) {
+      refusals -= 1
+      return 'busy'
+    }
+    return replace.call(this, p, expected, text)
+  }
+  const healed = await m.rollbackMarketplaceInstall({ record: RECORD, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: once.fs, setAutoUpdate: once.setAutoUpdate, now: NOW })
+  assert.equal(healed.ok, true, JSON.stringify(healed))
+  assert.equal(JSON.parse(once.fs.readFile(INSTALLED)!).plugins['hoai@hoai'][0].version, '0.80.0')
+  const always = rollbackWorld()
+  always.fs.replaceIfUnchanged = () => 'busy'
+  const lost = await m.rollbackMarketplaceInstall({ record: RECORD, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: always.fs, setAutoUpdate: always.setAutoUpdate, now: NOW })
+  assert.deepEqual(lost, { ok: false, reason: 'not_persisted' })
+  assert.deepEqual(always.autoUpdate, [])
 })
 
 // -- The cgroup of an owning systemd unit -------------------------------------------------------

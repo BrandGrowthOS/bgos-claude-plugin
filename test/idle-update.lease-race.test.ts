@@ -16,6 +16,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 const mod: any = await import('../lib/idle-update.mjs')
@@ -38,6 +39,8 @@ type Files = Map<string, { text: string; mtimeMs: number }>
 function world() {
   const files: Files = new Map()
   const clock = { now: T0 }
+  /** The pids of agents whose process has ended. */
+  const dead = new Set<number>()
   const base = {
     readFile: (p: string) => files.get(p)?.text ?? null,
     mtimeMs: (p: string) => files.get(p)?.mtimeMs ?? null,
@@ -64,7 +67,7 @@ function world() {
       return [...names]
     },
   }
-  return { files, clock, base }
+  return { files, clock, dead, base }
 }
 
 type World = ReturnType<typeof world>
@@ -84,10 +87,12 @@ const isLiveLeaseOf = (raw: string | null, now: number) => {
 /**
  * One agent on the shared disk. `stale`: it read lease.json before the race began, and reads it so until it changes
  * a lease file itself. `inject`: runs before this agent's file operation number `at` (0 based). `dies`: no file
- * operation of this agent lands after its first exclusive create.
+ * operation of this agent lands after its first exclusive create, and its process is gone. Each agent has a pid of
+ * its own on one host.
  */
-function actor(w: World, id: string, o: { stale?: Files; inject?: { at: number; run: () => void }; dies?: boolean; violations: string[] }) {
+function actor(w: World, id: string, o: { stale?: Files; inject?: { at: number; run: () => void }; dies?: boolean; violations: string[]; log?: (text: string) => void }) {
   const me = { assistantId: id, nonce: `n-${id}` }
+  const pid = 40_000 + Number(id)
   let ops = 0
   let changed = false
   let dead = false
@@ -106,7 +111,10 @@ function actor(w: World, id: string, o: { stale?: Files; inject?: { at: number; 
     }
     const out = fn(...args)
     if (mutates && p.startsWith(join(DIR, 'lease.'))) changed = true
-    if (o.dies && name === 'createExclusive' && out === 'ok') dead = true
+    if (o.dies && name === 'createExclusive' && out === 'ok') {
+      dead = true
+      w.dead.add(pid)
+    }
     return out
   }
   const fs = {
@@ -118,7 +126,7 @@ function actor(w: World, id: string, o: { stale?: Files; inject?: { at: number; 
     rename: wrap('rename', w.base.rename, true),
     remove: wrap('remove', w.base.remove, true),
   }
-  const lease = need().createMachineLease({ dir: DIR, fs, now: () => w.clock.now, durations: D, onExpired: () => true })
+  const lease = need().createMachineLease({ dir: DIR, fs, now: () => w.clock.now, durations: D, onExpired: () => true, pid, host: 'one-computer', alive: (p: number) => !w.dead.has(p), log: o.log })
   return { id, me, lease, ops: () => ops }
 }
 
@@ -148,22 +156,22 @@ function run(w: World, party: Party, before: Files, violations: string[], holder
 }
 
 /** How many file operations `party` makes on a disk nobody else touches. */
-function opsAlone(step: Step) {
+function opsAlone(party: Party) {
   const w = world()
   w.base.writeAtomic(LEASE, EXPIRED)
-  const a = actor(w, '914', { violations: [] })
-  if (step === 'take') a.lease.take('0.82.0', a.me)
-  else a.lease.release({ assistantId: '913', nonce: 'n-913' })
+  const a = actor(w, party.id, { violations: [] })
+  if (party.step === 'take') a.lease.take('0.82.0', a.me)
+  else a.lease.release(a.me)
   return a.ops()
 }
 
 /**
- * Agent 914 takes the expired lease; `others` run inside it before each of its file operations in turn (and the
- * innermost inside the outer at each of its operations). Every schedule must leave one holder, its lease on disk,
- * and no live lease moved by another agent.
+ * `outer` takes (or releases) the expired lease; `mid` runs inside it before each of its file operations in turn (and
+ * `innermost` inside `mid` at each of its operations). Every schedule must leave at most one holder, its lease on
+ * disk, no live lease nobody holds, and no live lease moved by another agent.
  */
 function raceAll(name: string, outer: Party, mid: Party, innermost: Party | null) {
-  const n = opsAlone('take') + 2
+  const n = opsAlone(outer) + 2
   const m = innermost ? 14 : 1
   let schedules = 0
   for (let at = 0; at <= n; at += 1) {
@@ -206,6 +214,62 @@ test('the holder releasing its expired lease while another agent breaks it, and 
   raceAll('914 breaking, 913 releasing inside it, 916 inside that', { id: '914', step: 'take' }, { id: '913', step: 'release' }, { id: '916', step: 'take' })
 })
 
+test('the holder releasing its expired lease, with a late breaker inside it and a third agent inside that: one lease, never two', () => {
+  need()
+  raceAll('913 releasing, a late 914 inside it, 916 inside that', { id: '913', step: 'release' }, { id: '914', step: 'take', stale: true }, { id: '916', step: 'take' })
+})
+
+/**
+ * Agent 914 takes the expired lease and its whole computer pauses for `pauseMs` before its file operation `at`:
+ * then agent 915 takes, with the clock moved on. 914 is alive all the while. Returns the operations at which a
+ * pause let a live lease be moved.
+ */
+function slept(pauseMs: number) {
+  const n = opsAlone({ id: '914', step: 'take' }) + 2
+  const moved: number[] = []
+  for (let at = 0; at <= n; at += 1) {
+    const w = world()
+    w.base.writeAtomic(LEASE, EXPIRED)
+    const violations: string[] = []
+    const holders: string[] = []
+    const late = actor(w, '915', { violations })
+    let heldAlready = false
+    const sleeper = actor(w, '914', {
+      violations,
+      inject: {
+        at,
+        run: () => {
+          heldAlready = isLiveLeaseOf(w.base.readFile(LEASE), w.clock.now) === 'n-914'
+          w.clock.now += pauseMs
+          if (late.lease.take('0.82.0', late.me) === true) holders.push(late.me.nonce)
+        },
+      },
+    })
+    if (sleeper.lease.take('0.82.0', sleeper.me) === true) holders.push(sleeper.me.nonce)
+    if (violations.length > 0) {
+      moved.push(at)
+      continue
+    }
+    // A holder that sleeps past its own lease loses it: that is what a lease's time is for, not this race.
+    if (heldAlready && pauseMs >= D.leaseTtlMs) continue
+    assert.ok(holders.length <= 1, `pause ${pauseMs} at ${at}: two holders (${holders.join(', ')})`)
+    assert.equal(isLiveLeaseOf(w.base.readFile(LEASE), w.clock.now), holders[0] ?? null, `pause ${pauseMs} at ${at}: the lease on disk is not the holder's`)
+  }
+  return moved
+}
+
+test('a breaker that only slept mid break is not overtaken: its claim stands while its process lives, up to a whole lease', () => {
+  need()
+  assert.deepEqual(slept(3 * MIN), [], 'past leaseEndStaleMs, but alive: the end is still its own')
+  assert.deepEqual(slept(D.leaseTtlMs - SEC), [])
+})
+
+test('a breaker that slept past a whole lease mid break stands down when it wakes, but for one file operation, its rename', () => {
+  need()
+  const moved = slept(D.leaseTtlMs + MIN)
+  assert.ok(moved.length <= 1, `a pause at any of ${moved.join(', ')} moved a live lease: the last look before the rename must catch every pause but the one at the rename itself`)
+})
+
 test('a breaker that died mid break holds the end of that lease only for a while: the next agent breaks it once that runs out, not before', () => {
   const m = need()
   const w = world()
@@ -238,15 +302,65 @@ test('a break that stops short (its holder could not be put on the record) leave
   assert.deepEqual([...w.files.keys()].filter((p) => p.startsWith(join(DIR, 'lease.')) && p !== LEASE), [])
 })
 
-test('a claim on ending a lease: standing while young or undated, stale once old or stamped past a lease ahead', () => {
+test('a claim on ending a lease: a dead owner\'s stands leaseEndStaleMs, a live or unknown owner\'s a whole lease', () => {
   const m = need()
   if (typeof m.decideLeaseEndClaim !== 'function') assert.fail('lib/idle-update.mjs decideLeaseEndClaim is missing')
   const stale = D.leaseEndStaleMs
-  assert.equal(m.decideLeaseEndClaim({ mtimeMs: T0, now: T0 }, D), 'standing')
-  assert.equal(m.decideLeaseEndClaim({ mtimeMs: T0 - stale + 1, now: T0 }, D), 'standing')
-  assert.equal(m.decideLeaseEndClaim({ mtimeMs: T0 - stale, now: T0 }, D), 'stale')
-  assert.equal(m.decideLeaseEndClaim({ mtimeMs: null, now: T0 }, D), 'standing', 'a claim nobody can date is never taken over')
-  assert.equal(m.decideLeaseEndClaim({ mtimeMs: T0 + D.leaseTtlMs + 1, now: T0 }, D), 'stale', 'a clock that jumped holds nothing for ever')
-  assert.equal(m.decideLeaseEndClaim({ mtimeMs: T0 + MIN, now: T0 }, D), 'standing', 'a little ahead is a clock that moved back a little')
-  assert.ok(stale < D.leaseTtlMs && stale >= 30 * SEC, 'long enough for a break, far shorter than a lease')
+  const ttl = D.leaseTtlMs
+  const at = (ageMs: number, ownerAlive: boolean | null) => m.decideLeaseEndClaim({ mtimeMs: T0 - ageMs, now: T0, ownerAlive }, D)
+  assert.equal(at(0, false), 'standing')
+  assert.equal(at(stale - 1, false), 'standing')
+  assert.equal(at(stale, false), 'stale', 'its process is gone: a breaker that died there')
+  for (const owner of [true, null]) {
+    assert.equal(at(stale, owner), 'standing', `owner ${owner}: it may only be asleep`)
+    assert.equal(at(ttl - 1, owner), 'standing', `owner ${owner}`)
+    assert.equal(at(ttl, owner), 'stale', `owner ${owner}: past a whole lease nothing stands`)
+  }
+  assert.equal(m.decideLeaseEndClaim({ mtimeMs: T0 - stale, now: T0 }, D), 'standing', 'an owner nobody named is unknown')
+  assert.equal(m.decideLeaseEndClaim({ mtimeMs: null, now: T0, ownerAlive: false }, D), 'standing', 'a claim nobody can date is never taken over')
+  assert.equal(m.decideLeaseEndClaim({ mtimeMs: T0 + ttl + 1, now: T0, ownerAlive: true }, D), 'stale', 'a clock that jumped holds nothing for ever')
+  assert.equal(m.decideLeaseEndClaim({ mtimeMs: T0 + MIN, now: T0, ownerAlive: false }, D), 'standing', 'a little ahead is a clock that moved back a little')
+  assert.ok(stale < ttl && stale >= 30 * SEC, 'long enough for a break, far shorter than a lease')
+})
+
+const keyOf = (raw: string) => createHash('sha256').update(raw).digest('hex').slice(0, 24)
+
+test('leftovers of agents that died mid break are swept once a lease old: claims on leases long gone, and leases moved aside', () => {
+  need()
+  const w = world()
+  const young = T0 - MIN
+  const old = T0 - D.leaseTtlMs
+  const put = (name: string, mtimeMs: number) => w.files.set(join(DIR, name), { text: '{}\n', mtimeMs })
+  w.base.writeAtomic(LEASE, EXPIRED)
+  put(`lease.end-${keyOf('gone')}.json`, old)
+  put(`lease.end-${keyOf('gone too')}.3.json`, old)
+  put('lease.broken-n-900.json', old)
+  put('lease.released-n-901.json', old)
+  put(`lease.end-${keyOf('just made')}.json`, young)
+  put('lease.broken-n-902.json', young)
+  put(`lease.end-${keyOf(EXPIRED)}.json`, old)
+  put('lease.json.other', old)
+  w.dead.add(40_000 + 999)
+  const a = actor(w, '914', { violations: [] })
+  // 914 reads the claim on the lease on disk as standing for a whole lease and as stale past it: here it is a lease
+  // old, so it is taken over, and nothing about it is swept.
+  assert.equal(a.lease.take('0.82.0', a.me), true)
+  const left = [...w.files.keys()].map((p) => p.slice(DIR.length + 1)).sort()
+  assert.deepEqual(left, ['lease.broken-n-902.json', `lease.end-${keyOf('just made')}.json`, 'lease.json', 'lease.json.other'].sort())
+})
+
+test('the claims on one lease used up: no agent breaks it, and that is said, not left silent', () => {
+  need()
+  const w = world()
+  w.base.writeAtomic(LEASE, EXPIRED)
+  for (let n = 1; n <= 8; n += 1) {
+    w.files.set(join(DIR, `lease.end-${keyOf(EXPIRED)}${n === 1 ? '' : `.${n}`}.json`), { text: `${JSON.stringify({ pid: 41_000 + n, host: 'one-computer' })}\n`, mtimeMs: T0 - 3 * MIN })
+    w.dead.add(41_000 + n)
+  }
+  const said: string[] = []
+  const a = actor(w, '914', { violations: [], log: (text) => said.push(text) })
+  assert.equal(a.lease.take('0.82.0', a.me), false)
+  assert.equal(w.base.readFile(LEASE), EXPIRED)
+  assert.equal(said.length, 1)
+  assert.match(said[0], /8 stale claims/)
 })
