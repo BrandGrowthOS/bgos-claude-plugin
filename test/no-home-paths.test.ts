@@ -74,14 +74,15 @@ test('the check finds a planted home folder in every form it covers, and nothing
       'scripts/linux.py': `seccomp='${['', 'home', 'karim'].join('/')}/profile.json'`,
       'scripts/linux-root.sh': `cd ${['', 'mnt', 'data', 'home'].join('/')}/agent`,
       'REPORT.md': `ran in ${mac('kc')}`,
+      // Not exempt: a fixture outside test/, such as the hard floor fixture copies in lib/.
+      'lib/hard-floor-fixture.ts': `input: { kind: "path", path: "${mac('kc')}/.zshrc" },`,
     }
     for (const [path, text] of Object.entries(planted)) plant(path, `first line\n${text}\nlast line\n`)
     // Near misses and placeholders: none of these is one of our folders.
     plant('docs/near.md', [mac('you'), mac('kcx'), mac('karima'), win('you'), ['', 'home', 'you'].join('/'), ['', 'mnt', 'data', 'homes'].join('/'), 'Users kc'].join('\n'))
-    // Exempt: the tests, and the two pinned copies of BGOS backend fixtures.
+    // Exempt: the tests and their fixtures, and nothing else.
     plant('test/fixture.test.ts', mac('kc'))
-    plant('lib/hard-floor-fixture.ts', mac('kc'))
-    plant('lib/hard-floor-lane-fixture.ts', mac('kc'))
+    plant('test/fixtures/cases.json', mac('kc'))
     // A binary file is read too.
     plant('docs/evidence/run.log', `\u0000\u001b[31m${mac('kc')}\u001b[0m`)
     const init = spawnSync('git', ['init', '-q', repo], { encoding: 'utf8' })

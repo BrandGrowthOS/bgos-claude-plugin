@@ -43,14 +43,6 @@ export const EXEMPT = [
     prefix: 'test/',
     why: 'the tests and their fixtures model these hosts on purpose (the a633fb9c scope is everything but the tests)',
   },
-  {
-    path: 'lib/hard-floor-fixture.ts',
-    why: 'a byte-identical copy of the BGOS backend file backend/src/services/hard-floor-fixture.ts, pinned by sha256 on both sides; neutralize it there first, then re-pin',
-  },
-  {
-    path: 'lib/hard-floor-lane-fixture.ts',
-    why: 'a byte-identical copy of the BGOS backend file backend/src/services/hard-floor-lane-fixture.ts, pinned by sha256 on both sides; neutralize it there first, then re-pin',
-  },
 ]
 
 export function isExempt(path) {
@@ -99,5 +91,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   if (hits.length > 0) {
     console.error(`[check-home-paths] ${hits.length} lines name one of our home folders; use /Users/you, /home/you or C:\\Users\\you`)
     process.exitCode = 1
-  } else console.log('[check-home-paths] no tracked file outside the exempt fixtures names one of our home folders')
+  } else console.log('[check-home-paths] no tracked file outside test/ names one of our home folders')
 }
