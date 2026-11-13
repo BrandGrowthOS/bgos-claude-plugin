@@ -72,7 +72,9 @@ async function rig(t: any, loginOk: boolean | 'spa') {
   const run = () => runPersonVaultFill({
     pairing: { backendUrl: 'https://api.example.com', token: 'pt', ownerUserId: OWNER, assistantIds: [AGENT] }, agentRoot, assistantId: AGENT, actingUserId: LEO,
     ticket: 'K'.repeat(43), itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin, page: engine.selectedPage(), engine, security: testSecurity,
-    fetchImpl: (async () => new Response(JSON.stringify({ state, itemId: ITEM, devices: acct.devices, accountPublic: acct.accountPublic }), { status: 200 })) as never,
+    fetchImpl: (async (url: string) => String(url).includes('/vault/host/people-access')
+      ? new Response(JSON.stringify({ assistantId: AGENT, people: [{ userId: LEO, origins: [origin] }] }), { status: 200 })
+      : new Response(JSON.stringify({ state, itemId: ITEM, devices: acct.devices, accountPublic: acct.accountPublic }), { status: 200 })) as never,
   } as never)
   // What any frame of the page holds, raw: every input value and the text, never through the agent's masking.
   const raw = async () => {

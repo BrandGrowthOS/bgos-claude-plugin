@@ -19,11 +19,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { generateKeyPairSync } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { BrowserHostCore, BrowserPool, browserPathsFor, fillIdsOf, fillTabIdOf, runPersonVaultFill, sweepEndedShares } from '../bin/hoai-browser-host.mjs'
+import { BrowserHostCore, BrowserPool, ChromiumEngine, browserPathsFor, fillIdsOf, fillTabIdOf, runPersonVaultFill, sweepEndedShares } from '../bin/hoai-browser-host.mjs'
 import { RemoteBrowserViews } from '../lib/remote-view.mjs'
 import { vaultHostDir } from '../lib/vault-host.mjs'
 import { anchorOwnerAccount, confirmHostPin, loadOrCreateHostKey, provisionSigningIdentity, registerHostKey, testSecurity } from './helpers/vault-host.mjs'
@@ -201,7 +201,7 @@ test('the live view sends no frame while a login is being filled', () => {
 
 // ── runPersonVaultFill: the redeem, the checks, the open, the fill ──────────
 
-async function hostRig(people: any[], opts: { pinned?: boolean; anchored?: boolean } = {}) {
+async function hostRig(people: any[], opts: { pinned?: boolean; anchored?: boolean; access?: any } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'hvr-'))
   const agentRoot = join(home, '.bgos-agent')
   const dir = vaultHostDir(join(agentRoot, String(AGENT)))
@@ -223,17 +223,27 @@ async function hostRig(people: any[], opts: { pinned?: boolean; anchored?: boole
   const secrets: string[] = []
   const handBacks: number[] = []
   const steps: string[] = []
+  const accessAsks: string[] = []
   const pairing = { backendUrl: 'https://api.example.com', token: 'pt_secret_pairing', ownerUserId: OWNER, assistantIds: [AGENT] }
   const run = (over: Record<string, unknown> = {}, answer: any = redeemed, status = 200) => runPersonVaultFill({
     pairing, agentRoot, assistantId: AGENT, actingUserId: LEO, ticket: TICKET, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN,
     itemId: ITEM,
     page: fakePage(), engine: { registerSecret: (s: string) => secrets.push(s), handBackPrivacy: () => { handBacks.push(1); steps.push('release'); return { ok: true } } }, security: testSecurity,
     forgetHistory: async () => { steps.push('forget history'); return { ok: true } },
-    fetchImpl: async (url: string, init: any) => { fetches.push({ url, init }); return new Response(JSON.stringify(answer), { status }) },
+    fetchImpl: async (url: string, init: any) => {
+      // V2: who may still use which of the owner's sites, asked before every person fill.
+      if (url.startsWith('https://api.example.com/api/v1/vault/host/people-access')) {
+        accessAsks.push(url)
+        const access = 'access' in opts ? opts.access : { assistantId: AGENT, people: [{ userId: LEO, origins: [ORIGIN] }] }
+        return access === null ? new Response('', { status: 404 }) : new Response(JSON.stringify(access), { status: 200 })
+      }
+      fetches.push({ url, init })
+      return new Response(JSON.stringify(answer), { status })
+    },
     pageFill: async (_page: any, values: any, o: any) => { typed.push({ ...values, origin: o.origin }); steps.push('fill'); return { filled: true } },
     ...over,
   } as never)
-  return { home, dir, run, fetches, typed, secrets, handBacks, steps, redeemed, done: () => rmSync(home, { recursive: true, force: true }) }
+  return { home, dir, run, fetches, typed, secrets, handBacks, steps, accessAsks, redeemed, done: () => rmSync(home, { recursive: true, force: true }) }
 }
 
 test('the redeem goes out with the agent\'s own pairing, then the login is opened, registered and typed', async () => {
@@ -388,4 +398,51 @@ test('H1: the live view takes no command while a login is being filled, and fram
     assert.equal(done, false, method)
     assert.equal(sent[0]?.frame?.error?.code, 'vault_fill_running', method)
   }
+})
+
+test('V2: before every person fill of an owner login the host asks who may still use which site; not listed, nothing is typed', async () => {
+  const people = [{ userId: LEO, askMode: 'never', items: [{ itemId: null, ask: false }] }]
+  const ok = await hostRig(people)
+  try {
+    assert.deepEqual(await ok.run(), { filled: true })
+    assert.deepEqual(ok.accessAsks, [`https://api.example.com/api/v1/vault/host/people-access?assistantId=${AGENT}`])
+  } finally { ok.done() }
+  for (const [why, access, reason] of [
+    ['the person is not listed', { assistantId: AGENT, people: [] }, 'vault_access_ended'],
+    ['the site is not listed for them', { assistantId: AGENT, people: [{ userId: LEO, origins: ['https://other.example.com'] }] }, 'vault_access_ended'],
+    ['their owner vault is off (origins [])', { assistantId: AGENT, people: [{ userId: LEO, origins: [] }] }, 'vault_access_ended'],
+    ['no answer (404)', null, 'vault_access_unconfirmed'],
+  ] as const) {
+    const h = await hostRig(people, { access })
+    try {
+      assert.deepEqual(await h.run(), { filled: false, reason }, why)
+      assert.deepEqual(h.typed, [], why)
+    } finally { h.done() }
+  }
+})
+
+/**
+ * S3: Chromium's own password saving and autofill are off in the browser a
+ * person's turn runs in: the preferences are written into the profile Chrome
+ * starts with, BEFORE it launches, so no saved password prompt or store ever
+ * holds the owner's login.
+ */
+test('S3: password saving and autofill are off before the browser launches', async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'hvp-')))
+  try {
+    let seen: any = null
+    const engine: any = new ChromiumEngine({
+      executable: '/nonexistent/chrome', profileDir: join(home, 'browser', 'k'), outputDir: join(home, 'output', 'k'), scope: 'fixture',
+      launch: (async ({ profileDir }: { profileDir: string }) => {
+        seen = JSON.parse(readFileSync(join(profileDir, 'Default', 'Preferences'), 'utf8'))
+        throw new Error('stop before a real launch')
+      }) as never,
+    })
+    await assert.rejects(engine.start(), /stop before a real launch/)
+    assert.ok(seen, 'the preferences were there when Chrome would start')
+    assert.equal(seen.credentials_enable_service, false)
+    assert.equal(seen.profile.password_manager_enabled, false)
+    assert.equal(seen.autofill.profile_enabled, false)
+    assert.equal(seen.autofill.credit_card_enabled, false)
+  } finally { rmSync(home, { recursive: true, force: true }) }
 })
