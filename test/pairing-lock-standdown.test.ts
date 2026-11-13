@@ -40,6 +40,9 @@ const PAIRING_FRAMES = [
   'lanes_state',
   'lane_wake',
   'lane_revoked',
+  // Shared agent vault M2 (0.90.0): only the lock holder queues a person's
+  // lost access for the browser host.
+  'vault_person_access_changed',
   'voice_rpc',
   'export_pack',
   'export_pack_manifest',
