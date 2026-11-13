@@ -10,6 +10,14 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.87.6 (2026-11-13)
+
+Two follow ups from the review of the idle update (#291).
+
+**Two agents never restart together after a lease runs out.** When the computer's restart lease expired, two agents that both saw it could both break it: the second renamed the first one's new lease aside to check it, and a third agent that looked in that moment took the lease too, so two agents restarted at once. Now one agent alone ends any lease, by an exclusive claim on that lease, and it reads the lease again under the claim and never moves one that is not the lease it read. A claim left by an agent that died mid break stands for 2 minutes, then the next agent takes over; an agent that only slept mid break keeps its claim for a whole lease and checks it is still its own before it moves anything.
+
+**The rollback never drops a plugin Claude Code just installed.** Claude Code writes `installed_plugins.json` with no lock (a temp file and a rename; checked on 2.1.323), so there is no lock to share. The rollback now writes it through a temp file in the same folder and renames it over only while the file still reads what it read; if Claude Code wrote it meanwhile, the rollback reads it again and makes its change again, and if it keeps changing the rollback stops and says so rather than writing over it. On Windows a rename refused for a moment because the file is open elsewhere is tried again.
+
 ## 0.87.5 (2026-11-13)
 
 From the Helper's production test on a MacBook (2026-11-12): the Helper noticed a frozen agent and started a Fix every time, but never restarted it, and the app then said the agent was running again.

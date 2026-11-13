@@ -9,6 +9,12 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { nodeIdleUpdateFs } from '../lib/idle-update.mjs'
 
 // Only a missing module reads as missing; a module that does not load is a failure of its own.
 const mod: any = await import('../lib/idle-update-host.mjs').catch((err) => {
@@ -49,6 +55,11 @@ function memFs(files: Record<string, { text: string; mtimeMs?: number } | string
       writes.push({ path: p, text })
       map.set(p, { text, mtimeMs: NOW })
       return true
+    },
+    /** Through this fake's own writeAtomic (`this`), so a test that swaps writeAtomic sees these writes too. */
+    replaceIfUnchanged(this: any, p: string, expected: string | null, text: string): 'ok' | 'changed' | 'busy' | 'error' {
+      if ((this.readFile(p) ?? null) !== expected) return 'changed'
+      return this.writeAtomic(p, text) === true ? 'ok' : 'error'
     },
     remove: (p: string) => map.delete(p),
   }
@@ -648,6 +659,138 @@ test('a clone record is not the marketplace rollback\'s', async () => {
   const result = await need().rollbackMarketplaceInstall({ record: { ...RECORD, installMethod: 'clone' }, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', fs: w.fs, setAutoUpdate: w.setAutoUpdate, now: NOW })
   assert.deepEqual(result, { ok: false, reason: 'not_marketplace' })
   assert.deepEqual(w.fs.writes, [])
+})
+
+// -- installed_plugins.json is written only over what was read (#291 review follow up 3) ------------
+
+/**
+ * Claude Code's own write of installed_plugins.json, as watched with inotify on 2.1.323 (Linux, a scratch config
+ * folder, `claude plugin install` and `claude plugin update`): `installed_plugins.json.tmp.<8 hex>` in the same
+ * folder, then a rename over the file, with no lock file or folder taken around it.
+ */
+function claudeCodeWrites(path: string, change: (doc: any) => void) {
+  const doc = JSON.parse(readFileSync(path, 'utf8'))
+  change(doc)
+  const tmp = `${path}.tmp.${randomBytes(4).toString('hex')}`
+  writeFileSync(tmp, JSON.stringify(doc, null, 2))
+  renameSync(tmp, path)
+}
+
+/** A real config folder on disk: the install on 0.81.0, the old build's folder still there, and another plugin. */
+function realInstall() {
+  const root = mkdtempSync(join(tmpdir(), 'idle-installed-'))
+  const config = join(root, '.claude')
+  const plugins = join(config, 'plugins')
+  const fromRoot = join(plugins, 'cache', 'hoai', 'hoai', '0.80.0')
+  const toRoot = join(plugins, 'cache', 'hoai', 'hoai', '0.81.0')
+  mkdirSync(join(fromRoot, '.claude-plugin'), { recursive: true })
+  writeFileSync(join(fromRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'hoai', version: '0.80.0' }))
+  const installed = join(plugins, 'installed_plugins.json')
+  writeFileSync(installed, installedDoc('0.81.0', toRoot))
+  const machine = join(root, '.bgos-agent', 'idle-update')
+  mkdirSync(machine, { recursive: true })
+  const record = { ...RECORD, fromRoot }
+  return { root, plugins, installed, fromRoot, machine, record, done: () => rmSync(root, { recursive: true, force: true }) }
+}
+
+/**
+ * The real disk, with Claude Code writing installed_plugins.json just before each of this agent's first `times`
+ * writes of it, whatever the write is called: after the agent read the file, before its write lands.
+ */
+function claudeWritesFirst(installed: string, times: number, change: (doc: any, n: number) => void) {
+  const real: any = nodeIdleUpdateFs()
+  const reads = new Set(['readFile', 'mtimeMs', 'listDir'])
+  let n = 0
+  const fs: any = {}
+  for (const [name, fn] of Object.entries(real)) {
+    fs[name] = (...args: any[]) => {
+      if (!reads.has(name) && args[0] === installed && n < times) {
+        n += 1
+        claudeCodeWrites(installed, (doc) => change(doc, n))
+      }
+      return (fn as any)(...args)
+    }
+  }
+  return { fs, writes: () => n }
+}
+
+const noSwitch = () => ({ changed: false, reason: 'already' })
+
+test('Claude Code writes installed_plugins.json between the rollback\'s read and its write: both changes stand', async () => {
+  const w = realInstall()
+  try {
+    const raced = claudeWritesFirst(w.installed, 1, (doc) => {
+      doc.plugins['new@y'] = [{ scope: 'user', version: '2.0.0', installPath: '/y' }]
+    })
+    const result = await need().rollbackMarketplaceInstall({
+      record: w.record,
+      installedPluginsPath: w.installed,
+      holdPath: join(w.machine, 'enrolment-hold.json'),
+      marketplace: 'hoai',
+      fs: raced.fs,
+      setAutoUpdate: noSwitch,
+      now: NOW,
+    })
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(raced.writes(), 1, 'Claude Code wrote once, in the middle')
+    const doc = JSON.parse(readFileSync(w.installed, 'utf8'))
+    assert.deepEqual(doc.plugins['new@y'], [{ scope: 'user', version: '2.0.0', installPath: '/y' }], 'the plugin Claude Code installed meanwhile is still installed')
+    assert.equal(doc.plugins['hoai@hoai'][0].version, '0.80.0')
+    assert.equal(doc.plugins['hoai@hoai'][0].installPath, w.fromRoot)
+    assert.deepEqual(doc.plugins['other@x'], [{ scope: 'user', version: '1.0.0', installPath: '/x' }])
+    assert.deepEqual(readdirSync(w.plugins).filter((name) => name !== 'cache'), ['installed_plugins.json'], 'no temp file is left beside it')
+  } finally {
+    w.done()
+  }
+})
+
+test('Claude Code writing installed_plugins.json at every try: the rollback never writes over it, and says the install did not move', async () => {
+  const w = realInstall()
+  try {
+    const raced = claudeWritesFirst(w.installed, 100, (doc, n) => {
+      doc.plugins[`n${n}@y`] = [{ scope: 'user', version: `${n}.0.0`, installPath: `/y${n}` }]
+    })
+    const result = await need().rollbackMarketplaceInstall({
+      record: w.record,
+      installedPluginsPath: w.installed,
+      holdPath: join(w.machine, 'enrolment-hold.json'),
+      marketplace: 'hoai',
+      fs: raced.fs,
+      setAutoUpdate: noSwitch,
+      now: NOW,
+    })
+    assert.deepEqual(result, { ok: false, reason: 'not_persisted' })
+    const doc = JSON.parse(readFileSync(w.installed, 'utf8'))
+    const written = Array.from({ length: raced.writes() }, (_, i) => `n${i + 1}@y`)
+    assert.ok(written.length >= 1)
+    assert.deepEqual(written.filter((key) => !doc.plugins[key]), [], 'every plugin Claude Code installed is still installed')
+    assert.equal(doc.plugins['hoai@hoai'][0].version, '0.81.0', 'the install stays where Claude Code left it')
+    assert.deepEqual(readdirSync(w.plugins).filter((name) => name !== 'cache'), ['installed_plugins.json'], 'no temp file is left beside it')
+  } finally {
+    w.done()
+  }
+})
+
+test('a rename refused for a moment (Windows, the file open elsewhere) is tried again; one refused at every try fails as not moved', async () => {
+  const m = need()
+  const once = rollbackWorld()
+  let refusals = 1
+  const replace = once.fs.replaceIfUnchanged
+  once.fs.replaceIfUnchanged = function (this: any, p: string, expected: string | null, text: string) {
+    if (p === INSTALLED && refusals > 0) {
+      refusals -= 1
+      return 'busy'
+    }
+    return replace.call(this, p, expected, text)
+  }
+  const healed = await m.rollbackMarketplaceInstall({ record: RECORD, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: once.fs, setAutoUpdate: once.setAutoUpdate, now: NOW })
+  assert.equal(healed.ok, true, JSON.stringify(healed))
+  assert.equal(JSON.parse(once.fs.readFile(INSTALLED)!).plugins['hoai@hoai'][0].version, '0.80.0')
+  const always = rollbackWorld()
+  always.fs.replaceIfUnchanged = () => 'busy'
+  const lost = await m.rollbackMarketplaceInstall({ record: RECORD, installedPluginsPath: INSTALLED, holdPath: `${MACHINE}/enrolment-hold.json`, marketplace: 'hoai', configDir: CONFIG, fs: always.fs, setAutoUpdate: always.setAutoUpdate, now: NOW })
+  assert.deepEqual(lost, { ok: false, reason: 'not_persisted' })
+  assert.deepEqual(always.autoUpdate, [])
 })
 
 // -- The cgroup of an owning systemd unit -------------------------------------------------------

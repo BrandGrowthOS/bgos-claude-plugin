@@ -2424,8 +2424,8 @@
       "id": "lease-aside-plain-tag",
       "rule": "a nonce read from disk never names a path: the lease is moved aside only under a plain tag",
       "file": "lib/idle-update.mjs",
-      "find": "    if (typeof tag !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(tag)) return false\n",
-      "replace": "",
+      "find": "    if (typeof expectedRaw !== 'string' || typeof tag !== 'string' || !LEASE_TAG_RE.test(tag)) return false\n",
+      "replace": "    if (typeof expectedRaw !== 'string') return false\n",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3188,8 +3188,8 @@
       "id": "silent-lease-writes",
       "rule": "breaking an expired lease writes silent-<n>",
       "file": "lib/idle-update.mjs",
-      "find": "lease.state === 'expired' && !(noteExpiredLease(lease.lease) && moveLeaseAside(lease.raw, `broken-${me.nonce}`))",
-      "replace": "lease.state === 'expired' && !moveLeaseAside(lease.raw, `broken-${me.nonce}`)",
+      "find": "() => (onExpired ? onExpired(lease.lease) : true)",
+      "replace": "() => true",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -3198,8 +3198,8 @@
       "id": "silent-before-the-lease-goes",
       "rule": "a silence that cannot be written leaves the lease where it is",
       "file": "lib/idle-update.mjs",
-      "find": "!(noteExpiredLease(lease.lease) && moveLeaseAside(lease.raw, `broken-${me.nonce}`))",
-      "replace": "!(noteExpiredLease(lease.lease), moveLeaseAside(lease.raw, `broken-${me.nonce}`))",
+      "find": "      if (before && read(before, false) !== true) return false\n",
+      "replace": "      if (before) read(before, false)\n",
       "tests": [
         "test/idle-update.controller.test.ts"
       ]
@@ -5432,6 +5432,232 @@
         "test/self-update.test.ts"
       ],
       "bun": true
+    },
+    {
+      "id": "lease-end-claim",
+      "rule": "follow up 2: one agent ends any lease (the exclusive claim)",
+      "file": "lib/idle-update.mjs",
+      "find": "    const claim = claimEnd(expectedRaw, by)\n    if (!claim) return false\n",
+      "replace": "    const claim = []\n",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-read-again",
+      "rule": "follow up 2: the lease is read again under the claim",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (read(() => fs.readFile(leasePath), null) !== expectedRaw) return false\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-release-claimed",
+      "rule": "follow up 2: a release goes through the same claim as a break",
+      "file": "lib/idle-update.mjs",
+      "find": "    return end(lease.raw, `released-${me.nonce}`, { assistantId: me.assistantId, nonce: me.nonce }, before)",
+      "replace": "    return (!before || read(before, false) === true) && moveAside(lease.raw, `released-${me.nonce}`)",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-claim-never-stale",
+      "rule": "follow up 2: a breaker that died mid break holds the end only leaseEndStaleMs",
+      "file": "lib/idle-update.mjs",
+      "find": "  return ownerAlive === false && age >= d.leaseEndStaleMs ? 'stale' : 'standing'",
+      "replace": "  return 'standing'",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-claim-always-stale",
+      "rule": "follow up 2: a standing claim is never taken over",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (verdict !== 'stale') return null",
+      "replace": "      if (false) return null",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-claim-undated",
+      "rule": "follow up 2: a claim nobody can date stands",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (!finite(mtimeMs) || !finite(now)) return 'standing'",
+      "replace": "  if (!finite(mtimeMs) || !finite(now)) return 'stale'",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-claim-clock-jump",
+      "rule": "follow up 2: a claim stamped past a lease ahead holds nothing",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (mtimeMs - now > d.leaseTtlMs) return 'stale'\n  const age",
+      "replace": "  const age",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-claim-removed",
+      "rule": "follow up 2: the claim goes when the end is done or stops short",
+      "file": "lib/idle-update.mjs",
+      "find": "      for (const path of claim.paths) read(() => fs.remove(path), false)",
+      "replace": "      void claim",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-stale-claims-removed",
+      "rule": "follow up 2: the stale claims taken over from go too",
+      "file": "lib/idle-update.mjs",
+      "find": "      paths.push(path)\n    }\n    if (log)",
+      "replace": "    }\n    if (log)",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "installed-plugins-compare",
+      "rule": "follow up 3: the temp file replaces installed_plugins.json only while it reads what was read",
+      "file": "lib/idle-update.mjs",
+      "find": "        if (current !== expected) {",
+      "replace": "        if (false) {",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "installed-plugins-temp-dropped",
+      "rule": "follow up 3: a write not made leaves no temp file",
+      "file": "lib/idle-update.mjs",
+      "find": "          drop()\n          return 'changed'",
+      "replace": "          return 'changed'",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "installed-plugins-only-over-read",
+      "rule": "follow up 3: the rollback writes only over the file it read",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    const wrote = safe(() => fs.replaceIfUnchanged(installedPluginsPath, raw, repointed.text), 'error')",
+      "replace": "    const wrote = safe(() => fs.writeAtomic(installedPluginsPath, repointed.text), false) === true ? 'ok' : 'error'",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "installed-plugins-read-again",
+      "rule": "follow up 3: a file that changed is read again and the change made again",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    if (wrote === 'changed' || wrote === 'busy') continue\n",
+      "replace": "    if (wrote === 'busy') continue\n",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-owner-alive",
+      "rule": "follow up 2: a claim whose process lives is not taken over at leaseEndStaleMs",
+      "file": "lib/idle-update.mjs",
+      "find": "  return ownerAlive === false && age >= d.leaseEndStaleMs ? 'stale' : 'standing'",
+      "replace": "  return age >= d.leaseEndStaleMs ? 'stale' : 'standing'",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-whole-lease",
+      "rule": "follow up 2: past a whole lease no claim stands",
+      "file": "lib/idle-update.mjs",
+      "find": "  if (age >= d.leaseTtlMs) return 'stale'\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-still-mine",
+      "rule": "follow up 2: the last look before the rename finds a takeover",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (!stillMine(claim)) return false\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-still-mine-order",
+      "rule": "follow up 2: the later claim is read before the own claim",
+      "file": "lib/idle-update.mjs",
+      "find": "    read(() => fs.readFile(claimPath(claim.key, claim.n + 1)), null) === null && read(() => fs.readFile(claim.paths[claim.paths.length - 1]), null) === claim.text",
+      "replace": "    read(() => fs.readFile(claim.paths[claim.paths.length - 1]), null) === claim.text && read(() => fs.readFile(claimPath(claim.key, claim.n + 1)), null) === null",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-sweep-runs",
+      "rule": "follow up 2: leftovers of agents that died mid break are swept",
+      "file": "lib/idle-update.mjs",
+      "find": "    sweep()\n",
+      "replace": "",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-sweep-only-old",
+      "rule": "follow up 2: the sweep takes only what is a lease old",
+      "file": "lib/idle-update.mjs",
+      "find": "      if (finite(mtimeMs) && (now() - mtimeMs >= d.leaseTtlMs || mtimeMs - now() > d.leaseTtlMs)) read(() => fs.remove(path), false)",
+      "replace": "      read(() => fs.remove(path), false)",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "lease-end-claims-used-up-said",
+      "rule": "follow up 2: claims used up are said",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (log) read(() => log(",
+      "replace": "    if (false) read(() => log(",
+      "tests": [
+        "test/idle-update.lease-race.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "installed-plugins-busy-retried",
+      "rule": "follow up 3: a rename refused for a moment is tried again",
+      "file": "lib/idle-update-host.mjs",
+      "find": "    if (wrote === 'changed' || wrote === 'busy') continue",
+      "replace": "    if (wrote === 'changed') continue",
+      "tests": [
+        "test/idle-update.host.test.ts"
+      ]
     }
   ]
 }
