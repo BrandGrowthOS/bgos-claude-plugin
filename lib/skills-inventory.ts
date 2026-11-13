@@ -50,6 +50,7 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
@@ -101,6 +102,9 @@ const WALK_MAX_ENTRIES = 2000
 const WALK_MAX_DEPTH = 12
 /** At most this many skills are read from one root, so a huge folder cannot stall the daemon. */
 export const SKILLS_ROOT_MAX = 500
+/** Backup retention, applied when Remove or Replace writes a new backup. */
+export const SKILLS_TRASH_MAX_PER_SKILL = 20
+export const SKILLS_TRASH_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 const INSTALLED_PLUGINS_MAX_BYTES = 1024 * 1024
 /** Frontmatter keys that pre-approve tools or run commands (section 4.2). */
 const EXECUTABLE_KEYS = ['allowed-tools', 'hooks', 'shell']
@@ -733,6 +737,69 @@ function refuse(code: SkillRemoveCode, message: string): SkillRemoveAnswer {
 const PATH_MAX = 1024
 
 /**
+ * Flat trash names carry the backup clock, not the moved folder's mtime.
+ * The label disambiguates a collision of `review` from the skill `2-review`.
+ * Unknown or damaged labels are left alone rather than deleting another skill.
+ * The new backup is reserved first, so rollback can always put it back.
+ */
+function pruneSkillTrash(trashDir: string, newest: string, now: number, log: (msg: string) => void): void {
+  try {
+    const root = lstatSync(trashDir)
+    if (root.isSymbolicLink() || !root.isDirectory()) return
+    const mark = markOf(trashDir)
+    const bySkill = new Map<string, Array<{ path: string; time: number; sequence: number }>>()
+    for (const labelName of readdirSync(trashDir)) {
+      if (!labelName.endsWith('.json')) continue
+      const entry = labelName.slice(0, -5)
+      const path = join(trashDir, entry)
+      try {
+        const label = lstatSync(path + '.json')
+        if (!label.isFile() || label.isSymbolicLink() || label.size > 8192) continue
+        const note = JSON.parse(readFileSync(path + '.json', 'utf8'))
+        if (typeof note?.name !== 'string' || !SKILL_NAME_RE.test(note.name) || note?.scope !== 'agent') continue
+        const match = new RegExp(`^(\\d{15})(?:-(\\d{1,15}))?-${note.name}$`).exec(entry)
+        if (!match) continue
+        try {
+          lstatSync(path)
+        } catch (err) {
+          // Replace may have rolled the folder back into place, leaving its label.
+          if ((err as NodeJS.ErrnoException)?.code === 'ENOENT' && sameMark(mark, markOf(trashDir))) {
+            rmSync(path + '.json', { force: true })
+          }
+          continue
+        }
+        const backups = bySkill.get(note.name) ?? []
+        backups.push({ path, time: Number(match[1]), sequence: Number(match[2] ?? 1) })
+        bySkill.set(note.name, backups)
+      } catch {
+        // A backup with no trustworthy label cannot be assigned to this skill.
+      }
+    }
+    for (const backups of bySkill.values()) {
+      backups.sort((a, b) => Number(b.path === newest) - Number(a.path === newest) || b.time - a.time || b.sequence - a.sequence)
+      let kept = 0
+      for (const backup of backups) {
+        if (backup.path === newest || (backup.time >= now - SKILLS_TRASH_MAX_AGE_MS && kept < SKILLS_TRASH_MAX_PER_SKILL)) {
+          kept++
+          continue
+        }
+        if (!sameMark(mark, markOf(trashDir))) return
+        try {
+          // rmSync unlinks a backup that is a symlink; it never follows its target.
+          rmSync(backup.path, { recursive: true, force: true })
+          rmSync(backup.path + '.json', { force: true })
+        } catch (err) {
+          log(`skills: could not prune an old backup: ${String((err as Error)?.message ?? err)}`)
+        }
+      }
+    }
+  } catch (err) {
+    // The new backup has already landed. A cleanup failure must not lose it.
+    log(`skills: could not prune old backups: ${String((err as Error)?.message ?? err)}`)
+  }
+}
+
+/**
  * The frontmatter name of a skill folder (a link followed, as the list does),
  * read under the list's own rules: a SKILL.md inside the folder, a regular
  * file, not hard linked. Null otherwise.
@@ -831,12 +898,21 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
   // Read the way the moved entry is read after the move, or the two would never agree past 2^53.
   const targetId = identOf(target, false, input.fs)
   const skillsMark = markOf(agentSkills, input.fs)
+  const now = input.now()
   let dest: string
   try {
     mkdirSync(trashDir, { recursive: true })
-    const stamp = String(input.now()).padStart(15, '0')
-    dest = join(trashDir, `${stamp}-${folder}`)
-    for (let n = 2; existsSync(dest) || existsSync(dest + '.json'); n++) dest = join(trashDir, `${stamp}-${n}-${folder}`)
+    const stamp = String(now).padStart(15, '0')
+    // Never reuse a gap pruned earlier in this millisecond: the sequence is
+    // also the backup order when several writes share the same clock value.
+    const pattern = new RegExp(`^${stamp}(?:-(\\d{1,15}))?-${folder}(?:\\.json)?$`)
+    let sequence = 1
+    for (const entry of readdirSync(trashDir)) {
+      const match = pattern.exec(entry)
+      if (match) sequence = Math.max(sequence, Number(match[1] ?? 1) + 1)
+    }
+    dest = join(trashDir, sequence === 1 ? `${stamp}-${folder}` : `${stamp}-${sequence}-${folder}`)
+    while (existsSync(dest) || existsSync(dest + '.json')) dest = join(trashDir, `${stamp}-${++sequence}-${folder}`)
   } catch (err) {
     log(`skills: remove of ${shown} failed preparing the trash: ${displayPath(String((err as Error)?.message ?? err), home)}`)
     return refuse('write_failed', 'the trash folder could not be prepared, so nothing was moved')
@@ -870,10 +946,11 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
   try {
     writeFileSync(
       dest + '.json',
-      JSON.stringify({ name: folder, scope: 'agent', path: shown, removedAt: new Date(input.now()).toISOString() }, null, 1),
+      JSON.stringify({ name: folder, scope: 'agent', path: shown, removedAt: new Date(now).toISOString() }, null, 1),
     )
   } catch {
     // the skill is already in the trash; the note beside it is only a label
   }
+  pruneSkillTrash(trashDir, dest, now, log)
   return { ok: true, removed: { name: folder, scope: 'agent', path: shown }, trashedTo: dest }
 }
