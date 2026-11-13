@@ -1,0 +1,53 @@
+M1 no start grace: RED (4 failing)
+    keepalive-plan: decideChannelDeaf: past the start grace with no fresh beacon, no live daemon is no_channel_process and a silen
+    keepalive-plan: decideChannelDeaf: never a false alarm. A slow start, a fresh beacon, an unknown start, a claude not proven ru
+    watcher-keepalive: deafwatch (red first): a claude whose MCP never started (bin/bgos-launch.mjs removed) is flagged once past the
+    watcher-keepalive: deafwatch: a deaf failure is not undone by a relaunched claude still inside its grace; only a live channel end
+M2 fresh beacon ignored: RED (3 failing)
+    keepalive-plan: decideChannelDeaf: never a false alarm. A slow start, a fresh beacon, an unknown start, a claude not proven ru
+    watcher-keepalive: deafwatch: a restart that brings the channel back is `restarted`, and the next sweep that sees the beacon live
+    watcher-keepalive: deafwatch: no false alarm. A healthy agent, a daemon whose beacon is fresh, a daemon that never beaconed, a ch
+M3 never-beaconed live daemon judged deaf: RED (6 failing)
+    keepalive-plan: decideChannelDeaf: never a false alarm. A slow start, a fresh beacon, an unknown start, a claude not proven ru
+    watcher-keepalive: win32: an update at an idle moment with the launcher dead (a schtasks /Run too) is not made onto a hoai-core w
+    watcher-keepalive: board row 69337efa (win32): a live pairing lock holder still blocks the start (F4), and so does a hung one who
+    watcher-keepalive: daemon F7: a FRESH daemon that reports nothing pending is not restarted, whatever installed version the watche
+M4 sweep skips the channel check: RED (7 failing)
+    watcher-keepalive: board row 69337efa (win32): a live claude carrying the agent's pinned session id still blocks the start (its d
+    watcher-keepalive: board row 69337efa (win32): a live pairing lock holder still blocks the start (F4), and so does a hung one who
+    watcher-keepalive: deafwatch (red first): a claude whose MCP never started (bin/bgos-launch.mjs removed) is flagged once past the
+    watcher-keepalive: deafwatch: the three restarts a deaf channel gets are the usual budget (one per 30 min), then failed attempts_
+M5 a deaf failure is undone by a claude in grace: RED (1 failing)
+    watcher-keepalive: deafwatch: a deaf failure is not undone by a relaunched claude still inside its grace; only a live channel end
+M6 missing files not named: RED (3 failing)
+    watcher-keepalive: deafwatch (red first): a claude whose MCP never started (bin/bgos-launch.mjs removed) is flagged once past the
+    watcher-keepalive: deafwatch: the three restarts a deaf channel gets are the usual budget (one per 30 min), then failed attempts_
+    watcher-keepalive: deafwatch (win32, Ares): the launcher's hoai-core.mjs and the MCP launcher removed, claude up on its pin for 1
+M7 cwd-only claude judged: RED (6 failing)
+    watcher-keepalive: supervise: no known folder is needs_first_launch; a verified bespoke keepalive is supervised (never a second s
+    watcher-keepalive: supervise (G11): a keepalive.json whose script is alive but whose claude is between two relaunches is supervis
+    watcher-keepalive: safe moment (F3): the process table is read again after an install: a job started while the install ran is see
+    watcher-keepalive: board row 69337efa (win32): a lock holder that still runs as itself with no claude above it keeps the quiet wi
+M8 check up has no start grace: RED (2 failing)
+    agent-checkup: C3 (deafwatch): a claude inside its start grace is a slow start, never daemon_down or beacon_stale; past it, b
+    watcher-checkup: deafwatch: a check up during a slow start (claude up 2 min, its MCP server not up yet) finds nothing and resta
+M9 check up names no file: RED (1 failing)
+    watcher-checkup: deafwatch (Ares): past the grace with bin/bgos-launch.mjs removed, the check up names the missing file, restar
+M10 deaf restart offered as an update: RED (1 failing)
+    keepalive-plan: pendingKindOf: a deaf channel's restart is never an update to restart onto (no Restart now for it)
+M11 a live channel keeps the old missing files: RED (1 failing)
+    watcher-keepalive: deafwatch: once the channel is live again the record no longer names missing files
+M12 the sweep does not lift recent_activity for a deaf channel: RED (1 failing)
+    watcher-keepalive: deafwatch (Ares 17:29Z): a deaf channel is restarted though its session wrote a minute ago; a job under claude
+M13 the check up lifts it with an unknown start: RED (3 failing)
+    agent-checkup: never a kill when unsafe: recent_activity holds a C3 restart, waiting_idle
+    agent-checkup: C3 (deafwatch, Ares 17:29Z): a daemon down past the start grace is restarted though the session was active min
+    agent-checkup: invariant: no planned restart or start under C8 or C9 (but the C3 connector restart), an unsafe moment or a cl
+M14 a deaf channel lifts the job hold too: RED (3 failing)
+    keepalive-plan: decideSafeMoment (deafwatch, Ares 17:29Z): a deaf channel past its start grace is never held by recent session
+    agent-checkup: C3 (deafwatch, Ares 17:29Z): a daemon down past the start grace is restarted though the session was active min
+    watcher-keepalive: deafwatch (Ares 17:29Z): a deaf channel is restarted though its session wrote a minute ago; a job under claude
+M15 the check up passes no deaf flag: RED (3 failing)
+    agent-checkup: C3 (deafwatch, Ares 17:29Z): a daemon down past the start grace is restarted though the session was active min
+    watcher-checkup: deafwatch (Ares 17:29Z): a daemon down past the grace is restarted though the session was active a minute ago 
+    watcher-checkup: deafwatch: a claude only a cwd lookup finds still gives its start time, so a deaf channel past the grace is re

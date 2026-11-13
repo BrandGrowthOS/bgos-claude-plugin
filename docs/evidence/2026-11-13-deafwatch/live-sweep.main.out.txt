@@ -1,0 +1,16 @@
+the agent's claude, from the real process table:
+  3591205 3591198 Fri Nov 13 17:35:26 2026 claude --resume 8c1f0000-0000-4000-8000-0000000d0912 --dangerously-load-development-channels server:bgos
+plugin root ~/.claude/plugins/cache/hoai/hoai/0.87.6: bin/bgos-launch.mjs present? false
+
+sweep 1, at the real now (the claude is seconds old, a slow start):
+  heartbeat entry: [{"id":"912","state":"supervised","reason":"canonical","since":"2026-11-13T17:35:28.701Z"}]
+
+sweep 2, six minutes on (past the five minute start grace; its transcript written a minute ago):
+  heartbeat entry: [{"id":"912","state":"supervised","reason":"canonical","since":"2026-11-13T17:35:28.701Z"}]
+  keepalive-state.json record: {"state":"supervised","reason":"canonical"}
+
+the watcher log:
+  keep-alive: ON (source live, status 200, 1 cleared)
+  keep-alive 912: supervised (canonical)
+
+FAIL: slow start left alone, deaf channel flagged past the grace, restarted once through its service, reported not fixed, the missing file named

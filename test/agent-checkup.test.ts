@@ -28,7 +28,7 @@ import {
   diagnoseAgent,
   planRepairs,
 } from '../lib/agent-checkup.mjs'
-import { MAX_ATTEMPTS_PER_TARGET, RESTART_MIN_INTERVAL_MS } from '../lib/keepalive-plan.mjs'
+import { CHANNEL_START_GRACE_MS, MAX_ATTEMPTS_PER_TARGET, RESTART_MIN_INTERVAL_MS } from '../lib/keepalive-plan.mjs'
 
 const NOW = Date.parse('2026-10-23T12:00:00Z')
 const MIN = 60_000
@@ -122,6 +122,29 @@ test('C3: a live claude with no live daemon is daemon_down, fixable', () => {
   assert.deepEqual(causes(findings), ['C3'])
   assert.equal(findings[0].code, 'daemon_down')
   assert.equal(findings[0].fixable, true)
+})
+
+test('C3 (deafwatch): a claude inside its start grace is a slow start, never daemon_down or beacon_stale; past it, both are found as before', () => {
+  // 2 min in: its MCP server and daemon are still coming up. Before, the check up restarted it.
+  for (const over of [{ daemonAlive: false }, { beaconHeartbeatAtMs: NOW - BEACON_STALE_MS - 1 }]) {
+    const slow = checkupPass(obs({ ...over, claudeStartedAtMs: NOW - 2 * MIN }))
+    assert.deepEqual(slow.findings, [], JSON.stringify(over))
+    assert.equal(plannedRestart(slow.actions), false, JSON.stringify(over))
+    // Past the grace: the same evidence is a finding again.
+    assert.deepEqual(causes(diagnoseAgent(obs({ ...over, claudeStartedAtMs: NOW - CHANNEL_START_GRACE_MS }))), ['C3'], JSON.stringify(over))
+  }
+  // An unknown start (a claude only the state or a cwd lookup found) is judged as before.
+  assert.deepEqual(causes(diagnoseAgent(obs({ daemonAlive: false, claudeStartedAtMs: null }))), ['C3'])
+})
+
+test('C3 (deafwatch): a plugin file the channel needs that is gone is named in the finding (Ares: antivirus removed bin/bgos-launch.mjs)', () => {
+  const findings = diagnoseAgent(obs({ daemonAlive: false, claudeStartedAtMs: NOW - 11 * 60 * MIN, missingPluginFiles: ['bin/bgos-launch.mjs', 'bin/hoai-core.mjs'] }))
+  assert.equal(findings[0].code, 'daemon_down')
+  assert.equal(findings[0].evidence, 'claude is running and no daemon is; missing bin/bgos-launch.mjs, bin/hoai-core.mjs')
+  const stale = diagnoseAgent(obs({ beaconHeartbeatAtMs: NOW - 20 * MIN, missingPluginFiles: ['server.ts'] }))
+  assert.equal(stale[0].evidence, 'the beacon last beat 20 min ago while claude runs; missing server.ts')
+  // Nothing missing, nothing added.
+  assert.equal(diagnoseAgent(obs({ daemonAlive: false, missingPluginFiles: [] }))[0].evidence, 'claude is running and no daemon is')
 })
 
 test('C3: a stale beacon heartbeat while claude runs is beacon_stale', () => {
@@ -623,6 +646,26 @@ for (const [reason, unsafe] of UNSAFE) {
     assert.equal(pass.actions[0].state, 'waiting_idle')
   })
 }
+
+test('C3 (deafwatch, Ares 17:29Z): a daemon down past the start grace is restarted though the session was active minutes ago; never past a job or an unreadable tree', () => {
+  // What Ares's watcher logged: C3:daemon_down, plan=restart:skipped(recent_activity), not fixed yet.
+  const deaf = { daemonAlive: false, claudeStartedAtMs: NOW - 6 * MIN, activityMs: [NOW - 1 * MIN] }
+  const pass = checkupPass(obs(deaf))
+  assert.deepEqual(steps(pass.actions), ['restart:planned', 'verify:planned'])
+  // A silent channel under a running daemon (beacon_stale) past the grace: the same.
+  assert.equal(plannedRestart(checkupPass(obs({ claudeStartedAtMs: NOW - 6 * MIN, beaconHeartbeatAtMs: NOW - 20 * MIN, activityMs: [NOW - 1 * MIN] })).actions), true)
+  // Still never a kill of a job, nor on a tree it could not read.
+  for (const [reason, over] of [
+    ['background_job', { descendants: ['/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh && sleep 900'] }],
+    ['process_tree_unreadable', { descendants: null }],
+  ] as Array<[string, Record<string, any>]>) {
+    const held = checkupPass(obs({ ...deaf, ...over }))
+    assert.deepEqual(steps(held.actions), ['restart:skipped'], reason)
+    assert.equal(held.actions[0].reason, reason)
+  }
+  // A start the listing did not give proves no grace has passed: the activity hold stands (the UNSAFE table below).
+  assert.equal(checkupPass(obs({ ...deaf, claudeStartedAtMs: null })).actions[0].reason, 'recent_activity')
+})
 
 test('a restart gate that says no is a skipped step with its reason and state', () => {
   const rateLimited = checkupPass(obs({ daemonAlive: false, lastRestartAtMs: NOW - RESTART_MIN_INTERVAL_MS + MIN }))

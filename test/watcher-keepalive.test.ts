@@ -178,6 +178,30 @@ function machine(agents: AgentSpec[], opts: { platform?: string; installedVersio
 const psLine = (pid: number, ppid: number, cmd: string, start = 'Tue Oct  6 18:00:00 2026', uid = 501) => ` ${pid} ${ppid} ${uid} ${start} ${cmd}`
 
 /**
+ * The files a plugin root carries that its channel starts from (keepalive-plan CHANNEL_CORE_FILES, and
+ * the MCP servers the manifest names), so a fixture's root is a whole install: deafwatch names a missing one.
+ */
+function channelFilesAt(root: string, sep = '/'): Record<string, string> {
+  const at = (rel: string) => `${root}${sep}${rel.split('/').join(sep)}`
+  return {
+    [at('.claude-plugin/plugin.json')]: JSON.stringify({
+      name: 'hoai',
+      mcpServers: {
+        bgos: { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/bin/bgos-launch.mjs', '${CLAUDE_PLUGIN_ROOT}/server.ts'] },
+        'hoai-browser': { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/bin/hoai-browser-launch.mjs'] },
+      },
+    }),
+    [at('server.ts')]: '// the daemon\n',
+    [at('bin/bgos-launch.mjs')]: '// the MCP launcher\n',
+    [at('bin/hoai-core.mjs')]: HOAI_CORE_KEEP_ALIVE_TEXT,
+    [at('bin/hoai-browser-launch.mjs')]: '// the browser host launcher\n',
+    [at('bin/hoai-browser-mcp.mjs')]: '// the browser host MCP\n',
+  }
+}
+/** Mirrors HOAI_CORE_KEEP_ALIVE (declared further down, with the Windows tests): a --keep-alive launcher. */
+const HOAI_CORE_KEEP_ALIVE_TEXT = "export const RUN_KEEP_ALIVE_FLAGS = Object.freeze(['--keep-alive'])\n"
+
+/**
  * The Windows agents whose logon task this HOME (C:\Users\kc) has registered in the default
  * win32 world (`recorder()`'s `win32Task: 'own'`): agent 912, and agent 913 of the "two crashed
  * together" test. Each is seeded exactly as lib/agent-task-win32.mjs registers it from this HOME
@@ -1537,6 +1561,8 @@ const HOAI_CORE_OLD = "export const RUN_FRESH_FLAGS = Object.freeze(['--new'])\n
 function windowsMachine(extra: Record<string, string> = {}) {
   return memoryFs(
     {
+      // A whole plugin root: every file the channel starts from is there (deafwatch names a missing one).
+      ...channelFilesAt(WROOT, '\\'),
       [`${WROOT}\\bin\\hoai-core.mjs`]: HOAI_CORE_KEEP_ALIVE,
       [`${WHOME}\\.bgos-agent\\credentials-912.json`]: '{}',
       [`${WSTATE}\\launch.json`]: JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: WCWD, argv: [], installMethod: 'marketplace', pluginRoot: WROOT, node: 'node', startedAt: 'x', pid: null })),
@@ -2152,7 +2178,10 @@ test('board row 69337efa (win32): a live claude carrying the agent\'s pinned ses
     const rec = recorder({ win32Ps: listed(own) })
     const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn(own) }) as any)
     assert.deepEqual(starts(rec), [], `never a second session on its pin (activity ${(T0 - activityAt) / MIN} min ago)`)
-    assert.deepEqual(report.agents, [{ id: '912', state: 'waiting_idle', reason: 'session_without_launcher', since: new Date(T0).toISOString() }], 'no time: it waits for that session to end')
+    // deafwatch: that claude has run 30 min with its daemon dead and no beacon, so it is DEAF, not merely
+    // waiting: the row is the failed no-channel-heartbeat finding the Helper reads (Stuck, never connected),
+    // still with no time and still held for the same reason, never a task start beside it.
+    assert.deepEqual(report.agents, [{ id: '912', state: 'failed', reason: 'no-channel-heartbeat: no live channel (session_without_launcher)', since: new Date(T0).toISOString() }], 'no time: it waits for that session to end')
   }
 })
 
@@ -2176,7 +2205,9 @@ test('board row 69337efa (win32): a live pairing lock holder still blocks the st
   const hungRec = recorder({ win32Ps: listed(session) })
   const hungReport = await runKeepAliveSweep(windowsCtx(hung, hungRec, { pidAlive: aliveIn(session) }) as any)
   assert.deepEqual(starts(hungRec), [])
-  assert.deepEqual(hungReport.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+  // deafwatch: a hung daemon (no heartbeat for 10 min) under a claude up 30 min is a deaf channel: reported
+  // as the failed no-channel-heartbeat finding, held for the same reason, still never a start beside it.
+  assert.deepEqual(hungReport.agents.map((a: any) => [a.state, a.reason]), [['failed', 'no-channel-heartbeat: no live channel (session_without_launcher)']])
   // Its pid now names a process started after the last heartbeat (another agent's daemon): not this agent.
   const reused = [{ ProcessId: 4912, ParentProcessId: 8100, CreationDate: T0 - 2 * MIN, CommandLine: 'bun C:\\x\\server.ts' }]
   const gone = crashedMachine({ ...oldState, [WLOCK]: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 10 * MIN }) })
@@ -2625,4 +2656,225 @@ test('off the marker tier a marker on disk never blocks the restart (a canonical
   const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
   assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})
+
+// -- deafwatch: a live claude whose channel never came up (mission 298 goal 21) -------------------
+//
+// Ares's Windows PC, 2026-11-13: antivirus removed bin/bgos-launch.mjs (with hoai-core.mjs and the
+// browser host's launch and MCP scripts). Ares relaunched, claude came up, the bgos MCP server died
+// at once with MODULE_NOT_FOUND, and the session sat deaf for 11 hours: the sweep saw the claude
+// process and wrote `supervised`. The channel's own heartbeat (the daemon's beacon) is now part of
+// the health check: a claude of the agent up past CHANNEL_START_GRACE_MS (5 min) with no live channel
+// is the failed `no-channel-heartbeat` finding the Helper reads, restarted through the usual gates
+// and logged as not fixed while it stays deaf, naming any plugin file the channel needs that is gone.
+
+const DEAF_PIN = '8c1f0000-0000-4000-8000-0000000d0912'
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+/** `ps -o lstart=` for an instant, in the local zone the listing parser reads it in. */
+function lstartOf(ms: number) {
+  const d = new Date(ms)
+  const two = (n: number) => String(n).padStart(2, '0')
+  return `${WEEKDAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${String(d.getDate()).padStart(2, ' ')} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())} ${d.getFullYear()}`
+}
+const BEACON_912 = `${HOME}/.bgos-plugin-state/912/channel-beacon.json`
+
+/**
+ * Agent 912 under its canonical service, nothing to update, its plugin root whole but for `missing`.
+ * Its last daemon's state is 11 hours old (that daemon is gone); `beaconAt` is its channel's last beat.
+ */
+function deafMachine(opts: { missing?: string[]; beaconAt?: number | null; freshState?: boolean } = {}) {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: null }], { lastUpdated: '2026-10-06T06:00:00.000Z' })
+  for (const [path, text] of Object.entries(channelFilesAt(ROOT))) {
+    if (!(opts.missing ?? []).some((rel) => path === `${ROOT}/${rel}`)) fs.writeFile(path, text)
+  }
+  fs.writeFile(`${HOME}/.bgos-agent/912/session-id`, `${DEAF_PIN}\n`)
+  const stateAt = opts.freshState ? T0 : T0 - 11 * 60 * MIN
+  fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', stateAt, { sessionId: DEAF_PIN, runningVersion: '0.62.1', lastActivityAt: new Date(stateAt - 60 * MIN).toISOString() }))
+  if (opts.beaconAt != null) {
+    fs.writeFile(BEACON_912, JSON.stringify({ beaconAt: opts.beaconAt, pid: 4912 }))
+    fs.touch(BEACON_912, opts.beaconAt)
+  }
+  return fs
+}
+
+/** The process table: the agent's claude on its pinned session, started at `startedAt`, and its MCP server only when it runs. */
+function deafPs(startedAt: number, opts: { mcp?: boolean; pin?: boolean } = {}) {
+  const claude = opts.pin === false ? 'claude --dangerously-skip-permissions' : `claude --resume ${DEAF_PIN} --dangerously-load-development-channels server:bgos`
+  const lines = [psLine(1, 0, '/sbin/launchd'), psLine(5912, 4100, claude, lstartOf(startedAt))]
+  if (opts.mcp) lines.push(psLine(4912, 5912, `node ${ROOT}/bin/bgos-launch.mjs ${ROOT}/server.ts`, lstartOf(startedAt + 2_000)))
+  return lines.join('\n')
+}
+
+const deafRecord = (fs: MemoryFs) => JSON.parse(fs.files.get(keepAliveStatePath(HOME))!).agents['912']
+const kicks = (rec: ReturnType<typeof recorder>) => rec.calls.filter((c) => c.file === 'launchctl' && c.args[0] === 'kickstart').length
+
+test('deafwatch (red first): a claude whose MCP never started (bin/bgos-launch.mjs removed) is flagged once past the start grace, restarted, and logged not fixed while it stays deaf; it names the missing file', async () => {
+  const clock = fakeClock()
+  const startedAt = T0 - 2 * MIN
+  const fs = deafMachine({ missing: ['bin/bgos-launch.mjs'], beaconAt: T0 - 11 * 60 * MIN })
+  const rec = recorder({ ps: deafPs(startedAt) })
+  const { ctx, logs } = ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [5912, 4100].includes(pid) })
+
+  // 2 min after the launch: a start still coming up is no finding, and nothing is touched.
+  const early = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(early.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'canonical']])
+  assert.equal(kicks(rec), 0)
+
+  // 6 min after it (past the 5 min grace): deaf. The sweep restarts it through its service, the
+  // channel does not come back (the file is still gone), and the row says so and names the file.
+  clock.advance(4 * MIN)
+  const deaf = await runKeepAliveSweep(ctx as any)
+  assert.equal(kicks(rec), 1, 'one restart through the agent\'s own service')
+  assert.deepEqual(deaf.agents.map((a: any) => [a.state, a.reason]), [['failed', 'no-channel-heartbeat: missing bin/bgos-launch.mjs; no live channel (agent_deaf_after_restart)']])
+  const record = deafRecord(fs)
+  assert.equal(record.target, 'channel-deaf')
+  assert.equal(record.attempts, 1)
+  assert.deepEqual(record.missingFiles, ['bin/bgos-launch.mjs'], 'the record names the missing plugin file')
+  assert.ok(
+    logs.some((l) => l.includes('keep-alive 912: claude up 6 min with no live channel (no_channel_process, last beacon 664 min ago); plugin files missing at the plugin root: bin/bgos-launch.mjs')),
+    logs.join('\n'),
+  )
+  // No personal path rides the heartbeat: plugin relative names only.
+  assert.ok(!deaf.agents[0].reason.includes(HOME))
+
+  // The next sweep: still deaf, inside the 30 min restart interval. Still failed, still named, the
+  // same `since` (the finding holds, it does not churn), and no second restart.
+  clock.advance(1 * MIN)
+  const held = await runKeepAliveSweep(ctx as any)
+  assert.equal(kicks(rec), 1)
+  assert.deepEqual(held.agents.map((a: any) => [a.state, a.reason, a.since]), [['failed', 'no-channel-heartbeat: missing bin/bgos-launch.mjs; no live channel (restart_rate_limited)', deaf.agents[0].since]])
+  assert.equal(logs.filter((l) => l.includes('with no live channel')).length, 1, 'the full finding is logged once per episode')
+})
+
+test('deafwatch: the three restarts a deaf channel gets are the usual budget (one per 30 min), then failed attempts_exhausted, still named', async () => {
+  const clock = fakeClock()
+  const fs = deafMachine({ missing: ['bin/bgos-launch.mjs', 'bin/hoai-core.mjs', 'bin/hoai-browser-launch.mjs', 'bin/hoai-browser-mcp.mjs'] })
+  const rec = recorder({ ps: deafPs(T0 - 11 * 60 * MIN) })
+  const { ctx } = ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [5912, 4100].includes(pid) })
+  for (let i = 0; i < 3; i++) {
+    await runKeepAliveSweep(ctx as any)
+    clock.advance(31 * MIN)
+  }
+  assert.equal(kicks(rec), 3)
+  const spent = await runKeepAliveSweep(ctx as any)
+  assert.equal(kicks(rec), 3, 'no fourth restart')
+  assert.deepEqual(spent.agents.map((a: any) => [a.state, a.reason]), [['failed', 'no-channel-heartbeat: missing bin/bgos-launch.mjs, bin/hoai-core.mjs +2; no live channel (attempts_exhausted)']])
+  assert.deepEqual(deafRecord(fs).missingFiles, ['bin/bgos-launch.mjs', 'bin/hoai-core.mjs', 'bin/hoai-browser-launch.mjs', 'bin/hoai-browser-mcp.mjs'])
+  // Never offered as an update to restart onto: no pending on the entry.
+  assert.equal('pending' in spent.agents[0], false)
+})
+
+test('deafwatch: a restart that brings the channel back is `restarted`, and the next sweep that sees the beacon live ends the episode (its attempts start over)', async () => {
+  const clock = fakeClock()
+  const fs = deafMachine({ beaconAt: T0 - 11 * 60 * MIN })
+  const rec = recorder({ ps: deafPs(T0 - 11 * 60 * MIN) })
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [5912, 4100].includes(pid) })
+  const fixed = await runKeepAliveSweep(ctx as any)
+  assert.equal(kicks(rec), 1)
+  assert.deepEqual(fixed.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  assert.equal('missingFiles' in deafRecord(fs), false)
+  // The new daemon beacons.
+  clock.advance(2 * MIN)
+  fs.writeFile(BEACON_912, JSON.stringify({ beaconAt: clock.now(), pid: 4912 }))
+  fs.touch(BEACON_912, clock.now())
+  const live = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(live.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'canonical']])
+  assert.equal(deafRecord(fs).attempts, 0)
+  assert.equal(deafRecord(fs).target, null)
+})
+
+test('deafwatch: once the channel is live again the record no longer names missing files', async () => {
+  const clock = fakeClock()
+  const fs = deafMachine({ missing: ['bin/bgos-launch.mjs'] })
+  const rec = recorder({ ps: deafPs(T0 - 11 * 60 * MIN) })
+  const { ctx } = ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [5912, 4100].includes(pid) })
+  await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(deafRecord(fs).missingFiles, ['bin/bgos-launch.mjs'])
+  // The file is put back (a reinstall), the agent comes up and beacons.
+  fs.writeFile(`${ROOT}/bin/bgos-launch.mjs`, '// back\n')
+  clock.advance(2 * MIN)
+  fs.writeFile(BEACON_912, JSON.stringify({ beaconAt: clock.now(), pid: 4912 }))
+  fs.touch(BEACON_912, clock.now())
+  const live = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(live.agents.map((a: any) => a.state), ['supervised'])
+  assert.equal('missingFiles' in deafRecord(fs), false)
+})
+
+test('deafwatch: a deaf failure is not undone by a relaunched claude still inside its grace; only a live channel ends it', async () => {
+  const clock = fakeClock()
+  const fs = deafMachine({ missing: ['bin/bgos-launch.mjs'] })
+  const rec = recorder({ ps: deafPs(T0 - 11 * 60 * MIN) })
+  const { ctx } = ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [5912, 4100].includes(pid) })
+  const deaf = await runKeepAliveSweep(ctx as any)
+  assert.equal(deaf.agents[0].state, 'failed')
+  // Someone relaunched it a minute ago: the new claude has proven nothing yet.
+  clock.advance(2 * MIN)
+  const relaunched = recorder({ ps: deafPs(clock.now() - 1 * MIN) })
+  const again = await runKeepAliveSweep(ctxFor(fs, relaunched, clock, { pidAlive: (pid: number) => [5912, 4100].includes(pid) }).ctx as any)
+  assert.deepEqual(again.agents.map((a: any) => [a.state, a.reason, a.since]), [[deaf.agents[0].state, deaf.agents[0].reason, deaf.agents[0].since]])
+  assert.equal(kicks(relaunched), 0)
+})
+
+test('deafwatch: no false alarm. A healthy agent, a daemon whose beacon is fresh, a daemon that never beaconed, a channel that went quiet a minute ago, and a claude only its folder ties to the agent are all left as they were', async () => {
+  const cases: Array<{ name: string; fs: MemoryFs; ps: string; alive: number[] }> = [
+    // A live daemon (fresh state) beaconing a few seconds ago, claude up for hours.
+    { name: 'healthy', fs: deafMachine({ freshState: true, beaconAt: T0 - 5_000 }), ps: deafPs(T0 - 3 * 60 * MIN, { mcp: true }), alive: [4912, 5912, 4100] },
+    // A daemon that runs and has written no beacon (one standing down beside another session): unknown, not deaf.
+    { name: 'no beacon yet', fs: deafMachine({ freshState: true }), ps: deafPs(T0 - 3 * 60 * MIN, { mcp: true }), alive: [4912, 5912, 4100] },
+    // The daemon went away a minute ago; its last beat is 1 min old: not deaf yet (a restart of the MCP takes seconds).
+    { name: 'beacon still fresh', fs: deafMachine({ beaconAt: T0 - 1 * MIN }), ps: deafPs(T0 - 3 * 60 * MIN), alive: [5912, 4100] },
+    // A plain claude in the folder with nothing on its command line that says it is the agent's.
+    { name: 'not proven the agent\'s', fs: deafMachine(), ps: deafPs(T0 - 3 * 60 * MIN, { pin: false }), alive: [5912, 4100] },
+  ]
+  for (const c of cases) {
+    const rec = recorder({ ps: c.ps, lsof: `p5912\nn${AVA}\n` })
+    const report = await runKeepAliveSweep(ctxFor(c.fs, rec, fakeClock(), { pidAlive: (pid: number) => c.alive.includes(pid) }).ctx as any)
+    assert.deepEqual(report.agents.map((a: any) => a.state), ['supervised'], c.name)
+    assert.equal(kicks(rec), 0, c.name)
+  }
+})
+
+test('deafwatch: a daemon that runs but whose beacon went stale (channel silent) past the grace is deaf too', async () => {
+  const clock = fakeClock()
+  const fs = deafMachine({ freshState: true, beaconAt: T0 - 20 * MIN })
+  const rec = recorder({ ps: deafPs(T0 - 3 * 60 * MIN, { mcp: true }) })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [4912, 5912, 4100].includes(pid) }).ctx as any)
+  assert.equal(report.agents[0].state, 'failed')
+  assert.match(report.agents[0].reason, /^no-channel-heartbeat: channel silent \(/)
+})
+
+test('deafwatch (win32, Ares): the launcher\'s hoai-core.mjs and the MCP launcher removed, claude up on its pin for 11 h with no daemon: failed no-channel-heartbeat naming the files, never a task start beside it', async () => {
+  const own = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 11 * 60 * MIN, CommandLine: `"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume ${PIN} --dangerously-load-development-channels server:hoai` }]
+  const fs = crashedMachine({}, { activityAt: T0 - 11 * 60 * MIN })
+  for (const rel of ['bin\\bgos-launch.mjs', 'bin\\hoai-core.mjs', 'bin\\hoai-browser-launch.mjs', 'bin\\hoai-browser-mcp.mjs']) fs.rm(`${WROOT}\\${rel}`)
+  const rec = recorder({ win32Ps: listed(own) })
+  const logs: string[] = []
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn(own), log: (l: string) => logs.push(l) }) as any)
+  assert.deepEqual(starts(rec), [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['failed', 'no-channel-heartbeat: missing bin/bgos-launch.mjs, bin/hoai-core.mjs +2; no live channel (supervisor_v2_unavailable)']])
+  assert.deepEqual(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].missingFiles, ['bin/bgos-launch.mjs', 'bin/hoai-core.mjs', 'bin/hoai-browser-launch.mjs', 'bin/hoai-browser-mcp.mjs'])
+  assert.ok(logs.some((l) => l.includes('plugin files missing at the plugin root: bin/bgos-launch.mjs, bin/hoai-core.mjs, bin/hoai-browser-launch.mjs, bin/hoai-browser-mcp.mjs')), logs.join('\n'))
+})
+
+test('deafwatch (Ares 17:29Z): a deaf channel is restarted though its session wrote a minute ago; a job under claude still holds it', async () => {
+  for (const job of [false, true]) {
+    const clock = fakeClock()
+    const fs = deafMachine({ missing: ['bin/bgos-launch.mjs'] })
+    // The session's transcript, touched a minute ago.
+    const transcript = transcriptPathFor({ configDir: CONFIG, cwd: AVA, sessionId: DEAF_PIN })
+    fs.writeFile(transcript, '{"type":"assistant"}\n')
+    fs.touch(transcript, T0 - 1 * MIN)
+    const ps = deafPs(T0 - 20 * MIN) + (job ? `\n${psLine(6000, 5912, `/bin/zsh -c source ${HOME}/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'python monitor.py'`)}` : '')
+    const rec = recorder({ ps })
+    const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [5912, 4100, 6000].includes(pid) }).ctx as any)
+    if (job) {
+      assert.equal(kicks(rec), 0, 'never a kill of a job')
+      assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['failed', 'no-channel-heartbeat: missing bin/bgos-launch.mjs; no live channel (background_job)']])
+    } else {
+      assert.equal(kicks(rec), 1, 'restarted, not held for recent_activity')
+      assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['failed', 'no-channel-heartbeat: missing bin/bgos-launch.mjs; no live channel (agent_deaf_after_restart)']])
+    }
+  }
 })
