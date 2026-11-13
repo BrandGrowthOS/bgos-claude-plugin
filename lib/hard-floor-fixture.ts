@@ -3804,6 +3804,79 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     input: { kind: "command", command: "nice$(true) echo rm -rf build | cat" },
     ruleId: null,
   },
+  // Every reading of the feeder gives the shell its script, not only the
+  // first that names a printer: one reading may stop at a substitution
+  // written after the printer. A substitution where the program goes in a
+  // command a pipe feeds, or in one inside a substitution that reads the
+  // pipe, does not start a new command, so the program after it still reads
+  // the pipe.
+  {
+    name: "echo_behind_nice_given_a_substitution_and_one_before_the_script_piped_to_a_shell",
+    input: { kind: "command", command: "nice$(true) echo $(true) 'rm -rf build' | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "echo_behind_env_given_a_backtick_pair_and_one_before_the_script_piped_to_a_shell",
+    input: { kind: "command", command: "env`true` echo `true` 'sudo reboot' | bash" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "piped_shell_behind_a_substitution",
+    input: { kind: "command", command: "echo rm -rf build | $(true) sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_shell_behind_a_backtick_pair",
+    input: { kind: "command", command: "echo rm -rf build | `true` bash" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_shell_glued_after_a_substitution",
+    input: { kind: "command", command: "echo rm -rf build | $(true)sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_shell_behind_a_substitution_inside_a_substitution",
+    input: { kind: "command", command: "echo rm -rf build | nice $( $(true) sh )" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_shell_behind_a_substitution_given_a_harmless_script",
+    input: { kind: "command", command: "echo hello | $(true) sh" },
+    ruleId: null,
+  },
+  {
+    name: "piped_cat_behind_a_substitution",
+    input: { kind: "command", command: "echo rm -rf build | $(true) cat" },
+    ruleId: null,
+  },
+  {
+    name: "shell_after_a_piped_substitution_and_a_semicolon_is_not_fed",
+    input: { kind: "command", command: "echo rm -rf build | $(true); sh" },
+    ruleId: null,
+  },
+  {
+    name: "echo_behind_nice_given_two_substitutions_and_a_harmless_script_piped_to_a_shell",
+    input: { kind: "command", command: "nice$(true) echo $(true) hello | sh" },
+    ruleId: null,
+  },
+  {
+    name: "echo_behind_nice_given_two_substitutions_piped_to_cat",
+    input: { kind: "command", command: "nice$(true) echo $(true) 'rm -rf build' | cat" },
+    ruleId: null,
+  },
+  // A feeder whose program is only a substitution may be a cat of its here
+  // string, so the shell it feeds reads that.
+  {
+    name: "piped_shell_fed_a_here_string_by_a_substitution_where_the_program_goes",
+    input: { kind: "command", command: "$(echo cat) <<<'rm -rf build' | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_shell_fed_a_harmless_here_string_by_a_substitution_where_the_program_goes",
+    input: { kind: "command", command: "$(echo cat) <<<'echo done' | sh" },
+    ruleId: null,
+  },
   {
     name: "admin_and_folder_delete_names_the_delete",
     input: { kind: "command", command: "sudo rm -rf /var/cache/app" },
@@ -4158,7 +4231,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "e05a94d07c5af1d86cba6f788b8ac54e3e1f6dfe9692a7fc2c5be8d86d3f120a";
+  "7502a6537c5b4678c201f916024a7ef06260c47c0c89c2e7ca528a68959be806";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
