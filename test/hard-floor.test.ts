@@ -110,7 +110,8 @@ test('the shell reader: simple commands, quotes removed, a comment and a heredoc
     ['cd', 'a'],
     ['bash', '-c', 'rm -rf b'],
     ['tee', 'c'],
-    ['echo'],
+    // The substitution's output becomes words of echo, so a stand-in keeps its place.
+    ['echo', '$(...)'],
     ['ls'],
   ])
   // A backslash before a newline continues the line; before a plain letter it is a character.

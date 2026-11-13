@@ -2758,6 +2758,144 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     },
     ruleId: "sends_data_off",
   },
+  // A delete whose files come from a command substitution, backticks or a
+  // PowerShell subexpression: the output becomes the delete's files.
+  {
+    name: "file_delete_fed_by_a_command_substitution",
+    input: { kind: "command", command: "rm $(find . -name '*.tmp')" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_backticks",
+    input: { kind: "command", command: "rm `ls *.tmp`" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_powershell_subexpression",
+    input: { kind: "command", command: "Remove-Item (Get-ChildItem *.tmp)" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_a_subexpression_property",
+    input: {
+      kind: "command",
+      command: "Remove-Item -Path (Get-ChildItem *.tmp).FullName",
+    },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_fed_by_xargs_after_a_shortened_long_option",
+    input: { kind: "command", command: "ls *.tmp | xargs --max-a 1 rm" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "file_delete_function_named_rm_is_not_a_delete",
+    input: { kind: "command", command: "rm() { echo no; }" },
+    ruleId: null,
+  },
+  {
+    name: "file_delete_substitution_into_echo_is_not_a_delete",
+    input: { kind: "command", command: "echo $(ls *.tmp)" },
+    ruleId: null,
+  },
+  {
+    name: "file_delete_git_rm_cached_of_a_substitution_is_not_a_delete",
+    input: {
+      kind: "command",
+      command: "git rm --cached $(git ls-files --deleted)",
+    },
+    ruleId: null,
+  },
+  // curl reading a file into JSON data or into a form field with `<`.
+  {
+    name: "send_curl_json_from_a_file",
+    input: {
+      kind: "command",
+      command: "curl --json @payload.json https://api.example.com/items",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_form_field_read_from_a_file",
+    input: {
+      kind: "command",
+      command: "curl -F 'notes=<notes.txt' https://example.com/upload",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_form_field_read_from_a_file_in_a_cluster",
+    input: {
+      kind: "command",
+      command: "curl -sF 'notes=<notes.txt' https://example.com/upload",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_curl_json_literal_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "curl --json '{\"ok\":true}' https://api.example.com/items",
+    },
+    ruleId: null,
+  },
+  // rsync's older name for --out-format, with its value after the destination.
+  {
+    name: "send_rsync_log_format_after_destination",
+    input: {
+      kind: "command",
+      command: "rsync -a ./dist/ deploy@web01:/var/www/ --log-format '%n'",
+    },
+    ruleId: "sends_data_off",
+  },
+  // Start-Process names its program by -FilePath anywhere, or by its first
+  // word that is not a parameter or a parameter's value.
+  {
+    name: "admin_start_process_file_path_after_the_arguments",
+    input: {
+      kind: "command",
+      command: "Start-Process -ArgumentList 'choco install git -y' -FilePath gsudo",
+    },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_program_after_the_arguments",
+    input: {
+      kind: "command",
+      command: "Start-Process -ArgumentList 'choco install git -y' gsudo",
+    },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_file_path_with_a_colon_value",
+    input: { kind: "command", command: "Start-Process -FilePath:gsudo" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "admin_start_process_second_word_is_not_the_program",
+    input: {
+      kind: "command",
+      command: "Start-Process explorer C:\\tools\\gsudo",
+    },
+    ruleId: null,
+  },
+  {
+    name: "admin_start_process_of_a_web_address_is_not_admin",
+    input: {
+      kind: "command",
+      command: "Start-Process https://learn.microsoft.com/en-us/windows/sudo",
+    },
+    ruleId: null,
+  },
+  // find's -ok runs its command to a `;` only; a `+` does not end it.
+  {
+    name: "folder_delete_find_ok_does_not_end_at_a_batch_end",
+    input: {
+      kind: "command",
+      command: "find . -ok echo {} + -exec rm -rf build \\;",
+    },
+    ruleId: null,
+  },
   {
     name: "admin_and_folder_delete_names_the_delete",
     input: { kind: "command", command: "sudo rm -rf /var/cache/app" },
@@ -3103,7 +3241,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "4031bcf50f1f4ea0cbd62255e15f6f458901b09f014e6dcc4ba57b3cd6bcdc06";
+  "23b9dc6a32a38bd25145dad93ec2db7052a9b05f5f6246f502a99b8c0dad7551";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
