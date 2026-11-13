@@ -175,8 +175,8 @@ test('presence: KC\'s case, a clone folder with a bgos-send-gate hook and nothin
   assert.equal(presence.registered, false)
   const line = privateHookBootLine(presence)
   assert.match(line, /NOT registered/)
-  // It no longer sends the owner to `bgos-agent update`, which resets a clone to the head of origin/main (board row
-  // 84c23fab): the daemon writes the hook itself at boot (board row f83db4b7), so a restart loads it.
+  // It no longer sends the owner to `bgos-agent update`, which reset a clone to the head of origin/main before board
+  // row 01a0db74: the daemon writes the hook itself at boot (board row f83db4b7), so a restart loads it.
   assert.doesNotMatch(line, /bgos-agent update/)
   assert.match(line, /writes it into its workspace at boot/)
   assert.doesNotMatch(PRIVATE_HOOK_MISSING_REFUSAL, /bgos-agent update/)

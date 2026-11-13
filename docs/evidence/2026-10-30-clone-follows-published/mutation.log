@@ -1,0 +1,236 @@
+
+=== L1 no newer check: an ahead clone is moved back
+--- lib/follow-published.mjs:125
+-  if (!opts.fresh) {
+    if (from === null)
++  if (false) {
+    if (from === null)
+    KILLED (rc 1)
+      ✖ a clone AHEAD of the published release is never moved back: it says so and waits for the release to catch up (765.270041ms)
+      ✖ a clone at the published version with later commits on it stays where it is (403.617958ms)
+      ✖ failing tests:
+
+=== L2 ahead reads as current
+--- lib/follow-published.mjs:129
+-  if (from === to) return result('current'
++  if (true) return result('current'
+    KILLED (rc 1)
+      ✖ a clone AHEAD of the published release is never moved back: it says so and waits for the release to catch up (723.932125ms)
+      ✖ failing tests:
+
+=== L3 local changes ignored
+--- lib/follow-published.mjs:113
+-  if (status.stdout.trim()) return result('dirty'
++  if (false) return result('dirty'
+    KILLED (rc 1)
+      ✖ a checkout with local changes is never touched (784.871917ms)
+      ✖ failing tests:
+
+=== L4 tag package.json not checked
+--- lib/follow-published.mjs:149
+-  if (carried !== to) {
++  if (false) {
+    KILLED (rc 1)
+      ✖ a published tag whose package.json carries another version is refused, and nothing moves (533.755583ms)
+      ✖ failing tests:
+
+=== L5 a shallow clone is deepened
+--- lib/follow-published.mjs:142
+-  const depth = shallow.code === 0 && shallow.stdout.trim() === 'true' ? ['--depth', '1'] : []
++  const depth = []
+    KILLED (rc 1)
+      ✖ a depth 1 field clone fetches only the published tag, stays shallow, and lands on it (707.471167ms)
+      ✖ failing tests:
+
+=== L6 every stay is an error
+--- lib/follow-published.mjs:67
+-  if (outcome === 'current' || outcome === 'ahead') return 10
++  if (outcome === 'current') return 10
+    KILLED (rc 1)
+      ✖ the exit codes the shell callers act on (1.388333ms)
+      ✖ failing tests:
+
+=== L7 an unreadable release falls back to main
+--- lib/follow-published.mjs:119
+-  return result('unknown', `${firstLine(error instanceof Error ? error.message : String(error))}; ${NOT_CHANGED} (it stays at ${at})`)
++  tag = 'v0.27.0'
+    KILLED (rc 1)
+      ✖ a marketplace that cannot be read, or names no release, leaves the clone where it is (749.131291ms)
+      ✖ fresh: a marketplace that cannot be read is a failure, so the caller never keeps a clone of main (865.904833ms)
+      ✖ failing tests:
+
+=== A1 update always takes the release, even backwards
+--- bin/bgos-agent:1929
+-  said="$(published_release "$PLUGIN_DIR" follow "$PLUGIN_DIR" 2>&1)" || rc=$?
++  said="$(published_release "$PLUGIN_DIR" follow "$PLUGIN_DIR" --fresh 2>&1)" || rc=$?
+    KILLED (rc 1)
+      ✖ hoai-agent update on a host AHEAD of the published release does not move it back: it says so and waits (2362.531834ms)
+      ✖ failing tests:
+
+=== A2 an unreadable release is only a warning
+--- bin/bgos-agent:1933
+-  *) die "${said:-the published release could not be read; the plugin checkout was not changed}" ;;
++  *) warn "${said:-the published release could not be read; the plugin checkout was not changed}" ;;
+    KILLED (rc 1)
+      ✖ hoai-agent update with the marketplace offline leaves the checkout exactly where it is (1732.133917ms)
+      ✖ hoai-agent update with an unreadable marketplace ref leaves the checkout exactly where it is (1721.895958ms)
+      ✖ failing tests:
+
+=== A3 no hand over after a move
+--- bin/bgos-agent:1943
+-  if [ "$rc" -eq 0 ] && [ -f "$SELF" ]; then
++  if [ "$rc" -eq 10 ] && [ -f "$SELF" ]; then
+    KILLED (rc 1)
+      ✖ the rest of the update runs the NEW script, and the version message still names where it started (1360.272625ms)
+      ✖ an update whose HOME id helper cannot answer still completes: it restarts nothing by name and says why, for each agent (1538.089834ms)
+      ✖ failing tests:
+
+=== A4 install keeps a clone of main
+--- bin/bgos-agent:778
+-  said="$(published_release "$partial" follow "$partial" --fresh 2>&1)" || rc=$?
++  said="$(published_release "$partial" follow "$partial" 2>&1)" || rc=$?
+    KILLED (rc 1)
+      ✖ hoai-agent install clones the published release, not main (2524.218334ms)
+      ✖ failing tests:
+
+=== A5 install keeps a clone it could not pin
+--- bin/bgos-agent:780
+-  if [ "$rc" -ne 0 ] && [ "$rc" -ne 10 ]; then
++  if false; then
+    KILLED (rc 1)
+      ✖ hoai-agent install with the marketplace unreachable makes no checkout at all, rather than one of main (2125.903125ms)
+      ✖ failing tests:
+
+=== C1 a new claim checkout stays on main
+--- bin/bgos-claim.mjs:600
+-  const pinned = await followPublishedRelease({ dir: partial, fresh: true, readPublishedTag })
++  const pinned = await followPublishedRelease({ dir: partial, readPublishedTag })
+    KILLED (rc 1)
+      ✖ a new claim checkout is the published release, never main (632.506541ms)
+      ✖ an existing claim checkout moves to the published release, not to main (696.025ms)
+      ✖ failing tests:
+
+=== C2 a new claim checkout is kept when it could not be pinned
+--- bin/bgos-claim.mjs:601
+-  if (exitCodeFor(pinned.outcome) === 1) {
++  if (false) {
+    KILLED (rc 1)
+      ✖ a new claim checkout is never made when the published release cannot be read (739.064667ms)
+      ✖ failing tests:
+
+=== C3 an existing claim checkout is moved back
+--- bin/bgos-claim.mjs:587
+-  const followed = await followPublishedRelease({ dir: pluginDir, readPublishedTag })
++  const followed = await followPublishedRelease({ dir: pluginDir, fresh: true, readPublishedTag })
+    KILLED (rc 1)
+      ✖ an existing claim checkout ahead of the published release stays, and says so; an unreadable release leaves it too (976.703625ms)
+      ✖ failing tests:
+
+=== S1 bootstrap.sh keeps main
+--- bin/hoai-bootstrap.sh:469
+-  PINNED="$(node "$PLUGIN_PARTIAL/bin/hoai-published-release.mjs" follow "$PLUGIN_PARTIAL" --fresh 2>&1)" || PINNED_RC=$?
++  PINNED="$(node "$PLUGIN_PARTIAL/bin/hoai-published-release.mjs" follow "$PLUGIN_PARTIAL" 2>&1)" || PINNED_RC=$?
+    KILLED (rc 1)
+      ✖ hoai-bootstrap.sh (clone method) checks out the published release, not main (2199.522291ms)
+      ✖ hoai-bootstrap.sh (clone method): an empty folder where the checkout goes stays until a pinned checkout replaces it; a folder with files is never touched (2487.765458ms)
+      ✖ failing tests:
+
+=== S2 bootstrap.sh keeps a clone it could not pin
+--- bin/hoai-bootstrap.sh:471
+-  if [ "$PINNED_RC" -ne 0 ] && [ "$PINNED_RC" -ne 10 ]; then
++  if false; then
+    KILLED (rc 1)
+      ✖ hoai-bootstrap.sh (clone method) with the marketplace unreachable fails plugin-install and leaves no checkout (2238.035208ms)
+      ✖ hoai-bootstrap.sh (clone method): an empty folder where the checkout goes stays until a pinned checkout replaces it; a folder with files is never touched (2110.585959ms)
+      ✖ failing tests:
+
+=== P1 bootstrap.ps1 keeps main
+--- bin/hoai-bootstrap.ps1:338
+-  $pinned = (& node (Join-Path $pluginPartial 'bin\hoai-published-release.mjs') follow $pluginPartial --fresh 2>&1 | Out-String).Trim()
++  $pinned = (& node (Join-Path $pluginPartial 'bin\hoai-published-release.mjs') follow $pluginPartial 2>&1 | Out-String).Trim()
+    KILLED (rc 1)
+      ✖ hoai-bootstrap.ps1 (clone method) pins its new clone to the published release before it is put in place (2.767292ms)
+      ✖ failing tests:
+
+=== U1 the daemon does not say it is ahead
+--- lib/self-update.ts:903
+-  compareSemver(runningSemver, latestSemver) > 0
++  compareSemver(runningSemver, latestSemver) < 0
+    KILLED (rc 1)
+      (fail) a clone updates to exactly the published release (board row 84c23fab) > a daemon ahead of the published release says so at its check, and that it waits for the release (board row 01a0db74) [364.61ms]
+
+=== R1 a reset drops unpushed commits
+--- lib/follow-published.mjs:159
+-  if (own.code !== 0 || own.stdout.trim()) {
++  if (false) {
+    KILLED (rc 1)
+      ✖ a checkout with commits of its own that no remote or tag holds is never reset over them (review of 01a0db74) (1247.935334ms)
+      ✖ failing tests:
+
+=== R2 bootstrap.sh removes an empty folder before the clone
+--- bin/hoai-bootstrap.sh:462
+-  if [ -L "$PLUGIN_ROOT" ] || { [ -e "$PLUGIN_ROOT" ] && [ -n "$(ls -A "$PLUGIN_ROOT" 2>/dev/null)" ]; }; then
++  if [ -e "$PLUGIN_ROOT" ] && ! rmdir "$PLUGIN_ROOT" 2>/dev/null; then
+    KILLED (rc 1)
+      ✖ hoai-bootstrap.sh (clone method): an empty folder where the checkout goes stays until a pinned checkout replaces it; a folder with files is never touched (2349.420375ms)
+      ✖ failing tests:
+
+=== R3 install removes an empty folder before the clone
+--- bin/bgos-agent:772
+-  if [ -L "$target" ] || { [ -e "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; }; then
++  if [ -e "$target" ] && ! rmdir "$target" 2>/dev/null; then
+    KILLED (rc 1)
+      ✖ hoai-agent install with the marketplace unreachable makes no checkout at all, rather than one of main (2737.237209ms)
+      ✖ failing tests:
+
+=== R4 bootstrap.ps1 carries on after a refused move
+--- bin/hoai-bootstrap.ps1:349
+-  if (-not (Test-Path (Join-Path $PluginRoot 'server.ts'))) {
++  if ($false) {
+    KILLED (rc 1)
+      ✖ hoai-bootstrap.ps1 (clone method) pins its new clone to the published release before it is put in place (2.816292ms)
+      ✖ failing tests:
+
+=== R5 an ahead host is told it is up to date
+--- bin/bgos-agent:1963
+-  ok "no change: the plugin stays at $AFTER"
++  ok "already up to date at $AFTER"
+    KILLED (rc 1)
+      ✖ hoai-agent update on a host AHEAD of the published release does not move it back: it says so and waits (2923.257ms)
+      ✖ failing tests:
+
+=== R6 a host a major ahead gets the generic line
+--- lib/self-update.ts:900
+-  inspection.versionDecision.kind === 'skip' &&
+    runningSemver &&
++  inspection.versionDecision.kind === 'skip' && inspection.versionDecision.reason === 'not-newer' &&
+    runningSemver &&
+    KILLED (rc 1)
+      (fail) a clone updates to exactly the published release (board row 84c23fab) > a daemon ahead of the published release says so at its check, and that it waits for the release (board row 01a0db74) [804.75ms]
+
+=== summary
+KILLED    L1 no newer check: an ahead clone is moved back
+KILLED    L2 ahead reads as current
+KILLED    L3 local changes ignored
+KILLED    L4 tag package.json not checked
+KILLED    L5 a shallow clone is deepened
+KILLED    L6 every stay is an error
+KILLED    L7 an unreadable release falls back to main
+KILLED    A1 update always takes the release, even backwards
+KILLED    A2 an unreadable release is only a warning
+KILLED    A3 no hand over after a move
+KILLED    A4 install keeps a clone of main
+KILLED    A5 install keeps a clone it could not pin
+KILLED    C1 a new claim checkout stays on main
+KILLED    C2 a new claim checkout is kept when it could not be pinned
+KILLED    C3 an existing claim checkout is moved back
+KILLED    S1 bootstrap.sh keeps main
+KILLED    S2 bootstrap.sh keeps a clone it could not pin
+KILLED    P1 bootstrap.ps1 keeps main
+KILLED    U1 the daemon does not say it is ahead
+KILLED    R1 a reset drops unpushed commits
+KILLED    R2 bootstrap.sh removes an empty folder before the clone
+KILLED    R3 install removes an empty folder before the clone
+KILLED    R4 bootstrap.ps1 carries on after a refused move
+KILLED    R5 an ahead host is told it is up to date
+KILLED    R6 a host a major ahead gets the generic line

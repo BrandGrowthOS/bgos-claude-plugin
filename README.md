@@ -83,7 +83,7 @@ That single command:
 
 1. checks prerequisites (bun, claude, git, expect; with `--always-on` also node,
    and tmux, which is optional but is what makes remote compact work),
-2. ensures the plugin is cloned + `bun install`ed,
+2. ensures the plugin is cloned (at the published release, never plugin main) + `bun install`ed,
 3. writes the agent's `.mcp.json` (+ a `CLAUDE.md` stub),
 4. installs a **per-agent service** that runs the agent through `hoai` in its own
    tmux session, resuming the agent's own conversation, answering Claude Code's
@@ -433,12 +433,15 @@ The shipped [HOAI browser skill](skills/hoai-browser/SKILL.md) explains this own
 cd ~
 git clone https://github.com/BrandGrowthOS/bgos-claude-plugin.git
 cd bgos-claude-plugin
+bun bin/hoai-published-release.mjs follow . --fresh
 bun install
 bun bin/bgos-daemon-wrapper.mjs --install "$HOME/.bgos-agent/runtime/bgos-daemon-wrapper.mjs"
 ```
 
-This creates `~/bgos-claude-plugin/` and atomically installs a stable daemon
-wrapper outside that mutable checkout. Run the wrapper install command again
+This creates `~/bgos-claude-plugin/` at the published release (the clone
+takes main, and `follow . --fresh` moves it to the tag the marketplace names,
+so a hand install never starts on merged code nobody published) and atomically
+installs a stable daemon wrapper outside that mutable checkout. Run the wrapper install command again
 after a manual plugin update.
 
 ### Step 2: Create `.mcp.json` in your project
@@ -1353,7 +1356,20 @@ names (its `ref`), read from the public marketplace manifest. It fetches only
 that tag and fast-forwards to the tag's commit, never to the head of
 `origin/main` and never to a version that was tagged but not published. A
 checkout already ahead of the release is left alone, and a manifest that cannot
-be read means no update until the next check.
+be read means no update until the next check. A checkout ahead of the release
+says so at each check (`running X is ahead of the published release vY`).
+
+Every other way a clone checkout is made or moved follows the same release
+(`lib/follow-published.mjs`, `bin/hoai-published-release.mjs`):
+`hoai-agent update`, the clone `hoai-agent install` makes, `bgos-claim`'s shared
+checkout, the clone method of `hoai-bootstrap.sh` and `.ps1`, and the hand
+install and hand update below (Step 1 and Manual updates). A new clone is
+pinned to the published tag before it is put in place; a release that cannot
+be read leaves no checkout at all, rather than one of main. An existing
+checkout moves only forward to a newer published release, never back, and never
+over local changes or commits that no remote branch or tag holds. Publishing is
+the one gate: a change merged to main reaches no clone until the marketplace
+ref names it.
 It skips any checkout with local changes. On a machine with several daemons
 using the same clone, a shared lock lets one daemon update while the others
 exit cleanly for their supervisors to restart them. An update waits for current
@@ -1430,13 +1446,15 @@ Manual updates remain supported:
 
 ```bash
 cd ~/bgos-claude-plugin
-git pull origin main
+bun bin/hoai-published-release.mjs follow .
 bun install
 bun bin/bgos-daemon-wrapper.mjs --install "$HOME/.bgos-agent/runtime/bgos-daemon-wrapper.mjs"
 ```
 
-Then restart the agent: type `/exit` in its session and run `hoai` from the
-same folder. The wrapper path in `.mcp.json` stays unchanged.
+`follow .` moves the checkout only to a newer published release, never to
+plugin main and never back; it leaves a checkout with local changes alone and
+says why. Then restart the agent: type `/exit` in its session and run `hoai`
+from the same folder. The wrapper path in `.mcp.json` stays unchanged.
 
 ## Running the tests
 

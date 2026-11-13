@@ -450,8 +450,32 @@ else
     fi
     PLUGIN_ROOT="$HOME/bgos-claude-plugin"
     if [ ! -f "$PLUGIN_ROOT/server.ts" ]; then
-        say "Cloning the HOAI plugin to $PLUGIN_ROOT"
-        git clone --depth 1 https://github.com/BrandGrowthOS/bgos-claude-plugin.git "$PLUGIN_ROOT" || fail 'plugin-install'
+        # The PUBLISHED release, never plugin main (board row 01a0db74): main is
+        # cloned beside the folder, moved to the tag the marketplace names by
+        # the clone's own bin/hoai-published-release.mjs, and only then put in
+        # place. A release that cannot be read leaves no checkout at all, so a
+        # rerun does not find a checkout of main and keep it.
+        say "Cloning the HOAI plugin to $PLUGIN_ROOT (the published release)"
+        PLUGIN_PARTIAL="$PLUGIN_ROOT.partial-$$"
+        # Only an EMPTY folder may stand where the checkout goes, and it is
+        # removed only once the new checkout is ready to take its place.
+        if [ -L "$PLUGIN_ROOT" ] || { [ -e "$PLUGIN_ROOT" ] && [ -n "$(ls -A "$PLUGIN_ROOT" 2>/dev/null)" ]; }; then
+            say "[hoai] $PLUGIN_ROOT exists and is not a plugin checkout (no server.ts); move it away and run this again"
+            fail 'plugin-install'
+        fi
+        git clone --quiet --depth 1 https://github.com/BrandGrowthOS/bgos-claude-plugin.git "$PLUGIN_PARTIAL" \
+            || { rm -rf "$PLUGIN_PARTIAL"; fail 'plugin-install'; }
+        PINNED_RC=0
+        PINNED="$(node "$PLUGIN_PARTIAL/bin/hoai-published-release.mjs" follow "$PLUGIN_PARTIAL" --fresh 2>&1)" || PINNED_RC=$?
+        # 0 moved to the release, 10 main already was the release.
+        if [ "$PINNED_RC" -ne 0 ] && [ "$PINNED_RC" -ne 10 ]; then
+            say "[hoai] $PINNED"
+            rm -rf "$PLUGIN_PARTIAL"
+            fail 'plugin-install'
+        fi
+        { [ ! -e "$PLUGIN_ROOT" ] || rmdir "$PLUGIN_ROOT"; } && mv "$PLUGIN_PARTIAL" "$PLUGIN_ROOT" \
+            || { rm -rf "$PLUGIN_PARTIAL"; fail 'plugin-install'; }
+        say "[hoai] $PINNED"
     fi
     say 'Installing plugin dependencies (bun install)...'
     ( cd "$PLUGIN_ROOT" && bun install --no-summary ) \

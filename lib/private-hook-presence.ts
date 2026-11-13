@@ -120,8 +120,9 @@ export function privateHookBootLine(presence: PrivateHookPresence): string {
   }
   return (
     `private turn: the private turn hook is NOT registered for this session (${presence.where}). ` +
-    // Not "run bgos-agent update": that resets a clone to the head of origin/main, released or not (board row
-    // 84c23fab), and a clone's daemon now writes the hook itself at every boot (board row f83db4b7).
+    // Not "run bgos-agent update": that used to reset a clone to the head of origin/main, released or not (board
+    // rows 84c23fab and 01a0db74; it now follows the published release), and a clone's daemon writes the hook itself
+    // at every boot anyway (board row f83db4b7).
     'Boards, schedule and browser tools will refuse every call until it is: a clone\'s daemon writes it into its ' +
     'workspace at boot (the "hooks:" line), and it loads when this agent restarts'
   )
