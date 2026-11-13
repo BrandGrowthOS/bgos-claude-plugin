@@ -643,7 +643,7 @@ test('review finding 4: in a terminal, a waiting offer names the older setup as 
 // could fail with all of them green. This one uses the real PowerShell and the real access lists, on whatever
 // Windows runs the suite (the CI runner is an Intel one with its antivirus on).
 test('REAL Windows, zero setup end to end: private key file, offered; a file another account can read is refused and replaced',
-  { skip: process.platform !== 'win32', timeout: 300_000 }, async () => {
+  { skip: process.platform !== 'win32', timeout: 240_000 }, async () => {
     // The module's own functions, with its own (real) security: not the test helper's injected one.
     const { hostKeyExposure, readHostRecord: readReal } = await import('../lib/vault-host.mjs')
     const dir = tempDir()
