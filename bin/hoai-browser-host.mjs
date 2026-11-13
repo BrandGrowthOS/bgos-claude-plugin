@@ -3924,7 +3924,10 @@ export class BrowserHost {
   }
 
   _agentsConnected(ids) {
-    for (const id of ids || []) void this._reconcilePeopleAccess(id).catch((err) => this._log(`people access: not reconciled (${err?.message ?? err})`))
+    // M2: on every connect, what a person lost while this host was away.
+    if (typeof this._reconcilePeopleAccess === 'function') {
+      for (const id of ids || []) void this._reconcilePeopleAccess(id).catch((err) => this._log?.(`people access: not reconciled (${err?.message ?? err})`))
+    }
     for (const id of ids || []) {
       const store = this.downloadStore(id)
       void Promise.resolve(store?.ready).then(() => store?.tellOwners()).catch(() => {})
