@@ -2896,6 +2896,486 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     },
     ruleId: null,
   },
+  // A substitution's output is words of the command around it, and the
+  // command goes on after it: a destination or an option written after a
+  // substitution is read, and a substitution at the end does not stand in
+  // for the destination before it.
+  {
+    name: "send_scp_destination_before_a_trailing_substitution",
+    input: {
+      kind: "command",
+      command: "scp report.txt user@host:/tmp/ $(true)",
+    },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_rsync_destination_before_a_trailing_backtick",
+    input: { kind: "command", command: "rsync -a ./site/ host:/srv/ `true`" },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "home_dotfile_cp_destination_before_a_trailing_substitution",
+    input: { kind: "command", command: "cp bashrc.bak ~/.bashrc $(true)" },
+    ruleId: "home_dotfile_write",
+  },
+  {
+    name: "home_dotfile_mv_destination_before_a_trailing_subexpression",
+    input: { kind: "command", command: "mv /tmp/gitconfig ~/.gitconfig (echo)" },
+    ruleId: "home_dotfile_write",
+  },
+  {
+    name: "send_scp_of_a_substitution_to_a_remote_host",
+    input: { kind: "command", command: "scp $(ls *.sql) user@host:/backups/" },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "force_push_after_a_substitution",
+    input: {
+      kind: "command",
+      command: "git push origin $(git branch --show-current) --force",
+    },
+    ruleId: "force_push",
+  },
+  {
+    name: "folder_delete_after_env_given_a_substitution",
+    input: { kind: "command", command: "env $(cat vars.txt) rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "push_of_a_substitution_without_force_is_not_a_force_push",
+    input: {
+      kind: "command",
+      command: "git push origin $(git branch --show-current)",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_scp_download_into_a_substituted_folder_is_not_a_send",
+    input: { kind: "command", command: "scp user@host:/backups/db.sql $(pwd)/" },
+    ruleId: null,
+  },
+  {
+    name: "send_rsync_download_before_a_trailing_substitution_is_not_a_send",
+    input: { kind: "command", command: "rsync -a host:/srv/ ./mirror/ $(true)" },
+    ruleId: null,
+  },
+  {
+    name: "cp_of_a_substitution_into_a_plain_folder_is_not_a_write",
+    input: { kind: "command", command: "cp $(ls *.txt) backup/" },
+    ruleId: null,
+  },
+  {
+    name: "docker_run_with_a_substituted_volume_is_not_risky",
+    input: { kind: "command", command: "docker run -v $(pwd):/app node:20 npm test" },
+    ruleId: null,
+  },
+  // The text written right against a substitution is a word of its own, so a
+  // flag, a program or a file name stays the word it is. A heredoc or here
+  // string after a wrapper given a substitution is still the script of the
+  // shell it feeds, and a substitution never ends a heredoc. A substitution
+  // at the end is passed over only when a source and a destination are still
+  // there without it.
+  {
+    name: "force_push_flag_written_against_a_substitution",
+    input: { kind: "command", command: "git push --force$(true) origin main" },
+    ruleId: "force_push",
+  },
+  {
+    name: "folder_delete_flags_written_against_a_substitution",
+    input: { kind: "command", command: "rm -rf$(true) build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_program_written_against_a_substitution",
+    input: { kind: "command", command: "rm$(true) -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "env_file_copy_destination_written_against_a_substitution",
+    input: { kind: "command", command: "cp .env.example .env$(true)" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "env_file_redirect_target_written_against_a_substitution",
+    input: { kind: "command", command: "echo DEBUG=1 >> .env$(true)" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "folder_delete_after_a_wrapper_given_a_substitution_written_against_it",
+    input: { kind: "command", command: "nice $(true)rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "force_push_after_a_wrapper_given_a_substitution_written_against_it",
+    input: { kind: "command", command: "nohup $(true)git push -f origin main" },
+    ruleId: "force_push",
+  },
+  {
+    name: "folder_delete_by_find_exec_given_a_substitution_written_against_it",
+    input: { kind: "command", command: "find . -name '*.tmp' -exec $(true)rm -rf {} +" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_by_find_delete_written_against_a_substitution",
+    input: { kind: "command", command: "find build -delete$(true)" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_by_git_clean_flags_written_against_a_substitution",
+    input: { kind: "command", command: "git clean -fdx$(true)" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_by_rsync_flag_written_against_a_substitution",
+    input: { kind: "command", command: "rsync -a --delete$(true) ./site/ ./mirror/" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_by_rd_switch_written_against_a_substitution",
+    input: { kind: "command", command: "rd /s$(true) /q build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "plugin_install_verb_written_against_a_substitution",
+    input: { kind: "command", command: "claude plugin install$(true) page-checker" },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "admin_verb_written_against_a_subexpression",
+    input: { kind: "command", command: "Start-Process notepad -Verb RunAs$(true)" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "heredoc_fed_to_a_shell_after_env_given_a_substitution",
+    input: {
+      kind: "command",
+      command: "env $(cat vars.txt) sh <<'EOF'\nrm -rf build\nEOF",
+    },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "here_string_fed_to_a_shell_after_a_wrapper_given_a_substitution",
+    input: { kind: "command", command: "nice $(true) bash <<< 'rm -rf build'" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "command_after_a_heredoc_whose_end_word_is_a_substitution",
+    input: { kind: "command", command: "cat <<$(true)\nhello\n$(true)\nrm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "request_preview_elided_after_an_escaped_line_break",
+    input: {
+      kind: "request",
+      toolName: "Bash",
+      inputPreview:
+        '{ "command": "echo start\\nrm -rf build\n⋯ 2600 code points elided ⋯\necho done", "description": "d" }',
+    },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "send_scp_download_into_a_substituted_folder_without_a_slash_is_not_a_send",
+    input: { kind: "command", command: "scp user@server:/var/log/app.log $(pwd)" },
+    ruleId: null,
+  },
+  {
+    name: "send_scp_download_with_a_substituted_port_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "scp -P $(cat .port) user@host:/srv/backup.sql $(pwd)",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_scp_download_with_a_port_into_a_substituted_folder_is_not_a_send",
+    input: {
+      kind: "command",
+      command: "scp -P 2222 user@host:/srv/backup.sql $(pwd)",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_rsync_download_into_a_substituted_folder_is_not_a_send",
+    input: { kind: "command", command: "rsync -a host:/srv/site/ $(pwd)" },
+    ruleId: null,
+  },
+  {
+    name: "archive_named_with_a_substitution_is_not_risky",
+    input: { kind: "command", command: "tar czf backup-$(date +%F).tgz src/" },
+    ruleId: null,
+  },
+  {
+    name: "push_to_a_branch_written_against_a_substitution_is_not_a_force_push",
+    input: { kind: "command", command: "git push origin main$(true)" },
+    ruleId: null,
+  },
+  {
+    name: "force_push_flag_with_a_substitution_inside_it",
+    input: { kind: "command", command: "git push --fo$(true)rce origin main" },
+    ruleId: "force_push",
+  },
+  {
+    name: "shell_fed_by_a_pipe_from_a_wrapper_given_a_substitution",
+    input: { kind: "command", command: "nice $(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_after_a_wrapper_given_a_substitution_takes_the_pipe",
+    input: { kind: "command", command: "echo 'rm -rf build' | env $(cat vars.txt) sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "command_after_a_heredoc_whose_end_word_holds_a_substitution",
+    input: { kind: "command", command: "cat <<EOF$(true)\nnotes\nEOF$(true)\nrm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "env_file_redirect_into_a_substituted_folder",
+    input: { kind: "command", command: "echo DEBUG=1 >> $(pwd)/.env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "send_scp_to_a_substituted_host",
+    input: { kind: "command", command: "scp report.txt deploy@$(cat host.txt):/srv/" },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "folder_delete_after_an_assignment_given_a_substitution",
+    input: { kind: "command", command: "X=$(pwd)/out rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "force_push_of_a_plus_refspec_given_a_substitution",
+    input: { kind: "command", command: "git push origin +$(git branch --show-current)" },
+    ruleId: "force_push",
+  },
+  {
+    name: "folder_delete_after_a_substitution_and_a_hash",
+    input: { kind: "command", command: "echo $(date +%F)#; rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "push_of_a_substituted_branch_to_main_is_not_a_force_push",
+    input: { kind: "command", command: "git push origin $(git branch --show-current):main" },
+    ruleId: null,
+  },
+  {
+    name: "cp_of_an_env_file_into_a_substituted_file_is_not_a_write",
+    input: { kind: "command", command: "cp .env $(mktemp -d)/env.bak" },
+    ruleId: null,
+  },
+  // The reader keeps what the earlier reading caught. A script a substitution
+  // prints into a pipe is read, and so is text written between two
+  // substitutions in one word. A backtick that closes a pair ends a heredoc's
+  // end word, a shift inside arithmetic is not a heredoc, and a heredoc or a
+  // here string written before a later substitution still feeds the shell. A
+  // copy into a substituted folder keeps that reading, a key file written into
+  // one is read, and a substituted name after a slash stays a name.
+  {
+    name: "shell_fed_what_a_substitution_echoes",
+    input: { kind: "command", command: "echo $(echo rm -rf build) | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_what_a_backtick_pair_echoes",
+    input: { kind: "command", command: "echo `echo rm -rf build` | bash" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_what_a_substitution_prints_from_a_heredoc",
+    input: { kind: "command", command: "echo $(cat <<'EOF'\nrm -rf build\nEOF\n) | bash" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_written_between_two_substitutions",
+    input: { kind: "command", command: "nice $(true)rm$(true) -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "admin_verb_written_between_two_substitutions",
+    input: { kind: "command", command: "nice $(true)sudo$(true) ls" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "command_after_a_backtick_pair_that_holds_a_heredoc_start",
+    input: { kind: "command", command: "x=`cat <<EOF`; rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "command_after_an_echoed_backtick_pair_that_holds_a_heredoc_start",
+    input: { kind: "command", command: "echo `cat <<EOF`; rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "here_string_fed_to_a_shell_before_a_later_substitution",
+    input: { kind: "command", command: "nice $(true) bash <<< 'rm -rf build' $(true)" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "heredoc_fed_to_a_shell_whose_log_name_is_substituted",
+    input: { kind: "command", command: "env $(cat vars.txt) sh <<'EOF' > run-$(date +%s).log\nrm -rf build\nEOF" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "env_file_copied_with_another_file_into_a_substituted_folder",
+    input: { kind: "command", command: "cp .env.production docker-compose.yml $(git rev-parse --show-toplevel)" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "send_scp_download_of_two_files_into_a_substituted_folder_is_not_a_send",
+    input: { kind: "command", command: "scp server:/var/log/a.log server:/var/log/b.log $(pwd)" },
+    ruleId: null,
+  },
+  {
+    name: "send_rsync_download_of_two_files_into_a_substituted_folder_is_not_a_send",
+    input: { kind: "command", command: "rsync -a server:/var/log/a.log server:/var/log/b.log $(pwd)" },
+    ruleId: null,
+  },
+  {
+    name: "copy_to_a_substituted_path_ending_in_rm_is_not_a_delete",
+    input: { kind: "command", command: "ls | xargs -I{} cp {} $(pwd)/rm" },
+    ruleId: null,
+  },
+  {
+    name: "command_after_a_shift_by_a_bracketed_amount",
+    input: { kind: "command", command: "echo $((1 << (n + 1)))\nrm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "command_after_a_shift_by_a_substitution",
+    input: { kind: "command", command: "echo $((1 << $(nproc)))\nrm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_inside_a_shift_amount",
+    input: { kind: "command", command: "x=$((1<<$(rm -rf build; echo 3)))" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "command_after_an_arithmetic_command_with_a_shift",
+    input: { kind: "command", command: "(( n = 1 << (k) ))\nrm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_in_a_substitution_takes_the_pipe",
+    input: { kind: "command", command: "echo rm -rf build | >&2$(sh)" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_in_a_substitution_of_a_piped_command_takes_the_pipe",
+    input: { kind: "command", command: "echo rm -rf build | true $(sh)" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "key_file_written_into_a_substituted_home",
+    input: { kind: "command", command: "cat new.pub >> $(echo ~)/.ssh/authorized_keys" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "credentials_written_into_a_substituted_folder",
+    input: { kind: "command", command: "echo x > $(pwd)/.aws/credentials" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "dated_log_in_home_is_not_a_dotfile_write",
+    input: { kind: "command", command: "echo done > ~/$(date +%F).log" },
+    ruleId: null,
+  },
+  {
+    name: "file_named_by_a_substitution_before_env_is_not_an_env_file",
+    input: { kind: "command", command: "echo KEY=1 > config/$(echo prod).env" },
+    ruleId: null,
+  },
+  {
+    name: "tee_into_a_file_named_by_a_substitution_before_env_is_not_an_env_write",
+    input: { kind: "command", command: "echo KEY=1 | tee config/$(echo prod).env" },
+    ruleId: null,
+  },
+  {
+    name: "copy_into_a_dated_home_file_is_not_a_dotfile_write",
+    input: { kind: "command", command: "cp notes.txt ~/$(date +%F).txt" },
+    ruleId: null,
+  },
+  {
+    name: "key_file_named_with_a_backslash",
+    input: { kind: "command", command: "cat deploy.p\\em" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "key_file_named_with_a_backslash_and_a_substitution",
+    input: { kind: "command", command: "cat id_r\\s$(true)a" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "file_delete_by_xargs_with_a_substituted_option_value",
+    input: { kind: "command", command: "find . -name '*.tmp' -print0 | xargs -0 --max-procs=$(nproc) rm" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "send_rsync_after_a_timeout_given_arithmetic",
+    input: { kind: "command", command: "timeout $((5*60))s rsync -az build/ deploy@host:/srv/" },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "plugin_add_after_a_config_value_given_a_substitution",
+    input: { kind: "command", command: "codex -c model=$(cat .model) mcp add docs -- npx docs-server" },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "here_string_with_a_substitution_written_against_it",
+    input: { kind: "command", command: "bash <<< $(true)'rm -rf build'" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "heredoc_piped_to_a_shell_after_env_given_a_substitution",
+    input: { kind: "command", command: "cat <<'EOF' | env $(cat vars.txt) bash\nrm -rf build\nEOF" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "send_rsync_with_a_substituted_log_name",
+    input: { kind: "command", command: "rsync -az ./site/ deploy@host:/srv/www/ > deploy-$(date +%F).log 2>&1" },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "branch_delete_push_of_a_substituted_branch",
+    input: { kind: "command", command: "git push origin :$(git branch --show-current)" },
+    ruleId: "force_push",
+  },
+  {
+    name: "force_push_after_a_substituted_git_dir",
+    input: { kind: "command", command: "GIT_DIR=$(pwd)/.git git push --force origin main" },
+    ruleId: "force_push",
+  },
+  {
+    name: "heredoc_piped_to_a_shell_from_a_wrapper_given_a_substitution",
+    input: { kind: "command", command: "nice $(true) cat <<'EOF' | sh\nrm -rf build\nEOF" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_an_echo_after_an_assignment_given_a_substitution",
+    input: { kind: "command", command: "X=$(pwd) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "send_scp_to_a_dated_remote_file",
+    input: { kind: "command", command: "scp db.sql host:/backups/db-$(date +%F).sql" },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "send_rsync_to_a_substituted_host",
+    input: { kind: "command", command: "rsync -a dist/ deploy@$(cat .host):/var/www/" },
+    ruleId: "sends_data_off",
+  },
+  {
+    name: "folder_delete_after_a_path_assignment_given_a_substitution",
+    input: { kind: "command", command: "PATH=$(pwd)/bin:$PATH rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "push_of_a_substituted_commit_to_a_branch_is_not_a_force_push",
+    input: { kind: "command", command: "git push origin $(git rev-parse HEAD):refs/heads/release" },
+    ruleId: null,
+  },
   {
     name: "admin_and_folder_delete_names_the_delete",
     input: { kind: "command", command: "sudo rm -rf /var/cache/app" },
@@ -3241,7 +3721,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "23b9dc6a32a38bd25145dad93ec2db7052a9b05f5f6246f502a99b8c0dad7551";
+  "df008cd03a05af0dc1bc107966805ee902b63b49cdc5f3f9fdd192ee5a62379c";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =

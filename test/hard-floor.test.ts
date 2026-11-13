@@ -180,6 +180,49 @@ test("find's exec family: other long chains stay quick too (no end at all, batch
   }
 })
 
+test('a long command that goes on after each of many substitutions stays quick', () => {
+  // One command keeps its words across its substitutions, so a check that
+  // wrote the whole command out at every match would read it over and over.
+  for (const command of [
+    'find . ' + '-exec rm $(x) {} + '.repeat(10000),
+    'find . ' + '-exec rm -rf $(x) {} + '.repeat(5000),
+    'echo ' + '$(x) w > f '.repeat(10000),
+    'x ' + '$(a) >> log '.repeat(10000),
+  ]) {
+    const started = performance.now()
+    core.classifyFloorAll({ kind: 'command', command })
+    const elapsed = performance.now() - started
+    assert.ok(elapsed < 2000, `${command.slice(0, 16)}... read in ${Math.round(elapsed)} ms`)
+  }
+})
+
+test('one script fed to many shells is read once', () => {
+  // Every shell a find runs is handed the same input, so reading that input
+  // again for each shell would cost its length times the number of shells.
+  const command = 'find . ' + '-exec sh \\; '.repeat(3000) + "<<'EOF'\n" + 'echo hello\n'.repeat(3000) + 'EOF'
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('one long pipe feeding many shells is read once', () => {
+  // Each shell after a substitution takes the same pipe, so the check that
+  // the pipe was already read comes before its words are read at all.
+  const command = 'echo ' + '-n '.repeat(20000) + 'x | sh' + ' $(x) sh'.repeat(20000)
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('a very long list of words after a double dash is read without running out of room', () => {
+  // The words after the dash are gathered one at a time, never handed over as
+  // one call's arguments, which has a limit far below the longest command.
+  const command = 'scp -- ' + 'a '.repeat(200000) + 'backup/'
+  assert.deepEqual(core.classifyFloorAll({ kind: 'command', command }), [])
+})
+
 test('spec 4.2: a mention is not the action, and neither is a comment or a script written to a file', () => {
   // The shapes an agent uses all day, each of which the server says null to.
   // With the switch off, every one of these that asked cost a round trip, a
