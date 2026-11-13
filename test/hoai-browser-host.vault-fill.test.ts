@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { BrowserHostCore, BrowserPool, ChromiumEngine, browserPathsFor, fillIdsOf, fillTabIdOf, runPersonVaultFill, sweepEndedShares } from '../bin/hoai-browser-host.mjs'
+import { BrowserHostCore, BrowserPool, ChromiumEngine, browserPathsFor, isPersonProfile, fillIdsOf, fillTabIdOf, runPersonVaultFill, sweepEndedShares } from '../bin/hoai-browser-host.mjs'
 import { RemoteBrowserViews } from '../lib/remote-view.mjs'
 import { vaultHostDir } from '../lib/vault-host.mjs'
 import { anchorOwnerAccount, confirmHostPin, loadOrCreateHostKey, provisionSigningIdentity, registerHostKey, testSecurity } from './helpers/vault-host.mjs'
@@ -422,27 +422,47 @@ test('V2: before every person fill of an owner login the host asks who may still
 })
 
 /**
- * S3: Chromium's own password saving and autofill are off in the browser a
- * person's turn runs in: the preferences are written into the profile Chrome
- * starts with, BEFORE it launches, so no saved password prompt or store ever
- * holds the owner's login.
+ * S3: Chromium's own password saving and autofill are off in a PERSON's
+ * browser: the preferences are written into the profile Chrome starts with,
+ * BEFORE it launches. The owner's own agent browser is left as it was.
  */
-test('S3: password saving and autofill are off before the browser launches', async () => {
+async function prefsAtLaunch(quietPasswords: boolean | undefined) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'hvp-')))
   try {
-    let seen: any = null
+    let seen: any = 'not launched'
     const engine: any = new ChromiumEngine({
       executable: '/nonexistent/chrome', profileDir: join(home, 'browser', 'k'), outputDir: join(home, 'output', 'k'), scope: 'fixture',
+      ...(quietPasswords === undefined ? {} : { quietPasswords }),
       launch: (async ({ profileDir }: { profileDir: string }) => {
-        seen = JSON.parse(readFileSync(join(profileDir, 'Default', 'Preferences'), 'utf8'))
+        try { seen = JSON.parse(readFileSync(join(profileDir, 'Default', 'Preferences'), 'utf8')) } catch { seen = null }
         throw new Error('stop before a real launch')
       }) as never,
     })
     await assert.rejects(engine.start(), /stop before a real launch/)
-    assert.ok(seen, 'the preferences were there when Chrome would start')
-    assert.equal(seen.credentials_enable_service, false)
-    assert.equal(seen.profile.password_manager_enabled, false)
-    assert.equal(seen.autofill.profile_enabled, false)
-    assert.equal(seen.autofill.credit_card_enabled, false)
+    return seen
   } finally { rmSync(home, { recursive: true, force: true }) }
+}
+
+test('S3: a person\'s browser starts with password saving and autofill off', async () => {
+  const seen = await prefsAtLaunch(true)
+  assert.equal(seen.credentials_enable_service, false)
+  assert.equal(seen.profile.password_manager_enabled, false)
+  assert.equal(seen.autofill.profile_enabled, false)
+  assert.equal(seen.autofill.credit_card_enabled, false)
+})
+
+test('S3: the owner\'s own agent browser is untouched: no preference is written', async () => {
+  assert.equal(await prefsAtLaunch(false), null)
+  assert.equal(await prefsAtLaunch(undefined), null, 'off unless asked')
+})
+
+test('S3: who counts as a person: never the owner by either name, never an unknown owner', () => {
+  assert.equal(isPersonProfile({ principal: `user-${LEO}` }, OWNER), true)
+  assert.equal(isPersonProfile({ principal: `user-${OWNER}` }, OWNER), false)
+  assert.equal(isPersonProfile({ principal: 'owner' }, OWNER), false)
+  assert.equal(isPersonProfile({ principal: 'group-55' }, OWNER), false)
+  assert.equal(isPersonProfile({ principal: `user-${LEO}` }, null), false, 'an owner this host cannot name: left alone')
+  const host = readFileSync(join(import.meta.dirname, '..', 'bin', 'hoai-browser-host.mjs'), 'utf8')
+  assert.match(host, /new ChromiumEngine\(\{ executable, profileDir, outputDir, heldDir, scope, headless, quietPasswords: personProfile === true,/)
+  assert.match(host, /createEngine: \(input\) => createEngine\(\{ \.\.\.input, personProfile: isPersonProfile\(input, this\.connectionFor\(input\.assistantId\)\?\.pairing\.ownerUserId \?\? null\) \}\)/)
 })

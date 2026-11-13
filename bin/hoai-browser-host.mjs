@@ -1000,8 +1000,9 @@ export function chromeArgs({ profileDir, headless = true, platform = process.pla
 /**
  * S3: the preferences that keep Chrome's own password manager and autofill off
  * in the profile it starts with, merged into `<userDataDir>/Default/Preferences`
- * before launch. Every browser this host runs, a person's included, so no
- * saved password prompt or store ever holds a login the vault typed.
+ * before launch, in a PERSON's browser (isPersonProfile), so no saved
+ * password prompt or store there ever holds a login the vault typed. The
+ * owner's own agent browser is left as it was.
  */
 export function writeQuietBrowserPrefs(userDataDir) {
   const dir = join(userDataDir, 'Default')
@@ -1016,6 +1017,16 @@ export function writeQuietBrowserPrefs(userDataDir) {
     autofill: { ...(prefs.autofill ?? {}), profile_enabled: false, credit_card_enabled: false },
   }
   writeFileSync(path, JSON.stringify(next), { mode: 0o600 })
+}
+
+/**
+ * Is this the browser of a person the agent is shared with? A `user-<id>`
+ * principal that is not the owner. An owner this host cannot name leaves the
+ * browser as it was.
+ */
+export function isPersonProfile(ctx, ownerUserId) {
+  const m = /^user-(.+)$/.exec(String(ctx?.principal ?? ''))
+  return !!m && typeof ownerUserId === 'string' && ownerUserId !== '' && m[1] !== ownerUserId
 }
 
 /** The CDP endpoint a live Chrome on this profile wrote, if any. */
@@ -1900,7 +1911,7 @@ export async function sweepRuntimeFolders({
  * attach an old native profile or recover its unauthenticated CDP endpoint.
  */
 export class ChromiumEngine {
-  constructor({ executable, profileDir, outputDir, heldDir = /** @type {string | null} */ (null), scope = '', headless = true, caps = DEFAULT_CAPS, clientName = 'hoai-browser-host', clientVersion = '0.0.0', log = () => {}, launch = launchChromium, platform = process.platform, removeDir = (/** @type {string} */ dir) => rmSync(dir, { recursive: true, force: true }), runtimeBusy = (/** @type {string} */ dir) => runtimeDirBusy(dir, { platform }) }) {
+  constructor({ executable, profileDir, outputDir, heldDir = /** @type {string | null} */ (null), scope = '', headless = true, quietPasswords = false, caps = DEFAULT_CAPS, clientName = 'hoai-browser-host', clientVersion = '0.0.0', log = () => {}, launch = launchChromium, platform = process.platform, removeDir = (/** @type {string} */ dir) => rmSync(dir, { recursive: true, force: true }), runtimeBusy = (/** @type {string} */ dir) => runtimeDirBusy(dir, { platform }) }) {
     this.profileDir = profileDir
     this.outputDir = outputDir
     this.heldDir = heldDir
@@ -1926,6 +1937,8 @@ export class ChromiumEngine {
     this._scope = scope || JSON.stringify({ profile: profileDir })
     this.vault = null
     this._runtimeDir = null
+    /** S3: a PERSON's browser starts with Chrome's password manager and autofill off. */
+    this._quietPasswords = quietPasswords === true
     /** Set by the pool once a sealed copy opened in this browser. */
     this.holdsSignIns = false
   }
@@ -1974,8 +1987,8 @@ export class ChromiumEngine {
     }
     this._acceptDownloads = acceptDownloads
     if (!this._engine) {
-      // S3: Chrome's own password saving and autofill stay off, written before it starts.
-      writeQuietBrowserPrefs(this._runtimeDir)
+      // S3: in a person's browser, Chrome's own password saving and autofill stay off, written before it starts.
+      if (this._quietPasswords) writeQuietBrowserPrefs(this._runtimeDir)
       const { child, browser } = await this._launch({ executable: this._executable, profileDir: this._runtimeDir, headless: this._headless, platform: this._platform, artifactsDir: acceptDownloads ? this.heldDir : null })
       this._child = child
       child.on('exit', () => this._gone())
@@ -3787,7 +3800,7 @@ export class BrowserHost {
     this._swept = new Set()
     this._downloadsTimer = null
     this._lastSweep = 0
-    this.pool = new BrowserPool({ agentRoot, createEngine, log, bindEngine: (engine, slot, ctx) => this.core?.bindEngine(engine, slot, ctx),
+    this.pool = new BrowserPool({ agentRoot, createEngine: (input) => createEngine({ ...input, personProfile: isPersonProfile(input, this.connectionFor(input.assistantId)?.pairing.ownerUserId ?? null) }), log, bindEngine: (engine, slot, ctx) => this.core?.bindEngine(engine, slot, ctx),
       loadSignIns: ctx => this._machineSignIns(ctx),
       // M2: origins a person lost while their browser was closed are cleared at its next start.
       afterStart: (engine, _slot, ctx) => applyPendingClears({ agentRoot, assistantId: ctx.assistantId, principal: ctx.principal, engine }) })
@@ -4159,9 +4172,9 @@ export async function main({
     return chrome.path ? 0 : 1
   }
 
-  const createEngine = async ({ profileDir, outputDir, heldDir, scope }) => {
+  const createEngine = async ({ profileDir, outputDir, heldDir, scope, personProfile }) => {
     const executable = await ensureBrowser({ findInstalled: () => resolveChromeExecutable({ env }), env, log })
-    return new ChromiumEngine({ executable, profileDir, outputDir, heldDir, scope, headless, clientName: 'hoai-browser-host', clientVersion: readPackageVersion(), log })
+    return new ChromiumEngine({ executable, profileDir, outputDir, heldDir, scope, headless, quietPasswords: personProfile === true, clientName: 'hoai-browser-host', clientVersion: readPackageVersion(), log })
   }
   const createProfileCompanion = (connection, legacyHost) => new AgentBrowserProfileCompanion({ connection, agentRoot, environment: env, deviceLabel, log,
     assertNoLegacyActive: scope => !legacyHost.pool.peek({ assistantId: scope.assistantId, principal: `user-${scope.actingUserId}` }),

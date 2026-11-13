@@ -24,7 +24,7 @@ Running commands is not available for people you share with yet. Your own tools 
 
 **A person who loses the owner's logins loses them from their browser.** On `vault_person_access_changed` (heard by the owner's daemon, queued for the browser host) and on every connect of the host, against `GET /api/v1/vault/host/people-access?assistantId=<id>`: an origin a person no longer has is cleared (cookies and storage) in their browser, now if it is open or at its next start, and a person who has no access left loses their browser profile. A 404 or no answer keeps the record for the next connect. The host also checks after every (re)connect of the owner's daemon and every 10 minutes, and before every fill of an owner login: a person or site no longer listed, or no answer, is refused and nothing is typed. A lost site is cleared for its whole site: cookies for the login's registrable domain (the host after its first label while that leaves two labels; the repo has no public suffix list) and storage for every origin under it the browser knows of.
 
-**Chrome's own password saving and autofill are off** in every browser the host runs, a person's included: the preferences are written into the profile before Chrome starts.
+**Chrome's own password saving and autofill are off in a person's browser**: the preferences are written into the profile before Chrome starts. The owner's own agent browser is left as it was.
 
 **A thread turn carries the owner's guardrail for that person.** When the server sends one with a person's thread turn (live or replayed), it is put in front of the turn with the same marker the main chat uses, never inside the person's words.
 
