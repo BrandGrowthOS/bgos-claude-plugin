@@ -26,7 +26,7 @@ exit=1
 test at test/catch-up-after-deploy.e2e.test.ts:3:9393
 ✖ a chat caught up on this connection: a live message goes straight over the socket, and costs no read (7284.813936ms)
   AssertionError [ERR_ASSERTION]: over the socket
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m05-always-hold.8r64z87c/test/catch-up-after-deploy.e2e.test.ts:746:14)
+      at TestContext.<anonymous> (/home/you/lane-tmp/d041/mut/m05-always-hold.8r64z87c/test/catch-up-after-deploy.e2e.test.ts:746:14)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 0)
       at async Suite.run (node:internal/test_runner/test:1905:7)

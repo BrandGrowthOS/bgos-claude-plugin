@@ -19,7 +19,7 @@ test at test/message-edits.test.ts:4:18010
 
   4 !== 3
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:665:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:665:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
     generatedMessage: false,
@@ -42,7 +42,7 @@ test at test/message-edits.test.ts:4:18451
   +   'B'
     ]
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:682:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:682:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -59,7 +59,7 @@ test at test/message-edits.test.ts:4:19434
 
   4 !== 3
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:693:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:693:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -76,7 +76,7 @@ test at test/message-edits.test.ts:4:19772
 
   4 !== 3
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:702:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:702:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,

@@ -4,7 +4,7 @@ not ok 1 - marketplace real boot: a non agent folder stays dormant with no tools
   ---
   duration_ms: 1159.506417
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:2897'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:2897'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] Credential source: none; assistantId: <missing>
@@ -25,8 +25,8 @@ not ok 1 - marketplace real boot: a non agent folder stays dormant with no tools
     0: 'hoai_pair_required'
   operator: 'deepStrictEqual'
   stack: |-
-    assertDormant (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:178:10)
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:195:5)
+    assertDormant (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:178:10)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:195:5)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
@@ -36,7 +36,7 @@ not ok 2 - marketplace real boot: both agents attach in their own home and never
   ---
   duration_ms: 1104.357167
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:3360'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:3360'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] Credential source: none; assistantId: <missing>
@@ -49,7 +49,7 @@ not ok 2 - marketplace real boot: both agents attach in their own home and never
   actual: false
   operator: '=='
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:207:14)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:207:14)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
@@ -59,7 +59,7 @@ not ok 3 - marketplace real boot: explicit scope opts in outside home, inherited
   ---
   duration_ms: 907.159959
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:3883'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:3883'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] Credential source: none; assistantId: 42
@@ -72,7 +72,7 @@ not ok 3 - marketplace real boot: explicit scope opts in outside home, inherited
   actual: false
   operator: '=='
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:223:12)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:223:12)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
@@ -82,7 +82,7 @@ not ok 4 - marketplace real boot: unreadable scope fails open
   ---
   duration_ms: 960.442042
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:4401'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:4401'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] Credential source: none; assistantId: <missing>
@@ -95,7 +95,7 @@ not ok 4 - marketplace real boot: unreadable scope fails open
   actual: false
   operator: '=='
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:233:12)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:233:12)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
@@ -105,7 +105,7 @@ not ok 5 - marketplace real boot: a sole agent in its recorded home needs no fol
   ---
   duration_ms: 841.411792
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:4695'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:4695'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] Credential source: none; assistantId: <missing>
@@ -118,7 +118,7 @@ not ok 5 - marketplace real boot: a sole agent in its recorded home needs no fol
   actual: false
   operator: '=='
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:244:12)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:244:12)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
@@ -128,7 +128,7 @@ not ok 6 - marketplace real boot: two unpinned recorded homes select only their 
   ---
   duration_ms: 1009.045292
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:5126'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:5126'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] Credential source: none; assistantId: <missing>
@@ -141,7 +141,7 @@ not ok 6 - marketplace real boot: two unpinned recorded homes select only their 
   actual: false
   operator: '=='
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:256:14)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:256:14)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
@@ -153,7 +153,7 @@ not ok 7 - marketplace real boot: unsubstituted manifest identity stays dormant
   ---
   duration_ms: 1126.776875
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:5777'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:5777'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] Credential source: none; assistantId: ${user_config.assistant_id}
@@ -174,8 +174,8 @@ not ok 7 - marketplace real boot: unsubstituted manifest identity stays dormant
     0: 'hoai_pair_required'
   operator: 'deepStrictEqual'
   stack: |-
-    assertDormant (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:178:10)
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:272:5)
+    assertDormant (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:178:10)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:272:5)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
@@ -187,7 +187,7 @@ not ok 8 - market2 launcher: legacy plus numbered launches the effective agent 4
   ---
   duration_ms: 1334.754083
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:6338'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:6338'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] marketplace dormant: this session is outside its agent home or explicit attach scope.
@@ -198,7 +198,7 @@ not ok 8 - market2 launcher: legacy plus numbered launches the effective agent 4
   actual: false
   operator: '=='
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:303:14)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:303:14)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
@@ -214,7 +214,7 @@ not ok 10 - market2 launcher: legacy without home launches the effective agent 4
   ---
   duration_ms: 1081.910333
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:6338'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:6338'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] Credential source: none; assistantId: <missing>
@@ -235,8 +235,8 @@ not ok 10 - market2 launcher: legacy without home launches the effective agent 4
     0: 'hoai_pair_required'
   operator: 'deepStrictEqual'
   stack: |-
-    assertDormant (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:178:10)
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:296:44)
+    assertDormant (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:178:10)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:296:44)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
@@ -248,7 +248,7 @@ not ok 11 - market2 launcher: explicit legacy without home launches the effectiv
   ---
   duration_ms: 1515.242458
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:6338'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:6338'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] Credential source: none; assistantId: <missing>
@@ -269,8 +269,8 @@ not ok 11 - market2 launcher: explicit legacy without home launches the effectiv
     0: 'hoai_pair_required'
   operator: 'deepStrictEqual'
   stack: |-
-    assertDormant (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:178:10)
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:296:44)
+    assertDormant (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:178:10)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:296:44)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
@@ -280,7 +280,7 @@ not ok 12 - market3 launcher: manifest agent 42 overrides legacy 41 without losi
   ---
   duration_ms: 1072.305083
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:7765'
+  location: '/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:2:7765'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] Credential source: none; assistantId: 42
@@ -293,7 +293,7 @@ not ok 12 - market3 launcher: manifest agent 42 overrides legacy 41 without losi
   actual: false
   operator: '=='
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/zz-tmp-m.test.ts:323:12)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/zz-tmp-m.test.ts:323:12)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)

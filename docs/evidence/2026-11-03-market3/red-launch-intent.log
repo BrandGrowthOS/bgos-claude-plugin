@@ -18,7 +18,7 @@ test at test/attach-scope.launcher.test.ts:1:1930
 
   '871' !== ''
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/attach-scope.launcher.test.ts:85:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/attach-scope.launcher.test.ts:85:12)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.start (node:internal/test_runner/test:1096:17)
@@ -39,7 +39,7 @@ test at test/attach-scope.test.ts:1:16754
   + 'unscoped'
   - 'match'
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/attach-scope.test.ts:499:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/attach-scope.test.ts:499:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.start (node:internal/test_runner/test:1096:17)
@@ -60,7 +60,7 @@ test at test/attach-scope.test.ts:1:17302
   + 'unscoped'
   - 'match'
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/attach-scope.test.ts:516:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/attach-scope.test.ts:516:12)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)

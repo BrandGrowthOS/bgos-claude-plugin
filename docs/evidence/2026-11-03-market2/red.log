@@ -22,7 +22,7 @@ test at test/marketplace-attach.e2e.test.ts:2:5331
 
   '41' !== '42'
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:273:14)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:273:14)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.start (node:internal/test_runner/test:1096:17)
@@ -41,7 +41,7 @@ test at test/marketplace-attach.e2e.test.ts:2:5331
 
   '41' !== '42'
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:273:14)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:273:14)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -62,7 +62,7 @@ test at test/marketplace-attach.e2e.test.ts:2:5331
 
   '' !== '42'
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:273:14)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:273:14)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
@@ -80,7 +80,7 @@ test at test/marketplace-attach.e2e.test.ts:2:6823
 
   'off' !== 'home'
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:295:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:295:12)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -102,7 +102,7 @@ test at test/marketplace-attach.test.ts:1:5857
 
   0 !== 1
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:130:14)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.test.ts:130:14)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.start (node:internal/test_runner/test:1096:17)
@@ -121,7 +121,7 @@ test at test/marketplace-attach.test.ts:1:5857
 
   0 !== 1
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:130:14)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.test.ts:130:14)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -142,7 +142,7 @@ test at test/marketplace-attach.test.ts:1:7082
 
   'Mode off; this session: agent 41: matching home or explicit opt in. This computer, last 7 days: 0 session starts, 0 wrong agent, 0 unscoped, 0 unreadable, 0 refused.'
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:148:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.test.ts:148:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)

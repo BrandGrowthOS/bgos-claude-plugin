@@ -17,7 +17,7 @@ test at test/message-edits.test.ts:4:11073
 
   2 !== 3
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:485:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:485:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
     generatedMessage: true,
@@ -34,7 +34,7 @@ test at test/message-edits.test.ts:4:11430
 
   3 !== 2
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:497:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:497:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,

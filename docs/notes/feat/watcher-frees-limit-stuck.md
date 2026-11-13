@@ -6,7 +6,7 @@ Kc asked for it 2026-11-01 (chat 4465, message 180081). Kc's word changes Data's
 
 ## 1. What the stuck state is (root cause, measured)
 
-Claude Code 2.1.316, the same build in `~/.local/bin/claude` (Linux) and `C:\Users\karim\.local\bin\claude.exe`
+Claude Code 2.1.316, the same build in `~/.local/bin/claude` (Linux) and `C:\Users\you\.local\bin\claude.exe`
 (both carry `// Version: 2.1.316` and the strings below). Read from the CLI's bundled JS, never run against a
 real session.
 

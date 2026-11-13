@@ -4,7 +4,7 @@ not ok 1 - market2 launcher: legacy plus numbered launches the effective agent 4
   ---
   duration_ms: 106.962083
   type: 'test'
-  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
+  location: '/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
   failureType: 'testCodeFailure'
   error: |-
     scope follows the selected credentials, not another filename
@@ -17,7 +17,7 @@ not ok 1 - market2 launcher: legacy plus numbered launches the effective agent 4
   actual: '41'
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:274:14)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:274:14)
     Test.runInAsyncScope (node:async_hooks:226:14)
     Test.run (node:internal/test_runner/test:1201:25)
     Test.start (node:internal/test_runner/test:1096:17)

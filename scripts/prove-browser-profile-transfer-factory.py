@@ -34,7 +34,7 @@ if not args.native_only:
   red,log=run(name+'-red',['node','--import',loader.as_uri(),*selected],{'HOAI_FACTORY_MUTATION':str(meta)});assert red.returncode==1 and 'MUTATION_LOADED'in log and ('ERR_ASSERTION'in log or 'AssertionError'in log),(name,red.returncode,log[-2500:]);assert target.read_bytes()==original
   green,log=run(name+'-restored',['node',*selected]);assert green.returncode==0,(name,log[-2500:]);results['unit'].append({**row,'redExit':1,'directAssertion':True,'exactOriginalWorkspaceBytes':True,'restoredExit':0});save()
 if not args.unit_only:
- ssh=['ssh','-F','none','-p','6969','-o','BatchMode=yes','karim@100.79.95.82'];probe=(root/'scripts/probe-browser-profile-transfer-factory.mjs').read_bytes();seccomp='/home/karim/hoai-profile-fresh.sdpd8isb/seccomp_profile.json';image='hoai-profile-fresh:418aa6dc'
+ ssh=['ssh','-F','none','-p','6969','-o','BatchMode=yes','karim@100.79.95.82'];probe=(root/'scripts/probe-browser-profile-transfer-factory.mjs').read_bytes();seccomp_in_home='hoai-profile-fresh.sdpd8isb/seccomp_profile.json';image='hoai-profile-fresh:418aa6dc'
  for kind in ['baseline','omitted-callback','restored']:
   text=source;row={}
   if kind=='omitted-callback':text,row=mutation('native-omitted-callback','        assertTransferAllowed,','        assertTransferAllowed:undefined,')
@@ -44,7 +44,7 @@ directory=pathlib.Path(tempfile.mkdtemp(prefix='hoai-transfer-factory-'));os.chm
 try:
  for filename,encoded in %r.items():
   file=directory/filename;file.write_bytes(base64.b64decode(encoded));os.chmod(file,0o644)
- command=['docker','create','--name',name,'--network','none','--init','--user','1000:1000','--cap-drop','ALL','--cap-add','SYS_CHROOT','--security-opt','seccomp='+%r,'--shm-size','1g',%r,'node','/opt/hoai-fresh/scripts/probe-browser-profile-transfer-factory.mjs']
+ command=['docker','create','--name',name,'--network','none','--init','--user','1000:1000','--cap-drop','ALL','--cap-add','SYS_CHROOT','--security-opt','seccomp='+os.path.join(os.path.expanduser('~'),%r),'--shm-size','1g',%r,'node','/opt/hoai-fresh/scripts/probe-browser-profile-transfer-factory.mjs']
  subprocess.run(command,capture_output=True,text=True,timeout=20,check=True)
  for source,destination in [('companion.mjs','/opt/hoai-fresh/lib/browser-profile-companion.mjs'),('probe.mjs','/opt/hoai-fresh/scripts/probe-browser-profile-transfer-factory.mjs')]:
   archive=io.BytesIO();data=(directory/source).read_bytes()
@@ -60,7 +60,7 @@ finally:
  after=subprocess.run(['docker','ps','-aq','--filter','name=^/'+name+'$'],capture_output=True,text=True,timeout=10);assert after.returncode==0
  shutil.rmtree(directory)
  print(json.dumps({'exit':None if p is None else p.returncode,'stdout':None if p is None else p.stdout,'stderr':None if p is None else p.stderr[-3000:],'containerAbsent':not after.stdout.strip(),'forcedStop':forced}))
-'''%(name,{'companion.mjs':base64.b64encode(text.encode()).decode(),'probe.mjs':base64.b64encode(probe).decode()},seccomp,image)
+'''%(name,{'companion.mjs':base64.b64encode(text.encode()).decode(),'probe.mjs':base64.b64encode(probe).decode()},seccomp_in_home,image)
   p=subprocess.run(ssh+['python3 -'],input=remote,capture_output=True,text=True,timeout=130);(out/('native-'+kind+'.transport.log')).write_text(p.stderr,encoding='utf-8');assert p.returncode==0,p.stderr[-1000:];receipt=json.loads(p.stdout);(out/('native-'+kind+'.json')).write_text(json.dumps(receipt,indent=2));assert receipt['containerAbsent']and not receipt['forcedStop'],receipt
   if kind=='omitted-callback':assert receipt['exit']==1 and 'AssertionError'in receipt['stdout'],receipt
   else:assert receipt['exit']==0 and '"qualified":true'in receipt['stdout']and '"normalCleanup":true'in receipt['stdout']and '"ownedBrowserGone":true'in receipt['stdout'],receipt

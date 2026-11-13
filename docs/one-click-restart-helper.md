@@ -140,7 +140,7 @@ session that these two gaps make unsafe.
 
 The relaunch uses `claude --continue`. `--continue` means "continue the MOST RECENT
 conversation in this cwd" (verified: `claude --help`). The fleet runs many agents
-in the SHARED cwd `/Users/fitecho/BGOS`, whose sessions all live in one project dir
+in the SHARED cwd `/Users/you/BGOS`, whose sessions all live in one project dir
 `~/.claude/projects/-Users-fitecho-BGOS/`. So a restarted agent resumes whatever
 session was newest in that shared folder, which is usually NOT its own.
 

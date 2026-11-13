@@ -334,7 +334,7 @@ export async function main() {
 }
 // REAL paths on both sides: node resolves the module URL through symlinks but
 // leaves argv[1] as the caller wrote it, so a launch through an aliased home
-// (/Users/fitecho is /Users/bgos) skipped main() silently (board bbbf3438).
+// (/Users/you-link is /Users/you) skipped main() silently (board bbbf3438).
 function isRunAsMain(argv1 = process.argv[1], moduleUrl = import.meta.url) {
   if (typeof argv1 !== 'string' || !argv1) return false
   try {

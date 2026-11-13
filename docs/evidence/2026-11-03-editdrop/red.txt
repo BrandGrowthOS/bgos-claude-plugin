@@ -18,8 +18,8 @@ test at test/message-edits.test.ts:4:2694
 
   1 !== 2
 
-      at assertEdit (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:245:10)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:261:3)
+      at assertEdit (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:245:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:261:3)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
     generatedMessage: false,
@@ -36,8 +36,8 @@ test at test/message-edits.test.ts:4:3109
 
   1 !== 2
 
-      at assertEdit (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:245:10)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:274:3)
+      at assertEdit (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:245:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:274:3)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -54,8 +54,8 @@ test at test/message-edits.test.ts:4:3552
 
   1 !== 2
 
-      at assertEdit (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:245:10)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:284:3)
+      at assertEdit (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:245:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:284:3)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,

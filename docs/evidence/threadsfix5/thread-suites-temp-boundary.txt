@@ -208,11 +208,11 @@
 test at test/aside-fork.test.ts:2:8013
 ✖ spec 15: the main transcript is byte identical after a By the way answer (a fake claude that writes its fork file) (474.055ms)
   Error: The side question could not be answered from what the agent knows.
-      at <anonymous> (/Users/kc/hoai-work/mbthreads-plugin/lib/aside-fork.ts:219:20)
-      at settle (/Users/kc/hoai-work/mbthreads-plugin/lib/aside-fork.ts:154:7)
-      at <anonymous> (/Users/kc/hoai-work/mbthreads-plugin/lib/aside-fork.ts:216:7)
-      at finish (/Users/kc/hoai-work/mbthreads-plugin/lib/stream-json-child.ts:108:37)
-      at ChildProcess.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/lib/stream-json-child.ts:111:38)
+      at <anonymous> (/Users/you/hoai-work/mbthreads-plugin/lib/aside-fork.ts:219:20)
+      at settle (/Users/you/hoai-work/mbthreads-plugin/lib/aside-fork.ts:154:7)
+      at <anonymous> (/Users/you/hoai-work/mbthreads-plugin/lib/aside-fork.ts:216:7)
+      at finish (/Users/you/hoai-work/mbthreads-plugin/lib/stream-json-child.ts:108:37)
+      at ChildProcess.<anonymous> (/Users/you/hoai-work/mbthreads-plugin/lib/stream-json-child.ts:111:38)
       at ChildProcess.emit (node:events:509:20)
       at ChildProcess._handle.onexit (node:internal/child_process:294:12) {
     code: 'failed'

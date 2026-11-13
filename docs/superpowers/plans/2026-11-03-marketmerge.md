@@ -10,7 +10,7 @@
 
 ## Constraints
 
-- Work only in `/Users/kc/hoai-work/mbmarket`.
+- Work only in `/Users/you/hoai-work/mbmarket`.
 - Use main's version and main's `REPORT.md`.
 - Preserve `REPORT-ROUND.md`.
 - Do not change behavior beyond combining the branches.

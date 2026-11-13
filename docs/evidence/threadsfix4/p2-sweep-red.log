@@ -17,7 +17,7 @@ test at test/thread-lanes.test.ts:6:14208
 
   1 !== 0
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:505:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:505:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
     generatedMessage: false,
@@ -38,7 +38,7 @@ test at test/thread-lanes.test.ts:6:16160
   + ]
   - []
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:539:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:539:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
