@@ -8,7 +8,7 @@
 
 import { strict as assert } from 'node:assert'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -90,18 +90,45 @@ function runAsChildOf(parentWrites: (ppid: number) => void, script: string, args
   return { status: out.status, stdout: out.stdout ?? '', stderr: out.stderr ?? '' }
 }
 
+/**
+ * A copy of the two launchers whose children are stubs: the browser launcher's
+ * MCP shim and the channel launcher's server only write a marker and exit. The
+ * real shim starts the Agent Browser host, which outlives this test and, on a
+ * test runner, keeps running through every later Chromium file (it doubled one
+ * of them on Linux CI). `lib/` is the real one, linked.
+ */
+function launcherCopy(dir: string): { bin: string; started: (name: string) => boolean } {
+  const bin = join(dir, 'bin')
+  mkdirSync(bin, { recursive: true })
+  for (const name of ['bgos-launch.mjs', 'hoai-browser-launch.mjs']) copyFileSync(repo(`bin/${name}`), join(bin, name))
+  symlinkSync(repo('lib'), join(dir, 'lib'), 'dir')
+  const stub = (name: string) => `import { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(join(dir, `${name}.started`))}, 'started')\n`
+  writeFileSync(join(bin, 'hoai-browser-mcp.mjs'), stub('hoai-browser-mcp'))
+  writeFileSync(join(dir, 'server.ts'), stub('server'))
+  return { bin, started: (name) => existsSync(join(dir, `${name}.started`)) }
+}
+
 test('bgos-launch and hoai-browser-launch exit 0 at once, with no output, when the thread\'s own CLI started them, and start as usual otherwise', { skip: process.platform === 'win32' ? 'threads do not run on Windows' : false }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'thread-mark-'))
   try {
     const lane = join(dir, '101.json')
-    for (const launcher of ['bin/bgos-launch.mjs', 'bin/hoai-browser-launch.mjs']) {
-      const inThread = runAsChildOf((pid) => writeFileSync(lane, state({ pid })), repo(launcher), [join(dir, 'no-such-server.ts')], { [THREAD_LANE_ENV]: lane, BUN_INSTALL: join(dir, 'nobun') })
+    const copy = launcherCopy(dir)
+    const server = join(dir, 'server.ts')
+    for (const [launcher, child] of [['bgos-launch.mjs', 'server'], ['hoai-browser-launch.mjs', 'hoai-browser-mcp']] as const) {
+      const script = join(copy.bin, launcher)
+      const inThread = runAsChildOf((pid) => writeFileSync(lane, state({ pid })), script, [server], { [THREAD_LANE_ENV]: lane })
       assert.equal(inThread.status, 0, `${launcher}: ${inThread.stderr}`)
       assert.equal(inThread.stdout, '', 'nothing on stdout: it is an MCP pipe')
       assert.equal(inThread.stderr, '')
-      // The same mark, but its lane names another process: a different agent's own launcher. It goes on (and here finds no bun or no server).
-      const elsewhere = runAsChildOf((pid) => writeFileSync(lane, state({ pid: pid + 100_000 })), repo(launcher), [join(dir, 'no-such-server.ts')], { [THREAD_LANE_ENV]: lane, BUN_INSTALL: join(dir, 'nobun'), PATH: '/nonexistent' })
-      assert.notDeepEqual([elsewhere.status, elsewhere.stderr], [0, ''], `${launcher} did not stop at the mark`)
+      assert.equal(copy.started(child), false, `${launcher} started nothing`)
+      // The same mark, but its lane names another process: a different agent's own launcher goes on and starts its child.
+      const elsewhere = runAsChildOf((pid) => writeFileSync(lane, state({ pid: pid + 100_000 })), script, [server], { [THREAD_LANE_ENV]: lane })
+      if (child === 'server' && !copy.started(child)) {
+        // The channel launcher needs bun to start its server: with none on this computer it says so, past the mark all the same.
+        assert.match(elsewhere.stderr, /bun/i, `${launcher} did not stop at the mark: ${elsewhere.status} ${elsewhere.stderr}`)
+      } else {
+        assert.equal(copy.started(child), true, `${launcher} went past the mark and started its child: ${elsewhere.status} ${elsewhere.stderr}`)
+      }
     }
   } finally {
     rmSync(dir, { recursive: true, force: true })
