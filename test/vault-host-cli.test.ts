@@ -113,7 +113,10 @@ for (const [name, ownerAnswer, anchors] of [
         process.stdin.pause = () => process.stdin;
         const answer = ${JSON.stringify(answer)};
         globalThis.fetch = async (url, init) => {
-          if (String(url).endsWith('/owner-account')) return answer ? new Response(JSON.stringify(answer), { status: 200 }) : new Response('', { status: 503 });
+          if (String(url).endsWith('/owner-account')) {
+            if (String(url) !== 'https://api.example.test/api/v1/vault/agent/42/owner-account' || (init?.method ?? 'GET') !== 'GET' || !init?.headers?.['X-BGOS-Pairing'] || !init?.headers?.['x-bgos-a2a-signature']) return new Response('', { status: 400 });
+            return answer ? new Response(JSON.stringify(answer), { status: 200 }) : new Response('', { status: 503 });
+          }
           return new Response(JSON.stringify({ registered: true, publicKey: JSON.parse(init.body).publicKey }), { status: 201 });
         };
         const code = await main(['--assistant', '42', '--state-dir', ${JSON.stringify(dir)}], { security: testSecurity });
