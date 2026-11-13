@@ -398,18 +398,39 @@ export function credentialsWritePath({ home = homedir(), assistantId = null, env
  * in plain JS because bgos-pair must not import TS sources (it runs under
  * bare node via npx). A test pins the two against each other so they cannot
  * drift: BGOS_CREDENTIALS_PATH, else an existing credentials-<id>.json for
- * the configured BGOS_ASSISTANT_ID, else the legacy credentials.json.
- * @param {{ env?: Record<string, string | undefined>, home?: string, exists?: (path: string) => boolean }} [opts]
+ * the configured BGOS_ASSISTANT_ID, else the legacy credentials.json when it
+ * is that same agent's, else that agent's own (missing) file: a named agent
+ * never reads another agent's pairing (helperwedge finding 4). With no
+ * assistant configured, the legacy credentials.json.
+ * @param {{ env?: Record<string, string | undefined>, home?: string, exists?: (path: string) => boolean,
+ *   readText?: (path: string) => string | null }} [opts]
  */
-export function resolveReadCredentialsPath({ env = {}, home = homedir(), exists = existsSync } = {}) {
+export function resolveReadCredentialsPath({ env = {}, home = homedir(), exists = existsSync, readText = readTextOrNull } = {}) {
   const override = String(env?.BGOS_CREDENTIALS_PATH ?? '').trim()
   if (override) return override
   const id = String(env?.BGOS_ASSISTANT_ID ?? '').trim()
   if (id && id !== ASSISTANT_ID_PLACEHOLDER) {
     const perAssistant = perAssistantCredentialsPath(home, id)
     if (exists(perAssistant)) return perAssistant
+    const legacy = credentialsPath(home)
+    let legacyId = ''
+    try {
+      legacyId = exists(legacy) ? String(JSON.parse(String(readText(legacy) ?? ''))?.assistantId ?? '').trim() : ''
+    } catch {
+      legacyId = ''
+    }
+    return legacyId === id ? legacy : perAssistant
   }
   return credentialsPath(home)
+}
+
+/** @param {string} path */
+function readTextOrNull(path) {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -431,9 +452,17 @@ export function verifyWrittenCredentials({
   exists = existsSync,
 }) {
   const expected = String(expectedAssistantId ?? '').trim()
+  /** @param {string} p */
+  const readText = (p) => {
+    try {
+      return String(read(p, 'utf8'))
+    } catch {
+      return null
+    }
+  }
   const readEnv = { ...env }
   if (expected) readEnv.BGOS_ASSISTANT_ID = expected
-  const resolved = resolveReadCredentialsPath({ env: readEnv, home, exists })
+  const resolved = resolveReadCredentialsPath({ env: readEnv, home, exists, readText })
   if (resolved !== path) {
     return {
       ok: false,
@@ -464,7 +493,7 @@ export function verifyWrittenCredentials({
   // pairing? If not, the operator MUST pin the env, and main() says so
   // unconditionally instead of the pairing quietly relying on an env var
   // nobody set.
-  const realEnvPath = resolveReadCredentialsPath({ env, home, exists })
+  const realEnvPath = resolveReadCredentialsPath({ env, home, exists, readText })
   let needsEnvPin = !samePath(realEnvPath, path)
   if (needsEnvPin) {
     try {
