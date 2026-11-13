@@ -10,6 +10,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.87.6 (2026-11-13)
+
+**A file clock ahead of the real clock cannot let a private turn through.** The daemon took a private turn marker's file modification time for when the marker was written, and ordered it against moments it takes on the real clock: a Stop's start, a delivery. On a computer whose file clock runs ahead (a network share, a clock jump, a restored file) a marker written before a Stop read as written after it. A turn whose Stop hook was killed then stayed the owner's past its Stop line, and a closed marker written before a message whose place was unknown lifted that message's bar. The private turn hook now stamps every marker it writes with the moment it wrote it (`writtenAt`), and the daemon judges by that stamp. A marker with no stamp, from an older hook, falls back to its file time, which the daemon refuses when it is later than its own clock; a stamp later than its clock is refused the same way. A marker whose time cannot be known never keeps a turn past a Stop and never lifts a bar.
+
 ## 0.87.5 (2026-11-13)
 
 From the Helper's production test on a MacBook (2026-11-12): the Helper noticed a frozen agent and started a Fix every time, but never restarted it, and the app then said the agent was running again.
