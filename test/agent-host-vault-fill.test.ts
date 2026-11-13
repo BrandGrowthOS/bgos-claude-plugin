@@ -389,5 +389,5 @@ test('M5: commits to the fill trust at the same moment are not lost', async () =
  * of sha256(JSON.stringify(["hoai-owner-account-v1", ownerId, accountPublic])).
  */
 test('H2: the account code test vector', () => {
-  assert.equal(ownerAccountCode('user_2abcDEFghiJKLmno', '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo'), '7509 7181 0915 0eda 35af')
+  assert.equal(ownerAccountCode('user_2xKc0wner', 'dCdN_F83ybX_Kh5E_bt8cmqPb6TKY3Gut1DFn0zX9jM'), 'f0e4 3307 6e27 42b2 ebb7')
 })
