@@ -2719,6 +2719,75 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     input: { kind: "command", command: "cat 0<&~/.ssh/id_rsa" },
     ruleId: null,
   },
+  // A command that so far holds only redirects is not ended by a
+  // substitution where the program goes: the shell after it keeps the here
+  // string, the heredoc or the pipe. An input redirect's target is also read
+  // with a substitution written after it left out.
+  {
+    name: "here_string_with_stream_digits_then_a_substitution_before_a_shell",
+    input: { kind: "command", command: "0<<<'rm -rf build' $(true) sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "heredoc_with_stream_digits_then_a_substitution_before_a_shell",
+    input: { kind: "command", command: "0<<EOF $(true) bash\nrm -rf build\nEOF" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "here_string_with_stream_digits_then_a_backtick_pair_before_a_shell",
+    input: { kind: "command", command: "0<<<'git push --force' `true` sh" },
+    ruleId: "force_push",
+  },
+  {
+    name: "here_string_then_a_substitution_before_a_shell",
+    input: { kind: "command", command: "<<<'sudo reboot' $(true) sh" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "output_redirect_then_a_substitution_before_a_piped_shell",
+    input: { kind: "command", command: "echo rm -rf build | 2>/dev/null $(true) sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "output_redirect_to_a_substitution_before_a_piped_shell",
+    input: { kind: "command", command: "echo rm -rf build | 2> $(echo /dev/null) sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "input_redirect_then_a_shell_substitution_given_a_pipe",
+    input: { kind: "command", command: "echo rm -rf build | </dev/null $(sh)" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "input_redirect_then_a_shell_substitution_given_a_harmless_pipe",
+    input: { kind: "command", command: "echo hello | </dev/null $(sh)" },
+    ruleId: null,
+  },
+  {
+    name: "secret_read_via_input_redirect_with_a_substitution_after_the_name",
+    input: { kind: "command", command: "cat < deploy.pem$(true)" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_with_a_backtick_pair_after_the_name",
+    input: { kind: "command", command: "base64 < ~/.aws/credentials`true`" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "here_string_of_a_harmless_script_then_a_substitution_before_a_shell",
+    input: { kind: "command", command: "0<<<'echo done' $(true) sh" },
+    ruleId: null,
+  },
+  {
+    name: "output_redirect_then_a_substitution_before_a_plain_program",
+    input: { kind: "command", command: "2>/dev/null $(true) ls" },
+    ruleId: null,
+  },
+  {
+    name: "secret_input_redirect_of_a_plain_file_with_a_substitution_after_it",
+    input: { kind: "command", command: "sort < notes.txt$(true)" },
+    ruleId: null,
+  },
   // A file delete whose files come from somewhere else: from xargs, from
   // find's exec family, or, for PowerShell's Remove-Item and its aliases,
   // from a pipe.
@@ -4089,7 +4158,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "3ddbec9036cc22058aeb65b76d03ea678dc42206ab714f27aac14f2dbe933e4d";
+  "e05a94d07c5af1d86cba6f788b8ac54e3e1f6dfe9692a7fc2c5be8d86d3f120a";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =

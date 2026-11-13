@@ -226,6 +226,17 @@ test('a pipe whose feeder gives no script is read once, however many readings it
   assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
 })
 
+test('a substitution where a program may go is told from a heredoc owner at once, however many heredocs wait', () => {
+  // Each such substitution asks whether the command so far owns a heredoc
+  // whose body comes after the line. Walking every waiting heredoc for it
+  // would grow with their count times the substitutions.
+  const command = 'cat <<A;'.repeat(40000) + ' $(x);'.repeat(40000)
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
 test('a very long list of words after a double dash is read without running out of room', () => {
   // The words after the dash are gathered one at a time, never handed over as
   // one call's arguments, which has a limit far below the longest command.
