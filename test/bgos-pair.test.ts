@@ -478,16 +478,22 @@ test('resolveReadCredentialsPath mirrors the read order: override, per-assistant
     ),
     '/home/kc/.bgos-agent/credentials-871.json',
   )
-  // Absent per-assistant file falls back to the legacy single file.
+  // Absent per-assistant file falls back to the legacy single file only when that file IS 871's
+  // pairing (the old layout); another agent's legacy file, or none, leaves 871's own missing file
+  // (helperwedge finding 4: a named agent never reads another agent's pairing).
+  const legacyOf = (id: number) => (p: string) => (asPosix(p) === '/home/kc/.bgos-agent/credentials.json' ? JSON.stringify({ assistantId: id, pairingToken: 't' }) : null)
+  const onlyLegacy = (p: string) => asPosix(p) === '/home/kc/.bgos-agent/credentials.json'
   assert.equal(
-    asPosix(
-      resolveReadCredentialsPath({
-        env: { BGOS_ASSISTANT_ID: '871' },
-        home,
-        exists: () => false,
-      }),
-    ),
+    asPosix(resolveReadCredentialsPath({ env: { BGOS_ASSISTANT_ID: '871' }, home, exists: onlyLegacy, readText: legacyOf(871) })),
     '/home/kc/.bgos-agent/credentials.json',
+  )
+  assert.equal(
+    asPosix(resolveReadCredentialsPath({ env: { BGOS_ASSISTANT_ID: '871' }, home, exists: onlyLegacy, readText: legacyOf(900) })),
+    '/home/kc/.bgos-agent/credentials-871.json',
+  )
+  assert.equal(
+    asPosix(resolveReadCredentialsPath({ env: { BGOS_ASSISTANT_ID: '871' }, home, exists: () => false })),
+    '/home/kc/.bgos-agent/credentials-871.json',
   )
   // No configured assistant id reads the legacy single file.
   assert.equal(
