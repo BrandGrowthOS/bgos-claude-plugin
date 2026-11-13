@@ -637,3 +637,43 @@ test('review finding 4: in a terminal, a waiting offer names the older setup as 
   // The states that need nothing from anyone say nothing of it.
   assert.doesNotMatch(AUTO_TEXT.installed, /new-signing-key/)
 })
+
+// -- A REAL Windows run (no injected reader), for the plugin's Windows CI ---------------------------------------
+// Every Windows case above goes through an injected access list reader, and that is how the first real Windows PC
+// could fail with all of them green. This one uses the real PowerShell and the real access lists, on whatever
+// Windows runs the suite (the CI runner is an Intel one with its antivirus on).
+test('REAL Windows, zero setup end to end: private key file, offered; a file another account can read is refused and replaced',
+  { skip: process.platform !== 'win32', timeout: 300_000 }, async () => {
+    // The module's own functions, with its own (real) security: not the test helper's injected one.
+    const { hostKeyExposure, readHostRecord: readReal } = await import('../lib/vault-host.mjs')
+    const dir = tempDir()
+    const s = server()
+    const real = (extra: Record<string, unknown> = {}) => {
+      const logs: string[] = []
+      // No `security`: the module's own, which is this machine's PowerShell.
+      return ensureAutoHost({ stateDir: dir, assistantId: ASSISTANT, ownerId: OWNER, apiBase: API, pairingToken: PAIRING, fetch: s.fetch, log: (line: string) => logs.push(line), env: {}, ...extra })
+        .then((result: { status: string; code?: string }) => ({ result, logs }))
+    }
+    const first = await real()
+    assert.deepEqual(first.result, { status: 'offered' }, first.logs.join(' | '))
+    assert.deepEqual(s.state.problems, [], 'no false alarm on a real machine')
+    assert.equal(await hostKeyExposure(dir), 'private')
+    const before = (await readReal(dir))!
+    assert.ok(before.signingSecret && before.identityPublic, 'the identity was stored too')
+
+    // Give the built in Users group read access to the key file, as a careless copy or a broad inherit would.
+    const file = join(dir, VAULT_HOST_FILE_NAME)
+    const granted = spawnSync('icacls', [file, '/grant', '*S-1-5-32-545:(R)'], { encoding: 'utf8' })
+    assert.equal(granted.status, 0, granted.stderr || granted.stdout)
+    assert.equal(await hostKeyExposure(dir), 'exposed')
+    await assert.rejects(readReal(dir), /VAULT_HOST_KEY_EXPOSED/)
+
+    // The next run never uses that key: a fresh one is made, protected and offered.
+    const second = await real()
+    assert.equal(second.result.status, 'offered', second.logs.join(' | '))
+    assert.equal(await hostKeyExposure(dir), 'private')
+    const after = (await readReal(dir))!
+    assert.notEqual(after.hostSeed, before.hostSeed)
+    const offered = s.calls.filter((c) => c.method === 'POST' && c.path === `${PREFIX}/host-offer`).map((c) => JSON.parse(c.body).publicKey)
+    assert.deepEqual(offered, [before.publicKey, after.publicKey], 'the exposed key was never offered again')
+  })
