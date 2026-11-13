@@ -820,6 +820,14 @@ import {
   writeWatcherCredentials,
 } from './lib/watcher-service.mjs'
 
+// ── Never a second copy of this plugin inside a thread ─────────────────────────
+// The FIRST statement of this file. An owner's full access thread is a true
+// fork with the owner's own MCP servers, so its CLI starts this server too
+// (lib/thread-lane-marker.mjs). A copy that thread's own CLI started, directly
+// or through a wrapper, exits here before it reads a credential, takes a lock
+// or opens a socket: the thread keeps every other server the owner has.
+if (startedByThreadLane({ parentOf: parentPid })) process.exit(0)
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 // Auth resolves to one of two modes (see lib/agent-credentials.ts):
@@ -1202,13 +1210,15 @@ import {
   watch,
   writeFileSync,
 } from 'node:fs'
-import { ThreadLaneManager, liveThreadWork, threadsPendingPath } from './lib/thread-lanes.ts'
-import { clearActiveGoal, copyTranscriptClearingGoal } from './lib/thread-transcript.ts'
+import { ThreadLaneManager, liveThreadWork, threadsPendingPath, type ThreadApprovalInput, type ThreadKeptInfo } from './lib/thread-lanes.ts'
+import { clearActiveGoal, copyTranscriptClearingGoal, findActiveGoalRow, latestPermissionMode } from './lib/thread-transcript.ts'
+import { agentSettingsPath, diskUsage, threadsFullAccess } from './lib/thread-access.ts'
+import { parentPid, startedByThreadLane } from './lib/thread-lane-marker.mjs'
 import { checkoutLimits, checkoutTooLarge } from './lib/thread-repo-size.ts'
 import { randomInt } from 'node:crypto'
 import { GroupLaneManager, type GroupApproval, type GroupDelivery } from './lib/group-lanes.ts'
 import { groupRouteOf, groupTapKey, groupTapLine, readGroupDelivery } from './lib/group-delivery.ts'
-import { groupIdleOverrideMs, groupLevelsEnabled, type GroupLevel } from './lib/group-lane-args.ts'
+import { groupIdleOverrideMs, groupLevelsEnabled, toolInputPreview, type GroupLevel } from './lib/group-lane-args.ts'
 import { createGroupSummaryQueue, isOwnerCard, withGroupSummaries } from './lib/group-summary-queue.ts'
 import { ensureGroupLaneRoot, groupSandboxWorks } from './lib/group-lane-root.ts'
 import { AsideForks, runAside } from './lib/aside-fork.ts'
@@ -1897,7 +1907,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
     // ONE declared list for the fetch AND the offline copy, so a fetch that
     // fails tells the agent no more than the served canon would have told
     // this daemon (capabilitiesFallbackFor, the stage 6 backend review).
-    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode })
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), threadFullAccess: threadFullAccessOn(), authMode: AUTH.mode })
     try {
       data = await bgosGetCapped(
         capabilitiesFetchPath(
@@ -2273,6 +2283,16 @@ function threadsCli(): ThreadsCliAnswer {
 }
 function threadsDeclared(): boolean {
   return process.platform !== 'win32' && threadsCli().ok
+}
+/**
+ * The owner's setting `threads.fullAccess` for this agent (lib/thread-access.ts):
+ * on unless ~/.bgos-agent/<id>/settings.json or HOAI_THREADS_FULL_ACCESS says
+ * off. Read fresh each time, so a change needs no restart: the next thread
+ * start and the next heartbeat's declaration both follow it.
+ */
+function threadFullAccessOn(): boolean {
+  const stateDir = agentStateDir(homedir(), ASSISTANT_ID) ?? pathJoin(homedir(), '.bgos-agent', 'unknown')
+  return threadsFullAccess({ env: process.env, readSettings: () => readFileSync(agentSettingsPath(stateDir), 'utf8') })
 }
 const bootSlashCommands = prepareSlashCommands(
   catalogForCapabilities({
@@ -7203,7 +7223,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
               chatId: String(resolvedChatId),
               text,
               declared: () =>
-                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), authMode: AUTH.mode }).includes(UI_CARD),
+                declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, threads: threadsDeclared(), threadFullAccess: threadFullAccessOn(), authMode: AUTH.mode }).includes(UI_CARD),
               log,
             })
         if (cardNudge) log(`reply to chat ${resolvedChatId}: card nudge given`)
@@ -14924,7 +14944,7 @@ const stopPauseLane = new StopPauseLane({
  *  this daemon never pauses on a host whose owner was never offered Pause. */
 function stopGoalView(): StopGoalView {
   return {
-    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }).includes('mission_pause'),
+    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), threadFullAccess: threadFullAccessOn(), authMode: AUTH.mode }).includes('mission_pause'),
     held: goalHeld,
     attachedMissionId: goalMissionId,
     pending: goalPendingArm,
@@ -15168,7 +15188,25 @@ const threadLanes = new ThreadLaneManager({
   transcripts: {
     copyClearingGoal: (from, to) => copyTranscriptClearingGoal(from, to),
     clearGoal: (path) => clearActiveGoal(path),
+    hasActiveGoal: async (path) => (await findActiveGoalRow(path)) !== null,
   },
+  // 0.88.0: a thread the owner opens is a true fork with the agent's own
+  // access, unless the owner turned `threads.fullAccess` off for this agent
+  // (lib/thread-access.ts). Read at every thread start, so no restart.
+  fullAccess: () => threadFullAccessOn(),
+  // The main session's own permission mode, from the transcript this daemon has proven is its session's.
+  mainPermissionMode: async () => {
+    const path = sessionBinder.provenTranscriptPath()
+    return path ? latestPermissionMode(path) : null
+  },
+  // What a full access thread still asks goes the way the owner's own chat's prompts go.
+  approve: (input) => approveThreadTool(input),
+  newSessionId: () => crypto.randomUUID(),
+  // A closed thread leaves nothing behind, and its close line says how much it freed.
+  diskUsage: (path) => diskUsage(path),
+  // Where the CLI keeps every session's background command output.
+  tempRoots: [...new Set([`/tmp/claude-${process.getuid?.() ?? ''}`, `/private/tmp/claude-${process.getuid?.() ?? ''}`, pathJoin(tmpdir(), `claude-${process.getuid?.() ?? ''}`)])],
+  onBranchKept: (info) => tellOwnerThreadWorkKept(info),
   fs: {
     exists: (path) => existsSync(path),
     mkdir: (path) => { mkdirSync(path, { recursive: true }) },
@@ -15181,6 +15219,15 @@ const threadLanes = new ThreadLaneManager({
     list: (dir) => readdirSync(dir),
     createExclusive: (path, data) => writeFileSync(path, data, { flag: 'wx' }),
     rename: (from, to) => renameSync(from, to),
+    // The start sweep leaves a link alone, and a folder another daemon may still be making.
+    stat: (path) => {
+      try {
+        const info = lstatSync(path)
+        return { kind: info.isSymbolicLink() ? 'link' : info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other', modifiedMs: info.mtimeMs }
+      } catch {
+        return null
+      }
+    },
   },
   post: (path, body) => bgosPost(path, body),
   now: () => Date.now(),
@@ -15255,6 +15302,49 @@ function permissionRequestHandler(): ((notification: unknown) => unknown) | null
   if (!(handlers instanceof Map)) return null
   const handler = handlers.get('notifications/claude/channel/permission_request')
   return typeof handler === 'function' ? (handler as (notification: unknown) => unknown) : null
+}
+
+/**
+ * A prompt of an owner's full access thread (0.88.0), through the very
+ * handler the owner's own chat's prompts go through: auto approve, the hard
+ * floor ("Always ask") and the approval card in the owner's main chat. With
+ * no such handler the card is asked. Refused when neither can be reached.
+ */
+function approveThreadTool(input: ThreadApprovalInput): Promise<{ allow: boolean }> {
+  const params: PermissionRequestParams = {
+    request_id: mintGroupPermissionRequestId(),
+    tool_name: input.toolName,
+    description: `In the thread "${input.title || 'a thread'}": ${input.description}`,
+    input_preview: toolInputPreview(input.input),
+  }
+  return new Promise<{ allow: boolean }>((resolve) => {
+    let settled = false
+    const settle = (allow: boolean): void => {
+      if (settled) return
+      settled = true
+      groupPermissionVerdicts.delete(params.request_id)
+      resolve({ allow })
+    }
+    groupPermissionVerdicts.set(params.request_id, (behavior) => settle(behavior === 'allow'))
+    const ownHandler = permissionRequestHandler()
+    const run = ownHandler
+      ? ownHandler({ method: 'notifications/claude/channel/permission_request', params })
+      : relayPermissionToOwner(params)
+    void Promise.resolve(run)
+      .catch((err) => log(`threads: a permission prompt could not be asked (${err instanceof Error ? err.name : 'error'})`))
+      .finally(() => settle(false))
+  })
+}
+
+/** A closed thread's work that was kept (a branch, or a worktree that could not be saved): told once, in the owner's own chat. */
+function tellOwnerThreadWorkKept(info: ThreadKeptInfo): void {
+  const chat = deafNoticeChat({ pendingChatId: '', mainChatIds, ownership: chatOwnership })
+  if (chat === null) return
+  const name = info.title ? `The thread "${info.title}"` : 'A thread'
+  const text = info.folder
+    ? `${name} was closed, but its working copy is kept on this computer at ${info.folder}, on the branch ${info.branch}: ${info.reason}.`
+    : `${name} was closed and its files were removed from this computer. Its work is kept on the branch ${info.branch}: ${info.reason}.`
+  void sendConnectionNotice(chat, text).catch((err) => log(`threads: the kept branch notice could not be posted: ${err instanceof Error ? err.name : 'error'}`))
 }
 
 const groupLanes = new GroupLaneManager({
@@ -15494,15 +15584,29 @@ function routeGroupStreamTap(view: StreamMessageView): boolean {
  * runs on every (re)connect once armed AND when the channel arms: the first
  * connect after a boot comes before the arm.
  */
+/** The start sweep ran in this daemon life (lib/thread-lanes.ts sweepLeftovers). */
+let threadLeftoversSwept = false
 function reconcilePendingThreads(why: string): void {
   if (!channelArmed) return
   const assistantIds = [String(ASSISTANT_ID)]
   void threadsCliGate.ready()
-    .then((answer) => {
+    .then(async (answer) => {
       // A cold-start probe may finish after the channel arms. Wait without
       // blocking, then check the lock again before recovering pending turns.
       // Nor once an update has drained: a turn started now would die with the restart, and the reconnect reads again.
       if (!answer.ok || !channelArmed || updateDrainMode) return 0
+      // THE START SWEEP (0.88.0), once per daemon life and before any pending turn runs: what a crash left
+      // of threads that are already closed. Never an open thread, never the main session's files.
+      if (!threadLeftoversSwept) {
+        threadLeftoversSwept = true
+        try {
+          const removed = await threadLanes.sweepLeftovers()
+          if (removed.length > 0) log(`threads: the start sweep removed what was left of ${removed.length} closed thread(s)`)
+        } catch (err) {
+          log(`threads: the start sweep failed: ${err instanceof Error ? err.name : 'error'}`)
+        }
+        if (!channelArmed || updateDrainMode) return 0
+      }
       // no-cache: an ETag 304 would hide turns this new process never ran.
       return threadLanes.reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
     })
@@ -20204,7 +20308,7 @@ async function main(): Promise<void> {
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
   setInterval(() => { agentStatePublisher.tick(); publishBrowserPrivateTurn() }, AGENT_STATE_TICK_MS).unref()
-  // Threads phase 1: the worktree of a thread closed more than 7 days ago goes.
+  // A closed thread is removed when it closes (0.88.0); this hourly pass removes one whose close was cut short.
   setInterval(() => {
     void threadLanes
       .sweepClosed(Date.now())
@@ -21456,7 +21560,7 @@ async function main(): Promise<void> {
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
       capabilities: () => [
-        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode }),
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), threadFullAccess: threadFullAccessOn(), authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the

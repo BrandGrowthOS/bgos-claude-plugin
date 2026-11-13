@@ -42,6 +42,27 @@ the plugin's hooks), or the thread wiring in `server.ts`.
    `HOAI_LIVE_THREAD=1` makes a missing Claude Code a failure instead of a
    skip; `HOAI_LIVE_CLAUDE=<path>` picks a specific `claude` binary.
 
+   Since 0.88.0 the same gate also holds the owner and recipient split: the
+   owner's thread (a frame with no lane stamp) runs in the agent's own folder
+   with no worktree and every tool, closing it leaves no file named by its
+   session id under the home folder and logs the bytes freed, and a frame
+   stamped for a person still gets its own worktree, read only on a
+   repository above the copy limit. A second real CLI test covers what the
+   daemon harness cannot script:
+
+   ```
+   THREADS_FULL_CLAUDE=$(command -v claude) npx tsx --test test/thread-full-fork.cli.test.ts
+   ```
+
+   Through the real lane manager it has the owner's Bash write outside the
+   agent folder and reach the network, checks the session's permission mode,
+   that the owner's own MCP server and hook load, that this plugin's own
+   launcher does not start a second copy, that a prompt reaches the approval
+   path, that `git checkout` is refused, and that a recipient's Bash cannot
+   write outside its worktree. It makes one throwaway folder under the home
+   folder (the sandbox lets every command write the temp folders) and removes
+   it.
+
    Why this is a gate: 0.87.0 shipped threads whose unit tests all passed, and
    the first thread message on a real agent took its daemon down (see
    `docs/thread-lanes-spike.md`, "0.87.0 crash"). The fakes never ran the

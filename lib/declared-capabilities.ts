@@ -402,6 +402,16 @@ export const MODEL_EFFORT_PICKER_TOKEN = 'model_effort_picker'
 export const THREAD_CAPABILITY_TOKENS: readonly string[] = Object.freeze(['message_threads', 'thread_sessions', 'asides'])
 
 /**
+ * A thread the owner opens is a true fork with the agent's full access, in
+ * the agent's own folder (0.88.0, lib/thread-lane-args.ts threadFullArgs).
+ * Declared beside the thread tokens only while the owner's setting
+ * `threads.fullAccess` is on (lib/thread-access.ts): the server then tells
+ * the agent's main session so (BGOS capability canon, `-threadfull1`). The
+ * server changes nothing else on it.
+ */
+export const THREAD_FULL_ACCESS_TOKEN = 'thread_full_access'
+
+/**
  * Group threads (the server's group threads contract): this daemon runs each
  * group the agent sits in as its own paused and resumed lane
  * (lib/group-lanes.ts) and answers group_thread_end. Declared only where a
@@ -477,6 +487,12 @@ export function declaredCapabilities(input: {
    */
   threads?: boolean
   /**
+   * The owner's setting threads.fullAccess is on for this agent (server.ts
+   * threadFullAccessOn). thread_full_access beside the thread tokens; absent
+   * reads as no.
+   */
+  threadFullAccess?: boolean
+  /**
    * HOAI_GROUP_LEVELS is on (lib/group-lane-args.ts groupLevelsEnabled):
    * group_levels beside group_threads. Absent, the daemon's own environment
    * is read, as the email tokens read theirs.
@@ -498,6 +514,7 @@ export function declaredCapabilities(input: {
       ? [MODEL_EFFORT_PICKER_TOKEN]
       : []),
     ...(input.threads === true && (input.platform ?? process.platform) !== 'win32' ? THREAD_CAPABILITY_TOKENS : []),
+    ...(input.threads === true && input.threadFullAccess === true && (input.platform ?? process.platform) !== 'win32' ? [THREAD_FULL_ACCESS_TOKEN] : []),
     ...(input.authMode === 'pairing' && input.threads === true && (input.platform ?? process.platform) !== 'win32'
       ? [GROUP_THREADS_TOKEN, ...((input.groupLevels ?? groupLevelsEnabled(process.env)) ? [GROUP_LEVELS_TOKEN] : [])]
       : []),

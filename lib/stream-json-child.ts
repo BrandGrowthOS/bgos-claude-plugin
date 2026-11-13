@@ -22,8 +22,12 @@ export interface StreamJsonChild {
   onExit(cb: (code: number | null, signal: string | null) => void): void
 }
 
-/** `env`: names added to the child's allow listed environment (laneChildEnv), never the daemon's whole one. */
-export type SpawnStreamJson = (command: string, args: string[], opts: { cwd: string; env?: Record<string, string> }) => StreamJsonChild
+/**
+ * `env`: names added to the child's allow listed environment (laneChildEnv), never the daemon's whole one.
+ * `ownerEnv`: an owner's full access thread (lib/thread-lane-args.ts threadFullArgs) gets the main session's
+ * environment instead (ownerLaneEnv), with `env` added on top.
+ */
+export type SpawnStreamJson = (command: string, args: string[], opts: { cwd: string; env?: Record<string, string>; ownerEnv?: boolean }) => StreamJsonChild
 
 /** NDJSON: whole lines only, JSON objects only; anything else is skipped. */
 export function lineSplitter(onFrame: (frame: Record<string, unknown>) => void): (chunk: string) => void {
@@ -86,17 +90,46 @@ export function laneChildEnv(env: Record<string, string | undefined>): Record<st
 }
 
 /**
+ * What an owner's full access thread never inherits from the daemon although
+ * the rest of its environment is the main session's: this plugin's own
+ * variables (its keys, its pairing, its state folders, its switches), and
+ * what the CLI sets for one MCP server or one plugin (the server's own
+ * project and plugin folders). Everything else passes: the thread is the
+ * owner's own agent, with the owner's PATH, ssh agent, proxies and cloud
+ * credentials, as the main session's own Bash has them.
+ */
+export const OWNER_LANE_ENV_DROPPED: readonly RegExp[] = Object.freeze([/^BGOS_/, /^HOAI_/, /^CLAUDE_PLUGIN_/, /^CLAUDE_PROJECT_DIR$/])
+
+/**
+ * The one variable of the plugin's own a thread keeps: where the plugin's
+ * state lives. Its hooks look there for the daemon the session belongs to,
+ * and without it "Always ask" would not find the daemon in a thread on an
+ * install that moved the state folder. It is a path, not a secret.
+ */
+export const OWNER_LANE_ENV_KEPT: readonly string[] = Object.freeze(['BGOS_PLUGIN_STATE_DIR'])
+
+export function ownerLaneEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue
+    if (!OWNER_LANE_ENV_KEPT.includes(key) && OWNER_LANE_ENV_DROPPED.some((re) => re.test(key))) continue
+    out[key] = value
+  }
+  return out
+}
+
+/**
  * The real child: node's spawn with three pipes; stderr is drained and
  * dropped. Off Windows it leads its own process group (detached), and kill
  * signals the whole group, so the tools a lane started (a shell, a test run,
  * a dev server) stop with it. Its stdin stays a pipe, so a daemon that dies
  * outright still closes it, and `claude -p` ends on that.
  */
-export function spawnStreamJson(command: string, args: string[], opts: { cwd: string; env?: Record<string, string> }): StreamJsonChild {
+export function spawnStreamJson(command: string, args: string[], opts: { cwd: string; env?: Record<string, string>; ownerEnv?: boolean }): StreamJsonChild {
   const ownGroup = process.platform !== 'win32'
   const child = spawn(command, args, {
     cwd: opts.cwd,
-    env: { ...laneChildEnv(process.env), ...(opts.env ?? {}) },
+    env: { ...(opts.ownerEnv === true ? ownerLaneEnv(process.env) : laneChildEnv(process.env)), ...(opts.env ?? {}) },
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
     detached: ownGroup,

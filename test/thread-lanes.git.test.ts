@@ -4,7 +4,10 @@
  * worktree and its branch are made, the `-b` refusal falls back to the branch
  * left from an earlier worktree, the lane's sandbox protects the source
  * repository's own git state, and Delete removes the worktree and only its
- * branch. claude itself is a fake: no process starts.
+ * branch. Since 0.88.0 a plain close removes the worktree too (remove and
+ * prune) and its branch unless the branch holds work found nowhere else;
+ * uncommitted changes are saved on the branch first. claude itself is a
+ * fake: no process starts.
  */
 
 import { strict as assert } from 'node:assert'
@@ -19,6 +22,7 @@ import { dirname, join } from 'node:path'
 
 import { ThreadLaneManager, type ThreadTurnInput } from '../lib/thread-lanes.ts'
 import type { StreamJsonChild } from '../lib/stream-json-child.ts'
+import { diskUsage } from '../lib/thread-access.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 
 const run = promisify(execFile)
@@ -58,6 +62,8 @@ function setup(opts: { platform?: NodeJS.Platform } = {}) {
   mkdirSync(dirname(main), { recursive: true })
   writeFileSync(main, '{}\n')
   const spawned: Array<{ args: string[]; cwd: string; child: FakeChild }> = []
+  const kept: Array<{ rootId: string; branch: string; folder?: string; reason: string }> = []
+  const logs: string[] = []
   const manager = new ThreadLaneManager({
     spawn: (_command, args, o) => {
       const child = new FakeChild()
@@ -101,10 +107,25 @@ function setup(opts: { platform?: NodeJS.Platform } = {}) {
     now: () => 1,
     setTimer: () => ({}),
     clearTimer: () => {},
-    log: () => {},
+    log: (line) => { logs.push(line) },
+    onBranchKept: (info) => { kept.push(info) },
+    diskUsage: (path) => diskUsage(path),
   })
-  return { dir, agent, manager, spawned, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+  return { dir, agent, manager, spawned, kept, logs, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
+
+/** A thread with its worktree made and its process gone, ready to be closed. */
+async function openThread(r: ReturnType<typeof setup>, rootId: string): Promise<string> {
+  r.manager.turn(turn(rootId))
+  await r.manager.idle()
+  const folder = join(r.agent, '.hoai', 'threads', rootId)
+  assert.ok(existsSync(join(folder, '.git')), 'the worktree is made')
+  r.spawned.at(-1)!.child.exit()
+  await r.manager.idle()
+  return folder
+}
+const branches = (agent: string) => git(agent, 'for-each-ref', '--format=%(refname:short)', 'refs/heads').split(/\r?\n/).filter(Boolean).sort()
+const worktrees = (agent: string) => git(agent, 'worktree', 'list', '--porcelain').split(/\r?\n/).filter((l) => l.startsWith('worktree ')).length
 
 const turn = (rootId: string): ThreadTurnInput => ({ chatId: '55', rootId, replyId: `${rootId}0`, mode: 'start', text: 'go', title: 't', rootText: 'r' })
 
@@ -221,6 +242,125 @@ test('a real git on Linux with no stash: the placeholders are invisible to git, 
     assert.match(git(r.agent, 'stash', 'list'), /stash@\{0\}/)
     git(r.agent, 'stash', 'pop', '-q')
     assert.equal(readFileSync(join(r.agent, 'a.txt'), 'utf8'), 'changed\r\n', 'stash pop honors the configured checkout endings')
+  } finally {
+    r.cleanup()
+  }
+})
+
+// -- 0.88.0: a closed thread leaves nothing behind, with a real git ------------
+
+test('close removes the worktree and prunes it, and the branch with it when the branch holds nothing of its own', async () => {
+  const r = setup()
+  try {
+    const folder = await openThread(r, '301')
+    assert.equal(worktrees(r.agent), 2)
+    await r.manager.close({ rootId: '301', removeWorktree: false })
+    await r.manager.idle()
+    assert.equal(existsSync(folder), false, 'the checkout is gone')
+    assert.equal(worktrees(r.agent), 1, 'git knows no second worktree')
+    assert.deepEqual(branches(r.agent), ['feature/x', 'main'], 'its branch pointed at a commit main has: removed')
+    assert.deepEqual(r.kept, [])
+    assert.equal(existsSync(join(r.dir, 'state', '301.json')), false)
+    assert.match(r.logs.find((l) => /thread 301 closed/.test(l)) ?? '', /freed [1-9]\d* bytes/)
+    assert.equal(git(r.agent, 'status', '--porcelain').trim(), '', 'the main checkout is untouched')
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('close keeps a branch that holds a commit found in no other branch, and removes the checkout', async () => {
+  const r = setup()
+  try {
+    const folder = await openThread(r, '302')
+    writeFileSync(join(folder, 'work.txt'), 'the thread\'s own work\n')
+    git(folder, 'add', '.')
+    git(folder, 'commit', '-qm', 'thread work')
+    const tip = git(r.agent, 'rev-parse', 'hoai/thread-302').trim()
+    await r.manager.close({ rootId: '302', removeWorktree: false })
+    await r.manager.idle()
+    assert.equal(existsSync(folder), false)
+    assert.equal(worktrees(r.agent), 1)
+    assert.equal(git(r.agent, 'rev-parse', 'hoai/thread-302').trim(), tip, 'the commit is still reachable by its branch')
+    assert.equal(r.kept.length, 1)
+    assert.equal(r.kept[0]!.branch, 'hoai/thread-302')
+    assert.match(r.kept[0]!.reason, /commits that are in no other branch/)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('close removes a branch whose commit was merged into another branch', async () => {
+  const r = setup()
+  try {
+    const folder = await openThread(r, '303')
+    writeFileSync(join(folder, 'work.txt'), 'merged work\n')
+    git(folder, 'add', '.')
+    git(folder, 'commit', '-qm', 'thread work')
+    git(r.agent, 'merge', '-q', '--ff-only', 'hoai/thread-303')
+    await r.manager.close({ rootId: '303', removeWorktree: false })
+    await r.manager.idle()
+    assert.equal(existsSync(folder), false)
+    assert.deepEqual(branches(r.agent), ['feature/x', 'main'])
+    assert.deepEqual(r.kept, [])
+    assert.ok(existsSync(join(r.agent, 'work.txt')), 'the merged work is in main')
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('close saves uncommitted changes, tracked and new, as a commit on the thread\'s branch before the checkout goes', async () => {
+  const r = setup()
+  try {
+    const folder = await openThread(r, '304')
+    writeFileSync(join(folder, 'a.txt'), 'changed by the thread\n')
+    writeFileSync(join(folder, 'new.txt'), 'made by the thread\n')
+    await r.manager.close({ rootId: '304', removeWorktree: false })
+    await r.manager.idle()
+    assert.equal(existsSync(folder), false, 'the checkout is gone')
+    assert.equal(git(r.agent, 'show', 'hoai/thread-304:new.txt').replace(/\r\n/g, '\n'), 'made by the thread\n', 'the new file is in the saved commit')
+    assert.equal(git(r.agent, 'show', 'hoai/thread-304:a.txt').replace(/\r\n/g, '\n'), 'changed by the thread\n')
+    assert.match(git(r.agent, 'log', '-1', '--format=%s', 'hoai/thread-304'), /Uncommitted work of the thread/)
+    assert.equal(r.kept.length, 1)
+    assert.match(r.kept[0]!.reason, /uncommitted changes of its worktree were saved/)
+    assert.equal(readFileSync(join(r.agent, 'a.txt'), 'utf8').replace(/\r\n/g, '\n'), 'a\n', 'the main checkout\'s file is as it was')
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('close keeps a worktree whose HEAD is detached, with whatever it holds', async () => {
+  const r = setup()
+  try {
+    const folder = await openThread(r, '305')
+    git(folder, 'checkout', '-q', '--detach')
+    writeFileSync(join(folder, 'loose.txt'), 'on no branch\n')
+    git(folder, 'add', '.')
+    git(folder, 'commit', '-qm', 'detached work')
+    await r.manager.close({ rootId: '305', removeWorktree: false })
+    await r.manager.idle()
+    assert.ok(existsSync(join(folder, 'loose.txt')), 'the only copy of that commit\'s checkout stays')
+    assert.deepEqual(await r.manager.sweepLeftovers(), [], 'and no later sweep takes it for an orphan')
+    assert.ok(existsSync(join(folder, 'loose.txt')))
+    assert.equal(r.kept.length, 1)
+    assert.equal(r.kept[0]!.folder, folder)
+    assert.match(r.kept[0]!.reason, /not on the thread's own branch/)
+  } finally {
+    r.cleanup()
+  }
+})
+
+test('the start sweep removes an orphan worktree with a real git, and keeps its branch only when it holds work', async () => {
+  const r = setup()
+  try {
+    git(r.agent, 'worktree', 'add', '-q', join('.hoai', 'threads', '401'), '-b', 'hoai/thread-401')
+    git(r.agent, 'worktree', 'add', '-q', join('.hoai', 'threads', '402'), '-b', 'hoai/thread-402')
+    writeFileSync(join(r.agent, '.hoai', 'threads', '402', 'kept.txt'), 'uncommitted in an orphan\n')
+    assert.deepEqual((await r.manager.sweepLeftovers()).sort(), ['401', '402'])
+    assert.equal(existsSync(join(r.agent, '.hoai', 'threads', '401')), false)
+    assert.equal(existsSync(join(r.agent, '.hoai', 'threads', '402')), false)
+    assert.equal(worktrees(r.agent), 1)
+    assert.deepEqual(branches(r.agent), ['feature/x', 'hoai/thread-402', 'main'])
+    assert.equal(git(r.agent, 'show', 'hoai/thread-402:kept.txt').replace(/\r\n/g, '\n'), 'uncommitted in an orphan\n')
   } finally {
     r.cleanup()
   }

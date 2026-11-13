@@ -20,7 +20,14 @@
  *    process group, then SIGKILL after 10 s); its next turn resumes it by its
  *    own id. A turn that has neither answered nor ended after 30 minutes is
  *    failed and its lane stopped the same way.
- *  - Confinement: every lane runs `--restricted` with its own tools,
+ *  - Full access (0.88.0): a thread its OWNER opens is a true fork with the
+ *    agent's own access, in the agent's own folder, on a repository of any
+ *    size (threadFullArgs), unless the owner's setting `threads.fullAccess`
+ *    is off. No worktree, no copy of the repository; the prompts it still
+ *    raises are answered as the main chat's are (deps.approve). Decided at
+ *    every start by threadAccess: a thread a share recipient opens, and one
+ *    whose opener is not known, is confined as below, exactly as before.
+ *  - Confinement: every other lane runs `--restricted` with its own tools,
  *    permission mode and settings (lib/thread-lane-args.ts threadLaneArgs):
  *    edits only in its worktree, Bash only in the CLI's sandbox.
  *  - Working tree: the daemon (never the lane) runs `git worktree add
@@ -51,16 +58,27 @@
  *    pid and start stamp are in the lane state, so the next start, a close or
  *    a delete stops it first (lib/lane-process.ts), never two lanes on one
  *    thread.
- *  - Close stops the lane and keeps the worktree for 7 days (sweepClosed);
- *    delete also removes the worktree, its hoai/thread-<root> branch, the
- *    fork's session file and the state. Either waits for a start in flight,
- *    so a worktree being made while the person deletes is removed too.
+ *  - Close (0.88.0: the owner closes the thread or merges it back) stops the
+ *    lane and removes everything the thread put on this computer: its
+ *    worktree (git worktree remove and prune), its fork's session files, its
+ *    temp files and its state, and logs the bytes freed. Its branch goes
+ *    when it holds nothing that is in no other branch; otherwise the branch
+ *    is kept and the owner is told (uncommitted changes are first saved on
+ *    it as a commit). Delete does the same and removes the branch whatever
+ *    it holds, as before. Either waits for a start in flight, so a worktree
+ *    being made while the person closes is removed too. A reply to a closed
+ *    thread starts a new fork and says its earlier turns are not in memory.
+ *  - sweepLeftovers, when the daemon starts: what a crash left of threads
+ *    that are already closed, thread folders with no state at all, and a
+ *    main transcript copy named by a state. Never an open thread, never
+ *    anything of the main session.
  *
  * Every effect is an injected dependency, so the whole manager is unit tested
  * with fakes (test/thread-lanes.test.ts). Erasable TypeScript only.
  */
 
-import { dirname, join, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 
 import {
   clipThreadText,
@@ -69,21 +87,35 @@ import {
   laneSecretPaths,
   protectedGitPaths,
   THREAD_LANE_REF_DIRS,
+  threadAccess,
+  threadFullArgs,
   threadLaneArgs,
   threadLaneTranscript,
+  threadOpener,
   threadTurnPrompt,
+  type ThreadAccess,
   type ThreadLaneConfinement,
+  type ThreadOpener,
   type ThreadTurnMode,
 } from './thread-lane-args.ts'
+import { THREAD_LANE_ENV } from './thread-lane-marker.mjs'
+import { formatBytes } from './thread-repo-size.ts'
 import { lineSplitter, userMessageLine, type SpawnStreamJson, type StreamJsonChild } from './stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 
 export const THREAD_LANE_MAX_RUNNING = 2
 export const THREAD_LANE_IDLE_MS = 20 * 60_000
 export const THREAD_LANE_KILL_GRACE_MS = 10_000
-export const THREAD_LANE_KEEP_CLOSED_MS = 7 * 24 * 60 * 60_000
+/** 0.88.0: a closed thread is removed at once. Kept for a caller that sets its own wait (deps.keepClosedMs). */
+export const THREAD_LANE_KEEP_CLOSED_MS = 0
 /** A turn with no result and no exit after this long is failed and its lane stopped. */
 export const THREAD_TURN_TIMEOUT_MS = 30 * 60_000
+/**
+ * A thread folder with no state that changed less than this long ago is not
+ * an orphan yet: another daemon working in the same agent folder may be in
+ * the middle of `git worktree add`, and writes its state only once that ends.
+ */
+export const THREAD_ORPHAN_MIN_AGE_MS = 10 * 60_000
 /** How often a stop of a lane process left from before a daemon crash checks whether it is gone. */
 export const THREAD_ORPHAN_POLL_MS = 250
 /**
@@ -155,6 +187,32 @@ export interface ThreadTurnInput {
   text: string
   title: string
   rootText: string
+  /**
+   * Who opened the thread, from the frame's own lane stamp
+   * (lib/thread-lane-args.ts threadOpener). Absent or anything but `owner`:
+   * the thread runs confined.
+   */
+  opener?: ThreadOpener
+}
+
+/** A prompt of an owner's full access thread, for the owner's own approval path. */
+export interface ThreadApprovalInput {
+  rootId: string
+  chatId: string
+  title: string
+  toolName: string
+  input: unknown
+  description: string
+}
+
+/** What a close kept, for the owner to be told: a branch with work of its own, or a worktree that could not be saved. */
+export interface ThreadKeptInfo {
+  rootId: string
+  title: string
+  branch: string
+  /** Set when the worktree itself was kept. */
+  folder?: string
+  reason: string
 }
 
 export interface ThreadLaneFs {
@@ -170,6 +228,12 @@ export interface ThreadLaneFs {
   /** Create a file that must not exist yet (git's own lock convention); throws when it does. */
   createExclusive(path: string, data: string): void
   rename(from: string, to: string): void
+  /**
+   * What a path is, links not followed, and when it last changed; null when
+   * it is not there. The start sweep reads it to leave alone a link and a
+   * folder that is still being made. Absent (unit fakes): no such check.
+   */
+  stat?(path: string): { kind: 'dir' | 'file' | 'link' | 'other'; modifiedMs: number } | null
 }
 
 export interface ThreadLaneDeps {
@@ -223,7 +287,31 @@ export interface ThreadLaneDeps {
   transcripts?: {
     copyClearingGoal(from: string, to: string): Promise<void>
     clearGoal(path: string): Promise<unknown>
+    /** The transcript holds a goal that is still active (lib/thread-transcript.ts findActiveGoalRow). */
+    hasActiveGoal?(path: string): Promise<boolean>
   }
+  /**
+   * The owner's setting `threads.fullAccess` (lib/thread-access.ts), read at
+   * every start. Absent (a person's lane, a unit fake): every thread is
+   * confined.
+   */
+  fullAccess?(): boolean
+  /** The main session's permission mode now (lib/thread-transcript.ts latestPermissionMode), or null. */
+  mainPermissionMode?(): Promise<string | null>
+  /**
+   * A prompt of a full access thread, answered as the owner's own chat
+   * answers one (auto approve, the hard floor, the approval card). Absent,
+   * or failing: the prompt is refused.
+   */
+  approve?(input: ThreadApprovalInput): Promise<{ allow: boolean; message?: string }>
+  /** A new session id for a goal cleared copy of the main transcript. */
+  newSessionId?(): string
+  /** The bytes a file or a folder holds (lib/thread-access.ts diskUsage), for the close log line. */
+  diskUsage?(path: string): Promise<number>
+  /** Where the CLI keeps a session's temp files: <root>/<project folder name>/<session id>. */
+  tempRoots?: readonly string[]
+  /** A close kept a branch or a worktree: the owner is told once. */
+  onBranchKept?(info: ThreadKeptInfo): void
   fs: ThreadLaneFs
   post(path: string, body: Record<string, unknown>): Promise<unknown>
   now(): number
@@ -250,6 +338,26 @@ export interface ThreadLaneState {
   cwd: string
   worktree: boolean
   readOnly: boolean
+  /**
+   * How the lane last started: `full` in the agent's own folder (cwd is the
+   * agent folder; `folder` is '' or an earlier worktree still to remove), or
+   * `confined` in its own folder. A state saved before 0.88.0 has none and
+   * reads as confined.
+   */
+  access: ThreadAccess
+  /**
+   * A copy of the main transcript made for a start (its goal cleared), until
+   * the fork has read it. Named here so a crash leaves no unknown file
+   * beside the main session's own.
+   */
+  tempCopy: string | null
+  /**
+   * The thread is closed and its working copy had to stay (its changes could
+   * not be saved, or it is not on the thread's own branch). The owner was
+   * told once; no sweep touches it again. A reply reopens the thread in it,
+   * and a delete removes it.
+   */
+  kept?: boolean
   closedAt: number | null
   /**
    * The reply id of the last turn this lane finished (answered or failed), ''
@@ -301,6 +409,10 @@ interface Lane {
   /** When the lane last finished a turn: the oldest idle lane gives its slot first. */
   idleSince: number
   copiedMainPath: string | null
+  /** The lane's session moved to the agent's own folder at this start: its next turn says so, once. */
+  upgraded: boolean
+  /** The current child started a new fork: a reply written to it is framed like a first turn. */
+  fresh: boolean
   posts: Promise<void>
   /** Posts queued or being tried for this lane (a reply retried with backoff counts until it settles). */
   postsInFlight: number
@@ -379,7 +491,8 @@ export class ThreadLaneManager {
     if (lane.state.closedAt !== null) {
       // A turn on a closed thread means it was reopened.
       lane.state.closedAt = null
-      if (lane.state.folder) this.persist(lane)
+      if (lane.state.kept) lane.state.kept = false
+      if (this.hasState(lane.state)) this.persist(lane)
     }
     lane.closed = false
     if (lane.state.title === '' && input.title) lane.state.title = input.title
@@ -400,7 +513,13 @@ export class ThreadLaneManager {
     return { accepted: true, state: this.waiting.includes(input.rootId) ? 'waiting' : 'working' }
   }
 
-  /** Stop a thread's lane. removeWorktree (delete) also removes its worktree, session file and state. */
+  /**
+   * Stop a thread's lane and remove everything it put on this computer (its
+   * worktree, its session files, its temp files, its state). A plain close
+   * (the owner closed the thread or merged it back) keeps the thread's branch
+   * when it holds work found in no other branch; removeWorktree (delete)
+   * removes the branch whatever it holds.
+   */
   async close(input: { rootId: string; removeWorktree: boolean }): Promise<{ stopped: true }> {
     if (typeof input.rootId !== 'string' || !ROOT_ID_RE.test(input.rootId)) {
       throw new ThreadLaneError('bad_request', 'The thread id is not valid.')
@@ -435,15 +554,18 @@ export class ThreadLaneManager {
       exited = this.stopOrphan(lane.state).then(() => undefined)
     }
     const state = lane.state
-    const settled: Promise<void> = input.removeWorktree
-      ? Promise.all([starting, exited]).then(async () => { await this.removeLane(state, { deleteBranch: true }) })
-      : starting.then(() => {
-          // Not when the thread was reopened meanwhile: that lane owns the file now.
-          if (!state.folder || this.lanes.has(rootId)) return
-          state.closedAt = this.deps.now()
-          this.persistState(state)
-        })
-    const done = Promise.all([settled, exited]).then(() => undefined)
+    const settled: Promise<void> = Promise.all([starting, exited]).then(async () => {
+      // Closed on disk before anything is removed: a crash from here on leaves a state the start sweep finishes.
+      if (this.hasState(state) && this.deps.fs.exists(this.statePath(rootId)) && !this.lanes.has(rootId)) {
+        state.closedAt = this.deps.now()
+        this.persistState(state)
+      }
+      await this.removeLane(state, input.removeWorktree ? { branch: 'force', why: 'deleted' } : { branch: 'safe', why: 'closed' })
+    })
+    // Never a rejection: a removal that failed is logged, and the root is released either way.
+    const done = Promise.all([settled, exited]).then(() => undefined, (err) => {
+      this.deps.log(`threads: thread ${rootId} could not be cleaned up (${describeError(err)})`)
+    })
     this.exiting.set(rootId, done)
     void done.then(() => {
       if (this.exiting.get(rootId) === done) this.exiting.delete(rootId)
@@ -453,7 +575,11 @@ export class ThreadLaneManager {
     return { stopped: true }
   }
 
-  /** Remove the worktrees of threads closed more than 7 days ago. Answers the root ids removed. */
+  /**
+   * Remove what is left of every thread whose state says it is closed (a
+   * close a crash cut short, or a thread an older version kept for 7 days).
+   * An open thread is never touched. Answers the root ids removed.
+   */
   async sweepClosed(now: number): Promise<string[]> {
     const keep = this.deps.keepClosedMs ?? THREAD_LANE_KEEP_CLOSED_MS
     let names: string[] = []
@@ -470,10 +596,12 @@ export class ThreadLaneManager {
       if (this.lanes.has(rootId) || this.exiting.has(rootId)) continue
       const state = this.load(rootId)
       if (!state || state.closedAt === null) continue
-      if (now - state.closedAt <= keep) continue
+      // Its working copy had to stay and the owner knows: only a reply or a delete changes that.
+      if (state.kept === true) continue
+      if (keep > 0 && now - state.closedAt <= keep) continue
       // Reserve the root before removal yields, just like explicit deletion.
       // A reopening turn may queue, but ensureChild waits for this owner.
-      const removal = this.removeLane(state, { deleteBranch: false })
+      const removal = this.removeLane(state, { branch: 'safe', why: 'closed earlier' })
       const done = removal.then(() => undefined)
       this.exiting.set(rootId, done)
       try {
@@ -483,6 +611,108 @@ export class ThreadLaneManager {
       }
     }
     return removed
+  }
+
+  /**
+   * THE START SWEEP (crash safety): once when the daemon starts, and with
+   * the hourly sweep. Removes
+   *  - what is left of every thread already closed (sweepClosed),
+   *  - a copy of the main transcript a start left behind, named by its state,
+   *  - a thread folder under <agent>/.hoai/threads with no state at all, in
+   *    this agent's state folder or any other agent's on this computer.
+   * Never a thread that is open (idle, running or only known from its state
+   * file), and never a file of the main session. Answers the root ids removed.
+   */
+  async sweepLeftovers(): Promise<string[]> {
+    const { fs, agentFolder, stateDir } = this.deps
+    const removed = await this.sweepClosed(this.deps.now())
+    let stateNames: string[] = []
+    try {
+      stateNames = fs.list(stateDir)
+    } catch {}
+    for (const name of stateNames) {
+      const m = /^([A-Za-z0-9_-]{1,64})\.json$/.exec(name)
+      if (!m || m[1] === 'empty-mcp') continue
+      const lane = this.lanes.get(m[1]!)
+      // A lane starting right now may be reading its copy.
+      if (lane && (lane.child || lane.starting || lane.current)) continue
+      const state = lane ? lane.state : this.load(m[1]!)
+      if (!state || state.tempCopy === null) continue
+      this.removeTempCopy(state)
+      state.tempCopy = null
+      this.persistState(state)
+    }
+    const base = join(agentFolder, '.hoai', 'threads')
+    let folders: string[] = []
+    try {
+      folders = fs.list(base)
+    } catch {}
+    for (const rootId of folders) {
+      if (!ROOT_ID_RE.test(rootId)) continue
+      if (this.lanes.has(rootId) || this.exiting.has(rootId) || fs.exists(this.statePath(rootId))) continue
+      // Another agent that works in this same folder may own it.
+      if (this.knownToAnotherAgent(rootId)) continue
+      const folder = join(base, rootId)
+      if (fs.stat) {
+        let info: ReturnType<NonNullable<ThreadLaneFs['stat']>> = null
+        try {
+          info = fs.stat(folder)
+        } catch {}
+        // Only a real folder (never a link: nothing is run in, or removed from, what it points to), and only
+        // one that has been still for a while (THREAD_ORPHAN_MIN_AGE_MS).
+        if (info === null || info.kind !== 'dir') continue
+        if (this.deps.now() - info.modifiedMs < THREAD_ORPHAN_MIN_AGE_MS) continue
+      }
+      const state: ThreadLaneState = {
+        rootId, chatId: '', title: '', forkSessionId: null, folder, cwd: folder, worktree: fs.exists(join(folder, '.git')), readOnly: false,
+        access: 'confined', tempCopy: null, closedAt: this.deps.now(), lastReplyId: '', lastDelivered: true, pid: null, pidStamp: null,
+      }
+      const removal = this.removeLane(state, { branch: 'safe', why: 'left behind with no state' })
+      const done = removal.then(() => undefined)
+      this.exiting.set(rootId, done)
+      try {
+        if (await removal) removed.push(rootId)
+      } finally {
+        if (this.exiting.get(rootId) === done) this.exiting.delete(rootId)
+      }
+    }
+    return removed
+  }
+
+  /** A state file for this thread in another agent's state folder (<state root>/<agent>/threads). */
+  private knownToAnotherAgent(rootId: string): boolean {
+    const { fs, stateDir } = this.deps
+    const root = dirname(dirname(stateDir))
+    let agents: string[] = []
+    try {
+      agents = fs.list(root)
+    } catch {
+      return false
+    }
+    return agents.some((agent) => {
+      const path = join(root, agent, basename(stateDir), `${rootId}.json`)
+      return path !== this.statePath(rootId) && fs.exists(path)
+    })
+  }
+
+  /**
+   * A main transcript copy a state names. Removed only where a start puts
+   * one (the agent folder's own project folder under a new id, or the lane's
+   * own project folder), and never the main transcript itself.
+   */
+  private removeTempCopy(state: ThreadLaneState): void {
+    const { fs, home, configDir, agentFolder } = this.deps
+    const path = state.tempCopy
+    if (path === null || !path.endsWith('.jsonl')) return
+    const id = basename(path).slice(0, -'.jsonl'.length)
+    if (!isSessionId(id)) return
+    const main = this.deps.mainSessionId()
+    if (isSessionId(main) && resolve(path) === resolve(sessionTranscriptPath(home, agentFolder, main, configDir))) return
+    const allowed = [sessionTranscriptPath(home, agentFolder, id, configDir), ...(state.cwd ? [sessionTranscriptPath(home, state.cwd, id, configDir)] : [])]
+    if (!allowed.some((p) => resolve(p) === resolve(path))) return
+    try {
+      fs.unlink(path)
+    } catch {}
   }
 
   /**
@@ -526,6 +756,8 @@ export class ThreadLaneManager {
         text: str(r.text),
         title: str(r.title),
         rootText: str(r.rootText),
+        // The row's own lane stamp, like a frame's: the owner's own row carries none.
+        opener: threadOpener(r),
       }
       const lane = this.lanes.get(input.rootId)
       if (lane && (lane.current || lane.queue.length > 0)) continue
@@ -593,6 +825,8 @@ export class ThreadLaneManager {
       this.clearIdle(lane)
       this.clearTurnTimer(lane)
       lane.queue = []
+      // A copy made for a start is of no use to a process that is being stopped.
+      this.dropCopiedMain(lane)
       if (lane.child) {
         lane.stopping = true
         lane.child.kill('SIGTERM')
@@ -623,6 +857,8 @@ export class ThreadLaneManager {
         cwd: '',
         worktree: false,
         readOnly: false,
+        access: 'confined',
+        tempCopy: null,
         closedAt: null,
         lastReplyId: '',
         lastDelivered: false,
@@ -654,6 +890,8 @@ export class ThreadLaneManager {
       starting: null,
       idleSince: 0,
       copiedMainPath: null,
+      upgraded: false,
+      fresh: false,
       posts: Promise.resolve(),
       postsInFlight: 0,
       closed: false,
@@ -671,7 +909,7 @@ export class ThreadLaneManager {
 
   private async runTurn(lane: Lane, turn: ThreadTurnInput): Promise<void> {
     try {
-      const starting = this.ensureChild(lane)
+      const starting = this.ensureChild(lane, turn)
       lane.starting = starting
       try {
         await starting
@@ -684,7 +922,25 @@ export class ThreadLaneManager {
       lane.turnSawAssistant = false
       lane.failedTurn = null
       this.armTurnTimer(lane, turn)
-      lane.child.write(userMessageLine(threadTurnPrompt({ ...turn, readOnly: lane.state.readOnly, agentFolder: this.deps.agentFolder })))
+      const full = lane.state.access === 'full'
+      const upgraded = lane.upgraded
+      const fresh = lane.fresh
+      lane.upgraded = false
+      lane.fresh = false
+      const earlierWork = upgraded && lane.state.worktree && lane.state.folder
+        ? { folder: lane.state.folder, branch: `hoai/thread-${lane.state.rootId}` }
+        : null
+      lane.child.write(userMessageLine(threadTurnPrompt({
+        mode: turn.mode,
+        text: turn.text,
+        title: turn.title,
+        rootText: turn.rootText,
+        readOnly: lane.state.readOnly,
+        agentFolder: this.deps.agentFolder,
+        ...(full ? { access: 'full' as const } : {}),
+        ...(fresh ? { fresh: true } : {}),
+        ...(upgraded ? { upgraded: true, earlierWork } : {}),
+      })))
     } catch (err) {
       // Nothing on a thread's start may reach the daemon's fault handlers: every
       // error ends here, as one plain log line and one reply in the thread.
@@ -851,7 +1107,7 @@ export class ThreadLaneManager {
     if (turn.replyId === '') return
     lane.state.lastReplyId = turn.replyId
     lane.state.lastDelivered = false
-    if (lane.state.folder) this.persist(lane)
+    if (this.hasState(lane.state)) this.persist(lane)
   }
 
   private postFailure(lane: Lane, turn: ThreadTurnInput, sentence: string): void {
@@ -896,10 +1152,26 @@ export class ThreadLaneManager {
     if (!current || current.lastReplyId !== turn.replyId) return
     current.lastDelivered = true
     // Never recreate a state file a delete removed meanwhile.
-    if (current.folder) this.persistState(current)
+    if (this.hasState(current)) this.persistState(current)
   }
 
-  private async ensureChild(lane: Lane): Promise<void> {
+  /** The lane has a state file to keep current: it has a folder of its own, or runs in the agent's. */
+  private hasState(state: ThreadLaneState): boolean {
+    return state.folder !== '' || state.access === 'full'
+  }
+
+  /** THE SPLIT, at every start: full access for the owner with the setting on, confined for everything else. */
+  private accessFor(turn: ThreadTurnInput): ThreadAccess {
+    let on = false
+    try {
+      on = this.deps.fullAccess ? this.deps.fullAccess() === true : false
+    } catch {
+      on = false
+    }
+    return threadAccess({ opener: turn.opener, fullAccess: on })
+  }
+
+  private async ensureChild(lane: Lane, turn: ThreadTurnInput): Promise<void> {
     const before = this.exiting.get(lane.state.rootId)
     if (before) await before
     // Cleanup can finish while this turn waits for a slot, leaving no
@@ -908,6 +1180,14 @@ export class ThreadLaneManager {
       lane.state.forkSessionId = null
       lane.state.pid = null
       lane.state.pidStamp = null
+    }
+    // THE SPLIT holds for a process that is still alive too: one started with another access than this
+    // turn may have (the owner turned the setting off or on, or this turn is not the owner's) is stopped,
+    // never reused, and the turn runs on a new one.
+    if (lane.child && !lane.stopping && !lane.closed && this.accessFor(turn) !== lane.state.access) {
+      this.deps.log(`threads: lane ${lane.state.rootId} is restarted, its access changed`)
+      this.clearIdle(lane)
+      this.stopChild(lane)
     }
     if (lane.child && lane.stopping) await lane.exited
     if (lane.closed || lane.child) return
@@ -921,7 +1201,49 @@ export class ThreadLaneManager {
     const problem = await this.deps.cliProblem()
     if (problem) throw new ThreadLaneError('unsupported', couldNotOpen(problem))
     if (lane.closed || lane.child) return
-    await this.prepareFolder(lane)
+    if (this.accessFor(turn) === 'full') {
+      await this.startFull(lane, claude)
+      return
+    }
+    // The owner turned full access off: the thread goes back to a folder of its own, with its session.
+    const cameFrom = lane.state.access === 'full' ? lane.state.cwd : ''
+    if (lane.state.access === 'full') {
+      const { folder, cwd } = lane.state
+      const own = this.ownFolder(lane.state)
+      if (own !== null && !lane.state.worktree && this.deps.fs.exists(own)) {
+        // It ran read only in a plain folder of its own before it had full access (a repository too large to
+        // copy, or no repository): read only there again, never taken for a worktree.
+        lane.state.access = 'confined'
+        lane.state.cwd = own
+        lane.state.readOnly = true
+        this.persist(lane)
+      } else {
+        lane.state.access = 'confined'
+        lane.state.folder = ''
+        lane.state.cwd = ''
+        try {
+          await this.prepareFolder(lane)
+        } catch (err) {
+          // No folder of its own could be made: the state still says where its session is.
+          lane.state.access = 'full'
+          lane.state.folder = folder
+          lane.state.cwd = cwd
+          throw err
+        }
+      }
+    } else {
+      await this.prepareFolder(lane)
+    }
+    if (cameFrom && lane.state.forkSessionId) {
+      const fork = lane.state.forkSessionId
+      if (!(await this.moveFork(fork, cameFrom, lane.state.cwd))) {
+        // It starts as a new fork. The session it could not take along is the thread's own and nobody would
+        // name it again: it goes, never left beside the main session's.
+        lane.state.forkSessionId = null
+        this.dropFork(fork, cameFrom)
+      }
+      this.persist(lane)
+    }
     if (lane.closed) return
     const confinement = await this.confinement(lane)
     // Closed while the worktree or its confinement was being made: no copy of
@@ -945,6 +1267,8 @@ export class ThreadLaneManager {
           // The fork resumes as it is: its goal, if any, is caught by the Stop hook defence.
           this.deps.log(`threads: lane ${lane.state.rootId} could not clear its inherited goal (${describeError(err)})`)
         }
+        // Closed while its transcript was being read: no process for it.
+        if (lane.closed) return
       }
     } else {
       const mainId = this.deps.mainSessionId()
@@ -956,9 +1280,175 @@ export class ThreadLaneManager {
         return
       }
     }
+    this.attach(lane, claude, args, { cwd: lane.state.cwd })
+  }
+
+  /**
+   * An OWNER's thread (lib/thread-lane-args.ts threadFullArgs): a true fork
+   * in the agent's own folder with the main session's permission mode. No
+   * worktree and no copy of the repository, whatever its size. A main chat
+   * goal that is still active is cleared in a copy the fork reads instead.
+   */
+  private async startFull(lane: Lane, claude: string): Promise<void> {
+    const { agentFolder, home, configDir, fs } = this.deps
+    await this.enterFullAccess(lane)
+    if (lane.closed) return
+    let mode: string | null = null
+    try {
+      mode = this.deps.mainPermissionMode ? await this.deps.mainPermissionMode() : null
+    } catch {
+      // Not known: the thread starts in `default`, where every prompt reaches the owner.
+      mode = null
+    }
+    if (lane.closed) return
+    let args: string[]
+    const own = lane.state.forkSessionId
+    const ownPath = own ? sessionTranscriptPath(home, agentFolder, own, configDir) : ''
+    if (own && fs.exists(ownPath)) {
+      args = threadFullArgs({ mainSessionId: this.deps.mainSessionId(), forkSessionId: own, permissionMode: mode })
+      try {
+        await this.clearForkGoal(ownPath)
+      } catch (err) {
+        this.deps.log(`threads: lane ${lane.state.rootId} could not clear its inherited goal (${describeError(err)})`)
+      }
+      // Closed while its transcript was being read: no process for it.
+      if (lane.closed) return
+    } else {
+      // No session of its own (a first start, or its files are gone): a new fork of the main session.
+      lane.state.forkSessionId = null
+      const mainId = this.deps.mainSessionId()
+      if (!isSessionId(mainId)) throw new ThreadLaneError('no_session', NO_SESSION)
+      const from = sessionTranscriptPath(home, agentFolder, mainId, configDir)
+      if (!fs.exists(from)) throw new ThreadLaneError('no_session', NO_SESSION)
+      const forkFrom = await this.goalClearedCopy(lane, mainId, from)
+      if (lane.closed) {
+        this.dropCopiedMain(lane)
+        return
+      }
+      args = threadFullArgs({ mainSessionId: mainId, forkSessionId: null, forkFrom, permissionMode: mode })
+    }
+    // The owner's environment, and the mark that keeps a second copy of this plugin out
+    // (lib/thread-lane-marker.mjs): the path of this lane's own state file, which names its process.
+    this.attach(lane, claude, args, { cwd: agentFolder, ownerEnv: true, env: { [THREAD_LANE_ENV]: this.statePath(lane.state.rootId) } })
+    const child = lane.child
+    const named = this.load(lane.state.rootId)
+    if (child && typeof child.pid === 'number' && named?.pid !== child.pid) {
+      // Its state could not be saved, so the mark names nobody and a second copy of this plugin would start in the thread.
+      this.deps.log(`threads: lane ${lane.state.rootId} was stopped, its state could not be saved`)
+      this.stopChild(lane)
+      throw new ThreadLaneError('state_failed', couldNotOpen('its state could not be saved on this computer. Send your reply again to retry.'))
+    }
+  }
+
+  /** The lane runs in the agent's own folder from here on; a session it has from a confined start moves there. */
+  private async enterFullAccess(lane: Lane): Promise<void> {
+    const { agentFolder } = this.deps
+    const state = lane.state
+    if (state.access === 'full' && state.cwd === agentFolder) return
+    const from = state.cwd
+    if (state.forkSessionId && from && from !== agentFolder) {
+      if (await this.moveFork(state.forkSessionId, from, agentFolder)) lane.upgraded = true
+      else state.forkSessionId = null
+    }
+    // `folder` and `worktree` stay as they are: an earlier worktree is still the thread's own and goes when it closes.
+    state.access = 'full'
+    state.cwd = agentFolder
+    state.readOnly = false
+    this.persist(lane)
+  }
+
+  /**
+   * Move a lane's own session transcript to the project folder of another
+   * working folder (the CLI looks a `--resume` id up by its cwd). False when
+   * there is no transcript to move, or it could not be moved.
+   */
+  private async moveFork(forkId: string, fromCwd: string, toCwd: string): Promise<boolean> {
+    const { fs, home, configDir } = this.deps
+    if (!isSessionId(forkId) || this.isMainSession(forkId)) return false
+    const from = sessionTranscriptPath(home, fromCwd, forkId, configDir)
+    const to = sessionTranscriptPath(home, toCwd, forkId, configDir)
+    if (from === to) return fs.exists(from)
+    if (!fs.exists(from)) return false
+    try {
+      fs.mkdir(dirname(to))
+      if (this.deps.transcripts) await this.deps.transcripts.copyClearingGoal(from, to)
+      else fs.copyFile(from, to)
+      fs.unlink(from)
+    } catch (err) {
+      this.deps.log(`threads: a thread's session could not be moved (${describeError(err)})`)
+      try {
+        fs.unlink(to)
+      } catch {}
+      return false
+    }
+    // The session's own folder beside it (its tool results) follows when the file system can move it.
+    try {
+      const dir = from.slice(0, -'.jsonl'.length)
+      if (from.endsWith('.jsonl') && fs.exists(dir)) fs.rename(dir, to.slice(0, -'.jsonl'.length))
+    } catch {}
+    return true
+  }
+
+  /** Remove a thread's own session transcript and the folder beside it from one working folder's project folder. Never the main session's. */
+  private dropFork(forkId: string, cwd: string): void {
+    const { fs, home, configDir } = this.deps
+    if (!isSessionId(forkId) || this.isMainSession(forkId) || !cwd) return
+    const transcript = sessionTranscriptPath(home, cwd, forkId, configDir)
+    if (!transcript.endsWith(`${forkId}.jsonl`)) return
+    for (const path of [transcript, transcript.slice(0, -'.jsonl'.length)]) {
+      try {
+        fs.rmrf(path)
+      } catch {}
+    }
+  }
+
+  /**
+   * A copy of the main transcript with its active goal cleared, beside the
+   * main transcript under a new session id, for the fork to read; null when
+   * the main chat has no active goal (the fork then reads the main
+   * transcript where it is). Named in the lane state before it is made.
+   */
+  private async goalClearedCopy(lane: Lane, mainId: string, from: string): Promise<string | null> {
+    const { fs, home, configDir, agentFolder } = this.deps
+    let active = true
+    try {
+      active = this.deps.transcripts?.hasActiveGoal
+        ? await this.deps.transcripts.hasActiveGoal(from)
+        : threadLaneTranscript(fs.readFile(from)) !== fs.readFile(from)
+    } catch (err) {
+      // Not known: the copy is made, which is right either way.
+      this.deps.log(`threads: lane ${lane.state.rootId} could not read the main chat's goal (${describeError(err)})`)
+    }
+    if (!active) return null
+    const id = (this.deps.newSessionId ?? randomUUID)()
+    if (!isSessionId(id) || this.isMainSession(id)) throw new ThreadLaneError('copy_failed', NO_COPY)
+    const to = sessionTranscriptPath(home, agentFolder, id, configDir)
+    if (to === from || fs.exists(to)) throw new ThreadLaneError('copy_failed', NO_COPY)
+    lane.copiedMainPath = to
+    lane.state.tempCopy = to
+    this.persist(lane)
+    try {
+      if (this.deps.transcripts) await this.deps.transcripts.copyClearingGoal(from, to)
+      else fs.writeFile(to, threadLaneTranscript(fs.readFile(from)))
+    } catch (err) {
+      this.deps.log(`threads: lane ${lane.state.rootId} could not copy the main transcript (${describeError(err)})`)
+      this.dropCopiedMain(lane)
+      throw new ThreadLaneError('copy_failed', NO_COPY)
+    }
+    return id
+  }
+
+  /** True for the main session's own id: nothing keyed by it is ever a thread's to move or remove. */
+  private isMainSession(id: string): boolean {
+    const main = this.deps.mainSessionId()
+    return typeof main === 'string' && main.toLowerCase() === id.toLowerCase()
+  }
+
+  /** Start the lane's process and wire its frames and its exit. */
+  private attach(lane: Lane, claude: string, args: string[], opts: { cwd: string; env?: Record<string, string>; ownerEnv?: boolean }): void {
     let child: StreamJsonChild
     try {
-      child = this.deps.spawn(claude, args, { cwd: lane.state.cwd })
+      child = this.deps.spawn(claude, args, opts)
     } catch (err) {
       this.dropCopiedMain(lane)
       throw new ThreadLaneError('spawn_failed', couldNotOpen(`Claude Code could not be started for it (${errorName(err)}). Send your reply again to retry.`))
@@ -966,6 +1456,8 @@ export class ThreadLaneManager {
     lane.child = child
     lane.stopping = false
     lane.sawInit = false
+    // A new fork: a reply written to it is framed like a first turn (threadTurnPrompt `fresh`).
+    lane.fresh = lane.state.forkSessionId === null
     this.recordPid(lane, child)
     lane.exited = new Promise<void>((done) => {
       child.onExit((code) => {
@@ -1177,9 +1669,53 @@ export class ThreadLaneManager {
       if (lane.state.pidStamp === null) this.readStamp(lane, child)
       return
     }
+    if (frame.type === 'control_request') {
+      this.onControlRequest(lane, child, frame)
+      return
+    }
     if (frame.type === 'assistant') lane.turnSawAssistant = true
     if (frame.type === 'user' && isStopHookFeedback(frame)) this.onStopHookBlock(lane)
     if (frame.type === 'result') this.onResult(lane, frame)
+  }
+
+  /**
+   * A permission prompt of the lane (`--permission-prompt-tool stdio`, only a
+   * full access thread carries it): answered by the owner's own approval
+   * path. A confined lane never gets one allowed here, and with no approval
+   * path, or one that fails, the prompt is refused: never left unanswered,
+   * never allowed by default.
+   */
+  private onControlRequest(lane: Lane, child: StreamJsonChild, frame: Record<string, unknown>): void {
+    const requestId = typeof frame.request_id === 'string' ? frame.request_id : ''
+    const request = (frame.request && typeof frame.request === 'object' ? frame.request : {}) as Record<string, unknown>
+    if (!requestId) return
+    if (request.subtype !== 'can_use_tool') {
+      child.write(`${JSON.stringify({ type: 'control_response', response: { subtype: 'error', request_id: requestId, error: 'not supported by this host' } })}\n`)
+      return
+    }
+    const input = request.input ?? {}
+    const answer = (verdict: { allow: boolean; message?: string } | null | undefined): void => {
+      if (lane.child !== child) return
+      // Only an explicit yes allows: an answer that is no verdict at all refuses.
+      const response = verdict?.allow === true
+        ? { behavior: 'allow', updatedInput: input }
+        : { behavior: 'deny', message: typeof verdict?.message === 'string' ? verdict.message : 'Your owner did not allow this.' }
+      child.write(`${JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } })}\n`)
+    }
+    const approve = this.deps.approve
+    if (lane.state.access !== 'full' || !approve) {
+      answer({ allow: false, message: 'This thread has nobody to ask, so this was not done.' })
+      return
+    }
+    const toolName = typeof request.tool_name === 'string' ? request.tool_name : 'a tool'
+    const title = lane.state.title || lane.state.rootId
+    const description = typeof request.description === 'string' && request.description ? request.description : `${toolName} in the thread "${title}"`
+    const failed = () => answer({ allow: false, message: 'The approval could not be asked, so this was not done.' })
+    try {
+      this.track(approve({ rootId: lane.state.rootId, chatId: lane.state.chatId, title, toolName, input, description }).then(answer, failed))
+    } catch {
+      failed()
+    }
   }
 
   /**
@@ -1208,7 +1744,7 @@ export class ThreadLaneManager {
       lane.state.pidStamp = null
       // Not over a reopened lane's own state file.
       const current = this.lanes.get(lane.state.rootId)
-      if (lane.state.folder && (current === lane || current === undefined)) this.persist(lane)
+      if (this.hasState(lane.state) && (current === lane || current === undefined)) this.persist(lane)
     }
     if (lane.graceTimer !== null) {
       this.deps.clearTimer(lane.graceTimer)
@@ -1242,7 +1778,7 @@ export class ThreadLaneManager {
     if (typeof pid !== 'number') return
     lane.state.pid = pid
     lane.state.pidStamp = null
-    if (lane.state.folder) this.persist(lane)
+    if (this.hasState(lane.state)) this.persist(lane)
     this.readStamp(lane, child)
   }
 
@@ -1253,7 +1789,7 @@ export class ThreadLaneManager {
       this.deps.processes.stamp(pid).then((stamp) => {
         if (typeof stamp !== 'string' || lane.child !== child || lane.state.pid !== pid || lane.state.pidStamp !== null) return
         lane.state.pidStamp = stamp
-        if (lane.state.folder) this.persist(lane)
+        if (this.hasState(lane.state)) this.persist(lane)
       }),
     )
   }
@@ -1305,7 +1841,7 @@ export class ThreadLaneManager {
     if (state.pid === pid) {
       state.pid = null
       state.pidStamp = null
-      if (state.folder) this.persistState(state)
+      if (this.hasState(state)) this.persistState(state)
     }
     return true
   }
@@ -1325,6 +1861,11 @@ export class ThreadLaneManager {
       this.deps.fs.unlink(lane.copiedMainPath)
     } catch {}
     lane.copiedMainPath = null
+    if (lane.state.tempCopy !== null) {
+      lane.state.tempCopy = null
+      // Not over a state file a close removed meanwhile.
+      if (this.hasState(lane.state) && this.deps.fs.exists(this.statePath(lane.state.rootId))) this.persist(lane)
+    }
   }
 
   private stopChild(lane: Lane): void {
@@ -1461,49 +2002,45 @@ export class ThreadLaneManager {
     return ROOT_ID_RE.test(state.rootId) && resolve(state.folder) === expected ? expected : null
   }
 
-  private async removeLane(state: ThreadLaneState, opts: { deleteBranch: boolean }): Promise<boolean> {
-    const { fs, git, agentFolder, home, configDir } = this.deps
+  private async removeLane(state: ThreadLaneState, opts: { branch: 'force' | 'safe'; why: string }): Promise<boolean> {
+    const { fs } = this.deps
     if (!(await this.stopOrphan(state))) return false
+    const freed = { bytes: 0 }
+    const notes: string[] = []
     const folder = this.ownFolder(state)
     if (state.folder && folder === null) {
       this.deps.log(`threads: lane ${state.rootId} names a folder outside the threads folder, it is not removed`)
     }
+    let keptFolder = false
     if (folder === null) {
       // Nothing of the folder's: only the session files and the state below.
     } else if (state.worktree) {
-      const removed = await git(['-C', agentFolder, 'worktree', 'remove', '--force', folder], agentFolder)
-      if (!removed.ok) {
-        try {
-          fs.rmrf(folder)
-        } catch {}
-        await git(['-C', agentFolder, 'worktree', 'prune'], agentFolder)
-      }
-      // Delete takes the thread's branch too, only that one and only once its
-      // worktree is gone (git refuses a branch a worktree still has out).
-      if (opts.deleteBranch && !fs.exists(folder)) {
-        await git(['-C', agentFolder, 'branch', '-D', `hoai/thread-${state.rootId}`], agentFolder)
-      }
+      keptFolder = await this.removeWorktree(state, folder, opts.branch, freed, notes)
     } else {
+      const bytes = await this.usage(folder)
       try {
         fs.rmrf(folder)
+        freed.bytes += bytes
       } catch {}
     }
-    if (state.forkSessionId && state.cwd && isSessionId(state.forkSessionId)) {
-      const transcript = sessionTranscriptPath(home, state.cwd, state.forkSessionId, configDir)
+    for (const path of this.sessionPaths(state, keptFolder ? null : folder)) {
+      const bytes = await this.usage(path)
       try {
-        fs.unlink(transcript)
+        fs.rmrf(path)
+        freed.bytes += bytes
       } catch {}
-      // The session's own folder beside it (<id>/tool-results/, where the CLI
-      // keeps large tool outputs): named by the UUID, under the project dir.
-      if (transcript.endsWith(`${state.forkSessionId}.jsonl`)) {
-        try {
-          fs.rmrf(transcript.slice(0, -'.jsonl'.length))
-        } catch {}
-      }
     }
-    try {
-      fs.unlink(this.statePath(state.rootId))
-    } catch {}
+    this.removeTempCopy(state)
+    if (keptFolder) {
+      // The working copy stays, so its state stays too, marked: the folder is nobody's orphan, the owner is
+      // told once, a reply finds it again and a delete removes it. Its session is gone, so it has no fork.
+      const kept: ThreadLaneState = { ...state, forkSessionId: null, pid: null, pidStamp: null, tempCopy: null, closedAt: state.closedAt ?? this.deps.now(), kept: true }
+      this.persistState(kept)
+    } else {
+      try {
+        fs.unlink(this.statePath(state.rootId))
+      } catch {}
+    }
     try {
       fs.unlink(this.undeliveredPath(state.rootId))
     } catch {}
@@ -1515,7 +2052,161 @@ export class ThreadLaneManager {
       reopened.state.pid = null
       reopened.state.pidStamp = null
     }
-    return true
+    const what = keptFolder ? 'its working copy is kept and its other files on this computer are removed' : 'its files on this computer are removed'
+    this.deps.log(`threads: thread ${state.rootId} ${opts.why}, ${what}: freed ${freed.bytes} bytes (${formatBytes(freed.bytes)})${notes.map((n) => `; ${n}`).join('')}`)
+    // False while something of the thread is still here: a sweep does not count it as removed.
+    return !keptFolder
+  }
+
+  /** The bytes a path holds, for the close log line; 0 where the daemon cannot measure. */
+  private async usage(path: string): Promise<number> {
+    try {
+      const n = this.deps.diskUsage ? await this.deps.diskUsage(path) : 0
+      return Number.isFinite(n) && n > 0 ? n : 0
+    } catch {
+      return 0
+    }
+  }
+
+  /**
+   * Remove a thread's worktree (git worktree remove, then prune) and its
+   * branch. `safe` (a close): uncommitted changes are first saved on the
+   * branch as a commit, and the branch goes only when nothing on it is
+   * missing from every other branch and remote; otherwise it is kept and the
+   * owner is told. `force` (a delete): the branch goes, as before 0.88.0.
+   * True when the worktree itself had to be kept (its changes could not be
+   * saved): then nothing of the folder is removed.
+   */
+  private async removeWorktree(state: ThreadLaneState, folder: string, mode: 'force' | 'safe', freed: { bytes: number }, notes: string[]): Promise<boolean> {
+    const { fs, git, agentFolder } = this.deps
+    const branch = `hoai/thread-${state.rootId}`
+    const keep = (reason: string, keptFolder?: string): void => {
+      notes.push(keptFolder ? `kept the worktree ${keptFolder} and the branch ${branch} (${reason})` : `kept the branch ${branch} (${reason})`)
+      try {
+        this.deps.onBranchKept?.({ rootId: state.rootId, title: state.title, branch, ...(keptFolder ? { folder: keptFolder } : {}), reason })
+      } catch {}
+    }
+    let saved: 'clean' | 'saved' | 'failed' = 'clean'
+    if (mode === 'safe' && fs.exists(folder)) {
+      // What the worktree holds is on the thread's branch only while its HEAD is that branch. Detached, or on a
+      // branch the thread made itself, a commit (one of its own, or the save below) goes with the checkout.
+      const head = await git(['-C', folder, 'symbolic-ref', '-q', 'HEAD'], folder)
+      if (!head.ok || head.stdout.trim() !== `refs/heads/${branch}`) {
+        keep('its working copy is not on the thread\'s own branch, so its work would be lost with it', folder)
+        return true
+      }
+      saved = await this.saveUncommitted(state, folder)
+    }
+    if (saved === 'failed') {
+      keep('its uncommitted changes could not be saved on the branch', folder)
+      return true
+    }
+    const bytes = await this.usage(folder)
+    const removed = await git(['-C', agentFolder, 'worktree', 'remove', '--force', folder], agentFolder)
+    if (!removed.ok) {
+      try {
+        fs.rmrf(folder)
+      } catch {}
+    }
+    await git(['-C', agentFolder, 'worktree', 'prune'], agentFolder)
+    // The branch goes only once its worktree is gone (git refuses a branch a worktree still has out).
+    if (fs.exists(folder)) {
+      this.deps.log(`threads: thread ${state.rootId} worktree could not be removed`)
+      return false
+    }
+    freed.bytes += bytes
+    if (mode === 'force') {
+      await git(['-C', agentFolder, 'branch', '-D', branch], agentFolder)
+      return false
+    }
+    const own = saved === 'saved' ? 'own' : await this.branchWork(branch)
+    if (own === 'none') await git(['-C', agentFolder, 'branch', '-D', branch], agentFolder)
+    else if (own === 'own') keep(saved === 'saved' ? 'the uncommitted changes of its worktree were saved on it as a commit' : 'it holds commits that are in no other branch and were not pushed')
+    return false
+  }
+
+  /**
+   * Commit whatever a worktree holds uncommitted onto the thread's own branch,
+   * so removing the checkout loses nothing. `clean`: nothing to save.
+   * `failed`: it could not be read or committed, and the worktree must stay.
+   */
+  private async saveUncommitted(state: ThreadLaneState, folder: string): Promise<'clean' | 'saved' | 'failed'> {
+    const { git } = this.deps
+    const status = await git(['-C', folder, 'status', '--porcelain'], folder)
+    if (!status.ok) return 'failed'
+    if (status.stdout.trim() === '') return 'clean'
+    const added = await git(['-C', folder, 'add', '-A'], folder)
+    if (!added.ok) return 'failed'
+    const message = `Uncommitted work of the thread "${state.title || state.rootId}", saved when the thread was closed`
+    const commit = (identity: string[]) => git(['-C', folder, ...identity, 'commit', '--no-verify', '-q', '-m', message], folder)
+    if ((await commit([])).ok) return 'saved'
+    // No git identity on this computer: the daemon's own, for this one commit.
+    return (await commit(['-c', 'user.name=HOAI', '-c', 'user.email=hoai@localhost'])).ok ? 'saved' : 'failed'
+  }
+
+  /**
+   * What the thread's branch holds: `none` when its tip is also in another
+   * branch or a remote (merged or pushed, or never committed to), `own` when
+   * it is in none, `gone` when there is no such branch. Not known reads as
+   * `own`: a branch is never deleted on a guess.
+   */
+  private async branchWork(branch: string): Promise<'none' | 'own' | 'gone'> {
+    const { git, agentFolder } = this.deps
+    const ref = `refs/heads/${branch}`
+    const tip = await git(['-C', agentFolder, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`], agentFolder)
+    const sha = tip.stdout.trim()
+    if (!tip.ok || sha === '') return 'gone'
+    const holders = await git(['-C', agentFolder, 'for-each-ref', '--contains', sha, '--format=%(refname)', 'refs/heads', 'refs/remotes'], agentFolder)
+    if (!holders.ok) return 'own'
+    const others = holders.stdout.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '' && l !== ref)
+    return others.length > 0 ? 'none' : 'own'
+  }
+
+  /**
+   * Every path the thread's forked session left on this computer, outermost
+   * first and none inside another: its transcript and the folder beside it,
+   * what the CLI keeps per session id (its environment, file history, tasks,
+   * debug log, temp folder), this plugin's hook spool for it, and, for a
+   * lane that ran in a folder of its own, that folder's whole project folder
+   * and temp folder. Nothing keyed by the main session's id, and never the
+   * agent folder's own project folder.
+   */
+  private sessionPaths(state: ThreadLaneState, folder: string | null): string[] {
+    const { home, configDir, agentFolder } = this.deps
+    const config = configDir.trim() || join(home, '.claude')
+    const temps = (this.deps.tempRoots ?? []).filter((root) => root.trim() !== '')
+    const pluginState = this.deps.pluginStateDir?.trim() || join(home, '.bgos-plugin-state')
+    const projectOf = (cwd: string) => dirname(sessionTranscriptPath(home, cwd, '00000000-0000-4000-8000-000000000000', configDir))
+    const agentProject = projectOf(agentFolder)
+    const out: string[] = []
+    // A folder of the thread's own: every session started in it was the thread's.
+    const own = new Set<string>()
+    if (folder !== null) {
+      own.add(projectOf(folder))
+      if (state.cwd && inside(resolve(state.cwd), folder)) own.add(projectOf(state.cwd))
+    }
+    for (const project of own) {
+      if (project === agentProject) continue
+      out.push(project)
+      for (const root of temps) out.push(join(root, basename(project)))
+    }
+    const fork = state.forkSessionId
+    if (fork && isSessionId(fork) && !this.isMainSession(fork)) {
+      // Wherever the fork may have run: its saved folder, the agent's own (a full access thread, and a state
+      // that lost its folder), and the thread's own folder. Each path is named by the fork's own id.
+      const ran = [...new Set([state.cwd, agentFolder, ...(folder !== null ? [folder] : [])].filter((cwd) => cwd !== ''))]
+      for (const cwd of ran) {
+        const transcript = sessionTranscriptPath(home, cwd, fork, configDir)
+        if (!transcript.endsWith(`${fork}.jsonl`)) continue
+        out.push(transcript, transcript.slice(0, -'.jsonl'.length))
+        for (const root of temps) out.push(join(root, basename(dirname(transcript)), fork))
+      }
+      for (const kind of ['session-env', 'file-history', 'tasks']) out.push(join(config, kind, fork))
+      out.push(join(config, 'debug', `${fork}.txt`))
+      out.push(join(pluginState, 'hooks', fork))
+    }
+    const sorted = [...new Set(out.map((p) => resolve(p)))].sort((a, b) => a.length - b.length)
+    return sorted.filter((p, i) => !sorted.slice(0, i).some((parent) => inside(p, parent)))
   }
 
   private statePath(rootId: string): string {
@@ -1558,6 +2249,9 @@ export class ThreadLaneManager {
       cwd: str(r.cwd) || str(r.folder),
       worktree: r.worktree === true,
       readOnly: r.readOnly === true,
+      access: r.access === 'full' ? 'full' : 'confined',
+      tempCopy: typeof r.tempCopy === 'string' && r.tempCopy !== '' ? r.tempCopy : null,
+      ...(r.kept === true ? { kept: true } : {}),
       closedAt: typeof r.closedAt === 'number' && Number.isFinite(r.closedAt) ? r.closedAt : null,
       lastReplyId: str(r.lastReplyId),
       lastDelivered: r.lastDelivered === true,
@@ -1658,6 +2352,11 @@ function describeResult(frame: Record<string, unknown>, raw: string): string {
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : ''
+}
+
+/** `child` is `parent` or lies under it (both absolute, resolved). */
+function inside(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`)
 }
 
 function validateTurn(input: ThreadTurnInput): void {

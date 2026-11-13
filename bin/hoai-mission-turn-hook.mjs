@@ -5,6 +5,7 @@
 // <state>/mission-turn (lib/mission-turn.mjs). Every error, timeout or missing file lets the turn go on: exit 0, nothing
 // printed. The one thing it ever refuses is the END of a turn while a goal whose server check passes sits unticked, and
 // only once per turn (Claude Code's stop_hook_active marks the second stop, which always goes through).
+import { threadLaneSkipsHook } from '../lib/thread-lane-marker.mjs'
 import { randomUUID } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -124,6 +125,8 @@ async function main() {
   } catch {
     return
   }
+  // A thread's turn end is not the main chat's: its mission goals are not held here (lib/thread-lane-marker.mjs).
+  if (threadLaneSkipsHook({ event: payload?.hook_event_name, sessionId: payload?.session_id })) return
   const out = missionTurnHookOutput(payload)
   if (out) process.stdout.write(out)
 }

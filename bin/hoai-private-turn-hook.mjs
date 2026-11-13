@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // A synchronous boundary for private tools. The existing telemetry hook stays async.
+import { threadLaneSkipsHook } from '../lib/thread-lane-marker.mjs'
 import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -279,6 +280,8 @@ export async function main() {
       chunks.push(chunk)
     }
     payload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    // A thread's turn end is not the main session's: its private turn stays as it is (lib/thread-lane-marker.mjs).
+    if (threadLaneSkipsHook({ event: payload?.hook_event_name, sessionId: payload?.session_id })) return
     if (payload?.hook_event_name === 'PreToolUse') {
       const refusal = privateToolRefusal(payload)
       if (refusal) {
