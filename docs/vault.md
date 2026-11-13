@@ -83,14 +83,19 @@ of it takes or returns a value.
 | Redeem | the host, the agent's own pairing | `POST /api/v1/vault/host/fills/:ticket/redeem` `{assistantId, actingUserId, sessionId, tabId, origin}` |
 
 `sessionId` and `tabId` are the ones `hoai_browser_status` shows on a
-person's turn. The host refuses unless this host is set up and pinned
-(`hoai vault-host`), the owner's signed state verifies against the account key
-pinned here on first use (`fillTrust` in `vault-host.json`, written only after
-a fill passed every check), the state is not older than one verified before,
+person's turn, and `itemId` is the login the lane asked for. The host refuses
+unless this host is set up and pinned (`hoai vault-host`), the owner's signed
+state verifies against the owner's account key ANCHORED here (`ownerAccount`
+in `vault-host.json`: by the account code `hoai vault-host` prints under the
+host fingerprint, compared with HOAI's, or by the desktop's same computer
+pairing door), never a key the server sends, the signer is not retired or
+revoked, the state is not older than one verified before,
 the person and the login are in the signed `people`, and, when the fill had to
 ask, the owner's signed approval verifies, from a device in the owner's signed
 device list, before it expires, and only once. A fill that runs past 75
-seconds closes that browser. It holds the page private from before the
+seconds closes that browser. Signed in means a new top document and no
+password field with a value; otherwise every password field is emptied. The
+tab's history is forgotten after every fill, so Back brings nothing back. It holds the page private from before the
 redeem until the login page is gone (or its fields were emptied) and answers
 `{filled: true}` or `{filled: false, reason}`.
 

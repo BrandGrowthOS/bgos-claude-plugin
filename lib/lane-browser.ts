@@ -41,6 +41,7 @@
  * No em or en dashes in this file.
  */
 import { LANE_BROWSER_TOOL_NAMES } from './lane-policy.mjs'
+import { HOST_FILL_SENTENCES } from './agent-host-vault-fill.mjs'
 
 /** The lane's own http: the lane session and nothing else (lane-server.ts laneFetch). Throws on a non 2xx with `status` and `body`. */
 export interface LaneHttp {
@@ -79,6 +80,12 @@ export const LANE_VAULT_WAIT_MAX_MS = 10 * 60_000 + 5_000
  * requestId to call again with.
  */
 export const LANE_VAULT_CALL_WAIT_MS = 48_000
+/**
+ * The fill itself, once a ticket is in hand: the relay call to the agent's own
+ * host is bounded on its own (the host's own deadline is 75 s), and the tool's
+ * description says so.
+ */
+export const LANE_VAULT_FILL_RELAY_MS = 90_000
 
 /** What the person reads, once, when a fill waits for the owner. One sentence. */
 export const LANE_VAULT_WAITING_SENTENCE =
@@ -104,7 +111,7 @@ export const LANE_VAULT_TOOLS: readonly McpTool[] = Object.freeze([
   {
     name: 'vault_fill',
     description:
-      'Sign in with a saved login from vault_items on the page open in your browser. Give the login id, the sessionId and tabId that hoai_browser_status shows for the tab, and the exact HTTPS origin of that tab, which must be the login\'s website. When the owner asks to approve each use, the person is told and this waits for the owner for up to about 50 seconds; if the owner has not answered by then it answers {filled: false, waiting: true, requestId}: call vault_fill again with the same arguments and that requestId to keep waiting. Otherwise it answers {filled: true} or {filled: false, reason}. ' +
+      'Sign in with a saved login from vault_items on the page open in your browser. Give the login id, the sessionId and tabId that hoai_browser_status shows for the tab, and the exact HTTPS origin of that tab, which must be the login\'s website. When the owner asks to approve each use, the person is told and this waits for the owner for up to about 50 seconds; if the owner has not answered by then it answers {filled: false, waiting: true, requestId}: call vault_fill again with the same arguments and that requestId to keep waiting. The fill itself, once a fill may go ahead, takes at most about 90 seconds more. Otherwise it answers {filled: true} or {filled: false, reason}. ' +
       NO_SECRET.replace('It never takes or returns', 'This tool never takes or returns'),
     inputSchema: {
       type: 'object',
@@ -194,12 +201,14 @@ export class LaneBrowserRelay {
   }
 
   /** One JSON-RPC message through the relay. Never throws. */
-  async send(message: Record<string, unknown>): Promise<RelayAnswer> {
+  async send(message: Record<string, unknown>, opts: { totalMs?: number } = {}): Promise<RelayAnswer> {
     const { http, sleep, now } = this.deps
     const startedAt = now()
+    const totalMs = opts.totalMs ?? RELAY_TOTAL_MS
+    const left = () => Math.max(1_000, Math.min(RELAY_REQUEST_MS, startedAt + totalMs - now()))
     let answer: unknown
     try {
-      answer = await http.post(RELAY_PATH, { clientId: this.deps.relaySessionKey, message, waitMs: RELAY_WAIT_MS, assistantId: Number(this.deps.assistantId) }, RELAY_REQUEST_MS)
+      answer = await http.post(RELAY_PATH, { clientId: this.deps.relaySessionKey, message, waitMs: Math.min(RELAY_WAIT_MS, Math.max(0, left() - 5_000)), assistantId: Number(this.deps.assistantId) }, left())
     } catch (err) {
       return this.refusal(err)
     }
@@ -207,10 +216,10 @@ export class LaneBrowserRelay {
       const a = (answer ?? {}) as Record<string, unknown>
       if (a.status === 'done') return { ok: true, message: (a.message && typeof a.message === 'object' ? a.message : {}) as Record<string, unknown> }
       if (a.status === 'pending' && typeof a.rpcId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(a.rpcId)) {
-        if (now() - startedAt > RELAY_TOTAL_MS) return { ok: false, code: 'host_timeout', text: RELAY_TEXT.host_timeout! }
+        if (now() - startedAt > totalMs) return { ok: false, code: 'host_timeout', text: RELAY_TEXT.host_timeout! }
         await sleep(Math.max(250, Number(a.pollAfterMs) || 2_000))
         try {
-          answer = await http.get(`${RELAY_PATH}/${encodeURIComponent(a.rpcId)}`, RELAY_REQUEST_MS)
+          answer = await http.get(`${RELAY_PATH}/${encodeURIComponent(a.rpcId)}`, left())
         } catch (err) {
           const refused = this.refusal(err)
           // The call was sent: it may have run.
@@ -222,9 +231,9 @@ export class LaneBrowserRelay {
     }
   }
 
-  private async request(method: string, params: Record<string, unknown>): Promise<RelayAnswer> {
+  private async request(method: string, params: Record<string, unknown>, opts: { totalMs?: number } = {}): Promise<RelayAnswer> {
     this.seq += 1
-    return this.send({ jsonrpc: '2.0', id: `lane-${this.seq}`, method, params })
+    return this.send({ jsonrpc: '2.0', id: `lane-${this.seq}`, method, params }, opts)
   }
 
   /** initialize once per relay session. */
@@ -252,10 +261,10 @@ export class LaneBrowserRelay {
   }
 
   /** One tool call on the host. A refusal is a tool error with the relay's sentence. */
-  async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  async callTool(name: string, args: Record<string, unknown>, opts: { totalMs?: number } = {}): Promise<ToolResult> {
     const init = await this.ensureInit()
     if (!init.ok) return text(init.text, true)
-    const called = await this.request('tools/call', { name, arguments: args })
+    const called = await this.request('tools/call', { name, arguments: args }, opts)
     if (!called.ok) {
       if (called.code === 'host_offline' || called.code === 'relay_unreachable') this.reset()
       return text(called.text, true)
@@ -416,6 +425,9 @@ export class LaneBrowserTools {
     }
     const itemId = String(a.itemId)
     const target = { sessionId: String(a.sessionId), tabId: String(a.tabId), origin }
+    // M3: the whole call, the first ask included, fits in LANE_VAULT_CALL_WAIT_MS.
+    const callEnds = this.deps.now() + LANE_VAULT_CALL_WAIT_MS
+    const budget = () => Math.max(1, callEnds - this.deps.now())
     let ticket: string | null = null
     try {
       let requestId: string | null = null
@@ -427,7 +439,7 @@ export class LaneBrowserTools {
           return json({ error: 'vault_request_unknown', message: 'That requestId is not a fill this lane is waiting on for this login and tab. Call vault_fill without requestId to ask again.' }, true)
         }
       } else {
-        const asked = (await this.deps.http.post(`vault/lane/items/${encodeURIComponent(itemId)}/fill`, target)) as Record<string, unknown> | null
+        const asked = (await this.deps.http.post(`vault/lane/items/${encodeURIComponent(itemId)}/fill`, target, budget())) as Record<string, unknown> | null
         if (asked?.status === 'ready' && typeof asked.ticket === 'string') ticket = asked.ticket
         else if (asked?.status === 'waiting' && typeof asked.requestId === 'string' && ID_RE.test(asked.requestId)) {
           requestId = asked.requestId
@@ -441,7 +453,7 @@ export class LaneBrowserTools {
         } else return json({ filled: false, reason: 'vault_unavailable', message: 'The vault did not give a fill for this login.' })
       }
       if (requestId !== null && ticket === null) {
-        const waited = await this.waitForOwner(requestId)
+        const waited = await this.waitForOwner(requestId, callEnds)
         if (waited.ok) ticket = waited.ticket
         else if (waited.waiting) {
           return json({ filled: false, waiting: true, requestId, message: `Waiting for the owner to approve; call vault_fill again with requestId ${requestId} to continue.` })
@@ -453,7 +465,8 @@ export class LaneBrowserTools {
       return json({ error: 'vault_refused', message: f.message ?? 'The vault could not take this fill just now.' }, true)
     }
     if (!ticket || !TICKET_RE.test(ticket)) return json({ filled: false, reason: 'vault_unavailable', message: 'The vault did not give a usable fill.' })
-    const done = await this.deps.relay.callTool('hoai_vault_fill', { ticket, ...target })
+    // The host is told which login was asked for (M4); the fill has its own limit (M3).
+    const done = await this.deps.relay.callTool('hoai_vault_fill', { ticket, itemId, ...target }, { totalMs: LANE_VAULT_FILL_RELAY_MS })
     ticket = null
     const said = done.content.map((c) => (typeof c.text === 'string' ? c.text : '')).join('')
     let receipt: Record<string, unknown> | null = null
@@ -465,7 +478,8 @@ export class LaneBrowserTools {
     if (receipt && receipt.filled === false) {
       const reason = typeof receipt.reason === 'string' && /^[a-z_]{1,64}$/.test(receipt.reason) ? receipt.reason : 'not_filled'
       this.deps.log(`vault: login ${itemId} not filled (${reason})`)
-      return json({ filled: false, reason })
+      const sentence = (HOST_FILL_SENTENCES as Record<string, string>)[reason]
+      return json({ filled: false, reason, ...(sentence ? { message: sentence } : {}) })
     }
     this.deps.log(`vault: login ${itemId} not filled (host answer)`)
     return json({ filled: false, reason: 'host_refused', message: said.slice(0, 300) || 'The browser did not fill the login.' }, done.isError === true)
@@ -476,18 +490,20 @@ export class LaneBrowserTools {
    * expiry). `waiting` means ask again with its requestId; any other end
    * forgets the request.
    */
-  private async waitForOwner(requestId: string): Promise<{ ok: true; ticket: string } | { ok: false; waiting: true } | { ok: false; waiting?: false; reason: string; message: string }> {
+  private async waitForOwner(requestId: string, callEnds: number): Promise<{ ok: true; ticket: string } | { ok: false; waiting: true } | { ok: false; waiting?: false; reason: string; message: string }> {
     const { http, sleep, now } = this.deps
     const open = this.waiting.get(requestId)
     const until = open?.until ?? now()
-    const callEnds = Math.min(until, now() + LANE_VAULT_CALL_WAIT_MS)
+    const pollEnds = Math.min(until, callEnds)
     const done = <T,>(answer: T): T => { this.waiting.delete(requestId); return answer }
     const ownerSilent = { ok: false as const, reason: 'owner_did_not_answer', message: 'The owner did not answer in time, so nothing was filled.' }
-    while (now() < callEnds) {
-      await sleep(LANE_VAULT_POLL_MS)
+    while (now() < pollEnds) {
+      await sleep(Math.min(LANE_VAULT_POLL_MS, Math.max(0, pollEnds - now())))
+      const left = pollEnds - now()
+      if (left <= 0) break
       let answer: Record<string, unknown> | null = null
       try {
-        answer = (await http.get(`vault/lane/fills/${encodeURIComponent(requestId)}`)) as Record<string, unknown> | null
+        answer = (await http.get(`vault/lane/fills/${encodeURIComponent(requestId)}`, left)) as Record<string, unknown> | null
       } catch (err) {
         const f = failure(err)
         if (f.status === 403 || f.status === 404) return done({ ok: false as const, reason: 'vault_unavailable', message: f.message ?? 'This fill is no longer available.' })

@@ -19,6 +19,7 @@ import assert from 'node:assert/strict'
 
 import {
   LANE_VAULT_CALL_WAIT_MS,
+  LANE_VAULT_FILL_RELAY_MS,
   LANE_VAULT_TOOLS,
   LaneBrowserRelay,
   LaneBrowserTools,
@@ -187,7 +188,7 @@ test('vault_fill ready: asks the server, then the host fills through the relay w
   assert.deepEqual(ask.body, { sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })
   const relayed = b.calls.find((c) => c.body?.message?.params?.name === 'hoai_vault_fill')!
   assert.equal(relayed.path, 'integrations/browser/mcp')
-  assert.deepEqual(relayed.body.message.params.arguments, { ticket: TICKET, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })
+  assert.deepEqual(relayed.body.message.params.arguments, { ticket: TICKET, itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })
   assert.deepEqual(told, [], 'nobody was asked')
 })
 
@@ -326,7 +327,7 @@ test('a call waits at most about 50 s, then says to call again with the requestI
   assert.equal(b.calls.filter((c) => c.path === `vault/lane/items/${ITEM}/fill`).length, 1, 'one fill request only')
   assert.deepEqual(told, [LANE_VAULT_WAITING_SENTENCE], 'told once')
   const relayed = b.calls.find((c) => c.body?.message?.params?.name === 'hoai_vault_fill')!
-  assert.deepEqual(relayed.body.message.params.arguments, { ticket: TICKET, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })
+  assert.deepEqual(relayed.body.message.params.arguments, { ticket: TICKET, itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })
 })
 
 test('a resumed call must name the same login, session, tab and origin as the request it resumes, and a usable requestId', async () => {
@@ -341,4 +342,48 @@ test('a resumed call must name the same login, session, tab and origin as the re
   }
   assert.equal((await t.call('vault_fill', { ...args, requestId: '../x' })).isError, true)
   assert.equal(b.calls.length, before, 'nothing asked for any of them')
+})
+
+test('M4 and H2: the host is told which login; an unconfirmed owner account reaches the person as the agreed sentence', async () => {
+  const b = backend({ hostReceipt: { filled: false, reason: 'vault_owner_account_unconfirmed' } })
+  const r = JSON.parse(textOf(await tools(b).t.call('vault_fill', { itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })))
+  assert.deepEqual(r, { filled: false, reason: 'vault_owner_account_unconfirmed', message: 'This computer has not confirmed your HOAI account yet. Open this agent\'s browser in HOAI on this computer, or pin this computer again.' })
+})
+
+/**
+ * M3: the 50 s cap holds for the WHOLE vault_fill call: the first ask and
+ * every poll are bounded by what is left of it. The fill through the relay
+ * after the ticket has its own limit, written in the tool's description.
+ */
+test('M3: every request of one call is bounded by what is left of its 50 s; the relay fill has its own stated limit', async () => {
+  const seen: Array<{ path: string; timeoutMs: number | undefined; at: number }> = []
+  const b = backend({ fill: { status: 'waiting', requestId: 'req-1', expiresAt: '2026-11-13T10:10:00Z' }, polls: Array.from({ length: 40 }, () => ({ status: 'waiting' })) })
+  let clock = Date.parse('2026-11-13T10:00:00Z')
+  const http = {
+    get: async (path: string, timeoutMs?: number) => { seen.push({ path, timeoutMs, at: clock }); return b.http.get(path) },
+    post: async (path: string, body: any, timeoutMs?: number) => {
+      seen.push({ path, timeoutMs, at: clock })
+      if (path === `vault/lane/items/${ITEM}/fill`) clock += 20_000 // a slow first answer spends a part of the budget
+      return b.http.post(path, body)
+    },
+  }
+  const relayCalls: any[] = []
+  const relay: any = { callTool: async (name: string, args: any, opts: any) => { relayCalls.push({ name, opts }); return { content: [{ type: 'text', text: '{"filled":true}' }] } } }
+  const t = new LaneBrowserTools({ enabled: true, relay, http, sleep: async (ms) => { clock += ms }, now: () => clock, log: () => {}, tellPerson: async () => {}, onListChanged: () => {} })
+  const start = clock
+  const first = JSON.parse(textOf(await t.call('vault_fill', { itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })))
+  assert.equal(first.waiting, true)
+  assert.ok(clock - start <= LANE_VAULT_CALL_WAIT_MS + 1, `the whole call took ${clock - start} ms`)
+  for (const call of seen) {
+    assert.ok(typeof call.timeoutMs === 'number' && call.timeoutMs > 0, `${call.path} bounded`)
+    assert.ok(call.at + call.timeoutMs! <= start + LANE_VAULT_CALL_WAIT_MS, `${call.path} at ${call.at - start} ms may run ${call.timeoutMs} ms`)
+  }
+  // The fill after a ticket: its own limit, and the description says it.
+  const ready = backend()
+  const t2 = new LaneBrowserTools({ enabled: true, relay, http: ready.http, sleep: async () => {}, now: () => Date.now(), log: () => {}, tellPerson: async () => {}, onListChanged: () => {} })
+  await t2.call('vault_fill', { itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })
+  assert.equal(relayCalls.at(-1).name, 'hoai_vault_fill')
+  assert.equal(relayCalls.at(-1).opts?.totalMs, LANE_VAULT_FILL_RELAY_MS)
+  assert.ok(LANE_VAULT_FILL_RELAY_MS <= 90_000)
+  assert.match(LANE_VAULT_TOOLS[1]!.description ?? '', /fill itself[^.]*at most about 90 seconds/)
 })

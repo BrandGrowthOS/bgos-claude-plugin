@@ -29,7 +29,11 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
   VaultError,
+  anchorOwnerAccount,
   confirmHostPin,
+  fetchOwnerAccount,
+  readOwnerAnchor,
+  showOwnerAccountCodeOnTerminal,
   hostPinStatus,
   loadOrCreateHostKey,
   provisionSigningIdentity,
@@ -175,17 +179,36 @@ export async function main(argv = process.argv.slice(2), { security = undefined 
       process.stderr.write('Host key registered with HOAI.\n')
     }
     showFingerprintOnTerminal(record, process.stderr)
-    if (hostPinStatus(record) === 'pinned') {
+    // H2: the owner's account key is anchored here only by a channel the
+    // server cannot forge. Here, the owner compares this account code with
+    // the one HOAI's pin screen computes from their own key.
+    let owner = null
+    if (!(await readOwnerAnchor(stateDir, undefined, security))) {
+      try {
+        owner = await fetchOwnerAccount({ apiBase: agent.apiBase, assistantId: agent.assistantId, signingSecret: record.signingSecret, pairingToken: agent.pairingToken })
+      } catch {
+        owner = null
+      }
+      if (owner && owner.ownerId !== agent.ownerId) owner = null
+      if (!owner || !showOwnerAccountCodeOnTerminal(owner, process.stderr)) {
+        owner = null
+        process.stderr.write('HOAI did not give your account code just now, so this computer cannot fill your logins for people you share this agent with yet. Run hoai vault-host again later to confirm it.\n')
+      }
+    }
+    if (hostPinStatus(record) === 'pinned' && !owner) {
       process.stderr.write(`${STATUS_TEXT.pinned}\n`)
       return 0
     }
-    process.stderr.write('In HOAI, open this agent\'s vault, compare the host fingerprint with the one above, and pin this host only if they match.\n')
+    process.stderr.write(owner
+      ? 'In HOAI, open this agent\'s vault, compare the host fingerprint AND your account code with the ones HOAI shows, and pin this host only if both match.\n'
+      : 'In HOAI, open this agent\'s vault, compare the host fingerprint with the one above, and pin this host only if they match.\n')
     const answer = await askLine('Type PINNED once you have done that (anything else stops here): ')
     if (answer !== 'PINNED') {
       process.stderr.write('Not confirmed. Run hoai vault-host again after you pinned the host.\n')
       return 1
     }
-    await confirmHostPin(stateDir, undefined, security)
+    if (hostPinStatus(record) !== 'pinned') await confirmHostPin(stateDir, undefined, security)
+    if (owner) await anchorOwnerAccount(stateDir, { ...owner, via: 'terminal' }, undefined, security)
     process.stderr.write(`${STATUS_TEXT.pinned}\n`)
     return 0
   } catch (error) {
