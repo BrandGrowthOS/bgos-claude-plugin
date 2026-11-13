@@ -131,3 +131,58 @@ export function privateHookBootLine(presence: PrivateHookPresence): string {
 export const PRIVATE_HOOK_MISSING_REFUSAL =
   'This private action did not start because the HOAI private turn hook is not registered for this session, so no sender can be verified. ' +
   'Ask the owner to restart this agent, so it loads the hook its daemon writes at boot.'
+
+/**
+ * Is the private turn hook live in the session this daemon serves, NOW (QUIETTURN4, the two account test,
+ * 2026-11-13)? The boot read above looks at the settings files once. A clone's boot that found no entry writes it
+ * (registerCloneHooksAtBoot) and asks for one restart, and the CLI can run the hook from its next prompt on, long
+ * before that restart. The boot read stayed false for the whole daemon life, so the quiet turn hold (which needs the
+ * hook) was off: on the rig a share recipient's card reached the owner's voice ask and ended its trust, and the
+ * refusal blamed a hook that was in fact running.
+ *
+ * The proof is the hook's own work, never a file on disk: the tracker hands back a turn with a `markerPath` only
+ * when the marker the hook wrote at UserPromptSubmit matched an admitted prompt. A forwarder line alone (the async
+ * telemetry hook) proves nothing. Once proven it stays proven for this daemon life: the hold grants nothing and only
+ * keeps other cards out of the owner's turn, so a late wrong "live" costs a wait, never a permission.
+ */
+export interface PrivateHookLiveness {
+  /** The boot read found the hook, or its marker has been read for a turn since. */
+  live(): boolean
+  /** A turn the tracker resolved (privateTurns.current). Returns live() after it. */
+  noteTurn(turn: { markerPath?: unknown } | null | undefined): boolean
+  /**
+   * The same answer in the boot read's shape, read at each use: `registered` is live(), `where` the boot read's
+   * until the marker proves it. server.ts keeps its name, PRIVATE_HOOK, so every reader (and every test harness
+   * that runs a slice of server.ts with its own PRIVATE_HOOK) reads it unchanged.
+   */
+  readonly presence: PrivateHookPresence
+}
+
+export function createPrivateHookLiveness({ atBoot, log = () => {} }: {
+  atBoot: PrivateHookPresence
+  log?: (line: string) => void
+}): PrivateHookLiveness {
+  let proven = false
+  const live = () => atBoot.registered || proven
+  const presence: PrivateHookPresence = {
+    get registered() { return live() },
+    get where() { return atBoot.registered || !proven ? atBoot.where : 'its marker was read for a turn in this daemon life' },
+  }
+  return {
+    live,
+    presence,
+    noteTurn(turn) {
+      if (!live() && turn && typeof turn.markerPath === 'string' && turn.markerPath !== '') {
+        proven = true
+        try { log(privateHookLiveLine()) } catch { /* A log line is best effort. */ }
+      }
+      return live()
+    },
+  }
+}
+
+/** Said once, when a daemon that booted without the hook first reads its marker. */
+export function privateHookLiveLine(): string {
+  return 'private turn: the private turn hook is live in this session (its marker was read for a turn); ' +
+    'the quiet turn hold and the refusal wording follow it from now on'
+}

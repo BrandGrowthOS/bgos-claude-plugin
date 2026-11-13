@@ -364,7 +364,7 @@ import {
   type StopGoalView,
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
-import { PRIVATE_HOOK_MISSING_REFUSAL, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
+import { PRIVATE_HOOK_MISSING_REFUSAL, createPrivateHookLiveness, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
 import { registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
 import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
@@ -11030,11 +11030,14 @@ mcp.notification = holdChannelCardsWhileBusy(modelEffortControl, mcp.notificatio
 function publishBrowserPrivateTurn(): void {
   if (!lockHeld) return
   try {
+    const turn = privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS })
+    // The hook's own marker read for a turn proves it runs in this session (QUIETTURN4, privateHook below).
+    privateHook.noteTurn(turn)
     publishPrivateContext({
       path: privateContextPath(FLOOR_STATE_ROOT, ASSISTANT_ID),
       secret: AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey,
       assistantId: ASSISTANT_ID, ownerUserId: USER_ID, claudePid: agentClaudePid(),
-      turn: privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS }),
+      turn,
     })
   } catch { /* An absent or expired context refuses private tools. */ }
 }
@@ -16149,7 +16152,7 @@ const FLOOR_HOOK: FloorHookPresence = (() => {
  * lets the daemon say so, once at boot and in the refusal text. It never opens
  * the gate (lib/private-hook-presence.ts).
  */
-const PRIVATE_HOOK: PrivateHookPresence = (() => {
+const PRIVATE_HOOK_AT_BOOT: PrivateHookPresence = (() => {
   try {
     return privateHookPresence({
       installMethod: INSTALL_METHOD,
@@ -16165,6 +16168,14 @@ const PRIVATE_HOOK: PrivateHookPresence = (() => {
     return { registered: false, where: `could not look (${err})` }
   }
 })()
+// QUIETTURN4 (the two account test, 2026-11-13): the boot read above is not the last word. A clone's boot that found
+// no entry writes it (registerCloneHooksAtBoot) and the CLI can run it from its next prompt on, long before the
+// watcher's one restart; read once, the quiet turn hold stayed off and refusals blamed a running hook for the whole
+// daemon life. PRIVATE_HOOK.registered is read at each use and says the boot read OR the hook's own marker read for a
+// turn since (publishBrowserPrivateTurn, at every hook event). At boot the two are the same, so the boot line and the
+// boot hook registration below read what they always did.
+const privateHook = createPrivateHookLiveness({ atBoot: PRIVATE_HOOK_AT_BOOT, log })
+const PRIVATE_HOOK: PrivateHookPresence = privateHook.presence
 
 function safeUsername(): string {
   try {

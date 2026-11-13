@@ -44,6 +44,7 @@ import { QUIET_CARD_MAX_WAIT_MS, QUIET_MEETING_CARD_MAX_WAIT_MS, createQuietTurn
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun } from '../lib/schedule-grant-run.mjs'
 import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
+import { PRIVATE_HOOK_MISSING_REFUSAL, createPrivateHookLiveness } from '../lib/private-hook-presence.ts'
 
 const OWNER = 'user_owner'
 const OTHER_OWNER = 'user_someone_else'
@@ -180,13 +181,20 @@ function machine(t: any) {
   let messageId = 7000
   let prompts = 0
 
-  /** `server`: what the backend's capabilities reply said (quietTurn: true), as server.ts keeps it. */
-  function daemon({ server = true }: { server?: boolean } = {}) {
+  /**
+   * `server`: what the backend's capabilities reply said (quietTurn: true), as server.ts keeps it.
+   * `hookAtBoot`: what server.ts's boot read of the settings files found (PRIVATE_HOOK). Left out, the harness
+   * leaves the hook out of the hold's switch, as every test before the hook boot fix (QUIETTURN4) did.
+   */
+  function daemon({ server = true, hookAtBoot }: { server?: boolean; hookAtBoot?: boolean } = {}) {
     const inbox: string[] = []
     const built: string[] = []
     let busy = false
     const fires = createFireLedger({ path: privateFiresPath(root, AGENT), now: () => clock.now })
     let quiet: ReturnType<typeof createQuietTurns>
+    // server.ts privateHook: the boot read, then the hook's own marker read in this daemon life.
+    const hook = hookAtBoot === undefined ? null
+      : createPrivateHookLiveness({ atBoot: { registered: hookAtBoot, where: 'the test' }, log: (line: string) => { lines.push(line) } })
     const tracker = createPrivateTurnTracker({
       ownerUserId: OWNER, markerPaths, fires, now: () => clock.now,
       onRevoke: () => { quiet.recheck() },
@@ -196,7 +204,7 @@ function machine(t: any) {
     quiet = createQuietTurns({
       trusted: () => tracker.quiet(), deliveryOf: (card: unknown) => tracker.deliveryOf(card), ownerUserId: OWNER,
       idle: () => !busy, now: () => clock.now, setTimer: timers.setTimer, clearTimer: timers.clearTimer,
-      enabled: () => server,
+      enabled: () => server && (hook === null || hook.live()),
     })
     // server.ts's chain: the raw card record, the scheduled run hold, the quiet hold. A released card goes round again.
     const chain: { notify?: (n: unknown) => unknown } = {}
@@ -261,13 +269,18 @@ function machine(t: any) {
       },
     }
     const cli = {
-      /** The CLI runs this card as its own prompt: the synchronous hook, then the forwarder line. */
-      prompt(card: string, session = 'session-a') {
+      /**
+       * The CLI runs this card as its own prompt: the synchronous hook, then the forwarder line. `hookRan: false`: the
+       * CLI never loaded the private turn hook, so only the forwarder's line reaches the daemon and no marker exists.
+       */
+      prompt(card: string, session = 'session-a', { hookRan = true }: { hookRan?: boolean } = {}) {
         busy = true
         const payload = { hook_event_name: 'UserPromptSubmit', session_id: session, cwd, prompt: card, prompt_id: `p${++prompts}` }
-        recordPrivateBoundary(payload, env)
+        if (hookRan) recordPrivateBoundary(payload, env)
         tracker.begin({ prompt: card, sessionId: session, promptId: payload.prompt_id })
         quiet.noteBegin(card)
+        // server.ts onHookPayload ends every hook event with publishBrowserPrivateTurn, which reads the marker.
+        if (hook) hook.noteTurn(tracker.current({ markerPaths }))
       },
       /** The CLI turn stops. */
       stop(session = 'session-a') {
@@ -283,6 +296,8 @@ function machine(t: any) {
     /** The private tool gate (schedule, boards). */
     const gate = () => requirePrivateTurn(tracker, markerPaths, OWNER)
     const refusal = () => { try { gate(); return null } catch (err) { return String((err as Error).message) } }
+    /** What server.ts tells the agent when a private call refuses: the missing hook, while it is not known live. */
+    const refusalText = () => { const why = refusal(); return why === null ? null : hook && !hook.live() ? PRIVATE_HOOK_MISSING_REFUSAL : why }
     /** The signed browser context the Agent Browser shim reads. */
     const browser = () => {
       publishPrivateContext({ path: contextPath, secret: SECRET, assistantId: AGENT, ownerUserId: OWNER, claudePid: process.pid, turn: tracker.current({ markerPaths }), now: clock.now })
@@ -290,7 +305,7 @@ function machine(t: any) {
       assert.equal(file.signature, createHmac('sha256', SECRET).update(JSON.stringify(file.context)).digest('hex'), 'the context is signed')
       return file.context
     }
-    return { tracker, quiet, send, cli, inbox, built, gate, refusal, browser, completeTask }
+    return { tracker, quiet, send, cli, inbox, built, gate, refusal, refusalText, browser, completeTask, hook }
   }
   const advance = async (ms: number) => { clock.now += ms; timers.fire(); await flush() }
   return { root, clock, lines, daemon, advance, markerPaths }
@@ -954,4 +969,50 @@ test('N5 (P24): the hold reads no owner turn once an ask\'s deadline has passed,
   assert.notEqual(d.tracker.quiet(), null)
   m.clock.now = T0 + 20 * 60_000
   assert.equal(d.tracker.quiet(), null, 'at its deadline the ask is over for the hold too')
+})
+
+// ── QUIETTURN4: the boot that wrote the hook (the two account test, 2026-11-13) ─────────────────────────────
+// The daemon read the settings files once at boot, found no private turn hook, wrote it, and asked for one restart.
+// The CLI ran the hook from its next prompt on, but the boot read stayed false for the whole daemon life, so the hold
+// was off: a share recipient's card reached the owner's voice ask and ended its trust (rig run 1).
+
+test('QUIETTURN4: a boot that found no hook holds once the hook\'s own marker is read, in the same daemon life', async (t) => {
+  const m = machine(t)
+  const d = m.daemon({ hookAtBoot: false })
+  assert.equal(d.hook!.live(), false, 'nothing proves the hook yet')
+  await ownerAsks(d)
+  assert.equal(d.hook!.live(), true, 'the CLI ran the hook for the owner\'s ask: its marker was read')
+  assert.ok(m.lines.some((line) => /private turn hook is live in this session/.test(line)))
+  const waiting = d.send.member('Leo here: what is the second item on the launch plan?', 'user_leo', '13')
+  await flush()
+  assert.equal(d.inbox.length, 1, 'the share recipient\'s card waits outside the owner\'s turn')
+  assert.equal(d.gate().actingUserId, OWNER, 'and the owner\'s ask keeps its trust')
+  d.completeTask('41')
+  d.cli.stop()
+  await waiting
+  assert.equal(d.inbox.length, 2, 'after the ask it goes in')
+})
+
+test('QUIETTURN4 control: a CLI that never loaded the hook leaves the hold off and the refusal names the missing hook', async (t) => {
+  const m = machine(t)
+  const d = m.daemon({ hookAtBoot: false })
+  await d.send.task(stampedTask('41'))
+  d.cli.prompt(d.inbox.at(-1)!, 'session-a', { hookRan: false })
+  assert.equal(d.hook!.live(), false, 'a forwarder line alone proves nothing')
+  await d.send.member('Leo here: are you there?', 'user_leo', '13')
+  assert.equal(d.inbox.length, 2, 'nothing waits on a hook that is not there, as before the fix')
+  assert.equal(d.refusalText(), PRIVATE_HOOK_MISSING_REFUSAL, 'the agent still hears why, and to restart')
+  assert.deepEqual(m.lines.filter((line) => line.startsWith('quiet turn:')), [])
+})
+
+test('QUIETTURN4: a boot that found the hook holds from the first card, as before', async (t) => {
+  const m = machine(t)
+  const d = m.daemon({ hookAtBoot: true })
+  assert.equal(d.hook!.live(), true)
+  await ownerAsks(d)
+  void d.send.member('Leo here: hello', 'user_leo', '13')
+  await flush()
+  assert.equal(d.inbox.length, 1)
+  assert.equal(d.gate().actingUserId, OWNER)
+  assert.equal(m.lines.filter((line) => /private turn hook is live/.test(line)).length, 0, 'nothing new to say')
 })

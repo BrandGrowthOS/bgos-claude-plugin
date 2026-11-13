@@ -10,6 +10,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.88.1 (2026-11-13)
+
+**The quiet turn holds from the first prompt after a boot that wrote the private turn hook.** A clone's daemon that found no private turn hook at boot writes it and asks for one restart, and the session can run the hook from its next prompt on. The daemon used to read the hook's presence only once, at boot, so for the whole daemon life until that restart the quiet turn hold was off and a refused private action blamed a missing hook that was in fact running: on a two account test a share recipient's message reached the owner's voice ask and ended its trust. Now the hook's own marker, read for a turn, proves it is live, and from then on the hold and the refusal wording follow that. A session that never loaded the hook still holds nothing and still hears that the hook is missing.
+
 ## 0.88.0 (2026-11-11)
 
 **A voice call with you is a trusted turn, and a trusted turn is quiet.** Asking your agent on a call to schedule something, change a board or open a page was refused with "its current sender could not be verified", because a call sends real work as a task and a task carried no proof of who asked. When the server proves that you spoke right before the task was sent (its `VOICE_ASK_STAMP` switch, off by default), the task now opens a trusted turn for that one task: schedule, boards, artifacts and the browser act as you until the agent reports it, for twenty minutes at most. Email is never part of a voice ask. A task sent again opens nothing.
