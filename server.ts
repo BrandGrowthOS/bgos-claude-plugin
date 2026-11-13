@@ -754,6 +754,7 @@ import {
   memoizeAncestorReading,
   memoizeFor,
   memoizeUntilFound,
+  oldestOwnerWaitMs,
   readClaudeAncestor,
   readSessionTranscript,
 } from './lib/agent-state.js'
@@ -9806,6 +9807,9 @@ function flushChatCursors(): void {
 interface PendingInbound {
   messageId: number
   ts: number
+  // When the FIRST message of this chat that is still unanswered arrived: a newer message replaces the
+  // entry (and its ts), not how long the person has waited. Published as ownerWaitingSince.
+  firstTs: number
   reminded: boolean
   // The message was the owner's own (its lane's privateActor): only then is its reminder marked owner_inbound, the
   // one reminder the private turn tracker carries through an owner's turn (Data's review of #261, M1).
@@ -10009,7 +10013,7 @@ function recordInbound(
   const existing = pendingInbounds.get(chatId)
   if (existing && existing.messageId >= messageId) return
   const ownerInbound = typeof actingUserId === 'string' && actingUserId !== '' && actingUserId === USER_ID
-  pendingInbounds.set(chatId, { messageId, ts: Date.now(), reminded: false, ownerInbound, probed: false })
+  pendingInbounds.set(chatId, { messageId, ts: Date.now(), firstTs: existing?.firstTs ?? Date.now(), reminded: false, ownerInbound, probed: false })
 }
 
 function clearInbound(chatId: string | undefined): void {
@@ -15927,6 +15931,8 @@ const agentStatePublisher = new AgentStatePublisher({
     // after the bound session's SessionEnd until another event is admitted.
     turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
     pendingMessages: pendingInbounds.size,
+    // The delivery a frozen claude never recorded: the watcher's check up reads it (helperwedge finding 3).
+    ownerWaitingSinceMs: oldestOwnerWaitMs(pendingInbounds.values()),
     pendingPermissions: pendingPermissions.size,
     activeOperations: messageActivity.activeOperations,
     // Apart from the operations: the watcher's update sweep waits for it, and a recovery restart does not.
