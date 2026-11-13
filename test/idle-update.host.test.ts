@@ -56,6 +56,11 @@ function memFs(files: Record<string, { text: string; mtimeMs?: number } | string
       map.set(p, { text, mtimeMs: NOW })
       return true
     },
+    /** Through this fake's own writeAtomic (`this`), so a test that swaps writeAtomic sees these writes too. */
+    replaceIfUnchanged(this: any, p: string, expected: string | null, text: string): 'ok' | 'changed' | 'error' {
+      if ((this.readFile(p) ?? null) !== expected) return 'changed'
+      return this.writeAtomic(p, text) === true ? 'ok' : 'error'
+    },
     remove: (p: string) => map.delete(p),
   }
 }
