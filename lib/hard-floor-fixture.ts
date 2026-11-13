@@ -3547,6 +3547,194 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     input: { kind: "command", command: "git push origin $(git rev-parse HEAD):refs/heads/release" },
     ruleId: null,
   },
+  // A wrapper's name, or the feeder's own name, with a substitution written
+  // against it still feeds a shell what the feeder prints: a pipe carries
+  // every reading of the command before it, as the reader reads that command
+  // (with the substitution left out, and the words after it), with or
+  // without the wrapper's own options, for every wrapper the reader knows.
+  {
+    name: "shell_fed_by_echo_behind_nice_given_a_substitution",
+    input: { kind: "command", command: "nice$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_env_given_a_substitution",
+    input: { kind: "command", command: "env$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_nice_given_a_backtick_pair",
+    input: { kind: "command", command: "nice`true` echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_a_heredoc_by_cat_behind_env_given_a_backtick_pair",
+    input: { kind: "command", command: "env`true` cat <<'EOF' | bash\nrm -rf build\nEOF" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_a_here_string_by_cat_behind_nice_given_a_substitution",
+    input: { kind: "command", command: "nice$(true) cat <<< \"rm -rf build\" | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_cat_given_a_substitution_on_its_name",
+    input: { kind: "command", command: "cat$(true) <<< \"rm -rf build\" | bash" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_printf_given_a_substitution_on_its_name",
+    input: { kind: "command", command: "printf$(true) \"rm -rf build\" | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_nice_given_a_substitution_and_a_value",
+    input: { kind: "command", command: "nice$(true) -n 5 echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_timeout_given_a_substitution_and_a_duration",
+    input: { kind: "command", command: "timeout$(true) 5 echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_env_given_a_substitution_options_and_a_variable",
+    input: { kind: "command", command: "env$(true) -i PATH=/usr/bin echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_sudo_given_a_substitution_and_a_user",
+    input: { kind: "command", command: "sudo$(true) -u root echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+    ruleIds: ["recursive_delete", "admin_rights"],
+  },
+  {
+    name: "shell_fed_by_echo_behind_a_wrapper_split_by_a_substitution",
+    input: { kind: "command", command: "ni$(true)ce echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_written_against_a_substitution_behind_nice",
+    input: { kind: "command", command: "nice $(true)echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_written_between_two_substitutions",
+    input: { kind: "command", command: "nice $(true)echo$(true) rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_after_a_substitution_fed_by_echo_behind_nice_given_one",
+    input: { kind: "command", command: "nice$(true) echo rm -rf build | nice $(true) sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_what_a_substitution_echoes_behind_env_given_one",
+    input: { kind: "command", command: "echo $(env$(true) echo rm -rf build) | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_sudo_given_a_substitution",
+    input: { kind: "command", command: "sudo$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+    ruleIds: ["recursive_delete", "admin_rights"],
+  },
+  {
+    name: "shell_fed_by_echo_behind_doas_given_a_substitution",
+    input: { kind: "command", command: "doas$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+    ruleIds: ["recursive_delete", "admin_rights"],
+  },
+  {
+    name: "shell_fed_by_echo_behind_nohup_given_a_substitution",
+    input: { kind: "command", command: "nohup$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_command_given_a_substitution",
+    input: { kind: "command", command: "command$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_builtin_given_a_substitution",
+    input: { kind: "command", command: "builtin$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_exec_given_a_substitution",
+    input: { kind: "command", command: "exec$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_ionice_given_a_substitution",
+    input: { kind: "command", command: "ionice$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_stdbuf_given_a_substitution",
+    input: { kind: "command", command: "stdbuf$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_busybox_given_a_substitution",
+    input: { kind: "command", command: "busybox$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_chronic_given_a_substitution",
+    input: { kind: "command", command: "chronic$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_unbuffer_given_a_substitution",
+    input: { kind: "command", command: "unbuffer$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_wsl_given_a_substitution",
+    input: { kind: "command", command: "wsl$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_time_given_a_substitution",
+    input: { kind: "command", command: "time$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_by_echo_behind_xargs_given_a_substitution",
+    input: { kind: "command", command: "xargs$(true) echo rm -rf build | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "shell_fed_a_harmless_echo_behind_nice_given_a_substitution",
+    input: { kind: "command", command: "nice$(true) echo hello | sh" },
+    ruleId: null,
+  },
+  {
+    name: "shell_fed_a_harmless_echo_behind_nice_given_a_backtick_pair",
+    input: { kind: "command", command: "nice`true` echo hello | bash" },
+    ruleId: null,
+  },
+  {
+    name: "shell_fed_a_harmless_here_string_by_cat_behind_nice_given_a_substitution",
+    input: { kind: "command", command: "nice$(true) cat <<< \"echo done\" | sh" },
+    ruleId: null,
+  },
+  {
+    name: "shell_fed_a_harmless_echo_behind_timeout_given_a_substitution",
+    input: { kind: "command", command: "timeout$(true) 5 echo ls | sh" },
+    ruleId: null,
+  },
+  {
+    name: "echo_behind_env_given_a_substitution_with_no_shell",
+    input: { kind: "command", command: "env$(true) echo rm -rf build" },
+    ruleId: null,
+  },
+  {
+    name: "echo_behind_nice_given_a_substitution_piped_to_cat",
+    input: { kind: "command", command: "nice$(true) echo rm -rf build | cat" },
+    ruleId: null,
+  },
   {
     name: "admin_and_folder_delete_names_the_delete",
     input: { kind: "command", command: "sudo rm -rf /var/cache/app" },
@@ -3901,7 +4089,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "f32d4fec73a06f2d83d5f47e71b9844a99effe34e30dfbd918210f130fba5916";
+  "3ddbec9036cc22058aeb65b76d03ea678dc42206ab714f27aac14f2dbe933e4d";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =

@@ -216,6 +216,16 @@ test('one long pipe feeding many shells is read once', () => {
   assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
 })
 
+test('a pipe whose feeder gives no script is read once, however many readings it has', () => {
+  // A feeder with many substitutions has a reading after each one, and every
+  // shell on the pipe would walk them all again if a miss were not kept.
+  const command = 'yes ' + '$(x) a '.repeat(20000) + '| sh' + ' $(x) sh'.repeat(20000)
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
 test('a very long list of words after a double dash is read without running out of room', () => {
   // The words after the dash are gathered one at a time, never handed over as
   // one call's arguments, which has a limit far below the longest command.
