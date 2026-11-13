@@ -1924,6 +1924,91 @@ test('the canary\'s validated file carries where it came from, so a later failur
   assert.equal(body.fromRoot, '/c/plugins/cache/hoai/hoai/0.80.0')
 })
 
+// -- Two agents breaking one expired lease (#291 review follow up 2) ---------------------------------
+
+const LEASE = join(MACHINE, 'lease.json')
+
+/**
+ * One agent's view of the shared disk, for an agent that read lease.json before another agent broke it: its reads
+ * of lease.json answer what `before` held until it changes a lease file itself. `dies` ends its process the moment
+ * it has moved lease.json away: no file operation after that lands. `onChange` sees every lease file change it makes.
+ */
+function lateReader(disk: ReturnType<typeof memDisk>, before: Map<string, { text: string; mtimeMs: number }>, o: { dies?: boolean; onChange?: (op: string) => void } = {}) {
+  let changed = false
+  let dead = false
+  const live = disk.fs
+  const isLeaseFile = (p: string) => p.startsWith(join(MACHINE, 'lease.'))
+  const guard = <T extends (...args: any[]) => any>(fn: T): T =>
+    ((...args: any[]) => {
+      if (dead) throw new Error('this process has ended')
+      return fn(...args)
+    }) as T
+  const change = <T extends (...args: any[]) => any>(op: string, fn: T): T =>
+    guard((...args: any[]) => {
+      const out = fn(...args)
+      if (isLeaseFile(String(args[0]))) {
+        changed = true
+        o.onChange?.(op)
+        if (o.dies && op === 'rename' && args[0] === LEASE && out === true) dead = true
+      }
+      return out
+    }) as T
+  const fs = {
+    ...live,
+    readFile: guard((p: string) => (p === LEASE && !changed ? before.get(p)?.text ?? null : live.readFile(p))),
+    mtimeMs: guard((p: string) => (p === LEASE && !changed ? before.get(p)?.mtimeMs ?? null : live.mtimeMs(p))),
+    listDir: guard(live.listDir),
+    createExclusive: change('createExclusive', live.createExclusive),
+    writeAtomic: change('writeAtomic', live.writeAtomic),
+    rename: change('rename', live.rename),
+    remove: change('remove', live.remove),
+  }
+  return { ...disk, fs }
+}
+
+/** A lease on 0.81.0 an hour old: expired. The agents here go to 0.82.0, which a canary already proved. */
+function expiredLeaseDisk() {
+  const disk = memDisk()
+  proven(disk, '0.82.0')
+  disk.fs.writeAtomic(LEASE, JSON.stringify({ assistantId: '913', target: '0.81.0', nonce: 'n-913', at: new Date(disk.clock.now - HOUR).toISOString() }))
+  return disk
+}
+
+test('two agents that read one expired lease: the one that breaks it second never moves the live lease the first now holds', async () => {
+  const disk = expiredLeaseDisk()
+  const before = new Map(disk.files)
+  const first = agent(disk, { id: 914, staged: '0.82.0' })
+  assert.equal(await first.c.tick(), 'requested')
+  const held = disk.fs.readFile(LEASE)
+  assert.equal(JSON.parse(held!).assistantId, '914')
+  const gaps: string[] = []
+  const late = agent(
+    lateReader(disk, before, {
+      onChange: (op) => {
+        if (disk.fs.readFile(LEASE) !== held) gaps.push(`after its ${op}, lease.json read ${disk.fs.readFile(LEASE) ?? 'missing'}`)
+      },
+    }),
+    { id: 915, staged: '0.82.0' },
+  )
+  assert.notEqual(await late.c.tick(), 'requested')
+  assert.deepEqual(gaps, [], 'while 914 holds the lease, lease.json is 914\'s at every step of the late breaker')
+  assert.equal(disk.fs.readFile(LEASE), held)
+  assert.equal(late.restarts.length, 0)
+})
+
+test('three agents on one computer: a breaker that dies mid break never frees the lease another holds, so no two restart together', async () => {
+  const disk = expiredLeaseDisk()
+  const before = new Map(disk.files)
+  const first = agent(disk, { id: 914, staged: '0.82.0' })
+  assert.equal(await first.c.tick(), 'requested')
+  const late = agent(lateReader(disk, before, { dies: true }), { id: 915, staged: '0.82.0' })
+  await late.c.tick()
+  const third = agent(disk, { id: 916, staged: '0.82.0' })
+  assert.equal(await third.c.tick(), 'machine_busy', 'the lease 914 holds still stands')
+  assert.equal([first, late, third].reduce((n, a) => n + a.restarts.length, 0), 1, 'one restart on the computer at a time')
+  assert.equal(JSON.parse(disk.fs.readFile(LEASE)!).assistantId, '914')
+})
+
 // -- An agent that goes silent past its lease --------------------------------------------------------
 
 const silentFiles = (disk: ReturnType<typeof memDisk>) => [...disk.files.keys()].filter((p) => /silent-/.test(p))
