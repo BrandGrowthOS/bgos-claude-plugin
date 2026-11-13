@@ -81,9 +81,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { EventEmitter } from 'node:events'
 import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
 import { deletePersonBrowserProfile, personShareEnded, principalDirName } from '../lib/person-browser-profile.mjs'
+import { applyPendingClears, clearPersonOrigins, drainAccessChanges, fetchPeopleAccess, reconcilePeopleAccess, recordFillOrigin } from '../lib/person-access.mjs'
 import { HostFillError, openPersonFill } from '../lib/agent-host-vault-fill.mjs'
-import { fillLoginInPage } from '../lib/agent-host-page-fill.mjs'
-import { commitFillTrust, hostPinStatus, readFillTrust, readHostRecord, vaultHostDir } from '../lib/vault-host.mjs'
+import { fillLoginInPage, forgetPageHistory } from '../lib/agent-host-page-fill.mjs'
+import { commitFillTrust, hostPinStatus, readFillTrust, readHostRecord, readOwnerAnchor, vaultHostDir } from '../lib/vault-host.mjs'
 import { ensureBrowser, bundledChromium, browserBootstrapReadiness, browserInstallActivity, cancelBrowserInstallations, whenBrowserInstallationsDrained } from '../lib/browser-bootstrap.mjs'
 import { terminateBrowserDaemon } from '../lib/browser-profile-daemon-stop.mjs'
 import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../lib/agent-inventory.mjs'
@@ -2157,7 +2158,9 @@ export class ChromiumEngine {
  * Chrome, and one principal's concurrent first calls share one launch.
  */
 export class BrowserPool {
-  constructor({ agentRoot, createEngine, idleMs = BROWSER_IDLE_MS, log = () => {}, loadSignIns = null, bindEngine = /** @type {((engine: any, slot: any, ctx: any) => void) | null} */ (null) }) {
+  constructor({ agentRoot, createEngine, idleMs = BROWSER_IDLE_MS, log = () => {}, loadSignIns = null, bindEngine = /** @type {((engine: any, slot: any, ctx: any) => void) | null} */ (null), afterStart = /** @type {((engine: any, slot: any, ctx: any) => Promise<unknown> | unknown) | null} */ (null) }) {
+    /** Called with each engine once it started, before the call that needed it runs. */
+    this.afterStart = afterStart
     this._agentRoot = agentRoot
     this._createEngine = createEngine
     /** Called with each new engine, its slot and the call's context, before it starts. */
@@ -2227,6 +2230,7 @@ export class BrowserPool {
             } catch (err) { this._log(`sign-ins: not opened (${err?.code || 'unavailable'})`) }
           }
           slot.openedAt = new Date().toISOString()
+          try { await this.afterStart?.(engine, slot, ctx) } catch (err) { this._log(`after start: ${err?.message ?? err}`) }
           return engine
         })().finally(() => {
           slot.starting = null
@@ -2415,7 +2419,7 @@ const REDEEM_MAX_BYTES = 2_500_000
  * this browser, typed, Sign in pressed, and the login document awaited
  * (lib/agent-host-page-fill.mjs). Answers a receipt; never a value.
  */
-export async function runPersonVaultFill({ pairing, agentRoot, assistantId, actingUserId, ticket, sessionId, tabId, origin, page, engine, fetchImpl = globalThis.fetch, pageFill = fillLoginInPage, security = undefined }) {
+export async function runPersonVaultFill({ pairing, agentRoot, assistantId, actingUserId, ticket, itemId = undefined, sessionId, tabId, origin, page, engine, fetchImpl = globalThis.fetch, pageFill = fillLoginInPage, forgetHistory = forgetPageHistory, security = undefined }) {
   const dir = vaultHostDir(join(agentRoot, String(assistantId)))
   let record
   try {
@@ -2448,9 +2452,10 @@ export async function runPersonVaultFill({ pairing, agentRoot, assistantId, acti
   let values = null
   try {
     values = await openPersonFill(redeemed, {
-      assistantId, ownerUserId: pairing.ownerUserId, actingUserId, origin, hostSeed: record.hostSeed,
+      assistantId, ownerUserId: pairing.ownerUserId, actingUserId, origin, hostSeed: record.hostSeed, itemId,
       trust: {
         read: (userId) => readFillTrust(dir, userId, undefined, security),
+        ownerAnchor: () => readOwnerAnchor(dir, undefined, security),
         commit: (c) => commitFillTrust(dir, c, undefined, security),
       },
     })
@@ -2460,7 +2465,19 @@ export async function runPersonVaultFill({ pairing, agentRoot, assistantId, acti
   try {
     // Every later answer of this browser hides the value, whatever a page does with it.
     engine?.registerSecret?.(values.password)
+    // M2: which sites a person had the owner's logins filled on (no value), so
+    // losing access later can clear them from that person's browser.
+    if (!values.own) {
+      try { recordFillOrigin({ agentRoot, assistantId, userId: actingUserId, origin }) } catch {}
+    }
     const done = await pageFill(page, { username: values.username, password: values.password }, { origin })
+    // H1: the filled document can never come back. Whatever the outcome, the
+    // tab's back and forward history (and with it the back forward cache) is
+    // forgotten before the page is released; a tab whose history could not be
+    // forgotten stays private and counts as not filled.
+    let forgot = null
+    try { forgot = await forgetHistory(page) } catch { forgot = null }
+    if (forgot?.ok !== true) return { filled: false, reason: 'history_not_cleared', private: 'kept' }
     // The engine's own privacy (lib/browser-host-core/answer-privacy.js) made
     // the page private the moment a secret field had a value. The login
     // document is gone now, or its fields were emptied: the host releases the
@@ -2526,6 +2543,8 @@ export class BrowserHostCore {
     this.vaultFill = vaultFill
     /** The longest a fill may hold a browser (VAULT_FILL_DEADLINE_MS); then that browser is closed. */
     this.vaultFillDeadlineMs = VAULT_FILL_DEADLINE_MS
+    /** How long a fill waits for a browser call already running (VAULT_FILL_DRAIN_MS); then it answers browser_busy. */
+    this.vaultFillDrainMs = VAULT_FILL_DRAIN_MS
     /** A browsing card is the owner's: another person's or a room's browsing is not told in the owner's chat. */
     this.isOwnerPrincipal = isOwnerPrincipal
     this.intentCheck = intentCheck
@@ -3064,7 +3083,9 @@ export class BrowserHostCore {
     const id = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v)
     let origin = null
     try { const u = new URL(String(a.origin)); if (u.protocol === 'https:' && u.origin === a.origin) origin = a.origin } catch {}
-    if (typeof a.ticket !== 'string' || !/^[A-Za-z0-9_-]{20,200}$/.test(a.ticket) || !id(a.sessionId) || !id(a.tabId) || !origin) return receipt(false, 'bad_input')
+    // The login the lane asked for (M4): the redeemed one must be it.
+    const itemOk = typeof a.itemId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(a.itemId)
+    if (typeof a.ticket !== 'string' || !/^[A-Za-z0-9_-]{20,200}$/.test(a.ticket) || !itemOk || !id(a.sessionId) || !id(a.tabId) || !origin) return receipt(false, 'bad_input')
     const slot = this.pool.peek(ctx)
     if (!slot) return receipt(false, 'no_browser')
     const ids = fillIdsOf(slot.engine)
@@ -3082,14 +3103,14 @@ export class BrowserHostCore {
       let timer
       const settled = await Promise.race([
         Promise.allSettled([...(slot.runningTools || [])]).then(() => true),
-        new Promise((resolve) => { timer = setTimeout(() => resolve(false), VAULT_FILL_DRAIN_MS); timer.unref?.() }),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(false), this.vaultFillDrainMs); timer.unref?.() }),
       ]).finally(() => clearTimeout(timer))
       if (!settled) return receipt(false, 'browser_busy')
       // A page that never lets go (an alert, a busy loop) must not hold the
       // browser forever: at the deadline the browser that may hold the value
       // is closed, and only then is the hold let go.
       let deadline
-      const fill = Promise.resolve().then(() => this.vaultFill({ assistantId: ctx.assistantId, actingUserId: person[1], ticket: a.ticket, sessionId: a.sessionId, tabId: a.tabId, origin, page, engine: slot.engine }))
+      const fill = Promise.resolve().then(() => this.vaultFill({ assistantId: ctx.assistantId, actingUserId: person[1], ticket: a.ticket, itemId: a.itemId, sessionId: a.sessionId, tabId: a.tabId, origin, page, engine: slot.engine }))
       const done = await Promise.race([
         fill,
         new Promise((resolve) => { deadline = setTimeout(() => resolve({ timedOut: true }), this.vaultFillDeadlineMs); deadline.unref?.() }),
@@ -3734,7 +3755,9 @@ export class BrowserHost {
     this._downloadsTimer = null
     this._lastSweep = 0
     this.pool = new BrowserPool({ agentRoot, createEngine, log, bindEngine: (engine, slot, ctx) => this.core?.bindEngine(engine, slot, ctx),
-      loadSignIns: ctx => this._machineSignIns(ctx) })
+      loadSignIns: ctx => this._machineSignIns(ctx),
+      // M2: origins a person lost while their browser was closed are cleared at its next start.
+      afterStart: (engine, _slot, ctx) => applyPendingClears({ agentRoot, assistantId: ctx.assistantId, principal: ctx.principal, engine }) })
     this.remoteViews = new RemoteBrowserViews({ pool: this.pool })
     this.connections = new Map()
     this.retiringConnections = new Map()
@@ -3841,6 +3864,7 @@ export class BrowserHost {
     // A person whose share ended loses an open browser and its folders (0.90.0).
     this._sharesTimer = setInterval(() => {
       void sweepEndedShares({ pool: this.pool, agentRoot: this.agentRoot, isOwnerPrincipal: (ctx) => this.core.isOwnerPrincipal?.(ctx) === true, log: this._log }).catch(() => {})
+      void this._drainAccessChanges().catch(() => {})
     }, ENDED_SHARE_SWEEP_MS)
     this._sharesTimer.unref?.()
     return this
@@ -3863,7 +3887,44 @@ export class BrowserHost {
   }
 
   /** A pairing connected: its agents' stores sweep (once) and tell owners nobody could tell. */
+  /** M2: what a person lost while this host was away, from the server, on every connect. */
+  async _reconcilePeopleAccess(id) {
+    const conn = this.connectionFor(id)
+    if (!conn) return
+    const answer = await fetchPeopleAccess({ backendUrl: conn.pairing.backendUrl, token: conn.pairing.token, assistantId: id, fetchImpl: this._fetch })
+    // A 404 or no answer keeps the record for the next connect.
+    if (!answer) return
+    await reconcilePeopleAccess({ agentRoot: this.agentRoot, assistantId: id, answer, ownerUserId: conn.pairing.ownerUserId, ...this._accessEffects(id) })
+  }
+
+  _accessEffects(id) {
+    return {
+      clearOrigins: (userId, origins) => clearPersonOrigins({ pool: this.pool, agentRoot: this.agentRoot, assistantId: id, userId, origins }),
+      deleteProfile: async (userId) => {
+        const owner = this.connectionFor(id)?.pairing.ownerUserId ?? null
+        if (userId === owner) return
+        const ctx = { assistantId: id, principal: `user-${userId}` }
+        try { await this.pool.release(ctx) } catch {}
+        this.pool._slots?.delete?.(this.pool.slotKey(ctx))
+        try { deletePersonBrowserProfile({ agentRoot: this.agentRoot, assistantId: id, userId, ownerUserId: owner }) } catch {}
+        this._log(`a person on agent ${id} lost the owner's logins: their browser was closed and its folders deleted`)
+      },
+    }
+  }
+
+  /** M2: the changes the owner's daemon queued from its pairing room. */
+  async _drainAccessChanges() {
+    for (const conn of this.connections.values()) {
+      for (const id of conn.pairing.assistantIds) {
+        try {
+          await drainAccessChanges({ agentRoot: this.agentRoot, assistantId: id, ownerUserId: conn.pairing.ownerUserId, ...this._accessEffects(id) })
+        } catch (err) { this._log(`people access: a queued change did not apply (${err?.message ?? err})`) }
+      }
+    }
+  }
+
   _agentsConnected(ids) {
+    for (const id of ids || []) void this._reconcilePeopleAccess(id).catch((err) => this._log(`people access: not reconciled (${err?.message ?? err})`))
     for (const id of ids || []) {
       const store = this.downloadStore(id)
       void Promise.resolve(store?.ready).then(() => store?.tellOwners()).catch(() => {})

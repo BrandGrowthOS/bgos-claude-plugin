@@ -17,14 +17,14 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { generateKeyPairSync } from 'node:crypto'
+import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { fillNeedsAsk, openPersonFill } from '../lib/agent-host-vault-fill.mjs'
+import { HOST_FILL_SENTENCES, canonical, fillNeedsAsk, openPersonFill } from '../lib/agent-host-vault-fill.mjs'
 import { account, approve, signedState } from './helpers/vault-state-fixture.mjs'
-import { commitFillTrust, loadOrCreateHostKey, readFillTrust, testSecurity } from './helpers/vault-host.mjs'
+import { anchorOwnerAccount, commitFillTrust, loadOrCreateHostKey, ownerAccountCode, ownerAccountFromDoorAnswer, readFillTrust, readOwnerAnchor, testSecurity } from './helpers/vault-host.mjs'
 
 const AGENT = 901
 const OWNER = 'user_owner1'
@@ -39,19 +39,21 @@ function rig(people: any[] | undefined, extra: Record<string, unknown> = {}) {
   acct.addDevice()
   const phone = acct.addDevice()
   const state = signedState({ ownerId: OWNER, assistantId: AGENT, hostSeed, acct, people, items: [{ id: ITEM, website: ORIGIN, username: 'owner@example.com', password: 'made-up-secret-1' }], ...extra })
-  const trust = memoryTrust()
+  // The owner's account key, anchored on this host by a channel the server cannot forge (H2).
+  const trust = memoryTrust({ ownerId: OWNER, accountPublic: acct.accountPublic })
   const ctx = { assistantId: AGENT, ownerUserId: OWNER, actingUserId: LEO, origin: ORIGIN, hostSeed, trust, now: () => Date.parse('2026-11-13T10:00:00.000Z') }
   const redeemed = { state, itemId: ITEM, devices: acct.devices, accountPublic: acct.accountPublic }
   return { acct, phone, hostSeed, state, ctx, redeemed, trust, pins: trust.pins }
 }
 
 /** This machine's fill trust, in memory: the account key pins, the revision floors, the approvals used. */
-function memoryTrust() {
+function memoryTrust(anchor: { ownerId: string; accountPublic: string } | null = null) {
   const pins = new Map<string, string>()
   const floors = new Map<string, number>()
   const used = new Set<string>()
   return {
     pins, floors, used,
+    ownerAnchor: async () => anchor,
     read: async (userId: string) => ({ accountPublic: pins.get(userId) ?? null, revisionFloor: floors.get(userId) ?? 0, approvalUsed: (id: string) => used.has(id) }),
     commit: async (c: { userId: string; accountPublic: string; revision: number; requestId?: string; approvalUntil?: number }) => {
       if (pins.has(c.userId) && pins.get(c.userId) !== c.accountPublic) throw Object.assign(new Error('x'), { code: 'vault_account_key_changed' })
@@ -77,7 +79,8 @@ test('an all-logins entry (itemId null) lists the item', async () => {
 })
 
 test('no people in the signed state, or the item not listed: refused', async () => {
-  assert.equal(await code(openPersonFill(rig(undefined).redeemed, rig(undefined).ctx)), 'vault_not_shared_with_person')
+  const none = rig(undefined)
+  assert.equal(await code(openPersonFill(none.redeemed, none.ctx)), 'vault_not_shared_with_person')
   const r = rig([{ userId: LEO, askMode: 'never', items: [{ itemId: 'another-item', ask: false }] }])
   assert.equal(await code(openPersonFill(r.redeemed, r.ctx)), 'vault_not_shared_with_person')
 })
@@ -92,7 +95,7 @@ test('step 1: a forged signature, another account key or another agent is refuse
   assert.equal(await code(openPersonFill(r.redeemed, r.ctx)), 'ok')
   const forger = account(); forger.addDevice()
   const forged = signedState({ ownerId: OWNER, assistantId: AGENT, hostSeed: r.hostSeed, acct: forger, people, items: [{ id: ITEM, website: ORIGIN, username: 'x', password: 'y' }] })
-  assert.equal(await code(openPersonFill({ state: forged, itemId: ITEM, devices: forger.devices, accountPublic: forger.accountPublic }, r.ctx)), 'vault_state_unverified', 'not the pinned key')
+  assert.equal(await code(openPersonFill({ state: forged, itemId: ITEM, devices: forger.devices, accountPublic: forger.accountPublic }, r.ctx)), 'vault_owner_account_mismatch', 'not the anchored key')
   const other = rig(people, { assistantId: 902 })
   assert.equal(await code(openPersonFill(other.redeemed, { ...other.ctx })), 'vault_state_other_agent')
 })
@@ -231,3 +234,104 @@ async function readFillTrustPlain(dir: string, userId: string) {
   const t = await readFillTrust(dir, userId, undefined, testSecurity)
   return { accountPublic: t.accountPublic, revisionFloor: t.revisionFloor, used: t.approvalUsed('req-1') }
 }
+
+// ── H2: the owner's account key must be anchored on this host ──────────────
+
+/**
+ * The cold review's proof (zz-review-tofu): on a first fill a server signs the
+ * owner's REAL sealed items under its own account key, with its own website
+ * and its own person. Trust on first use opened the real password for it and
+ * pinned its key. Now the owner's key must be anchored on this host by a
+ * channel the server cannot forge (the desktop's loopback door, or the
+ * terminal pin with the account code); a server key is refused.
+ */
+test('H2: a server that re-signs the real ciphertext under its own key gets nothing, anchored or not', async () => {
+  const hostSeed = seed()
+  const owner = account(); owner.addDevice()
+  const real = signedState({ ownerId: OWNER, assistantId: AGENT, hostSeed, acct: owner,
+    people: [{ userId: LEO, askMode: 'always', items: [{ itemId: ITEM, ask: true }] }],
+    items: [{ id: ITEM, website: ORIGIN, username: 'owner@example.com', password: 'REAL-OWNER-SECRET' }] })
+  const evil = account(); const dev = evil.addDevice()
+  const { signature: _sig, ...body } = real as any
+  const forged: any = { ...body, signerDeviceId: dev.id, devices: [{ deviceId: dev.id, key: {} }],
+    items: body.items.map((i: any) => ({ ...i, website: 'https://attacker.example' })),
+    people: [{ userId: 'user_mallory', askMode: 'never', items: [{ itemId: null, ask: false }] }] }
+  forged.signature = Buffer.from(sign(null, Buffer.from('hoai-vault-state-v2\n' + canonical(forged)), evil.keys.get(dev.id))).toString('base64url')
+  const answer = { state: forged, itemId: ITEM, devices: evil.devices, accountPublic: evil.accountPublic }
+  const ctx = { assistantId: AGENT, ownerUserId: OWNER, actingUserId: 'user_mallory', origin: 'https://attacker.example', hostSeed, now: () => Date.now() }
+  // No anchor on this host: refused, and nothing pinned.
+  const bare = memoryTrust(null)
+  assert.equal(await code(openPersonFill(answer, { ...ctx, trust: bare })), 'vault_owner_account_unconfirmed')
+  assert.equal(bare.pins.size, 0)
+  // The real owner's key anchored: the server's key is refused, never re-pinned.
+  const anchored = memoryTrust({ ownerId: OWNER, accountPublic: owner.accountPublic })
+  assert.equal(await code(openPersonFill(answer, { ...ctx, trust: anchored })), 'vault_owner_account_mismatch')
+  assert.equal(anchored.pins.size, 0)
+  // An anchor for another owner is no anchor for this one.
+  const other = memoryTrust({ ownerId: 'user_someone', accountPublic: owner.accountPublic })
+  assert.equal(await code(openPersonFill({ state: real, itemId: ITEM, devices: owner.devices, accountPublic: owner.accountPublic }, { ...ctx, actingUserId: LEO, origin: ORIGIN, trust: other })), 'vault_owner_account_unconfirmed')
+})
+
+test('H2: the refusal sentence for an unanchored owner key is the agreed one', () => {
+  assert.equal(HOST_FILL_SENTENCES.vault_owner_account_unconfirmed, 'This computer has not confirmed your HOAI account yet. Open this agent\'s browser in HOAI on this computer, or pin this computer again.')
+})
+
+test('M1: a state signed by a retired or revoked device is refused', async () => {
+  const people = [{ userId: LEO, askMode: 'never', items: [{ itemId: ITEM, ask: false }] }]
+  const r = rig(people)
+  const signer = r.acct.devices[0]!
+  const retired = signedState({ ownerId: OWNER, assistantId: AGENT, hostSeed: r.hostSeed, acct: r.acct, people, retiredDeviceIds: [signer.id], items: [{ id: ITEM, website: ORIGIN, username: 'u', password: 'p' }] })
+  assert.equal(await code(openPersonFill({ ...r.redeemed, state: retired }, r.ctx)), 'vault_state_unverified')
+  const revokedDevices = r.acct.devices.map((d: any) => (d.id === signer.id ? { ...d, revokedAt: '2026-11-12T00:00:00.000Z' } : d))
+  assert.equal(await code(openPersonFill({ ...r.redeemed, devices: revokedDevices }, r.ctx)), 'vault_state_unverified')
+})
+
+test('M4: the redeemed login must be the one the lane asked for', async () => {
+  const r = rig([{ userId: LEO, askMode: 'never', items: [{ itemId: null, ask: false }] }])
+  assert.equal(await code(openPersonFill(r.redeemed, { ...r.ctx, itemId: '3f1c3a4b-5d6e-4f70-8a9b-0c1d2e3f4a5b' })), 'vault_item_mismatch')
+  assert.equal(await code(openPersonFill(r.redeemed, { ...r.ctx, itemId: ITEM })), 'ok')
+})
+
+test('H2: the owner account anchor in the host file: set once, the same again passes, another key is refused and never re-pinned; the account code', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'anchor-')), 'vault')
+  try {
+    await loadOrCreateHostKey(dir, AGENT)
+    const A = 'A'.repeat(43)
+    assert.equal(await readOwnerAnchor(dir, undefined, testSecurity), null)
+    await anchorOwnerAccount(dir, { ownerId: OWNER, accountPublic: A, via: 'terminal' }, undefined, testSecurity)
+    assert.deepEqual(await readOwnerAnchor(dir, undefined, testSecurity), { ownerId: OWNER, accountPublic: A, via: 'terminal' })
+    await anchorOwnerAccount(dir, { ownerId: OWNER, accountPublic: A, via: 'desktop_door' }, undefined, testSecurity)
+    await assert.rejects(anchorOwnerAccount(dir, { ownerId: OWNER, accountPublic: 'B'.repeat(43), via: 'terminal' }, undefined, testSecurity), (e: any) => e.code === 'vault_owner_account_changed')
+    await assert.rejects(anchorOwnerAccount(dir, { ownerId: 'user_other', accountPublic: A, via: 'terminal' }, undefined, testSecurity), (e: any) => e.code === 'vault_owner_account_changed')
+    assert.equal((await readOwnerAnchor(dir, undefined, testSecurity))!.accountPublic, A, 'unchanged')
+    await assert.rejects(anchorOwnerAccount(dir, { ownerId: OWNER, accountPublic: 'short', via: 'terminal' }, undefined, testSecurity))
+    // The code HOAI's pin screen shows from the owner's own key.
+    const hex = createHash('sha256').update(JSON.stringify(['hoai-owner-account-v1', OWNER, A])).digest('hex').slice(0, 20)
+    assert.equal(ownerAccountCode(OWNER, A), hex.match(/.{4}/g)!.join(' '))
+    assert.match(ownerAccountCode(OWNER, A), /^[0-9a-f]{4}( [0-9a-f]{4}){4}$/)
+  } finally { rmSync(join(dir, '..'), { recursive: true, force: true }) }
+})
+
+test('H2: the desktop door answer carries ownerAccount; only a well formed one for this owner is read', () => {
+  const A = 'A'.repeat(43)
+  assert.deepEqual(ownerAccountFromDoorAnswer({ accepted: true, ownerAccount: { ownerId: OWNER, accountPublic: A } }, OWNER), { ownerId: OWNER, accountPublic: A })
+  assert.equal(ownerAccountFromDoorAnswer({ accepted: true }, OWNER), null)
+  assert.equal(ownerAccountFromDoorAnswer({ accepted: true, ownerAccount: { ownerId: 'user_x', accountPublic: A } }, OWNER), null)
+  assert.equal(ownerAccountFromDoorAnswer({ accepted: true, ownerAccount: { ownerId: OWNER, accountPublic: 'nope' } }, OWNER), null)
+  assert.equal(ownerAccountFromDoorAnswer({ accepted: false, ownerAccount: { ownerId: OWNER, accountPublic: A } }, OWNER), null)
+})
+
+test('M5: commits to the fill trust at the same moment are not lost', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'trust-lock-')), 'vault')
+  try {
+    await loadOrCreateHostKey(dir, AGENT)
+    const A = 'A'.repeat(43)
+    const until = Date.now() + 60_000
+    await Promise.all(Array.from({ length: 6 }, (_, i) => commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 1, requestId: `req-${i}`, approvalUntil: until }, undefined, testSecurity)))
+    const t = await readFillTrust(dir, OWNER, undefined, testSecurity)
+    for (let i = 0; i < 6; i++) assert.equal(t.approvalUsed(`req-${i}`), true, `req-${i}`)
+    // The same approval twice at once: exactly one wins.
+    const both = await Promise.allSettled([0, 1].map(() => commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 1, requestId: 'req-twice', approvalUntil: until }, undefined, testSecurity)))
+    assert.deepEqual(both.map((x) => x.status).sort(), ['fulfilled', 'rejected'])
+  } finally { rmSync(join(dir, '..'), { recursive: true, force: true }) }
+})

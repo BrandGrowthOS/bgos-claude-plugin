@@ -26,7 +26,7 @@ import { join } from 'node:path'
 import { BrowserHostCore, BrowserPool, browserPathsFor, fillIdsOf, fillTabIdOf, runPersonVaultFill, sweepEndedShares } from '../bin/hoai-browser-host.mjs'
 import { RemoteBrowserViews } from '../lib/remote-view.mjs'
 import { vaultHostDir } from '../lib/vault-host.mjs'
-import { confirmHostPin, loadOrCreateHostKey, provisionSigningIdentity, registerHostKey, testSecurity } from './helpers/vault-host.mjs'
+import { anchorOwnerAccount, confirmHostPin, loadOrCreateHostKey, provisionSigningIdentity, registerHostKey, testSecurity } from './helpers/vault-host.mjs'
 import { account, signedState } from './helpers/vault-state-fixture.mjs'
 
 const AGENT = 901
@@ -103,9 +103,9 @@ test('a person\'s fill runs under page secrecy and answers a receipt with no val
   try {
     await r.pool.acquire(PERSON)
     const { sessionId, tabId } = await idsFor(r.core, PERSON)
-    const answer = await r.core.callTool(PERSON, 'hoai_vault_fill', { ticket: TICKET, sessionId, tabId, origin: ORIGIN })
+    const answer = await r.core.callTool(PERSON, 'hoai_vault_fill', { ticket: TICKET, itemId: ITEM, sessionId, tabId, origin: ORIGIN })
     assert.deepEqual(JSON.parse(textOf(answer)), { filled: true })
-    assert.deepEqual(seen, [{ assistantId: AGENT, actingUserId: LEO, ticket: TICKET, sessionId, tabId, origin: ORIGIN, page: `${ORIGIN}/login`, engine: true }])
+    assert.deepEqual(seen, [{ assistantId: AGENT, actingUserId: LEO, ticket: TICKET, itemId: ITEM, sessionId, tabId, origin: ORIGIN, page: `${ORIGIN}/login`, engine: true }])
     assert.equal(during.held, true)
     assert.match(during.snapshot, /login is being filled/)
     assert.match(during.navigate, /login is being filled/)
@@ -121,19 +121,22 @@ test('refused before anything is redeemed: the owner\'s turn, stale ids, another
   let called = 0
   const r = core({ vaultFill: async () => { called += 1; return { filled: true } } })
   try {
-    const none = JSON.parse(textOf(await r.core.callTool(PERSON, 'hoai_vault_fill', { ticket: TICKET, sessionId: 'vs_x', tabId: 'tab_x', origin: ORIGIN })))
+    const none = JSON.parse(textOf(await r.core.callTool(PERSON, 'hoai_vault_fill', { ticket: TICKET, itemId: ITEM, sessionId: 'vs_x', tabId: 'tab_x', origin: ORIGIN })))
     assert.deepEqual(none, { filled: false, reason: 'no_browser' })
     await r.pool.acquire(PERSON)
     await r.pool.acquire(OWNER_CTX)
     const { sessionId, tabId } = await idsFor(r.core, PERSON)
     const reason = async (ctx: any, args: any) => JSON.parse(textOf(await r.core.callTool(ctx, 'hoai_vault_fill', args))).reason
-    assert.equal(await reason(OWNER_CTX, { ticket: TICKET, sessionId, tabId, origin: ORIGIN }), 'owner_turn')
-    assert.equal(await reason({ ...PERSON, principal: 'owner' }, { ticket: TICKET, sessionId, tabId, origin: ORIGIN }), 'owner_turn')
-    assert.equal(await reason(PERSON, { ticket: TICKET, sessionId: 'vs_other', tabId, origin: ORIGIN }), 'stale_target')
-    assert.equal(await reason(PERSON, { ticket: TICKET, sessionId, tabId: 'tab_other', origin: ORIGIN }), 'stale_target')
-    assert.equal(await reason(PERSON, { ticket: TICKET, sessionId, tabId, origin: 'https://other.example.com' }), 'origin_mismatch')
-    assert.equal(await reason(PERSON, { ticket: 'short', sessionId, tabId, origin: ORIGIN }), 'bad_input')
-    assert.equal(await reason(PERSON, { ticket: TICKET, sessionId, tabId, origin: 'http://bank.example.com' }), 'bad_input')
+    assert.equal(await reason(OWNER_CTX, { ticket: TICKET, itemId: ITEM, sessionId, tabId, origin: ORIGIN }), 'owner_turn')
+    assert.equal(await reason({ ...PERSON, principal: 'owner' }, { ticket: TICKET, itemId: ITEM, sessionId, tabId, origin: ORIGIN }), 'owner_turn')
+    assert.equal(await reason(PERSON, { itemId: ITEM, ticket: TICKET, sessionId: 'vs_other', tabId, origin: ORIGIN }), 'stale_target')
+    assert.equal(await reason(PERSON, { itemId: ITEM, ticket: TICKET, sessionId, tabId: 'tab_other', origin: ORIGIN }), 'stale_target')
+    assert.equal(await reason(PERSON, { itemId: ITEM, ticket: TICKET, sessionId, tabId, origin: 'https://other.example.com' }), 'origin_mismatch')
+    assert.equal(await reason(PERSON, { itemId: ITEM, ticket: 'short', sessionId, tabId, origin: ORIGIN }), 'bad_input')
+    assert.equal(await reason(PERSON, { itemId: ITEM, ticket: TICKET, sessionId, tabId, origin: 'http://bank.example.com' }), 'bad_input')
+    // M4: the login the lane asked for is named, and must be a login id.
+    assert.equal(await reason(PERSON, { ticket: TICKET, sessionId, tabId, origin: ORIGIN }), 'bad_input')
+    assert.equal(await reason(PERSON, { ticket: TICKET, itemId: '../x', sessionId, tabId, origin: ORIGIN }), 'bad_input')
     assert.equal(called, 0)
   } finally { r.done() }
 })
@@ -151,10 +154,10 @@ test('the target is the acting person\'s own browser: the owner\'s or another pe
     for (const slot of [ownerSlot, benSlot]) {
       const ids = fillIdsOf(slot.engine)
       const tab = fillTabIdOf(slot.engine, slot.engine.pages()[0])
-      assert.equal(await reason({ ticket: TICKET, sessionId: ids.sessionId, tabId: tab, origin: ORIGIN }), 'stale_target')
+      assert.equal(await reason({ ticket: TICKET, itemId: ITEM, sessionId: ids.sessionId, tabId: tab, origin: ORIGIN }), 'stale_target')
       // Leo's own session id with another browser's tab id: refused too.
       const leo = await idsFor(r.core, PERSON)
-      assert.equal(await reason({ ticket: TICKET, sessionId: leo.sessionId, tabId: tab, origin: ORIGIN }), 'stale_target')
+      assert.equal(await reason({ ticket: TICKET, itemId: ITEM, sessionId: leo.sessionId, tabId: tab, origin: ORIGIN }), 'stale_target')
     }
     assert.equal(called, 0)
     void ownerPages
@@ -166,7 +169,7 @@ test('review finding 4: a fill that never ends closes that browser and lets go o
   try {
     await r.pool.acquire(PERSON)
     const { sessionId, tabId } = await idsFor(r.core, PERSON)
-    const answer = JSON.parse(textOf(await r.core.callTool(PERSON, 'hoai_vault_fill', { ticket: TICKET, sessionId, tabId, origin: ORIGIN })))
+    const answer = JSON.parse(textOf(await r.core.callTool(PERSON, 'hoai_vault_fill', { ticket: TICKET, itemId: ITEM, sessionId, tabId, origin: ORIGIN })))
     assert.deepEqual(answer, { filled: false, reason: 'timed_out' })
     assert.equal(r.pool.peek(PERSON), null, 'the browser that held the value was closed')
     const slot = (r.pool as any)._slots.get(r.pool.slotKey(PERSON))
@@ -198,7 +201,7 @@ test('the live view sends no frame while a login is being filled', () => {
 
 // ── runPersonVaultFill: the redeem, the checks, the open, the fill ──────────
 
-async function hostRig(people: any[], opts: { pinned?: boolean } = {}) {
+async function hostRig(people: any[], opts: { pinned?: boolean; anchored?: boolean } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'hvr-'))
   const agentRoot = join(home, '.bgos-agent')
   const dir = vaultHostDir(join(agentRoot, String(AGENT)))
@@ -211,21 +214,26 @@ async function hostRig(people: any[], opts: { pinned?: boolean } = {}) {
     await confirmHostPin(dir)
   }
   const acct = account()
+  // The owner's account key, anchored here (H2): by the terminal pin in these tests.
+  if (opts.anchored !== false) await anchorOwnerAccount(dir, { ownerId: OWNER, accountPublic: acct.accountPublic, via: 'terminal' }, undefined, testSecurity)
   const state = signedState({ ownerId: OWNER, assistantId: AGENT, hostSeed: record.hostSeed, acct, people, items: [{ id: ITEM, website: ORIGIN, username: 'owner@example.com', password: 'made-up-secret-9' }] })
   const redeemed = { state, itemId: ITEM, devices: acct.devices, accountPublic: acct.accountPublic }
   const fetches: any[] = []
   const typed: any[] = []
   const secrets: string[] = []
   const handBacks: number[] = []
+  const steps: string[] = []
   const pairing = { backendUrl: 'https://api.example.com', token: 'pt_secret_pairing', ownerUserId: OWNER, assistantIds: [AGENT] }
   const run = (over: Record<string, unknown> = {}, answer: any = redeemed, status = 200) => runPersonVaultFill({
     pairing, agentRoot, assistantId: AGENT, actingUserId: LEO, ticket: TICKET, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN,
-    page: fakePage(), engine: { registerSecret: (s: string) => secrets.push(s), handBackPrivacy: () => { handBacks.push(1); return { ok: true } } }, security: testSecurity,
+    itemId: ITEM,
+    page: fakePage(), engine: { registerSecret: (s: string) => secrets.push(s), handBackPrivacy: () => { handBacks.push(1); steps.push('release'); return { ok: true } } }, security: testSecurity,
+    forgetHistory: async () => { steps.push('forget history'); return { ok: true } },
     fetchImpl: async (url: string, init: any) => { fetches.push({ url, init }); return new Response(JSON.stringify(answer), { status }) },
-    pageFill: async (_page: any, values: any, o: any) => { typed.push({ ...values, origin: o.origin }); return { filled: true } },
+    pageFill: async (_page: any, values: any, o: any) => { typed.push({ ...values, origin: o.origin }); steps.push('fill'); return { filled: true } },
     ...over,
   } as never)
-  return { home, dir, run, fetches, typed, secrets, handBacks, redeemed, done: () => rmSync(home, { recursive: true, force: true }) }
+  return { home, dir, run, fetches, typed, secrets, handBacks, steps, redeemed, done: () => rmSync(home, { recursive: true, force: true }) }
 }
 
 test('the redeem goes out with the agent\'s own pairing, then the login is opened, registered and typed', async () => {
@@ -315,4 +323,69 @@ test('review finding 6: the sweep also removes folders of an ended share with no
     assert.ok(existsSync(benPaths.profileDir), 'no marker, kept')
     assert.deepEqual(await sweepEndedShares({ pool: r.pool, agentRoot, log: () => {} }), [], 'nothing left to do')
   } finally { r.done() }
+})
+
+test('H1: after every person\'s fill, success or not, the tab\'s history is forgotten before the page is released', async () => {
+  const h = await hostRig([{ userId: LEO, askMode: 'never', items: [{ itemId: ITEM, ask: false }] }])
+  try {
+    assert.deepEqual(await h.run(), { filled: true })
+    assert.deepEqual(h.steps, ['fill', 'forget history', 'release'])
+    h.steps.length = 0
+    assert.deepEqual(await h.run({ pageFill: async () => { h.steps.push('fill'); return { filled: false, reason: 'sign_in_failed' } } }), { filled: false, reason: 'sign_in_failed' })
+    assert.deepEqual(h.steps, ['fill', 'forget history', 'release'])
+    // A history that could not be forgotten is no success, and the page stays private.
+    h.steps.length = 0
+    const kept = await h.run({ forgetHistory: async () => { h.steps.push('forget history'); return { ok: false } } })
+    assert.deepEqual(kept, { filled: false, reason: 'history_not_cleared', private: 'kept' })
+    assert.deepEqual(h.steps, ['fill', 'forget history'], 'not released')
+  } finally { h.done() }
+})
+
+test('H2: no anchored owner account on this host, no fill of the owner\'s login; M4: another login than asked is refused', async () => {
+  const people = [{ userId: LEO, askMode: 'never', items: [{ itemId: null, ask: false }] }]
+  const u = await hostRig(people, { anchored: false })
+  try {
+    assert.deepEqual(await u.run(), { filled: false, reason: 'vault_owner_account_unconfirmed' })
+    assert.deepEqual(u.typed, [])
+  } finally { u.done() }
+  const h = await hostRig(people)
+  try {
+    assert.deepEqual(await h.run({ itemId: '3f1c3a4b-5d6e-4f70-8a9b-0c1d2e3f4a5b' }), { filled: false, reason: 'vault_item_mismatch' })
+    assert.deepEqual(h.typed, [])
+  } finally { h.done() }
+})
+
+test('M6: a browser call that does not finish in time keeps the fill out: browser_busy, nothing redeemed, the hold let go', async () => {
+  let called = 0
+  const r = core({ vaultFill: async () => { called += 1; return { filled: true } } })
+  try {
+    const slot = await r.pool.acquire(PERSON)
+    r.core.vaultFillDrainMs = 30
+    slot.runningTools = new Set([new Promise(() => {})])
+    const { sessionId, tabId } = await idsFor(r.core, PERSON)
+    const answer = JSON.parse(textOf(await r.core.callTool(PERSON, 'hoai_vault_fill', { ticket: TICKET, itemId: ITEM, sessionId, tabId, origin: ORIGIN })))
+    assert.deepEqual(answer, { filled: false, reason: 'browser_busy' })
+    assert.equal(called, 0)
+    assert.equal(slot.vaultHold, null)
+    assert.equal(slot.ownerInputLease, null)
+  } finally { r.done() }
+})
+
+test('H1: the live view takes no command while a login is being filled, and frames come back after', async () => {
+  const page = fakePage()
+  const engine: any = { pages: () => [page] }
+  const slot: any = { engine }
+  const pool: any = { peek: () => slot, slotKey: () => 'k' }
+  const views = new RemoteBrowserViews({ pool })
+  const sent: any[] = []
+  const view: any = { viewId: 'v1', connectionId: 'c1', closed: false, context: PERSON, engine, page, sessionId: 's', tabId: 't', pendingFrame: null, latestFrame: null, queued: 0, tail: Promise.resolve(),
+    cdp: { send: async () => ({}) }, sendFrame: (m: any) => { sent.push(m); return true } }
+  views.views.set('v1', view)
+  slot.vaultHold = { kind: 'vault_fill' }
+  for (const method of ['hoai.input.acquire', 'hoai.input.pointer', 'hoai.browser.navigation', 'hoai.input.reload', 'Page.startScreencast']) {
+    sent.length = 0
+    const done = await views.command({ viewId: 'v1', frame: { id: 1, method, params: {}, sessionId: 's', tabId: 't' } }, 'c1')
+    assert.equal(done, false, method)
+    assert.equal(sent[0]?.frame?.error?.code, 'vault_fill_running', method)
+  }
 })
