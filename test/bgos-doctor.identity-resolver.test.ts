@@ -412,3 +412,16 @@ test('buildDoctorRows: a refused identity fails the credentials row with its fix
   assert.equal(ok?.ok, true)
   assert.match(String(ok?.detail), /identity: BGOS_ASSISTANT_ID=867 in the env block of \/a\/867\/\.mcp\.json/)
 })
+
+// REVIEW-0432 F2 (M22): the doctor reads the shared file for a named agent only when it is that agent's.
+test('the doctor never names another agent\'s shared credentials.json for a named agent whose own file is missing', () => {
+  const ownPath = join(AGENT_DIR, 'credentials-1175.json')
+  const legacyOf = (assistantId: number) => ({ [DEFAULT_PATH]: JSON.stringify({ assistantId, pairingToken: 't' }) })
+  const other = resolveDoctorIdentity({ env: { BGOS_ASSISTANT_ID: '1175' }, home: HOME, folder: FOLDER, ...fakeFs(legacyOf(900)) })
+  assert.equal(other.via, 'env-assistant')
+  assert.equal(other.path, ownPath)
+  assert.match(other.source, /does not exist, so the daemon has no pairing/)
+  const own = resolveDoctorIdentity({ env: { BGOS_ASSISTANT_ID: '1175' }, home: HOME, folder: FOLDER, ...fakeFs(legacyOf(1175)) })
+  assert.equal(own.via, 'legacy')
+  assert.equal(own.path, DEFAULT_PATH)
+})

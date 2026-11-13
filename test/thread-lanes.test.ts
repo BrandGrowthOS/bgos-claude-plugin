@@ -57,7 +57,9 @@ class FakeChild implements StreamJsonChild {
   frame(f: Record<string, unknown>) { for (const cb of this.out) cb(`${JSON.stringify(f)}\n`) }
   exit(code: number | null = 0) { this.exited = true; for (const cb of this.exits) cb(code, null) }
   init(id: string) { this.frame({ type: 'system', subtype: 'init', session_id: id }) }
+  /** A turn's end as the CLI sends it: an assistant frame first (a made up one when the turn errored), then the result. */
   result(text: string, isError = false) {
+    this.frame({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: isError ? 'API Error' : text }] } })
     this.frame(isError ? { type: 'result', subtype: 'error_during_execution', is_error: true } : { type: 'result', subtype: 'success', is_error: false, result: text })
   }
 }
@@ -77,6 +79,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
   const removed: string[] = []
   const branchesDeleted: string[] = []
   const timers: Timer[] = []
+  const logs: string[] = []
   const clock = { now: opts.startAt ?? 1_000_000 }
   /** The machine's processes as the lanes see them: a stamp while alive, and what stops each. */
   const procs = new Map<number, { stamp: string; alive: boolean; dies: 'SIGTERM' | 'SIGKILL' | 'never' }>()
@@ -160,12 +163,12 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
     now: () => clock.now,
     setTimer: (fn, ms) => { const t: Timer = { fn, ms, cleared: false, fired: false }; timers.push(t); return t },
     clearTimer: (h) => { (h as Timer).cleared = true },
-    log: () => {},
+    log: (line) => { logs.push(line) },
   }
   const manager = new ThreadLaneManager(deps)
   const live = (ms: number) => timers.filter((t) => t.ms === ms && !t.cleared && !t.fired)
   const fire = (t: Timer) => { t.fired = true; t.fn() }
-  return { manager, deps, files, dirs, spawned, posts, failedPosts, refusedPosts, modes, gitCalls, removed, branchesDeleted, timers, clock, live, fire, mainSrc, procs, procKills, ctl, procCwd }
+  return { manager, deps, files, dirs, spawned, posts, failedPosts, refusedPosts, modes, gitCalls, removed, branchesDeleted, timers, logs, clock, live, fire, mainSrc, procs, procKills, ctl, procCwd }
 }
 
 /** The command the manager must build for a working lane in wt(root) (protected: the agent repo's own state). */
@@ -2339,4 +2342,185 @@ test('THREADREPLY: the saved answer is private to this user and the log names th
   assert.equal(r.modes.get(SAVED), 0o600)
   assert.ok(logs.some((l) => l.includes('101.undelivered.txt')), logs.join(' | '))
   assert.equal(logs.some((l) => l.includes('the answer.')), false, 'the answer itself is never logged')
+})
+
+// -- THREADFIX: a result that is not the turn's answer never fails the turn, and a late answer is never lost --
+
+/** One assistant text frame, as the CLI sends it before every result a turn really produced. */
+const assistantFrame = (text: string) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] }, session_id: FORK_A })
+const resultFrame = (text: string, turns: number, over: Record<string, unknown> = {}) => ({ type: 'result', subtype: 'success', is_error: false, result: text, num_turns: turns, session_id: FORK_A, ...over })
+const replyBodies = (r: ReturnType<typeof rig>) => r.posts.filter((p) => p.path === REPLY).map((p) => p.body)
+const logged = (r: ReturnType<typeof rig>, what: RegExp) => r.logs.filter((l) => what.test(l))
+
+test('an empty num_turns 0 result before the turn\'s first assistant frame does not fail the turn, and the later answer is posted', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  // The frames a fork sends, in order, when the main session still had a background task (measured on CLI 2.1.322).
+  c.frame({ type: 'system', subtype: 'task_notification', task_id: 'b1', tool_use_id: 'tool_0', status: 'stopped', output_file: '', summary: 'Background shell command didn\'t finish before the previous session ended', session_id: FORK_A })
+  c.init(FORK_A)
+  c.frame(resultFrame('', 0))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r), [], 'the empty result of the notice is no failure')
+  assert.deepEqual(statePosts(r), ['101:working'], 'the thread is still working')
+  assert.equal(r.manager.runningCount(), 1, 'the turn still holds its slot')
+  assert.equal(r.live(THREAD_TURN_TIMEOUT_MS).length, 1, 'and its timer')
+  c.init(FORK_A)
+  c.frame(assistantFrame('PONG'))
+  c.frame(resultFrame('PONG', 1))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r), [{ chatId: '55', rootId: '101', text: 'PONG', final: true }], 'the real answer is the one reply')
+  assert.deepEqual(statePosts(r), ['101:working'], 'never back to open')
+  assert.equal(r.manager.runningCount(), 0)
+  assert.equal(logged(r, /skipped a result/).length, 1, r.logs.join(' | '))
+  assert.equal(saved(r).lastReplyId, '1010')
+  assert.equal(saved(r).lastDelivered, true)
+})
+
+test('any result before the turn\'s first assistant frame is skipped, on a later turn of the same process too', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame('first.'))
+  c.frame(resultFrame('first.', 1))
+  await r.manager.idle()
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'and then?' }))
+  await r.manager.idle()
+  // Not this turn's: the CLI has said nothing since the message was written to it.
+  c.frame(resultFrame('a background task finished.', 3))
+  c.frame(resultFrame('', 0, { subtype: 'error_during_execution', is_error: true }))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r).map((b) => b.text), ['first.'])
+  assert.equal(r.manager.runningCount(), 1, 'the second turn is still running')
+  c.frame(assistantFrame('second.'))
+  c.frame(resultFrame('second.', 1))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r).map((b) => b.text), ['first.', 'second.'])
+  assert.deepEqual(statePosts(r), ['101:working', '101:working'], 'no failure in between')
+  assert.equal(logged(r, /skipped a result/).length, 2, r.logs.join(' | '))
+  assert.equal(r.logs.some((l) => l.includes('a background task finished.')), false, 'what a result says is never logged')
+})
+
+test('an empty result after the assistant spoke is still a failed turn', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame('thinking aloud'))
+  c.frame(resultFrame('', 1))
+  await r.manager.idle()
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+  assert.match(String(replyBodies(r)[0]!.text), /^This turn failed/)
+})
+
+test('a result that arrives after a turn failed is delivered or logged, never dropped silently', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame('API Error: 500'))
+  c.frame(resultFrame('API Error: 500', 1, { is_error: true }))
+  await r.manager.idle()
+  assert.equal(replyBodies(r).length, 1)
+  assert.match(String(replyBodies(r)[0]!.text), /^This turn failed/)
+  // An empty one is no answer: logged, and the real one may still come.
+  c.frame(resultFrame('', 0))
+  await r.manager.idle()
+  assert.equal(replyBodies(r).length, 1)
+  assert.equal(logged(r, /dropped a result/).length, 1, r.logs.join(' | '))
+  // The same process answers after all: that is this turn's reply.
+  c.frame(assistantFrame('PONG'))
+  c.frame(resultFrame('PONG', 1))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r)[1], { chatId: '55', rootId: '101', text: 'PONG', final: true })
+  assert.equal(logged(r, /answered after it was reported failed/).length, 1, r.logs.join(' | '))
+  // One late answer per failed turn: anything after it belongs to no turn.
+  c.frame(resultFrame('and another thing.', 1))
+  await r.manager.idle()
+  assert.equal(replyBodies(r).length, 2)
+  assert.equal(logged(r, /dropped a result/).length, 2, r.logs.join(' | '))
+  assert.equal(r.logs.some((l) => l.includes('PONG') || l.includes('and another thing.')), false, 'what a result says is never logged')
+})
+
+test('a late result after a failed summary turn is posted as a reply too, the one route a late answer takes', async () => {
+  const r = rig()
+  r.manager.turn(turn('101', { mode: 'summary', replyId: '', text: '' }))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame(''))
+  c.frame(resultFrame('', 1))
+  await r.manager.idle()
+  assert.equal(replyBodies(r).length, 1, 'the failure sentence')
+  c.frame(assistantFrame('- asked X'))
+  c.frame(resultFrame('- asked X', 1))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r)[1], { chatId: '55', rootId: '101', text: '- asked X', final: true })
+  assert.deepEqual(r.posts.filter((p) => p.path === 'integrations/threads/summary'), [])
+})
+
+test('once the next turn has started, a late result is never taken for the failed turn\'s answer', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame('API Error: 500'))
+  c.frame(resultFrame('API Error: 500', 1, { is_error: true }))
+  await r.manager.idle()
+  r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'again' }))
+  await r.manager.idle()
+  c.frame(resultFrame('stale.', 1))
+  await r.manager.idle()
+  assert.equal(r.posts.some((p) => p.body.text === 'stale.'), false)
+  assert.equal(logged(r, /skipped a result/).length, 1, r.logs.join(' | '))
+  c.frame(assistantFrame('fresh.'))
+  c.frame(resultFrame('fresh.', 1))
+  await r.manager.idle()
+  assert.deepEqual(replyBodies(r).map((b) => b.text).slice(1), ['fresh.'])
+})
+
+test('a result with no turn to answer is logged, on an idle lane and on a closed one', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(assistantFrame('done.'))
+  c.frame(resultFrame('done.', 1))
+  await r.manager.idle()
+  c.frame(assistantFrame('unasked.'))
+  c.frame(resultFrame('unasked.', 1))
+  await r.manager.idle()
+  assert.equal(logged(r, /dropped a result/).length, 1, r.logs.join(' | '))
+  await r.manager.close({ rootId: '101', removeWorktree: false })
+  c.frame(resultFrame('after the close.', 1))
+  await flush()
+  assert.equal(logged(r, /dropped a result/).length, 2, r.logs.join(' | '))
+  assert.deepEqual(replyBodies(r).map((b) => b.text), ['done.'])
+  c.exit(null)
+  await r.manager.idle()
+})
+
+test('a turn whose only result was skipped still ends, at the turn timeout', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const c = r.spawned[0]!.child
+  c.init(FORK_A)
+  c.frame(resultFrame('', 0))
+  await r.manager.idle()
+  assert.deepEqual(statePosts(r), ['101:working'])
+  r.fire(r.live(THREAD_TURN_TIMEOUT_MS)[0]!)
+  await r.manager.idle()
+  assert.deepEqual(statePosts(r), ['101:working', '101:open'])
+  assert.equal(replyBodies(r).length, 1, 'one plain sentence, the timeout')
+  assert.deepEqual(c.killed, ['SIGTERM'])
+  c.exit(null)
+  await r.manager.idle()
 })

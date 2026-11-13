@@ -23,6 +23,31 @@ Running commands is not available for people you share with yet. Your own tools 
 **On a call the refusal says to ask again on the call.** A private action refused in a turn a call's card reached now tells the agent to have you ask again on the call, not to send a chat message you cannot type hands free.
 
 Also: a question card that was still waiting when its question ended (answered elsewhere or timed out) no longer opens a trusted turn when it is delivered late.
+## 0.87.5 (2026-11-13)
+
+From the Helper's production test on a MacBook (2026-11-12): the Helper noticed a frozen agent and started a Fix every time, but never restarted it, and the app then said the agent was running again.
+
+**A really frozen agent is restarted.** The check up found the frozen session (`wedged_session`) and then held the restart because a turn was in flight, until the turn was 2 hours old. A frozen session always has a turn in flight. Now a turn holds the restart only while the session is still making progress: its newest model turn or its newest hook event within the last 10 minutes. A reply the agent still owes, or a newer message from the owner, is not progress. The hold lifts only when the watcher actually read both the session's transcript and its hook events and both are old: an agent whose transcript or hooks it cannot see is never restarted on that guess. A question waiting for the owner, a job running under the agent and the restart limits still hold it. The restart resumes the same conversation. A stopped claude is woken first, and if the same claude is still there 10 seconds after the restart was handed over, it is ended.
+
+**A held fix says "Not fixed yet".** A restart the check up found and did not run is now reported `not_fixed`, with words starting "Not fixed yet". Before, it was a skipped step that the app read as "busy, at work", so it showed "Working. The Helper checked and left it alone." and popped "running again" while the agent stayed frozen. The Helper's loop can now go on to the known fixes and log the agent for the team when nothing helps. The two holds the app shows as their own state (a question waiting for the owner, restarts used up) stay as they were.
+
+**A message that never reached the transcript counts.** The check up now reads Claude Code's queue line for a message (written just before the message's own entry) as delivered, and the daemon publishes when the first owner message it still owes a reply to arrived (`ownerWaitingSince` in agent-state.json). A claude that froze before the message arrived writes neither line, and is now seen too.
+
+**An agent never borrows another agent's pairing.** When an agent's own `credentials-<id>.json` was missing, its daemon fell back to the shared `credentials.json`, which on a computer with several agents can be another agent's live pairing. Now the shared file is used only when it is that same agent's pairing; otherwise the agent has no pairing at all. The doctor and the pairing command follow the same rule.
+
+**The owner's Restart.** A new watcher job, `restart_agent`, restarts one agent whatever its state: no check up, no busy hold, no restart limit. It wakes and ends the agent's session, starts it again through its own launcher, service or recipe, resuming the same conversation, and checks that it answers. If it stays down, it is started again and checked once more. Only an owner's job (`requestedBy: "owner"`) for exactly one agent is carried out. An older watcher answers `unknown_op:restart_agent` and does nothing. The app's button and route are a separate change (`docs/checkup/helperwedge.md`).
+
+## 0.87.4 (2026-11-11)
+
+**A thread answers when the main session has a background task running.** A thread starts as a copy of the agent's main session. When that session still had a background task running (a shell command left in the background), Claude Code first told the copy that the task was gone, and closed that notice with an empty result before it read the thread's message. The daemon took the empty result for the thread's answer: the thread said `This turn failed before the agent could answer`, went back to Open, and the real answer, which came a second or two later, was dropped without a log line. A result that cannot be the answer to the thread's message is now skipped: an empty one with no model turn behind it, and any result that comes before Claude Code has said anything since the message went in. The turn keeps waiting for its own result.
+
+**An answer that comes after a turn was reported failed is posted.** If the same process still answers after `This turn failed`, and no newer message has started in that thread, the answer is posted in the thread as a reply. Every result the daemon drops is now logged, with its shape and never its text.
+
+**Tests:** the exact frames measured on Claude Code 2.1.322 in `test/thread-lanes.test.ts`, and a seventh live case in `test/thread-live.e2e.test.ts`: a throwaway main session with a `sleep` still running in the background, forked by the real daemon with the real CLI.
+
+## 0.87.3 (2026-11-06)
+
+**The reply tool reports where the message went** An agent's reply result now names the chat it actually reached and says delivered when the server stored it, instead of a side conversation that was never used.
 
 ## 0.87.2 (2026-11-09)
 

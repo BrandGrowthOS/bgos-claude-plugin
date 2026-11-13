@@ -755,6 +755,7 @@ import {
   memoizeAncestorReading,
   memoizeFor,
   memoizeUntilFound,
+  oldestOwnerWaitMs,
   readClaudeAncestor,
   readSessionTranscript,
 } from './lib/agent-state.js'
@@ -7123,12 +7124,33 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
         const result = await bgosPost('send-message', body)
         const msgId = (result as any)?.message?.id
-        // A 201 proves persistence, not peer delivery. Keep sending even into
-        // a closed thread so the backend can revive it, then require its word
-        // on the forward. Unknown chat kinds can be side threads after restart.
-        // Only a positively known non-peer chat may omit confirmation; missing
-        // or unknown reports otherwise stay uncertain, even on repeated replies.
+        // The server resolves session handles, including older handles whose
+        // local mapping has been replaced. Classify its actual stored chat,
+        // refreshing an incomplete inbox before deciding where the reply went.
+        const replyChatId = String((result as any)?.message?.chatId ?? resolvedChatId)
+        if (
+          !mainChatIds.includes(replyChatId) &&
+          !groupChatIds.has(replyChatId) &&
+          !meetingChatIds.has(replyChatId) &&
+          !peerSideThreadChats.has(replyChatId) &&
+          !peerConvByChat.has(replyChatId) &&
+          !closedPeerChats.has(replyChatId) &&
+          (result as any)?.message?.peerConversationId == null &&
+          (result as any)?.peerDelivery == null
+        ) await discoverChats()
+        // A stored id confirms a main chat reply. Side threads still require
+        // the backend's word on the peer handoff, including after a close.
+        // If the refreshed inbox omits the kind, keep that handoff uncertain
+        // without asserting that the chat is a side conversation.
         const peerDelivery = peerDeliveryOf(result)
+        const isPeerSideThread =
+          peerSideThreadChats.has(replyChatId) ||
+          peerConvByChat.has(replyChatId) ||
+          closedPeerChats.has(replyChatId) ||
+          (result as any)?.message?.peerConversationId != null ||
+          (result as any)?.peerDelivery != null
+        const isKnownNonPeer = mainChatIds.includes(replyChatId) || groupChatIds.has(replyChatId) || meetingChatIds.has(replyChatId)
+        const replyDestination = `${isPeerSideThread ? 'the side thread' : groupChatIds.has(replyChatId) ? 'the group chat' : mainChatIds.includes(replyChatId) ? 'the main chat' : 'chat'} ${replyChatId}`
         if (peerDelivery === 'not_forwarded') {
           if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
             clearInbound(resolvedChatId)
@@ -7138,25 +7160,25 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
               `(${peerDeliveryReason(result)}); told the agent`,
           )
           return peerConversationEnded(result)
-            ? peerReplyNotForwardedResult(String(resolvedChatId), msgId, hasAttachment)
-            : peerReplyNotPassedOnResult(String(resolvedChatId), msgId, peerDeliveryReason(result), hasAttachment)
+            ? peerReplyNotForwardedResult(replyChatId, msgId, hasAttachment)
+            : peerReplyNotPassedOnResult(replyChatId, msgId, peerDeliveryReason(result), hasAttachment)
         }
-        if (
-          peerDelivery !== 'forwarded' &&
-          (peerSideThreadChats.has(String(resolvedChatId)) ||
-            peerConvByChat.has(String(resolvedChatId)) ||
-            closedPeerChats.has(String(resolvedChatId)) ||
-            (result as any)?.message?.peerConversationId != null ||
-            (result as any)?.peerDelivery != null ||
-            (!mainChatIds.includes(String(resolvedChatId)) &&
-              !groupChatIds.has(String(resolvedChatId)) &&
-              !meetingChatIds.has(String(resolvedChatId))))
-        ) {
+        if (msgId == null) {
+          if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
+            clearInbound(resolvedChatId)
+          }
+          log(`reply to ${replyDestination} returned no stored message id; delivery is unconfirmed`)
+          return {
+            content: [{ type: 'text', text: `Delivery unconfirmed: HOAI returned no stored message id for this reply to ${replyDestination}.` }],
+            isError: true,
+          }
+        }
+        if (peerDelivery !== 'forwarded' && (isPeerSideThread || !isKnownNonPeer)) {
           if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
             clearInbound(resolvedChatId)
           }
           log(`reply to chat ${resolvedChatId} saved as ${msgId} but peer delivery is unconfirmed; told the agent`)
-          return peerReplyUnconfirmedResult(String(resolvedChatId), msgId, hasAttachment)
+          return peerReplyUnconfirmedResult(replyChatId, msgId, hasAttachment, isPeerSideThread)
         }
         // Session binding: the CLI writes this tool call's result ("Sent
         // (message_id: N)...") verbatim into THIS session's transcript, so
@@ -7214,7 +7236,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         const decisionWarning = decisions >= 2 ? multiDecisionLine(decisions) : null
         if (decisionWarning) log(`reply to chat ${resolvedChatId}: ${decisions} decisions with buttons, card named`)
         const notes = [cardNudge, decisionWarning].filter((n): n is string => n !== null)
-        return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})${notes.map((n) => `\n${n}`).join('')}` }] }
+        return { content: [{ type: 'text', text: `Sent (${parts.join(', ')}) Delivered to ${replyDestination}.${notes.map((n) => `\n${n}`).join('')}` }] }
       } catch (err) {
         if (peerRefusalOf(err) === PEER_NOT_PARTICIPANT) {
           // HOAI refuses this reply every time (lib/peer-refusal.ts). Say so in
@@ -9810,6 +9832,9 @@ function flushChatCursors(): void {
 interface PendingInbound {
   messageId: number
   ts: number
+  // When the FIRST message of this chat that is still unanswered arrived: a newer message replaces the
+  // entry (and its ts), not how long the person has waited. Published as ownerWaitingSince.
+  firstTs: number
   reminded: boolean
   // The message was the owner's own (its lane's privateActor): only then is its reminder marked owner_inbound, the
   // one reminder the private turn tracker carries through an owner's turn (Data's review of #261, M1).
@@ -10013,7 +10038,7 @@ function recordInbound(
   const existing = pendingInbounds.get(chatId)
   if (existing && existing.messageId >= messageId) return
   const ownerInbound = typeof actingUserId === 'string' && actingUserId !== '' && actingUserId === USER_ID
-  pendingInbounds.set(chatId, { messageId, ts: Date.now(), reminded: false, ownerInbound, probed: false })
+  pendingInbounds.set(chatId, { messageId, ts: Date.now(), firstTs: existing?.firstTs ?? Date.now(), reminded: false, ownerInbound, probed: false })
 }
 
 function clearInbound(chatId: string | undefined): void {
@@ -15973,6 +15998,8 @@ const agentStatePublisher = new AgentStatePublisher({
     // after the bound session's SessionEnd until another event is admitted.
     turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
     pendingMessages: pendingInbounds.size,
+    // The delivery a frozen claude never recorded: the watcher's check up reads it (helperwedge finding 3).
+    ownerWaitingSinceMs: oldestOwnerWaitMs(pendingInbounds.values()),
     pendingPermissions: pendingPermissions.size,
     activeOperations: messageActivity.activeOperations,
     // Apart from the operations: the watcher's update sweep waits for it, and a recovery restart does not.

@@ -147,6 +147,28 @@ The unchanged production command answered in one model request with zero goal ch
 
 A control bypassing only child goal preparation restored the active parent into the child copy. The third feedback block caused SIGTERM and exactly one failure reply naming the Stop hook and `/goal`, before the CLI's nine-block fallback. This retains the loop breaker as a second line. These measurements cover this CLI version on macOS; the full suite covers the existing cross-platform argument, permission and hook contracts.
 
+## (i) A fork of a session with a background task: the empty result that is not the answer (2026-11-11)
+
+Measured on CLI 2.1.322 on macOS with an isolated configuration, a local scripted Messages API and dummy credentials. A throwaway parent session started `sleep 600` with `run_in_background` and was still running when it was forked with the lane command (`-p --input-format stream-json --output-format stream-json --verbose --resume <parent> --fork-session`), the thread's message already on stdin. The fork's frames, in order:
+
+1. `system/task_notification`, `status: "stopped"`, summary `Background shell command didn't finish before the previous session ended`.
+2. `system/init`.
+3. `result`, `subtype: "success"`, `is_error: false`, `result: ""`, `num_turns: 0`. No model request was made for it.
+4. `system/init` again.
+5. `assistant` (the answer; its one model request carried both the notice and the thread's message).
+6. `result`, `subtype: "success"`, `num_turns: 1`, the answer.
+
+A fork of a parent with no background task sends `init`, `assistant` and one `result`. Up to 0.87.3 the lane took frame 3 for its turn's result, posted the generic failure and dropped frame 6 (fixed in 0.87.4, `onResult` in `lib/thread-lanes.ts`).
+
+What else was measured, to tell a result that is the turn's own from one that is not:
+
+- An API error: an `assistant` frame with model `<synthetic>` and the error text, then `result` with `is_error: true` and `num_turns: 1`.
+- `/context` and `/cost` as the message: a synthetic `assistant` frame, then the `result`. An unknown slash command goes to the model as text.
+- A UserPromptSubmit hook that blocks the message: `system/informational` naming the block, then `result` with the same text, `num_turns: 0` and no `assistant` frame. Nothing follows.
+- `/compact` as the message: `system/status`, `init`, `system/compact_boundary`, two `user` frames, then `result` with `result: ""` and `num_turns: 0`. Nothing follows.
+
+So the lane skips an empty result with no model turn, and any result before the turn's first `assistant` frame. Known limit: the last two cases are the turn's own result with no `assistant` frame, so the lane skips them too and that turn ends at the 30 minute turn timeout, where up to 0.87.3 the hook's text was posted, or the generic failure, at once. A lane keeps the plugin's UserPromptSubmit hooks, and the private turn hook blocks a message when it cannot write its boundary. See `test/thread-lanes.test.ts` and the last case of `test/thread-live.e2e.test.ts`.
+
 ## 0.87.0 crash: a thread message took the daemon down (fixed in 0.87.1)
 
 **What was seen.** On an owner's agent (Claude Code 2.1.319 on macOS, plugin 0.87.0 from a clone install, its folder a git repository of about 6.5 GB, a main session days long), the owner opened a thread and sent one reply. Within seconds the daemon process exited, with no error line in Claude Code's MCP log; the browser host only logged that the daemon let go of it. The thread's state file named its worktree (made, 6.5 GB on disk) and no lane process. After a session restart the waiting thread was picked up again and the daemon exited again within about 7 seconds. 0.85.5 was stable.
