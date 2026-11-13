@@ -848,3 +848,36 @@ test('wedge: only a wedge lifts the turn hold; a dead connector under a live tur
   assert.deepEqual(steps(pass.actions), ['restart:skipped'])
   assert.equal(pass.actions[0].reason, 'turn_in_flight')
 })
+
+// -- REVIEW-0432 F1: the reviewer's two scenarios -----------------------------------------------------
+
+test('review F1 scenario A: a 25 minute task whose transcript and spool the watcher cannot read is never restarted', () => {
+  const pass = checkupPass(
+    obs({
+      messagesDeliveredAtMs: NOW - 25 * MIN, // the daemon owes the reply from minute 0
+      lastTranscriptActivityAtMs: null,
+      stateFresh: true,
+      agentState: freshState({ turnInFlight: true, pendingMessages: 1, lastActivityAtMs: NOW - 25 * MIN }),
+      activityMs: [NOW - 25 * MIN, null, null],
+      progressMs: [null, null],
+    }),
+  )
+  assert.deepEqual(causes(pass.findings), ['C5'])
+  assert.equal(plannedRestart(pass.actions), false)
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+})
+
+test('review F1 scenario B: hooks that never reach the daemon, a long subagent and a queued follow-up are never restarted', () => {
+  const pass = checkupPass(
+    obs({
+      messagesDeliveredAtMs: NOW - 11 * MIN, // the follow-up's queue line
+      lastTranscriptActivityAtMs: NOW - 20 * MIN, // the Agent tool_use; sidechain entries are not read
+      stateFresh: true,
+      agentState: freshState({ turnInFlight: false, turnSignal: 'none', pendingMessages: 1, lastActivityAtMs: NOW - 11 * MIN }),
+      activityMs: [NOW - 11 * MIN, null, NOW - 11 * MIN],
+      progressMs: [NOW - 20 * MIN, null],
+    }),
+  )
+  assert.deepEqual(causes(pass.findings), ['C5'])
+  assert.equal(plannedRestart(pass.actions), false)
+})
