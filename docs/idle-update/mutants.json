@@ -5481,7 +5481,7 @@
       "id": "lease-end-claim-always-stale",
       "rule": "follow up 2: a standing claim is never taken over",
       "file": "lib/idle-update.mjs",
-      "find": "      if (decideLeaseEndClaim({ mtimeMs: read(() => fs.mtimeMs(path), null), now: now() }, d) !== 'stale') return null",
+      "find": "      if (verdict !== 'stale') return null",
       "replace": "      if (false) return null",
       "tests": [
         "test/idle-update.lease-race.test.ts",
@@ -5525,8 +5525,8 @@
       "id": "lease-end-stale-claims-removed",
       "rule": "follow up 2: the stale claims taken over from go too",
       "file": "lib/idle-update.mjs",
-      "find": "      paths.push(path)\n    }\n    return null",
-      "replace": "    }\n    return null",
+      "find": "      paths.push(path)\n    }\n    if (log)",
+      "replace": "    }\n    if (log)",
       "tests": [
         "test/idle-update.lease-race.test.ts",
         "test/idle-update.controller.test.ts"
@@ -5566,8 +5566,8 @@
       "id": "installed-plugins-read-again",
       "rule": "follow up 3: a file that changed is read again and the change made again",
       "file": "lib/idle-update-host.mjs",
-      "find": "    if (wrote === 'changed') continue\n",
-      "replace": "",
+      "find": "    if (wrote === 'changed' || wrote === 'busy') continue\n",
+      "replace": "    if (wrote === 'busy') continue\n",
       "tests": [
         "test/idle-update.host.test.ts"
       ]
@@ -5620,19 +5620,8 @@
       "id": "lease-sweep-runs",
       "rule": "follow up 2: leftovers of agents that died mid break are swept",
       "file": "lib/idle-update.mjs",
-      "find": "    sweep(lease.raw)\n",
+      "find": "    sweep()\n",
       "replace": "",
-      "tests": [
-        "test/idle-update.lease-race.test.ts",
-        "test/idle-update.controller.test.ts"
-      ]
-    },
-    {
-      "id": "lease-sweep-spares-current",
-      "rule": "follow up 2: the sweep leaves the claims on the lease on disk",
-      "file": "lib/idle-update.mjs",
-      "find": "      if (!(claim ? claim[1] !== current : LEASE_ASIDE_RE.test(String(name)))) continue",
-      "replace": "      if (!(claim ? true : LEASE_ASIDE_RE.test(String(name)))) continue",
       "tests": [
         "test/idle-update.lease-race.test.ts",
         "test/idle-update.controller.test.ts"

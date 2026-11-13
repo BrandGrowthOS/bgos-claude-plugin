@@ -126,7 +126,9 @@ function actor(w: World, id: string, o: { stale?: Files; inject?: { at: number; 
     rename: wrap('rename', w.base.rename, true),
     remove: wrap('remove', w.base.remove, true),
   }
-  const lease = need().createMachineLease({ dir: DIR, fs, now: () => w.clock.now, durations: D, onExpired: () => true, pid, host: 'one-computer', alive: (p: number) => !w.dead.has(p), log: o.log })
+  // As in the controller, putting the holder on the record before its lease goes is file work of its own.
+  const onExpired = () => fs.readFile(join(DIR, '0.81.0', 'silent-1')) === null || true
+  const lease = need().createMachineLease({ dir: DIR, fs, now: () => w.clock.now, durations: D, onExpired, pid, host: 'one-computer', alive: (p: number) => !w.dead.has(p), log: o.log })
   return { id, me, lease, ops: () => ops }
 }
 
@@ -342,11 +344,9 @@ test('leftovers of agents that died mid break are swept once a lease old: claims
   put('lease.json.other', old)
   w.dead.add(40_000 + 999)
   const a = actor(w, '914', { violations: [] })
-  // 914 reads the claim on the lease on disk as standing for a whole lease and as stale past it: here it is a lease
-  // old, so it is taken over, and nothing about it is swept.
   assert.equal(a.lease.take('0.82.0', a.me), true)
   const left = [...w.files.keys()].map((p) => p.slice(DIR.length + 1)).sort()
-  assert.deepEqual(left, ['lease.broken-n-902.json', `lease.end-${keyOf('just made')}.json`, 'lease.json', 'lease.json.other'].sort())
+  assert.deepEqual(left, ['lease.broken-n-902.json', `lease.end-${keyOf('just made')}.json`, 'lease.json', 'lease.json.other'].sort(), 'young ones and other files stay')
 })
 
 test('the claims on one lease used up: no agent breaks it, and that is said, not left silent', () => {
