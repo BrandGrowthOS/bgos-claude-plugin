@@ -2548,6 +2548,177 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     },
     ruleId: "sends_data_off",
   },
+  {
+    name: "secret_read_via_input_redirect",
+    input: { kind: "command", command: "cat < /home/user/.ssh/id_rsa" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_no_space",
+    input: { kind: "command", command: "cat <~/.ssh/id_ed25519" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_double_quoted",
+    input: { kind: "command", command: "cat < \"/home/user/.aws/credentials\"" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_single_quoted",
+    input: { kind: "command", command: "cat < '/home/user/.netrc'" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_stream_zero",
+    input: { kind: "command", command: "cat 0< ~/.git-credentials" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_after_other_words",
+    input: { kind: "command", command: "openssl rsa -check -noout < server.pem" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_before_the_program",
+    input: { kind: "command", command: "< ~/.ssh/id_rsa base64" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_in_a_pipeline",
+    input: { kind: "command", command: "base64 < ~/.ssh/id_rsa | head -c 40" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_inside_bash_lc",
+    input: { kind: "command", command: "bash -lc 'wc -c < ~/.pgpass; true'" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_backslash_escaped",
+    input: { kind: "command", command: "base64 < ~/.aws/credential\\s" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_via_input_redirect_escaped_suffix",
+    input: { kind: "command", command: "cat <deploy.p\\em" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "redirect_stream_digits_against_input_redirect_are_not_the_program",
+    input: { kind: "command", command: "0</dev/null rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "secret_read_via_read_write_redirect",
+    input: { kind: "command", command: "exec 3<> deploy.pfx" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_input_redirect_of_a_plain_file_is_not_a_key",
+    input: { kind: "command", command: "sort < notes/todo.txt" },
+    ruleId: null,
+  },
+  {
+    name: "secret_input_redirect_stream_dup_is_not_a_file",
+    input: { kind: "command", command: "cat 0<&3" },
+    ruleId: null,
+  },
+  {
+    name: "secret_heredoc_delimiter_is_not_a_file",
+    input: { kind: "command", command: "cat <<id_rsa\nhello\nid_rsa" },
+    ruleId: null,
+  },
+  {
+    name: "secret_heredoc_body_naming_a_key_is_data",
+    input: { kind: "command", command: "cat <<'EOF'\nsee ~/.ssh/id_rsa\nEOF" },
+    ruleId: null,
+  },
+  {
+    name: "secret_here_string_naming_a_key_is_text",
+    input: { kind: "command", command: "cat <<< ~/.ssh/id_rsa" },
+    ruleId: null,
+  },
+  {
+    name: "secret_process_substitution_reading_a_key",
+    input: { kind: "command", command: "diff <(cat ~/.ssh/id_rsa) a.txt" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_process_substitution_of_a_plain_file_is_not_a_key",
+    input: { kind: "command", command: "diff <(sort a.txt) b.txt" },
+    ruleId: null,
+  },
+  // Digits written against any input redirect are its stream: a stream
+  // copied for reading, a here string or a heredoc. The command after them
+  // is still the program, and a shell there still reads its script.
+  {
+    name: "redirect_stream_digits_against_a_stream_copy_are_not_the_program",
+    input: { kind: "command", command: "0<&3 rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "redirect_stream_digits_against_input_redirect_before_an_elevation",
+    input: { kind: "command", command: "0</dev/null sudo reboot" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "redirect_stream_digits_against_input_redirect_before_a_piped_shell",
+    input: { kind: "command", command: "echo rm -rf build | 0</dev/null sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "redirect_stream_digits_against_a_here_string_are_not_the_program",
+    input: { kind: "command", command: "0<<<x rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "redirect_stream_digits_against_a_heredoc_are_not_the_program",
+    input: { kind: "command", command: "0<<EOF rm -rf build\nhello\nEOF" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "redirect_stream_digits_against_a_tab_heredoc_are_not_the_program",
+    input: { kind: "command", command: "3<<-EOF sudo reboot\nEOF" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "redirect_stream_digits_against_a_here_string_feeding_a_shell",
+    input: { kind: "command", command: "0<<<'rm -rf build' sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "redirect_stream_digits_against_a_heredoc_feeding_a_shell",
+    input: { kind: "command", command: "0<<EOF bash\nrm -rf build\nEOF" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "redirect_stream_digits_against_a_here_string_for_cat_is_data",
+    input: { kind: "command", command: "0<<<'rm -rf build' cat" },
+    ruleId: null,
+  },
+  {
+    name: "redirect_stream_digits_against_a_heredoc_for_cat_is_data",
+    input: { kind: "command", command: "0<<EOF cat\nrm -rf build\nEOF" },
+    ruleId: null,
+  },
+  // A substitution that holds only an input redirect reads that file, with
+  // no program named; a stream copy given a file name is refused by the shell
+  // and reads nothing.
+  {
+    name: "secret_read_via_a_substitution_with_only_a_redirect",
+    input: { kind: "command", command: "echo $(< ~/.ssh/id_rsa)" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_substitution_with_only_a_redirect_of_a_plain_file",
+    input: { kind: "command", command: "echo $(< notes.txt)" },
+    ruleId: null,
+  },
+  {
+    name: "secret_stream_copy_given_a_file_name_reads_nothing",
+    input: { kind: "command", command: "cat 0<&~/.ssh/id_rsa" },
+    ruleId: null,
+  },
   // A file delete whose files come from somewhere else: from xargs, from
   // find's exec family, or, for PowerShell's Remove-Item and its aliases,
   // from a pipe.
@@ -3398,6 +3569,15 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     ruleIds: ["uses_secret_key", "sends_data_off"],
   },
   {
+    name: "request_bash_secret_read_via_input_redirect",
+    input: {
+      kind: "request",
+      toolName: "Bash",
+      inputPreview: '{"command":"cat < ~/.ssh/id_rsa","description":"Show the key"}',
+    },
+    ruleId: "uses_secret_key",
+  },
+  {
     name: "remote_rsync_that_also_deletes",
     input: {
       kind: "command",
@@ -3721,7 +3901,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "df008cd03a05af0dc1bc107966805ee902b63b49cdc5f3f9fdd192ee5a62379c";
+  "f32d4fec73a06f2d83d5f47e71b9844a99effe34e30dfbd918210f130fba5916";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
