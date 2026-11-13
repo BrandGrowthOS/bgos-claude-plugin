@@ -256,6 +256,31 @@ test('a launcher asked to stop while the way back runs relaunches nothing', asyn
   assert.equal(h.claudes.length, 1)
 })
 
+test('a launcher asked to stop while the second launch\'s way back runs raises no alert for a claude it has ended', async () => {
+  let n = 0
+  const second = wayBack()
+  const fn = async (input: any) => {
+    n += 1
+    return n === 1 ? { outcome: 'none', reason: 'not_requested', record: null } : second.fn(input)
+  }
+  const h = harness({ idleRollback: fn })
+  await launched(h, 1)
+  h.helpers[0]!.emit('exit', 0, null)
+  h.fireHeartbeatCheck()
+  await launched(h, 2)
+  h.helpers[1]!.emit('exit', 0, null)
+  h.fireHeartbeatCheck()
+  await waitUntil(() => second.asks.length === 1, 'the second way back is asked')
+  h.abort()
+  await waitUntil(() => h.claudes[1]!.killed, 'the stop ends claude')
+  await settle()
+  second.release()
+  await h.done
+  await settle()
+  assert.doesNotMatch(h.files.get(STATUS_PATH) ?? '', /outcome=no-channel-heartbeat /)
+  assert.equal(h.prints.some((l) => l.includes('ALERT (no-channel-heartbeat)')), false, h.prints.join('\n'))
+})
+
 test('a launcher whose files are faked and passes no way back asks none (the existing tests run as before)', async () => {
   const h = harness()
   await launched(h, 1)
