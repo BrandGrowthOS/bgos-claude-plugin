@@ -15,12 +15,12 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { scratchDir } from './helpers/scratch-dirs.ts'
 import { resolvePosixBash } from './helpers/posix-bash.ts'
 import { offlineUrl, startManifestServer, type ManifestServer } from './helpers/manifest-server.ts'
 import { git, releaseOrigin } from './helpers/release-origin.ts'
@@ -59,7 +59,7 @@ function github() {
 
 /** A HOME with stand ins on PATH: git that serves GitHub from `bare` (over a file URL, so --depth 1 holds as it does in the field), the real node, and tools the installer only looks for. */
 function host(bare: string) {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'clone-install-home-')))
+  const home = realpathSync(scratchDir('clone-install-home-'))
   const shims = join(home, 'shims')
   mkdirSync(shims)
   const shim = (name: string, body: string) => {

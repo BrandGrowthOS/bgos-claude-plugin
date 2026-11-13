@@ -16,12 +16,12 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, cpSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { scratchDir } from './helpers/scratch-dirs.ts'
 import { resolvePosixBash } from './helpers/posix-bash.ts'
 import { offlineUrl, startManifestServer, type ManifestServer } from './helpers/manifest-server.ts'
 
@@ -54,7 +54,7 @@ async function marketplace(ref: string) {
  * published, a merge after it, then 3.0.0 bumped and auto-tagged on main but never published.
  */
 function fixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'update-published-')))
+  const root = realpathSync(scratchDir('update-published-'))
   const home = join(root, 'home')
   mkdirSync(home, { recursive: true })
   const stubs = join(root, 'stubs')

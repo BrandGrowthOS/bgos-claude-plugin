@@ -12,13 +12,13 @@
  * Run: npx tsx --test test/bgos-claim.published.test.ts
  */
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readdirSync, realpathSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { pathToFileURL } from 'node:url'
 
 import { ensurePluginCheckout } from '../bin/bgos-claim.mjs'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 import { git, releaseOrigin } from './helpers/release-origin.ts'
 
 const SLOW = { timeout: 120_000 }
@@ -37,7 +37,7 @@ function origin() {
   return { o, released, unpublished, repo: { BGOS_PLUGIN_REPO: pathToFileURL(o.bare).href } }
 }
 
-const agentsRoot = () => realpathSync(mkdtempSync(join(tmpdir(), 'claim-agents-')))
+const agentsRoot = () => realpathSync(scratchDir('claim-agents-'))
 const pluginDirOf = (root: string) => join(root, '.plugin', 'bgos-claude-plugin')
 
 test('a new claim checkout is the published release, never main', SLOW, async () => {

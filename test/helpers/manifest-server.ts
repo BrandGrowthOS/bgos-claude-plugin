@@ -7,11 +7,11 @@
  * next answers an HTTP 500. `offlineUrl` is a port nothing listens on: the marketplace cannot be reached.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { realpathSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { scratchDir } from './scratch-dirs.ts'
 import { marketplaceManifest } from './release-origin.ts'
 
 const SERVER = `
@@ -40,7 +40,7 @@ export interface ManifestServer {
 }
 
 export async function startManifestServer(ref: string): Promise<ManifestServer> {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'manifest-server-')))
+  const dir = realpathSync(scratchDir('manifest-server-'))
   const file = join(dir, 'marketplace.json')
   writeFileSync(file, marketplaceManifest(ref))
   const child: ChildProcess = spawn(process.execPath, ['-e', SERVER, file], { stdio: ['ignore', 'pipe', 'inherit'] })
