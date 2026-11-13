@@ -157,6 +157,28 @@ test('a shell\'s script is read as a command, four levels deep and no deeper', (
   assert.equal(classifyCommand(five), null, 'a fifth level is not read')
 })
 
+test("find's exec family: each command is read once, to its own end, however many there are", () => {
+  // About 100K characters of commands that each end at their own `;`, so a
+  // reader that walks on past each end reads the rest again every time and
+  // spends the hook's budget.
+  const chain = '-exec nice -n \\; '.repeat(6000)
+  const kinds = (command: string) => core.classifyFloorAll({ kind: 'command', command }).map((m) => m.ruleId)
+  const started = performance.now()
+  assert.deepEqual(kinds(`find . ${chain}-exec rm -rf build \\;`), ['recursive_delete'])
+  assert.deepEqual(kinds(`find . ${chain}-exec sudo reboot \\;`), ['admin_rights'])
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test("find's exec family: other long chains stay quick too (no end at all, batch ends, bare -exec words)", () => {
+  for (const chain of ['-exec nice '.repeat(9000), '-exec x {} + '.repeat(7500), '-exec '.repeat(16000)]) {
+    const started = performance.now()
+    core.classifyFloorAll({ kind: 'command', command: `find . ${chain}` })
+    const elapsed = performance.now() - started
+    assert.ok(elapsed < 2000, `${chain.slice(0, 12)}... read in ${Math.round(elapsed)} ms`)
+  }
+})
+
 test('spec 4.2: a mention is not the action, and neither is a comment or a script written to a file', () => {
   // The shapes an agent uses all day, each of which the server says null to.
   // With the switch off, every one of these that asked cost a round trip, a

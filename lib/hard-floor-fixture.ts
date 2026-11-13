@@ -2723,6 +2723,41 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     input: { kind: "command", command: "rm --help | head -n 5" },
     ruleId: null,
   },
+  // find's exec family runs each command to its own end, a `;` or a `+`
+  // right after `{}`: a later -exec is read only after that end, and an
+  // -exec among a command's own words is one of its words.
+  {
+    name: "folder_delete_by_a_second_find_exec",
+    input: {
+      kind: "command",
+      command: "find . -name '*.log' -exec gzip {} \\; -exec rm -rf build \\;",
+    },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_find_exec_inside_an_echo_is_not_a_delete",
+    input: {
+      kind: "command",
+      command: "find . -exec echo -exec rm -rf build \\;",
+    },
+    ruleId: null,
+  },
+  {
+    name: "admin_find_exec_inside_an_echo_is_not_admin",
+    input: {
+      kind: "command",
+      command: "find . -exec echo -exec sudo reboot \\;",
+    },
+    ruleId: null,
+  },
+  {
+    name: "send_by_find_exec_scp",
+    input: {
+      kind: "command",
+      command: "find . -name '*.log' -exec scp {} user@host:/tmp/ \\;",
+    },
+    ruleId: "sends_data_off",
+  },
   {
     name: "admin_and_folder_delete_names_the_delete",
     input: { kind: "command", command: "sudo rm -rf /var/cache/app" },
@@ -3068,7 +3103,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "d3ed0e412c1f324db40727cf00a8575ab6ed48d2eeeb8c9528eea20ea623a21f";
+  "4031bcf50f1f4ea0cbd62255e15f6f458901b09f014e6dcc4ba57b3cd6bcdc06";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
