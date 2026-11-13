@@ -3,7 +3,8 @@
 the named test file red on an assertion (not on a load error). Restores the file after each run."""
 import subprocess, sys, os, re
 
-ROOT = '/Users/kc/hoai-work/mbplugtrack'
+# The plugin checkout this file sits in (docs/evidence/<run>/mutate.py), or MUTATE_ROOT when set.
+ROOT = os.path.abspath(os.environ.get('MUTATE_ROOT') or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
 os.chdir(ROOT)
 
 LIB = 'lib/follow-published.mjs'
