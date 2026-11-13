@@ -193,17 +193,64 @@ test('step 4: only the key wrapped to this host opens the value', async () => {
   assert.equal(await code(openPersonFill(r.redeemed, { ...r.ctx, hostSeed: seed() })), 'vault_item_not_for_this_host')
 })
 
-test('section 6: a person\'s own login, in their own signed vault, never asks', async () => {
+/**
+ * Section 6, after the review: a person's own logins are NOT trusted on first
+ * use. The redeem of an own login also carries the owner's signed vault
+ * (`ownerVault: {state, devices, accountPublic}`), verified against the
+ * owner's anchored key; its `people` entry for the person carries the
+ * person's account key as the owner's device pinned it (`accountPublic`).
+ * The person's own state must verify under exactly that key. Missing or
+ * different: refused, and never pinned from the server.
+ */
+function ownRig(personKeyInOwnerState: 'match' | 'missing' | 'other') {
   const hostSeed = seed()
-  const acct = account()
-  const state = signedState({ ownerId: LEO, assistantId: AGENT, hostSeed, acct, items: [{ id: ITEM, website: ORIGIN, username: 'leo@example.com', password: 'leos-own' }] })
-  const trust = memoryTrust()
-  const pins = trust.pins
+  const owner = account(); owner.addDevice()
+  const leo = account(); leo.addDevice()
+  const stranger = account(); stranger.addDevice()
+  const personKey = personKeyInOwnerState === 'match' ? leo.accountPublic : personKeyInOwnerState === 'other' ? stranger.accountPublic : undefined
+  const ownerState = signedState({ ownerId: OWNER, assistantId: AGENT, hostSeed, acct: owner,
+    people: [{ userId: LEO, askMode: 'never', items: [{ itemId: null, ask: false }], ...(personKey ? { accountPublic: personKey } : {}) }],
+    items: [{ id: '9f1c3a4b-5d6e-4f70-8a9b-0c1d2e3f4a5b', website: 'https://other.example.com', username: 'o', password: 'owner-secret' }] })
+  const state = signedState({ ownerId: LEO, assistantId: AGENT, hostSeed, acct: leo, items: [{ id: ITEM, website: ORIGIN, username: 'leo@example.com', password: 'leos-own' }] })
+  const trust = memoryTrust({ ownerId: OWNER, accountPublic: owner.accountPublic })
   const ctx = { assistantId: AGENT, ownerUserId: OWNER, actingUserId: LEO, origin: ORIGIN, hostSeed, trust, now: () => Date.now() }
-  const got = await openPersonFill({ state, itemId: ITEM, devices: acct.devices, accountPublic: acct.accountPublic }, ctx)
+  const redeemed = { state, itemId: ITEM, devices: leo.devices, accountPublic: leo.accountPublic, ownerVault: { state: ownerState, devices: owner.devices, accountPublic: owner.accountPublic } }
+  return { ctx, trust, redeemed, owner, leo, stranger, ownerState, hostSeed }
+}
+
+test('section 6: a person\'s own login opens only under the key the owner\'s signed, anchored state names for them', async () => {
+  const r = ownRig('match')
+  const got = await openPersonFill(r.redeemed, r.ctx)
   assert.deepEqual({ ...got }, { username: 'leo@example.com', password: 'leos-own', own: true, asked: false })
-  assert.deepEqual([...pins.keys()], [LEO], 'pinned under the person, never as the owner')
-  assert.equal(await code(openPersonFill({ state, itemId: ITEM, devices: acct.devices, accountPublic: acct.accountPublic }, { ...ctx, actingUserId: 'user_other' })), 'vault_state_not_the_owners')
+  assert.equal(await code(openPersonFill(r.redeemed, { ...r.ctx, actingUserId: 'user_other' })), 'vault_state_not_the_owners')
+  // The server's own key for the person, without the owner's word: refused, never pinned.
+  const { ownerVault: _gone, ...bare } = r.redeemed
+  const fresh = ownRig('match')
+  assert.equal(await code(openPersonFill({ ...bare }, fresh.ctx)), 'vault_own_logins_unconfirmed')
+  assert.equal(fresh.trust.pins.size, 0)
+})
+
+test('section 6: the owner\'s state names no key for the person, or another one: refused with the agreed sentence', async () => {
+  for (const which of ['missing', 'other'] as const) {
+    const r = ownRig(which)
+    assert.equal(await code(openPersonFill(r.redeemed, r.ctx)), 'vault_own_logins_unconfirmed', which)
+    assert.equal(r.trust.pins.size, 0, which)
+  }
+  assert.equal(HOST_FILL_SENTENCES.vault_own_logins_unconfirmed, 'Your own logins for this agent can be used once the owner opens the vault for you again.')
+})
+
+test('section 6: the owner\'s vault that names the person must itself verify under the anchored owner key', async () => {
+  const r = ownRig('match')
+  // A server signs an owner state of its own that names the server's key for Leo.
+  const evil = account(); evil.addDevice()
+  const forgedOwner = signedState({ ownerId: OWNER, assistantId: AGENT, hostSeed: r.hostSeed, acct: evil,
+    people: [{ userId: LEO, askMode: 'never', items: [{ itemId: null, ask: false }], accountPublic: r.stranger.accountPublic }], items: [] })
+  const forgedOwn = signedState({ ownerId: LEO, assistantId: AGENT, hostSeed: r.hostSeed, acct: r.stranger, items: [{ id: ITEM, website: ORIGIN, username: 'x', password: 'server-chosen' }] })
+  const answer = { state: forgedOwn, itemId: ITEM, devices: r.stranger.devices, accountPublic: r.stranger.accountPublic, ownerVault: { state: forgedOwner, devices: evil.devices, accountPublic: evil.accountPublic } }
+  assert.equal(await code(openPersonFill(answer, r.ctx)), 'vault_owner_account_mismatch')
+  // No anchored owner key at all: nothing of the person's own either.
+  const unanchored = { ...r.ctx, trust: memoryTrust(null) }
+  assert.equal(await code(openPersonFill(r.redeemed, unanchored)), 'vault_owner_account_unconfirmed')
 })
 
 test('the fill trust file: first use pins, the same key passes, another key is refused; floors only rise; an approval id is used once', async () => {
@@ -334,4 +381,13 @@ test('M5: commits to the fill trust at the same moment are not lost', async () =
     const both = await Promise.allSettled([0, 1].map(() => commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 1, requestId: 'req-twice', approvalUntil: until }, undefined, testSecurity)))
     assert.deepEqual(both.map((x) => x.status).sort(), ['fulfilled', 'rejected'])
   } finally { rmSync(join(dir, '..'), { recursive: true, force: true }) }
+})
+
+/**
+ * The shared test vector for the account code (the app builder uses the same
+ * formula and the same vector): the first 20 hex characters, in groups of 4,
+ * of sha256(JSON.stringify(["hoai-owner-account-v1", ownerId, accountPublic])).
+ */
+test('H2: the account code test vector', () => {
+  assert.equal(ownerAccountCode('user_2abcDEFghiJKLmno', '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo'), '7509 7181 0915 0eda 35af')
 })

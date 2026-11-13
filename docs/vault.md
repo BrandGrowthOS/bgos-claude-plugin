@@ -88,7 +88,9 @@ unless this host is set up and pinned (`hoai vault-host`), the owner's signed
 state verifies against the owner's account key ANCHORED here (`ownerAccount`
 in `vault-host.json`: by the account code `hoai vault-host` prints under the
 host fingerprint, compared with HOAI's, or by the desktop's same computer
-pairing door), never a key the server sends, the signer is not retired or
+pairing door), never a key the server sends (a person's own login: the
+person's own state verifies under the key the owner's signed state names
+for them, `people[].accountPublic`, sent as `ownerVault`), the signer is not retired or
 revoked, the state is not older than one verified before,
 the person and the login are in the signed `people`, and, when the fill had to
 ask, the owner's signed approval verifies, from a device in the owner's signed
