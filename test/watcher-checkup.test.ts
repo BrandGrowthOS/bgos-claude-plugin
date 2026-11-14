@@ -33,10 +33,10 @@ import { CHANNEL_CORE_FILES } from '../lib/keepalive-plan.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
-const HOME = '/home/kc'
+const HOME = '/home/person'
 const USER = 'kc'
 const TOKEN = 'bgp_' + 'S3cretPairingTokenValue0123456789'
-const CONFIG = '/home/kc/.claude'
+const CONFIG = '/home/person/.claude'
 const ROOT = `${CONFIG}/plugins/cache/hoai/hoai/0.38.4`
 const T0 = Date.parse('2026-08-25T12:00:00.000Z')
 const MIN = 60_000
@@ -79,7 +79,7 @@ function fakeClock(start = T0) {
 type Call = { method: string; path: string; body: any }
 
 /** An in-process fake backend: serves the given frames once, the job bodies, records every call. */
-function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any> } = {}) {
+function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any>; keepAlive?: any } = {}) {
   const calls: Call[] = []
   let served = false
   const respond = (status: number, json: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(json) })
@@ -92,6 +92,8 @@ function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any> } = {}) 
       served = true
       return respond(200, { frames: opts.frames ?? [] })
     }
+    // The keep-alive answer (GET integrations/watchers/keep-alive), only when a test gives one.
+    if (opts.keepAlive !== undefined && u.pathname.endsWith('/integrations/watchers/keep-alive')) return respond(200, opts.keepAlive)
     const m = /\/machine-rpc\/([^/]+)$/.exec(u.pathname)
     if (m && init?.method === 'GET') return respond(200, opts.jobs?.[decodeURIComponent(m[1]!)] ?? {})
     return respond(200, {})
@@ -157,6 +159,9 @@ function writeTranscript(fs: MemoryFs, lines: string[], mtimeMs: number) {
   fs.writeFile(TRANSCRIPT, `${lines.join('\n')}\n`)
   fs.touch(TRANSCRIPT, mtimeMs)
 }
+
+/** The server's keep-alive answer to this watcher, placing exactly these agents on this computer (agentWindows). */
+const keepAliveAnswer = (ids: string[]) => ({ enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, agentWindows: Object.fromEntries(ids.map((id) => [id, false])) })
 
 /** The checkup job as the backend enqueues it (P1: op reconcile, intent checkup, one target, a numeric id). */
 function checkupJob(rpcId = 'chk-1', targets: any[] = [{ pairingId: 3, assistantId: 912 }]) {
@@ -616,6 +621,41 @@ test('a checkup with no agent, or with several, is refused by name and touches n
     assert.equal(restartRequested(fs), false)
     assert.equal(run.execCalls.some((c) => c.startsWith('ps ')), false, 'nothing observed for a refused job')
   }
+})
+
+test('board row 23415823: an agent whose login file is gone but whose records are here is a lost login, reported in the DTO shape and never restarted', async () => {
+  // The 13 Nov wipe: credentials-912.json deleted, everything else of agent 912 left in place.
+  const fs = agentFs()
+  fs.rm(`${HOME}/.bgos-agent/credentials-912.json`)
+  // The server places agent 912's pairing on this computer (its keep-alive map for this watcher).
+  const backend = fakeBackend({ ...checkupJob(), keepAlive: keepAliveAnswer(['912']) })
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, psLine(1, 0, '/sbin/init'))
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.match(terminal.message, /found login_file_missing/)
+  assert.deepEqual(terminal.findings.map((f: any) => [f.cause, f.status, f.target, f.fix]), [['login_file_missing', 'FAIL', '912', "This agent's login file is missing on this computer. Pair it again to fix it."]])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['login_file_missing', 'report', 'not_fixed']])
+  assertDtoShape(backend.progress('chk-1'))
+  assertNoSecrets(backend.progress('chk-1').map((b) => JSON.stringify(b)), 'the lost login report')
+  assert.equal(restartRequested(fs), false)
+  assert.deepEqual(run.spawns, [])
+  assert.equal(fs.files.has(`${HOME}/.bgos-agent/credentials-912.json`), false)
+})
+
+test('board row 23415823, round 2: the same records with the pairing moved to another computer (the server places it elsewhere) stay agent_not_on_this_machine', async () => {
+  const fs = agentFs()
+  fs.rm(`${HOME}/.bgos-agent/credentials-912.json`)
+  const backend = fakeBackend({ ...checkupJob(), keepAlive: keepAliveAnswer(['913']) })
+  const run = rig(fs, backend, fakeClock(), psLine(1, 0, '/sbin/init'))
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'failed')
+  assert.equal(terminal.message, 'agent_not_on_this_machine:912')
+  assert.equal(JSON.stringify(backend.progress('chk-1')).includes('login_file_missing'), false)
+  assert.ok(backend.calls.some((c) => c.method === 'GET' && c.path.endsWith('/integrations/watchers/keep-alive')), 'the server was asked')
+  assert.equal(restartRequested(fs), false)
 })
 
 test('the op checkup is a checkup too', async () => {
