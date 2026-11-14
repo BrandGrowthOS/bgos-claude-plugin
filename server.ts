@@ -523,6 +523,7 @@ import {
   marketplaceChannelSpec,
 } from './bin/bgos-install-method.mjs'
 import { resolveChannelSpec } from './bin/hoai-core.mjs'
+import { writeCredentialsFile } from './bin/bgos-pair.mjs'
 import { threadOptionsWarning } from './bin/bgos-launch.mjs'
 import {
   UpdateStreamConsumer,
@@ -656,6 +657,7 @@ import {
   resolveAuthRecheckIntervalMs,
   AuthRecheckMonitor,
 } from './lib/auth-recheck.js'
+import { CredentialsFileRestorer } from './lib/credentials-restore.js'
 import {
   detectCompactCapability,
   formatCompactDetection,
@@ -1377,6 +1379,45 @@ function log(msg: string): void {
 // resolved, and no token is ever logged (fingerprints only).
 const authRecheckMonitor = new AuthRecheckMonitor(authSnapshot(AUTH, CREDENTIALS_PATH))
 
+// ── Lost credentials file: written back from the token this daemon holds ─────
+// 2026-11-13 an accident deleted every credentials-<id>.json on a Mac; each
+// daemon ran on in memory, but a restart would have come up unpaired and the
+// Helper read the missing file as "agent not on this machine". On the same
+// recheck (interval and file watch) the boot file is checked: when it is gone
+// AND a fresh GET integrations/me with the in-memory token answers 200 listing
+// this assistant, it is written back by bgos-pair's own writer (0600, exclusive
+// create, so a re-pair that lands meanwhile wins) and one WARN names the path.
+// Never another assistant's file, never the shared credentials.json, never on
+// a failing token, nothing posted to chat (lib/credentials-restore.ts).
+const credentialsRestorer = new CredentialsFileRestorer({
+  path: CREDENTIALS_PATH,
+  via: CREDENTIALS_SELECTION.via,
+  auth: AUTH,
+  bootCreds: CREDENTIALS_FILE,
+  exists: existsSync,
+  readCreds: loadCredentialsFile,
+  probeMe: () =>
+    bgosCall(
+      {
+        url: `${API_BASE}/integrations/me`,
+        init: { headers: { ...authHeaders(AUTH) } },
+        timeoutMs: HTTP_TIMEOUT_MS,
+        label: 'GET integrations/me (credentials restore)',
+      },
+      async (response) => ({
+        status: response.status,
+        body: response.ok ? await response.json().catch(() => null) : null,
+      }),
+    ),
+  writeExclusive: async (path, creds) => {
+    const written = await writeCredentialsFile(path, creds, { exclusive: true })
+    if (written?.aclApplied === false) {
+      log(`WARN restored credentials file ${path} is UNPROTECTED: ${written.aclError ?? 'the ACL lock failed'}`)
+    }
+  },
+  log,
+})
+
 function credentialsMtimeMs(path: string): number | null {
   try {
     return statSync(path).mtimeMs
@@ -1385,8 +1426,11 @@ function credentialsMtimeMs(path: string): number | null {
   }
 }
 
-function runAuthRecheck(): void {
+async function runAuthRecheck(): Promise<void> {
   try {
+    // First, a lost boot file is written back while the token still works,
+    // so the comparison below sees the file again instead of a divergence.
+    if ((await credentialsRestorer.check()) === 'restored') armCredentialsWatch()
     // cwd is load-bearing, not decoration. Without it the resolver cannot see
     // the <cwd>/.bgos-agent-id folder pin, so on a host with several paired
     // agents it falls through to the shared legacy file, and this recheck would
@@ -1413,12 +1457,68 @@ function runAuthRecheck(): void {
     )
     if (line) log(line)
   } catch (err) {
-    // Visibility-only feature: a recheck failure must never hurt the daemon.
+    // A recheck (or restore) failure must never hurt the daemon.
     log(`auth recheck skipped: ${err}`)
   }
 }
 
 let authWatchDebounce: ReturnType<typeof setTimeout> | null = null
+let authWatchers: Array<ReturnType<typeof watch>> = []
+
+function scheduleAuthRecheck(): void {
+  if (authWatchDebounce) clearTimeout(authWatchDebounce)
+  authWatchDebounce = setTimeout(runAuthRecheck, 500)
+  authWatchDebounce.unref?.()
+}
+
+/**
+ * Cheap immediate signal on file change; guarded so watcher failures (missing
+ * file, platform quirks, watcher error events) never crash anything - the
+ * interval remains the backstop. Two watches: the file itself (a rewrite in
+ * place), and its folder, filtered to the file's own name, because under bun on
+ * Linux a watch on a file reports NOTHING when that file is deleted (measured
+ * 2026-11-14, bun 1.3.11; node reports a rename) while a folder watch reports
+ * it. Armed again after a restore: the old watches follow the deleted inode
+ * (or a folder that was removed), so the restored file needs its own.
+ */
+function armCredentialsWatch(): boolean {
+  for (const watcher of authWatchers) {
+    try {
+      watcher.close()
+    } catch {
+      /* already closed */
+    }
+  }
+  authWatchers = []
+  const fileName = basename(CREDENTIALS_PATH)
+  const targets: Array<[string, (event: string, name: string | Buffer | null) => void]> = [
+    [CREDENTIALS_PATH, () => scheduleAuthRecheck()],
+    [
+      pathDirname(CREDENTIALS_PATH),
+      (_event, name) => {
+        // A folder holds every agent's files; only this file's own name, an
+        // event that names nothing, or this file being absent is worth a
+        // recheck. The absence test is there because bun reports one name for
+        // a batch of deletions (rm -rf of the folder named another file).
+        if (name == null || String(name) === fileName || !existsSync(CREDENTIALS_PATH)) {
+          scheduleAuthRecheck()
+        }
+      },
+    ],
+  ]
+  for (const [target, onEvent] of targets) {
+    try {
+      const watcher = watch(target, { persistent: false }, onEvent)
+      watcher.on('error', () => {
+        /* watcher death is fine; the periodic recheck continues */
+      })
+      authWatchers.push(watcher)
+    } catch {
+      /* no watch on this platform/path; periodic recheck only */
+    }
+  }
+  return authWatchers.length > 0
+}
 
 function startAuthRecheck(): void {
   const intervalMs = resolveAuthRecheckIntervalMs(process.env)
@@ -1427,23 +1527,7 @@ function startAuthRecheck(): void {
     return
   }
   setInterval(runAuthRecheck, intervalMs).unref()
-  // Cheap immediate signal on file change; guarded so watcher failures
-  // (missing file, platform quirks, watcher error events) never crash
-  // anything - the interval above remains the backstop.
-  let watching = false
-  try {
-    const watcher = watch(CREDENTIALS_PATH, { persistent: false }, () => {
-      if (authWatchDebounce) clearTimeout(authWatchDebounce)
-      authWatchDebounce = setTimeout(runAuthRecheck, 500)
-      authWatchDebounce.unref?.()
-    })
-    watcher.on('error', () => {
-      /* watcher death is fine; the periodic recheck continues */
-    })
-    watching = true
-  } catch {
-    /* no watch on this platform/path; periodic recheck only */
-  }
+  const watching = armCredentialsWatch()
   log(
     `auth recheck enabled (every ${Math.round(intervalMs / 1000)}s` +
       (watching ? ' + credentials-file watch)' : ', no file watch)'),

@@ -1297,12 +1297,19 @@ function commandWasNotFound(error) {
   return error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT'
 }
 
+/**
+ * Write a credentials file: folder 0700, file 0600, and on Windows the ACL lock.
+ * `opts.exclusive` creates the file only when it does not exist and rejects with
+ * EEXIST otherwise: the daemon's restore of a lost file (lib/credentials-restore.ts)
+ * uses it so a re-pair that lands meanwhile is never overwritten by an older copy.
+ */
 export async function writeCredentialsFile(path, creds, opts = {}) {
   const platform = opts.platform ?? process.platform
   await mkdir(dirname(path), { recursive: true, mode: CREDENTIALS_DIR_MODE })
   await chmod(dirname(path), CREDENTIALS_DIR_MODE).catch(() => {})
   await writeFile(path, `${JSON.stringify(creds, null, 2)}\n`, {
     mode: CREDENTIALS_FILE_MODE,
+    flag: opts.exclusive ? 'wx' : 'w',
   })
   await chmod(path, CREDENTIALS_FILE_MODE)
   if (platform !== 'win32') return { platform, aclApplied: null }

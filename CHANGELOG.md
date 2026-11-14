@@ -10,6 +10,12 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.87.6 (2026-11-14)
+
+**A running agent writes back a lost login file.** On 2026-11-13 an accident deleted every agent's `~/.bgos-agent/credentials-<id>.json` on a Mac. The agents kept working on the pairing they held in memory, but any restart would have come up unpaired, and the Helper read the missing file as "agent not on this machine". Now the daemon checks its own file on the auth recheck (every 10 minutes, and at once through a watch on the file and its folder). When the file is gone and `GET integrations/me` with the pairing it holds answers 200 and lists this agent, it writes the file back in the shape pairing writes (folder 0700, file 0600, the Windows lock) and logs one WARN naming the path. It posts nothing to chat. Measured on Linux: the file is back about 0.5 to 0.8 seconds after it was deleted, also when the whole `.bgos-agent` folder was deleted.
+
+It never overwrites a file (the write only creates, so a re-pair that lands meanwhile wins), never writes when the backend refuses the pairing or does not list this agent, and never writes another agent's file. The shared `credentials.json` is never put back, because pairing deletes it on purpose when it moves an agent to its own file. An agent started with `BGOS_PAIRING_TOKEN` or an API key has no file to restore and does nothing. The file watch now also watches the folder: under bun on Linux a watch on a file reports nothing when the file is deleted.
+
 ## 0.87.5 (2026-11-13)
 
 From the Helper's production test on a MacBook (2026-11-12): the Helper noticed a frozen agent and started a Fix every time, but never restarted it, and the app then said the agent was running again.
