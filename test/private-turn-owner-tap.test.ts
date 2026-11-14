@@ -867,8 +867,9 @@ test('re-verify (Medium): server.ts checks every lane\'s tap against the cards t
   assert.match(source, /await bgosPatch\(`messages\/\$\{payload\.supersedes\}`, retireBody\)\n {10}postedButtons\.forget\(payload\.supersedes\)\n/, 'the retired plan card')
 })
 
-// ── Its re-verify (a Low the fix introduced, fixed red first): the backend refuses edit_message (chat_id '0'), and the
-// record followed the edit anyway, so the owner's later tap on that card was not as posted and ended a live owner turn.
+// ── Its re-verify (a Low the fix introduced, fixed red first): the record followed an edit the backend refused, so
+// the owner's later tap on that card was not as posted and ended a live owner turn. edit_message now edits through
+// bgosPatch, which throws on any answer that is not 2xx (test/edit-message-route.test.ts runs the real one).
 
 test('re-verify (Low): server.ts\'s edit_message tells the record only an edit the backend accepted', async () => {
   const ts = (await import('typescript')).default
@@ -884,7 +885,11 @@ test('re-verify (Low): server.ts\'s edit_message tells the record only an edit t
     const scope: Record<string, unknown> = {
       BACKEND_URL: 'https://backend.invalid/api/v1', HTTP_TIMEOUT_MS: 1000, USER_ID: OWNER, postedButtons,
       protectBackslashesForMarkdown: (text: string) => text,
-      bgosCall: async (_call: unknown, consume: (response: Response) => Promise<unknown>) => consume(new Response(null, { status })),
+      // bgosPatch's contract: a 2xx resolves, anything else throws.
+      bgosPatch: async (path: string) => {
+        if (status >= 200 && status < 300) return status === 204 ? null : { id: 901 }
+        throw new Error(`PATCH ${status}: refused ${path}`)
+      },
     }
     // eslint-disable-next-line no-new-func
     const editMessage = new Function('scope', `with (scope) {\n${js}\nreturn editMessage\n}`)(scope) as (args: Record<string, unknown>) => Promise<unknown>

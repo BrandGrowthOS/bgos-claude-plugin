@@ -600,8 +600,8 @@ export function buildPlanCardBody(input: {
  * the payload flips to `superseded`, so the old card keeps its steps, dims, and
  * reads "Superseded by the plan below".
  *
- * `edit_message` cannot do this. It takes {message_id, text} and POSTs to
- * `webhook/edited_message`, carrying no options at all. The working mechanism
+ * `edit_message` cannot do this. It takes {message_id, text} and PATCHes only
+ * the text, carrying no options at all. The working mechanism
  * is the direct PATCH the permission relay's backstop and boot sweep already
  * use, which is what this body is for.
  */

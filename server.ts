@@ -5325,11 +5325,17 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'edit_message',
-      description: 'Edit a previously sent message in the BGOS chat.',
+      description:
+        'Edit the text of one of your previously sent messages in the BGOS chat. ' +
+        'Answers "Edited" only when the backend took the edit; otherwise it returns an error with the reason, ' +
+        'and the message is unchanged.',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          message_id: { type: 'string', description: 'The message ID to edit' },
+          message_id: {
+            type: 'string',
+            description: 'The message ID to edit: the number a reply returned ("Sent (message_id: N)").',
+          },
           text: { type: 'string', description: 'The new message text' },
         },
         required: ['message_id', 'text'],
@@ -7463,43 +7469,35 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     }
 
     case 'edit_message': {
-      const message_id = rawArgs.message_id as string | undefined
+      const message_id = rawArgs.message_id as string | number | undefined
       const text = rawArgs.text as string | undefined
-      if (!message_id || !text) {
-        return { content: [{ type: 'text', text: 'Error: message_id and text required' }] }
+      if (message_id == null || message_id === '' || !text) {
+        return { content: [{ type: 'text', text: 'Error: message_id and text required' }], isError: true }
+      }
+      // A message id is the number a reply answered with. Anything else (a
+      // made up id, a path, a chat id with a suffix) is refused here, before
+      // it can become part of the PATCH path.
+      const id = String(message_id).trim()
+      if (!/^[1-9]\d{0,17}$/.test(id)) {
+        return { content: [{ type: 'text', text: 'Error: message_id must be a message id from a reply' }], isError: true }
       }
       try {
         // Same CommonMark backslash protection as the reply path, an edited
         // message is rendered the same way, so it needs the same fix.
         const safeText = protectBackslashesForMarkdown(text)
-        const baseUrl = BACKEND_URL.replace(/\/api\/v1$/i, '').replace(/\/$/, '')
-        await bgosCall(
-          {
-            url: `${baseUrl}/webhook/edited_message`,
-            init: {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                event_type: 'edited_message',
-                message_id,
-                chat_id: '0',
-                user_id: USER_ID,
-                timestamp: new Date().toISOString(),
-                text: safeText,
-                message: { text: safeText },
-              }),
-            },
-            timeoutMs: HTTP_TIMEOUT_MS,
-            label: 'POST webhook/edited_message',
-          },
-          // The original code never inspected the response; it only needed the
-          // request to leave. Keep that, but bounded. The posted buttons record
-          // follows only an edit the backend took: a refused one leaves the card
-          // as it stands, and the owner's tap on it is the owner's.
-          async (response) => {
-            if (response.ok) postedButtons.edited(message_id, safeText)
-          },
-        )
+        // The edit route the app itself uses, with this daemon's own
+        // credential: the backend binds the owner to the credential and asks
+        // the chat kind's own edit rule. Before this, the tool POSTed to the
+        // unsigned webhook bridge for edits, naming no real chat, which the
+        // backend refused every time (message_not_in_named_chat), and the
+        // tool answered "Edited" without reading the answer. bgosPatch throws
+        // on any answer that is not 2xx, so a refused edit reaches the catch
+        // below as the backend's own line, with isError.
+        await bgosPatch(`messages/${id}`, { text: safeText })
+        // The posted buttons record follows only an edit the backend took: a
+        // refused one throws above and leaves the card as it stands, so the
+        // owner's tap on it is the owner's.
+        postedButtons.edited(id, safeText)
         return { content: [{ type: 'text', text: 'Edited' }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
