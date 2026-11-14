@@ -132,7 +132,7 @@ export function floorAskOutput(words) {
  * main() always passes it; without it this is the bare list contract the
  * tests pin rule by rule.
  *
- * EVERY KIND, THE MOST DANGEROUS FIRST (0.87.5). A call can fall under more
+ * EVERY KIND, THE MOST DANGEROUS FIRST (0.87.7). A call can fall under more
  * than one kind (an `.env` append, then a key file uploaded with `curl -T`).
  * The hook reads them all (the core's classifyToolCallLead): its reason names
  * the most dangerous kind, and the match it records carries every kind in

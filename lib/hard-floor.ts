@@ -65,7 +65,7 @@ export interface HardFloorMatch {
   /** On a lead match: every kind's command, each once, the most dangerous first. */
   evidences?: string[]
   /**
-   * On a lead match: the match a reader of one kind took before 0.87.5, the
+   * On a lead match: the match a reader of one kind took before 0.87.7, the
    * first kind in the list's order and its own command.
    */
   first?: { ruleId: HardFloorRuleId; evidence: string }

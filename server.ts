@@ -4091,7 +4091,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     record: floorRecord,
     // This channel's email_send is read with auto approve off too: its card can
     // carry the owner's Allow only when the floor holds it (lib/floor-check.ts).
-    // Every kind the preview shows, the most dangerous first (0.87.5).
+    // Every kind the preview shows, the most dangerous first (0.87.7).
     previewMatch:
       floorRecord === null && (AUTO_APPROVE || isOwnSendingTool(tool_name))
         ? classifyPermissionRequestLead(tool_name, input_preview)

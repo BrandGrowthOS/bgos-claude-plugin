@@ -102,7 +102,7 @@ test('every fixture case a hook can see: the ask on a match, nothing otherwise',
     else if (c.input.kind === 'tool') input = hookInput(c.input.toolName, {})
     else continue // a request is the relay's input, not the hook's
     const out = decideFloorHook(input, core)
-    // The hook names the MOST DANGEROUS kind the call falls under (0.87.5):
+    // The hook names the MOST DANGEROUS kind the call falls under (0.87.7):
     // a top kind when one matched, else the first in list order.
     const kinds = c.ruleIds ?? (c.ruleId === null ? [] : [c.ruleId])
     const leadId = kinds.find((id) => TOP_KINDS.includes(id)) ?? kinds[0]

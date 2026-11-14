@@ -59,7 +59,7 @@
  * about a different, harmless command. consultFloor re-reads its own body and
  * floorRouteFor sends such a proceed to the owner instead of auto approving.
  *
- * EVERY KIND, THE MOST DANGEROUS FIRST (0.87.5). A command can fall under
+ * EVERY KIND, THE MOST DANGEROUS FIRST (0.87.7). A command can fall under
  * several kinds, and the four most dangerous sort after the older ones in the
  * list. The plan's match names them all (recordFloorMatch: what the record's
  * commands read, then what the preview shows), its `ruleId` is the most
@@ -68,7 +68,7 @@
  * of three ways to say it the server reads the most kinds in, the top kinds
  * counted first: the command as the CLI showed it, every kind's command
  * (fitted, lib/floor-evidence.mjs fitFloorEvidence), and the body made from
- * `first` the way it was made before 0.87.5. So it never reads fewer kinds
+ * `first` the way it was made before 0.87.7. So it never reads fewer kinds
  * than the preview alone or than before.
  *
  * WITH AUTO APPROVE OFF (floorRouteFor's second argument). Every request is
@@ -152,12 +152,12 @@ export interface FloorRecord {
   sessionId: string | null
   toolUseId: string | null
   /**
-   * Every kind the hook read, the most dangerous first (0.87.5); `ruleId` is
+   * Every kind the hook read, the most dangerous first (0.87.7); `ruleId` is
    * the first of them and `evidence` its own command. Absent on a record an
    * older hook wrote.
    */
   ruleIds?: string[]
-  /** Every kind's command, each once, the most dangerous first (0.87.5). */
+  /** Every kind's command, each once, the most dangerous first (0.87.7). */
   evidences?: string[]
   /** The probe of the value the floor read (lib/floor-state.mjs valueProbe). */
   probe?: { head: string; tail: string }
@@ -285,7 +285,7 @@ export function recordFloorMatch(
   )
 }
 
-/** A record's commands: its `evidences` (0.87.5), then its one `evidence`, each once. */
+/** A record's commands: its `evidences` (0.87.7), then its one `evidence`, each once. */
 function recordEvidenceLines(record: FloorRecord): string[] {
   const listed = Array.isArray(record.evidences)
     ? record.evidences.filter((line): line is string => typeof line === 'string' && line.length > 0)
@@ -323,7 +323,7 @@ export function floorCheckPath(
  * simple command that matched (the match's evidence), so the server reads the
  * part that matters and not a head and a tail that stop around it.
  *
- * EVERY KIND (0.87.5): three bodies are made and the one the list reads the
+ * EVERY KIND (0.87.7): three bodies are made and the one the list reads the
  * most kinds in is sent, the top kinds counted first and the match's own
  * (most dangerous) kind breaking a tie (mostRead): the input as the CLI
  * showed it; every kind's command (the match's `evidence`, fitted top kinds
@@ -370,7 +370,7 @@ export function buildFloorCheckBody(
 }
 
 /**
- * The body as this relay made it before 0.87.5, for the match's one rule:
+ * The body as this relay made it before 0.87.7, for the match's one rule:
  * the input when it reads that rule first, else the evidence, fitted for that
  * rule alone.
  */

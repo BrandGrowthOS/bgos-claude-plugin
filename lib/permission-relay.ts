@@ -447,13 +447,13 @@ export const FLOOR_EVIDENCE_LEAD_MAX = 1500
  *     reader (which reads the first such key of a text that is not JSON)
  *     matches it. The lead is fitted to FLOOR_EVIDENCE_LEAD_MAX by dropping
  *     arguments, never the operator, with a marker saying how many went.
- *     EVERY KIND (0.87.5): the evidence carries each kind's command, one per
+ *     EVERY KIND (0.87.7): the evidence carries each kind's command, one per
  *     line, the most dangerous first, and the card is whichever of these the
  *     server's card reader reads the most kinds in, the top kinds counted
  *     first: led by every kind's command (each fitted, a long word shortened
  *     in its middle, one that cannot fit left out, never the ones after it),
  *     led by the most dangerous kind's command alone, led the way it was
- *     before 0.87.5 (the first kind in the list's order, its own command
+ *     before 0.87.7 (the first kind in the list's order, its own command
  *     fitted for it alone), or not led at all. A tie keeps the earlier one,
  *     so a card of one kind is led as before whenever that reads as much. A
  *     top kind the server cannot read on the card is never marked as one
@@ -514,7 +514,7 @@ export function permissionCardTool(input: {
 }
 
 /**
- * A lead fitted the way it was before 0.87.5: for the first kind the evidence
+ * A lead fitted the way it was before 0.87.7: for the first kind the evidence
  * reads, by dropping arguments; the evidence's head when it reads none.
  * `budget`: how many characters the dropping may read (unbounded, as before,
  * when absent).

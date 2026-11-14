@@ -1,6 +1,6 @@
 /**
  * A command that does several risky things reaches the server with EVERY one
- * of them, the most dangerous first (0.87.5).
+ * of them, the most dangerous first (0.87.7).
  *
  * Rules version 4 reads every kind a command falls under (classifyFloorAll).
  * These cases hold, end to end through the real hook, record, relay plan, body
@@ -197,7 +197,7 @@ test('a short command with two kinds: the record, the check body and the card ca
   assert.deepEqual(missing(['env_file_write', 'sends_data_off'], cardKinds(card)), [], card)
 })
 
-/** The single kind and command the hook recorded before 0.87.5: the first kind in the list's order, its command cut from its head. */
+/** The single kind and command the hook recorded before 0.87.7: the first kind in the list's order, its command cut from its head. */
 function recordAsBefore(command: string): { ruleId: string; evidence: string } {
   const first = core.classifyToolCall('Bash', { command })!
   return { ruleId: first.ruleId, evidence: first.evidence.slice(0, FLOOR_RECORD_EVIDENCE_MAX) }
