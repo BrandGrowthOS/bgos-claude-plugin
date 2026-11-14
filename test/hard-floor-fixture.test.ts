@@ -76,7 +76,7 @@ test('this plugin carries exactly the fixture rule ids and words, in order', () 
  * and PINNED_RULES_DIGEST. Change these only together with a fixture copied
  * afresh from the backend.
  */
-const PINNED_FIXTURE_DIGEST = '7502a6537c5b4678c201f916024a7ef06260c47c0c89c2e7ca528a68959be806'
+const PINNED_FIXTURE_DIGEST = '24d128c8d4dafcbe6a4601eb52628f6ba205598bb589feedc285a6c92021b136'
 const PINNED_CARD_FIXTURE_DIGEST = '854ceb97cc68bbe28be7f87b81e2c4238a87e1dc8942212d7804f52f8ce05bd6'
 const PINNED_RULES_DIGEST = '1129586f99287d66f67a3154eff4614c47d8a5799f057a10f9a766fb379b98c5'
 /**
@@ -85,7 +85,7 @@ const PINNED_RULES_DIGEST = '1129586f99287d66f67a3154eff4614c47d8a5799f057a10f9a
  * above let a comment, a type or the header drift in one copy while both
  * suites stay green; this does not.
  */
-const PINNED_FIXTURE_FILE_SHA256 = '059536cae91b6202e22ca1eee3c614547743928631d7293e79e1b93bcf0369dd'
+const PINNED_FIXTURE_FILE_SHA256 = 'd1a52f5c99f3b7f71983a533a1a141d06d633b5db150879cfa87a1072a690ba0'
 
 test('pins the fixture data and the rules against the file AND a literal here (regenerate BOTH repos together)', () => {
   const fixture = sha256(JSON.stringify(HARD_FLOOR_FIXTURE))

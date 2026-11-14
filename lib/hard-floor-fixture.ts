@@ -3877,6 +3877,101 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     input: { kind: "command", command: "$(echo cat) <<<'echo done' | sh" },
     ruleId: null,
   },
+  // A substitution or subshell that is the whole program of a command a
+  // pipe feeds, or of one that holds only redirects, goes into the next
+  // pipe with what it prints. Substitutions glued one after another where
+  // the program goes may all give nothing, so the program is the text after
+  // the last of them.
+  {
+    name: "piped_shell_fed_by_a_subshell_after_a_pipe",
+    input: { kind: "command", command: "true | (echo 'rm -rf build') | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_shell_fed_a_force_push_by_a_subshell_after_a_pipe",
+    input: { kind: "command", command: "ls | (echo 'git push --force origin main') | bash" },
+    ruleId: "force_push",
+  },
+  {
+    name: "piped_shell_fed_by_a_substitution_after_a_pipe",
+    input: { kind: "command", command: "true | $(printf 'rm -rf build') | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_shell_fed_by_a_subshell_inside_a_fed_substitution",
+    input: { kind: "command", command: "echo hi | cat $( (echo 'rm -rf build') | sh )" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_shell_fed_by_a_substitution_after_an_output_redirect",
+    input: { kind: "command", command: "2>/dev/null $(echo 'sudo reboot') | bash" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "piped_shell_fed_by_a_backtick_pair_after_a_here_string",
+    input: { kind: "command", command: "<<<x `echo 'git push --force origin main'` | sh" },
+    ruleId: "force_push",
+  },
+  {
+    name: "piped_shell_fed_by_a_heredoc_cat_substitution_after_an_input_redirect",
+    input: { kind: "command", command: "< notes.txt $(cat <<EOF\nrm -rf build\nEOF\n) | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_glued_after_two_substitutions_after_a_pipe",
+    input: { kind: "command", command: "ls | $(true)$(true)rm -rf x" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_after_two_glued_substitutions_after_a_pipe",
+    input: { kind: "command", command: "ls | $(true)$(true) rm -rf x" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_glued_after_two_backtick_pairs_after_a_pipe",
+    input: { kind: "command", command: "ls | `true``true`rm -rf x" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "elevation_glued_after_two_substitutions_after_a_pipe",
+    input: { kind: "command", command: "echo hi | $(true)$(true)sudo sh" },
+    ruleId: "admin_rights",
+  },
+  {
+    name: "fed_delete_after_two_glued_substitutions_after_a_pipe",
+    input: { kind: "command", command: "find . | $(true)$(true) xargs rm" },
+    ruleId: "file_delete",
+  },
+  {
+    name: "folder_delete_glued_after_two_substitutions_after_an_output_redirect",
+    input: { kind: "command", command: "> log $(true)$(true)rm -rf x" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "folder_delete_glued_after_two_substitutions_behind_a_wrapper",
+    input: { kind: "command", command: "nice $(true)$(true)rm -rf x" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_shell_fed_a_harmless_subshell_after_a_pipe",
+    input: { kind: "command", command: "true | (echo hello) | sh" },
+    ruleId: null,
+  },
+  {
+    name: "piped_cat_fed_by_a_subshell_after_a_pipe",
+    input: { kind: "command", command: "true | (echo 'rm -rf build') | cat" },
+    ruleId: null,
+  },
+  {
+    name: "listing_glued_after_two_substitutions_after_a_pipe",
+    input: { kind: "command", command: "ls | $(true)$(true)ls -la" },
+    ruleId: null,
+  },
+  {
+    name: "echo_glued_after_two_substitutions_after_an_output_redirect",
+    input: { kind: "command", command: "> log $(true)$(true)echo done" },
+    ruleId: null,
+  },
   {
     name: "admin_and_folder_delete_names_the_delete",
     input: { kind: "command", command: "sudo rm -rf /var/cache/app" },
@@ -4231,7 +4326,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "7502a6537c5b4678c201f916024a7ef06260c47c0c89c2e7ca528a68959be806";
+  "24d128c8d4dafcbe6a4601eb52628f6ba205598bb589feedc285a6c92021b136";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
