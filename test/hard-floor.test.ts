@@ -237,6 +237,25 @@ test('a substitution where a program may go is told from a heredoc owner at once
   assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
 })
 
+test('a here string that many readings of one command share is scanned for a key once', () => {
+  // The words after each substitution are a reading of their own that keeps
+  // the command's here strings. Scanning them all again for each reading
+  // would grow with the readings times the here strings.
+  const command = '0<<<x $(x) sh '.repeat(6000)
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('a long heredoc body that many readings of one command share is scanned for a key once', () => {
+  const command = 'cat <<E' + ' $(x) a'.repeat(30000) + '\n' + 'z'.repeat(200000) + '\nE'
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
 test('a very long list of words after a double dash is read without running out of room', () => {
   // The words after the dash are gathered one at a time, never handed over as
   // one call's arguments, which has a limit far below the longest command.
