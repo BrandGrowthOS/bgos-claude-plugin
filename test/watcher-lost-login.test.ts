@@ -36,9 +36,9 @@ type Platform = 'linux' | 'darwin' | 'win32'
 
 /** Each platform's own HOME and separator: the paths the watcher builds there. */
 const PLATFORMS: Array<{ platform: Platform; home: string; sep: string }> = [
-  { platform: 'linux', home: '/home/kc', sep: '/' },
-  { platform: 'darwin', home: '/Users/kc', sep: '/' },
-  { platform: 'win32', home: 'C:\\Users\\kc', sep: '\\' },
+  { platform: 'linux', home: '/home/person', sep: '/' },
+  { platform: 'darwin', home: '/Users/person', sep: '/' },
+  { platform: 'win32', home: 'C:\\Users\\person', sep: '\\' },
 ]
 
 function paths(home: string, sep: string, id = ID) {

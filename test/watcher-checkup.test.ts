@@ -32,10 +32,10 @@ import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
-const HOME = '/home/kc'
+const HOME = '/home/person'
 const USER = 'kc'
 const TOKEN = 'bgp_' + 'S3cretPairingTokenValue0123456789'
-const CONFIG = '/home/kc/.claude'
+const CONFIG = '/home/person/.claude'
 const ROOT = `${CONFIG}/plugins/cache/hoai/hoai/0.38.4`
 const T0 = Date.parse('2026-08-25T12:00:00.000Z')
 const MIN = 60_000
