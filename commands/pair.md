@@ -52,5 +52,8 @@ Rules:
   `--allow-home` on your own to get past a 4.
 - On an account with several bound agents, pairing refuses to guess and lists
   the candidates; rerun with `--assistant-id <id>` appended to $ARGUMENTS.
+- Pairing takes the agent only from `--assistant-id`. If it says it ignored a
+  BGOS_ASSISTANT_ID from the environment, relay that line; to pair as that
+  agent, rerun with `--assistant-id <id>` appended to $ARGUMENTS.
 - If the code has expired, tell them to get a fresh code in the HOAI app
   (Add agent, then Claude Code) and run /hoai:pair again.
