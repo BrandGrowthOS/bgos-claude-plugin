@@ -30,6 +30,7 @@ import { checkupTarget, endOldClaudes, isOwnerChannelText, parseTranscriptTail }
 import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
+import { RESTART_NOTICE_FILE_NAME, parseRestartNotice, restartLine, takeRestartNotice } from '../lib/restart-notice.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
 const HOME = '/home/kc'
@@ -1318,7 +1319,7 @@ async function ownerRestartWhenLeft(after: { daemonLives: boolean; psReadable: b
     },
   })
   await runWatcher(run.deps as any)
-  return { terminal: terminalOf(backend, 'rst-1'), run }
+  return { terminal: terminalOf(backend, 'rst-1'), run, fs }
 }
 
 test('review F2 (M15): the owner Restart never starts a second session beside a live daemon', async () => {
@@ -1357,4 +1358,103 @@ test('review F2 (M20): a fix held by the pass deadline is "Not fixed yet", never
   assert.match(terminal.actions[0].detail, /^Not fixed yet \(pass_deadline: /)
   assert.match(terminal.message, /not fixed yet 1 \(held: pass_deadline\)/)
   assert.equal(restartRequested(fs), false)
+})
+
+// -- the restart line (board row b7276b5a): who restarted the agent, for the session it resumes ---------
+
+const NOTICE = `${STATE_DIR}/${RESTART_NOTICE_FILE_NAME}`
+const noticeOf = (fs: MemoryFs) => parseRestartNotice(fs.readFile(NOTICE))
+/** What the daemon the restart brought up reads, through the same take it makes on its first arm. */
+const daemonTakes = (fs: MemoryFs, bootedAtMs: number) =>
+  takeRestartNotice({
+    stateDir: STATE_DIR,
+    bootedAtMs,
+    fs: { readFile: (p: string) => fs.readFile(p), unlink: (p: string) => { if (!fs.files.has(p)) throw new Error('ENOENT'); fs.rm(p) } },
+  })
+
+test('restart line: the owner Restart leaves "restarted by the owner" for the session it resumes, once', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true }) })
+  writeTranscript(fs, [assistantTurn(T0 - 2 * MIN)], T0 - 2 * MIN)
+  const backend = fakeBackend(ownerRestartJob())
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, PS_912, { pidAlive: (pid: number) => live.has(pid) })
+  await runWatcher(run.deps as any)
+  assert.equal(terminalOf(backend, 'rst-1').state, 'done')
+  const notice = noticeOf(fs)
+  assert.deepEqual(notice, { by: 'owner', atMs: T0 }, 'written at the restart, before the hand over')
+  // The new daemon boots after it and takes it: the line, then nothing for any later boot.
+  const taken = daemonTakes(fs, clock.now())
+  assert.equal(restartLine(taken), '[hoai] You were restarted by the owner at 12:00 UTC; your conversation continued.')
+  assert.equal(daemonTakes(fs, clock.now() + MIN), null)
+})
+
+test('restart line: the owner Restart that had to start a stopped agent says so', async () => {
+  const { terminal, run, fs } = await ownerRestartWhenLeft({ daemonLives: false, psReadable: true })
+  // The restart ended the session and nothing came back, so the owner's Restart started it again.
+  assert.equal(terminal.steps.find((s: any) => s.kind === 'start_agent')?.state, 'ok', JSON.stringify(terminal.steps))
+  assert.equal(run.spawns.length, 1)
+  assert.deepEqual({ by: noticeOf(fs)?.by, why: noticeOf(fs)?.why }, { by: 'owner', why: 'stopped' })
+})
+
+test('restart line: a refused owner job leaves no notice', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  const backend = fakeBackend(ownerRestartJob('rst-1', { requestedBy: 'helper' }))
+  const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  assert.equal(terminalOf(backend, 'rst-1').state, 'failed')
+  assert.equal(fs.files.has(NOTICE), false)
+})
+
+test('restart line: an owner Restart that could not be handed over withdraws its notice', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  const write = fs.writeFile.bind(fs)
+  fs.writeFile = ((p: string, text: string, opts?: any) => {
+    if (p.endsWith('/restart-requested.json')) throw new Error('EACCES')
+    return write(p, text, opts)
+  }) as typeof fs.writeFile
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  assert.equal(terminalOf(backend, 'rst-1').state, 'failed')
+  assert.equal(restartRequested(fs), false)
+  assert.equal(fs.files.has(NOTICE), false, 'no session was restarted, so none is told it was')
+})
+
+test('restart line: the Helper check up restart says "restarted by the Helper"', async () => {
+  const fs = runCFs()
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, PS_912, { pidAlive: (pid: number) => live.has(pid) })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(terminalOf(backend).actions.map((a: any) => [a.did, a.outcome]), [['restart_agent', 'fixed']])
+  const notice = noticeOf(fs)
+  assert.equal(notice?.by, 'helper')
+  assert.equal(notice?.why, undefined, 'a running session restarted: no why')
+  assert.ok(notice!.atMs >= T0 && notice!.atMs <= clock.now())
+  assert.match(restartLine(daemonTakes(fs, clock.now())), /^\[hoai\] You were restarted by the Helper at 12:00 UTC; your conversation continued\.$/)
+})
+
+test('restart line: the Helper starting a dead session says it had stopped', async () => {
+  const fs = agentFs({ [`${STATE_DIR}/supervisor.json`]: '' })
+  writeTranscript(fs, [ownerMessage(T0 - 50 * MIN), assistantTurn(T0 - 49 * MIN)], T0 - 49 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, psLine(1, 0, '/sbin/init'))
+  await runWatcher(run.deps as any)
+  assert.deepEqual(terminalOf(backend).actions.map((a: any) => [a.did, a.outcome]), [['start_agent', 'fixed']])
+  assert.deepEqual({ by: noticeOf(fs)?.by, why: noticeOf(fs)?.why }, { by: 'helper', why: 'stopped' })
+})
+
+test('restart line: a check up that restarts nothing leaves no notice', async () => {
+  const fs = runCFs()
+  const backend = fakeBackend(checkupJob())
+  const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912], checkupDeadlineMs: 10_000 })
+  await runWatcher(run.deps as any)
+  assert.equal(restartRequested(fs), false)
+  assert.equal(fs.files.has(NOTICE), false)
 })

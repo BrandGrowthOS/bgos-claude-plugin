@@ -39,6 +39,7 @@ import {
   voiceConsultActor,
 } from '../lib/private-turn.mjs'
 import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
+import { applyRestartLine, createRestartLineSlot } from '../lib/restart-notice.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 import { VoiceRpcHandler, type VoiceRpcDeps, type VoiceRpcFrame } from '../lib/voice-rpc.ts'
 
@@ -449,7 +450,8 @@ test('every channel card the daemon pushes passes privateTurns.rawCard; a raw on
   const f = fixture(t, { now: Date.now() })
   const pushed: unknown[] = []
   const mcp = { notification: async (n: unknown) => { pushed.push(n) } }
-  execute(source.slice(start, end) + '}) as typeof mcp.notification', { mcp, privateTurns: f.tracker, groupNotificationStep: () => null })
+  // No restart line pending (lib/restart-notice.mjs): this daemon was not restarted by anyone.
+  execute(source.slice(start, end) + '}) as typeof mcp.notification', { mcp, privateTurns: f.tracker, groupNotificationStep: () => null, applyRestartLine, restartLineSlot: createRestartLineSlot() })
   const card = f.consultCard(live())
   f.submit(card)
   await mcp.notification({ method: 'notifications/claude/channel', params: { content: card, meta: {} } })

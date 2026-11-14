@@ -496,6 +496,7 @@ import {
   LIVENESS_PROBE_POLL_MS,
 } from './lib/boot-hello.js'
 import { LIMIT_NOTICE_FILE_NAME, LIMIT_NOTICE_POLL_MS, createLimitNoticeIntake } from './lib/limit-notice.js'
+import { applyRestartLine, createRestartLineSlot, restartLine, takeRestartNotice } from './lib/restart-notice.mjs'
 import {
   LOCK_HEARTBEAT_INTERVAL_MS,
   acquirePairingLock,
@@ -10925,6 +10926,11 @@ const groupSummaries = createGroupSummaryQueue({
   },
   log,
 })
+// The restart line (lib/restart-notice.mjs, board row b7276b5a): when the owner, the Helper or the
+// watcher restarted this agent, the first arm takes their notice and the NEXT channel card, whoever it is
+// for, carries one line saying so in front of its text. Once; a card that does not go out puts it back.
+// Nothing is posted to chat.
+const restartLineSlot = createRestartLineSlot()
 /** The permission prompts group lanes raised, by request id: their verdict goes to the lane. */
 const groupPermissionVerdicts = new Map<string, (behavior: string) => void>()
 function groupNotificationStep(notification: { method?: string; params?: unknown } | undefined): { swallow?: true; restore?: () => void } | null {
@@ -10953,13 +10959,22 @@ const sendMcpNotification = mcp.notification.bind(mcp)
 mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
   const group = groupNotificationStep(notification)
   if (group?.swallow) return Promise.resolve()
+  let restart: ReturnType<typeof applyRestartLine> = null
   if (notification?.method === 'notifications/claude/channel') {
     const params = notification.params as { content?: unknown; meta?: unknown } | undefined
+    // Its text only: the meta goes out exactly as its builder made it (the wake card contract).
+    restart = applyRestartLine(params, restartLineSlot)
+    if (restart) {
+      // The same delivery: its private turn still finds it by its text.
+      privateTurns.rekeyCard(restart.before, restart.after)
+      log('restart line: told the session who restarted it, on its first card')
+    }
     if (params) params.content = privateTurns.tagRawCard(params.content ?? '')
     privateTurns.rawCard(String(params?.content ?? ''), params?.meta)
   }
   const sent = sendMcpNotification(notification)
   if (group?.restore) sent.catch(group.restore)
+  if (restart) sent.catch(restart.restore)
   return sent
 }) as typeof mcp.notification
 // The scheduled run hold (lib/schedule-grant-run.mjs, 0.86.20): while a granted run is live every channel card but the
@@ -20711,6 +20726,18 @@ async function main(): Promise<void> {
     }
     deliveryLoopsStarted = true
     firstArmInFlight = true
+    // The restart line (lib/restart-notice.mjs): the owner, the Helper or the watcher left a notice
+    // beside the agent state before restarting it. Taken once, here, by the pairing lock holder on its
+    // first arm, before the boot sweep can send the first card; a notice written after this daemon
+    // booted is the next session's and stays. A start nobody asked for left none and adds nothing.
+    const restartNoticeDir = agentStateDir(homedir(), ASSISTANT_ID)
+    const restartNotice = restartNoticeDir
+      ? takeRestartNotice({ stateDir: restartNoticeDir, bootedAtMs: DAEMON_START_MS })
+      : null
+    if (restartNotice) {
+      restartLineSlot.set(restartLine(restartNotice))
+      log(`restart line: restarted by the ${restartNotice.by} at ${new Date(restartNotice.atMs).toISOString()}; the first card says so`)
+    }
     // The pairing lock refresh, the poll tick's FIRST step (see the tick), as
     // its own step so the email download keepalive (emailFilesKeepalive) runs
     // the very same refresh, throttle and stand-down while a download holds
