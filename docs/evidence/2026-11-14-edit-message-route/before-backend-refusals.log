@@ -1,0 +1,14 @@
+2026-11-14T01:19:29.335Z [WebSocketsController] info: WebsocketGateway subscribed to the "edited_message" message
+2026-11-14T01:19:29.380Z [RouterExplorer] info: Mapped {/webhook/edited_message, POST} route
+2026-11-14T01:21:23.409Z [WebhookController] warn: [rid=46003f9f-7193-447b-b87f-38d1cfb997ee] unsigned_webhook_shadow route=/webhook/edited_message ua=Bun/1.3.11
+2026-11-14T01:21:23.410Z [WebhookController] warn: [rid=46003f9f-7193-447b-b87f-38d1cfb997ee] [webhook-bridge] REFUSED route=/webhook/edited_message reason=message_not_in_named_chat claimed=user_fixture_maya resolved=<none> chat_id=null message_id=10
+2026-11-14T01:21:23.410Z [HttpExceptionAdvicer] warn: [rid=46003f9f-7193-447b-b87f-38d1cfb997ee] denied status=401 method=POST path=/webhook/edited_message principal=none reason=Refusing this event: the payload names nothing this caller may act on.
+2026-11-14T01:21:27.460Z [WebhookController] warn: [rid=1eaead52-eb8d-4e8f-89f7-ccb5193a8c27] unsigned_webhook_shadow route=/webhook/edited_message ua=Bun/1.3.11
+2026-11-14T01:21:27.460Z [WebhookController] warn: [rid=1eaead52-eb8d-4e8f-89f7-ccb5193a8c27] [webhook-bridge] REFUSED route=/webhook/edited_message reason=no_server_side_anchor claimed=user_fixture_maya resolved=<none> chat_id=null message_id=null assistant_id=null
+2026-11-14T01:21:27.461Z [HttpExceptionAdvicer] warn: [rid=1eaead52-eb8d-4e8f-89f7-ccb5193a8c27] denied status=401 method=POST path=/webhook/edited_message principal=none reason=Refusing this event: the payload names nothing this caller may act on.
+2026-11-14T01:21:27.464Z [WebhookController] warn: [rid=9441e638-6916-41de-a5b2-7ca87690b9e8] unsigned_webhook_shadow route=/webhook/edited_message ua=Bun/1.3.11
+2026-11-14T01:21:27.465Z [WebhookController] warn: [rid=9441e638-6916-41de-a5b2-7ca87690b9e8] [webhook-bridge] REFUSED route=/webhook/edited_message reason=message_not_found claimed=user_fixture_maya resolved=<none> chat_id=null message_id=999999
+2026-11-14T01:21:27.466Z [HttpExceptionAdvicer] warn: [rid=9441e638-6916-41de-a5b2-7ca87690b9e8] denied status=401 method=POST path=/webhook/edited_message principal=none reason=Refusing this event: the payload names nothing this caller may act on.
+2026-11-14T01:21:27.468Z [WebhookController] warn: [rid=29afefc8-9736-41b4-8a63-2e34ed581582] unsigned_webhook_shadow route=/webhook/edited_message ua=Bun/1.3.11
+2026-11-14T01:21:27.470Z [WebhookController] warn: [rid=29afefc8-9736-41b4-8a63-2e34ed581582] [webhook-bridge] REFUSED route=/webhook/edited_message reason=message_chat_kind_not_on_this_transport claimed=user_fixture_maya resolved=<none> chat_id=null message_id=6
+2026-11-14T01:21:27.470Z [HttpExceptionAdvicer] warn: [rid=29afefc8-9736-41b4-8a63-2e34ed581582] denied status=401 method=POST path=/webhook/edited_message principal=none reason=Refusing this event: the payload names nothing this caller may act on.

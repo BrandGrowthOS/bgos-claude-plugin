@@ -619,6 +619,8 @@ import {
   buildPlanCardBody,
   buildPlanCardPayload,
   buildPlanRetireBody,
+  planSupersedesAdmitted,
+  planSupersedesRefusal,
   buildPlanSupersedeBody,
   describePlanClick,
   isPlanCardPayload,
@@ -673,6 +675,7 @@ import {
   VERSION_HEARTBEAT_INTERVAL_MS,
 } from './lib/version-heartbeat'
 import { errorBodyText } from './lib/error-body'
+import { OwnMessages, ownMessageRefusal, ownMessagesFilePath } from './lib/own-messages'
 import { mcpServerInfo } from './lib/mcp-server-info'
 import { markConnectionText } from './lib/connection-texts.ts'
 import { createVerdictSender } from './lib/verdict-sender.ts'
@@ -1034,6 +1037,15 @@ const USER_ID = AUTH.userId
 const ASSISTANT_ID = AUTH.assistantId
 const POLL_INTERVAL_MS = Number(process.env.BGOS_POLL_INTERVAL_MS) || 2000
 const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
+
+// The messages this agent sent, as the server answered their creates (lib/own-messages.ts). edit_message edits only
+// these: with the owner's credential the edit route would otherwise rewrite the owner's own lines and the lines of
+// the owner's other agents. Declared up here, before anything can post, so bgosPost can always note an answer.
+const ownMessages = new OwnMessages({
+  filePath: ownMessagesFilePath(resolveCursorFilePath({ assistantId: ASSISTANT_ID, cwd: process.cwd() })),
+  assistantId: ASSISTANT_ID,
+  log: (line) => log(line),
+})
 
 // Person lanes (P3): asked by the three declaredCapabilities call sites, so it
 // lives above them all.
@@ -2114,7 +2126,15 @@ async function bgosPost(
           text.slice(0, 8192),
         )
       }
-      return response.json()
+      const answer = await response.json()
+      // A create of this agent's own row is noted for edit_message (lib/own-messages.ts), from the server's answer.
+      // Noting never fails the post.
+      try {
+        ownMessages.noteCreate(path, answer)
+      } catch (err) {
+        log(`own messages: answer to POST ${path} not noted: ${String(err)}`)
+      }
+      return answer
     },
   )
 }
@@ -5429,11 +5449,18 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'edit_message',
-      description: 'Edit a previously sent message in the BGOS chat.',
+      description:
+        'Edit the text of one of your previously sent messages in the BGOS chat. Only a message this agent ' +
+        'sent can be edited, never the owner\'s or another agent\'s. ' +
+        'Answers "Edited" only when the backend took the edit; otherwise it returns an error with the reason, ' +
+        'and the message is unchanged.',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          message_id: { type: 'string', description: 'The message ID to edit' },
+          message_id: {
+            type: 'string',
+            description: 'The message ID to edit: the number a reply returned ("Sent (message_id: N)").',
+          },
           text: { type: 'string', description: 'The new message text' },
         },
         required: ['message_id', 'text'],
@@ -7437,6 +7464,18 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       // rebuilt, so the fallback strips the chips and nothing else
       // (buildPlanRetireBody): the old card stops being answerable, which is
       // the half that matters, and loses only its explanation.
+      // ONLY THIS AGENT'S OWN CARD. `supersedes` comes from the model, and the
+      // retire below PATCHes it with the owner's credential, which the backend
+      // admits for any row the owner may edit: another agent's open question
+      // or approval card would lose its buttons, and so would the owner's own
+      // row. Refused before the retire and before the post, like a failed
+      // retire (lib/plan-card.ts, planSupersedesAdmitted).
+      if (
+        payload.supersedes !== undefined &&
+        !planSupersedesAdmitted(payload.supersedes, openPlan?.messageId, (id) => ownMessages.has(id))
+      ) {
+        return { content: [{ type: 'text', text: planSupersedesRefusal(payload.supersedes) }], isError: true }
+      }
       if (payload.supersedes !== undefined) {
         const retireBody =
           openPlan?.messageId === payload.supersedes
@@ -7567,47 +7606,59 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     }
 
     case 'edit_message': {
-      const message_id = rawArgs.message_id as string | undefined
+      const message_id = rawArgs.message_id as string | number | undefined
       const text = rawArgs.text as string | undefined
-      if (!message_id || !text) {
-        return { content: [{ type: 'text', text: 'Error: message_id and text required' }] }
+      if (message_id == null || message_id === '' || !text) {
+        return { content: [{ type: 'text', text: 'Error: message_id and text required' }], isError: true }
+      }
+      // A message id is the number a reply answered with. Anything else (a
+      // made up id, a path, a chat id with a suffix) is refused here, before
+      // it can become part of the PATCH path.
+      const id = String(message_id).trim()
+      if (!/^[1-9]\d{0,17}$/.test(id)) {
+        return { content: [{ type: 'text', text: 'Error: message_id must be a message id from a reply' }], isError: true }
+      }
+      // ONLY A MESSAGE THIS AGENT SENT. The PATCH below carries the owner's
+      // credential, and the backend admits any row the owner may edit: the
+      // owner's own lines (in a room, the ones other members read) and the
+      // lines of the owner's other agents. The model sees the owner's message
+      // ids all the time, so the id must be one the server answered as this
+      // agent's own row when the daemon created it (lib/own-messages.ts).
+      if (!ownMessages.has(id)) {
+        return { content: [{ type: 'text', text: ownMessageRefusal(id) }], isError: true }
       }
       try {
         // Same CommonMark backslash protection as the reply path, an edited
         // message is rendered the same way, so it needs the same fix.
         const safeText = protectBackslashesForMarkdown(text)
-        const baseUrl = BACKEND_URL.replace(/\/api\/v1$/i, '').replace(/\/$/, '')
-        await bgosCall(
-          {
-            url: `${baseUrl}/webhook/edited_message`,
-            init: {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                event_type: 'edited_message',
-                message_id,
-                chat_id: '0',
-                user_id: USER_ID,
-                timestamp: new Date().toISOString(),
-                text: safeText,
-                message: { text: safeText },
-              }),
-            },
-            timeoutMs: HTTP_TIMEOUT_MS,
-            label: 'POST webhook/edited_message',
-          },
-          // The original code never inspected the response; it only needed the
-          // request to leave. Keep that, but bounded. The posted buttons record
-          // follows only an edit the backend took: a refused one leaves the card
-          // as it stands, and the owner's tap on it is the owner's.
-          async (response) => {
-            if (response.ok) postedButtons.edited(message_id, safeText)
-          },
-        )
+        // The edit route the app itself uses, with this daemon's own
+        // credential: the backend binds the owner to the credential and asks
+        // the chat kind's own edit rule. Before this, the tool POSTed to the
+        // unsigned webhook bridge for edits, naming no real chat, which the
+        // backend refused every time (message_not_in_named_chat), and the
+        // tool answered "Edited" without reading the answer. bgosPatch throws
+        // on any answer that is not 2xx, so a refused edit reaches the catch
+        // below as the backend's own line, with isError.
+        await bgosPatch(`messages/${id}`, { text: safeText })
+        // The posted buttons record follows only an edit the backend took: a
+        // refused one throws above and leaves the card as it stands, so the
+        // owner's tap on it is the owner's.
+        postedButtons.edited(id, safeText)
         return { content: [{ type: 'text', text: 'Edited' }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
-        return { content: [{ type: 'text', text: `Failed: ${errMsg}` }], isError: true }
+        // The backend answered and refused (HttpError): its own line. Anything
+        // else got no usable answer (a timeout or a dropped connection after
+        // the request left, or an unreadable 2xx), so the edit may have
+        // landed; sending the same text again is harmless.
+        if (err instanceof HttpError) {
+          return { content: [{ type: 'text', text: `Failed: ${errMsg}` }], isError: true }
+        }
+        const line = errMsg.replace(/\s+/g, ' ').trim().replace(/\.?$/, '.')
+        return {
+          content: [{ type: 'text', text: `Failed: ${line} The edit may have landed; editing again with the same text is safe.` }],
+          isError: true,
+        }
       }
     }
 

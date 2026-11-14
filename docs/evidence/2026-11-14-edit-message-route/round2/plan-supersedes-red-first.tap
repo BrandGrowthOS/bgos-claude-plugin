@@ -1,0 +1,6 @@
+ok 1 - the open plan, or a message this agent sent, may be superseded; nothing else
+ok 2 - the refusal is one plain line naming the id
+not ok 3 - propose_plan asks before the retire PATCH and before the post, and refuses with that line
+# tests 3
+# pass 2
+# fail 1

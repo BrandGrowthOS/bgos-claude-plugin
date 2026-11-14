@@ -600,8 +600,8 @@ export function buildPlanCardBody(input: {
  * the payload flips to `superseded`, so the old card keeps its steps, dims, and
  * reads "Superseded by the plan below".
  *
- * `edit_message` cannot do this. It takes {message_id, text} and POSTs to
- * `webhook/edited_message`, carrying no options at all. The working mechanism
+ * `edit_message` cannot do this. It takes {message_id, text} and PATCHes only
+ * the text, carrying no options at all. The working mechanism
  * is the direct PATCH the permission relay's backstop and boot sweep already
  * use, which is what this body is for.
  */
@@ -619,6 +619,26 @@ export function buildPlanCardBody(input: {
  * in one chat, which is exactly what the retire-first ordering exists to
  * prevent.
  */
+/**
+ * MAY THIS AGENT RETIRE THE CARD `supersedes` NAMES? Only its own: the open plan this daemon holds, or a message the
+ * server answered as this agent's own create (lib/own-messages.ts). `supersedes` comes from the model and the retire
+ * PATCHes it with the owner's credential, which the backend admits for any row the owner may edit, so any other id
+ * would strip the buttons off another agent's open question or approval card, or off the owner's own row.
+ */
+export function planSupersedesAdmitted(
+  supersedes: number,
+  openPlanMessageId: unknown,
+  isOwnMessage: (id: number) => boolean,
+): boolean {
+  if (openPlanMessageId != null && Number(openPlanMessageId) === supersedes) return true
+  return isOwnMessage(supersedes)
+}
+
+/** The refusal for a `supersedes` that is not this agent's own card. One line; no plan is posted. */
+export function planSupersedesRefusal(supersedes: number): string {
+  return `Error: supersedes must be the message id of a plan card this agent posted, and message ${supersedes} is not one of them, so no plan was posted`
+}
+
 export function buildPlanRetireBody(): Record<string, unknown> {
   return { options: [] }
 }

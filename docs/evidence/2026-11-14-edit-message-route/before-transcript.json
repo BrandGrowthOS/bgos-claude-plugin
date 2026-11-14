@@ -1,0 +1,125 @@
+[
+  {
+    "at": "2026-11-14T01:21:14.292Z",
+    "label": "before",
+    "step": "tools",
+    "count": 59,
+    "editDescription": "Edit a previously sent message in the BGOS chat."
+  },
+  {
+    "at": "2026-11-14T01:21:19.320Z",
+    "label": "before",
+    "step": "tool",
+    "name": "reply",
+    "arguments": {
+      "chat_id": "1",
+      "text": "Draft: the launch review is on Thursday at 10:00."
+    },
+    "isError": false,
+    "text": "Sent (message_id: 10) Delivered to the main chat 1."
+  },
+  {
+    "at": "2026-11-14T01:21:23.355Z",
+    "label": "before",
+    "step": "row",
+    "when": "after reply",
+    "id": "10",
+    "status": 200,
+    "text": null,
+    "editedAt": null
+  },
+  {
+    "at": "2026-11-14T01:21:23.407Z",
+    "label": "before",
+    "step": "screenshot",
+    "file": "before-1-replied.png"
+  },
+  {
+    "at": "2026-11-14T01:21:23.411Z",
+    "label": "before",
+    "step": "tool",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "10",
+      "text": "Correction: the launch review moved to Friday at 14:00, same room."
+    },
+    "isError": false,
+    "text": "Edited"
+  },
+  {
+    "at": "2026-11-14T01:21:27.419Z",
+    "label": "before",
+    "step": "row",
+    "when": "after edit_message",
+    "id": "10",
+    "status": 200,
+    "text": null,
+    "editedAt": null
+  },
+  {
+    "at": "2026-11-14T01:21:27.457Z",
+    "label": "before",
+    "step": "screenshot",
+    "file": "before-2-after-edit.png"
+  },
+  {
+    "at": "2026-11-14T01:21:27.462Z",
+    "label": "before",
+    "step": "tool",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "abc",
+      "text": "never sent"
+    },
+    "isError": false,
+    "text": "Edited"
+  },
+  {
+    "at": "2026-11-14T01:21:27.466Z",
+    "label": "before",
+    "step": "tool",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "999999",
+      "text": "no such message"
+    },
+    "isError": false,
+    "text": "Edited"
+  },
+  {
+    "at": "2026-11-14T01:21:27.471Z",
+    "label": "before",
+    "step": "tool",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "6",
+      "text": "Atlas rewriting Leo"
+    },
+    "isError": false,
+    "text": "Edited"
+  },
+  {
+    "at": "2026-11-14T01:21:33.794Z",
+    "label": "before",
+    "step": "screenshot",
+    "file": "before-3-after-reload.png"
+  },
+  {
+    "at": "2026-11-14T01:21:40.090Z",
+    "label": "before",
+    "step": "screenshot",
+    "file": "before-4-phone-light.png"
+  },
+  {
+    "at": "2026-11-14T01:21:40.099Z",
+    "label": "before",
+    "step": "summary",
+    "messageId": "10",
+    "editAnswer": "Edited",
+    "final": {
+      "status": 200,
+      "text": null,
+      "editedAt": null
+    }
+  }
+]
