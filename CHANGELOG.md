@@ -29,6 +29,11 @@ Running commands is not available for people you share with yet. Your own tools 
 **On a call the refusal says to ask again on the call.** A private action refused in a turn a call's card reached now tells the agent to have you ask again on the call, not to send a chat message you cannot type hands free.
 
 Also: a question card that was still waiting when its question ended (answered elsewhere or timed out) no longer opens a trusted turn when it is delivered late.
+
+## 0.87.6 (2026-11-13)
+
+**A file clock ahead of the real clock cannot let a private turn through.** The daemon took a private turn marker's file modification time for when the marker was written, and ordered it against moments it takes on the real clock: a Stop's start, a delivery. On a computer whose file clock runs ahead (a network share, a clock jump, a restored file) a marker written before a Stop read as written after it. A turn whose Stop hook was killed then stayed the owner's past its Stop line, and a closed marker written before a message whose place was unknown lifted that message's bar. The private turn hook now stamps every marker it writes with the moment it wrote it (`writtenAt`), and the daemon judges by that stamp. A marker with no stamp, from an older hook, falls back to its file time, which the daemon refuses when it is later than its own clock; a stamp later than its clock is refused the same way. A marker whose time cannot be known never keeps a turn past a Stop and never lifts a bar.
+
 ## 0.87.5 (2026-11-13)
 
 From the Helper's production test on a MacBook (2026-11-12): the Helper noticed a frozen agent and started a Fix every time, but never restarted it, and the app then said the agent was running again.

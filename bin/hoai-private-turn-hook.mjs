@@ -101,7 +101,7 @@ function closeMarkers(paths, sessionId, { hold = false } = {}) {
         for (const key of HELD_TURN_KEYS) if (marker[key] !== undefined) held[key] = marker[key]
         held.staleTurn = sessionId
       }
-      const closed = { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false, ...held }
+      const closed = { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false, ...held, writtenAt: Date.now() }
       writePrivateJson(path, closed)
       keepOwnCopy(path, sessionId, closed)
     } catch {
@@ -188,6 +188,10 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
     ...(promptId ? { promptId } : {}),
     ...record,
     ...(ended ? { ended } : {}),
+    // When this marker was written, on the clock the daemon's own moments are on: the daemon orders the marker by it,
+    // never by the file's modification time, which a file clock ahead of the real one moves (lib/private-turn.mjs
+    // privateMarkerWrittenAt, board row 495d73c1). Taken last, right before the write.
+    writtenAt: Date.now(),
   }
   writePrivateJson(path, marker)
   if (event === 'SessionEnd') {
