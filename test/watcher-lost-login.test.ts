@@ -71,14 +71,34 @@ function agentFs(home: string, sep: string, opts: { login: boolean; records?: bo
 }
 
 /** The job context runWatcher hands a job, with every process and service layer faked. */
-function ctxFor(fs: MemoryFs, platform: Platform, home: string, alive: number[] = []) {
+/**
+ * The server's live keep-alive answer to this watcher (GET integrations/watchers/keep-alive). Its
+ * `agentWindows` map is keyed by every agent the server places on THIS computer: one whose current
+ * ACTIVE pairing reports this machine (backend keep-alive.model.ts windowAgents, isProvenOnMachine).
+ * An agent re-paired onto another computer is not in it. By default it places agent 912 here.
+ */
+type ServerAnswer = { status: number; json?: any } | 'throws'
+const placesHere = (ids: string[] = [ID]): ServerAnswer => ({
+  status: 200,
+  json: { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, agentWindows: Object.fromEntries(ids.map((id) => [id, false])) },
+})
+
+function ctxFor(fs: MemoryFs, platform: Platform, home: string, alive: number[] = [], server: ServerAnswer = placesHere()) {
   const posts: any[] = []
+  const gets: string[] = []
   const logs: string[] = []
   const spawns: unknown[] = []
   const kills: unknown[] = []
   const live = new Set(alive)
   const ctx = {
-    client: { progress: async (_rpcId: string, body: any) => void posts.push(body) },
+    client: {
+      progress: async (_rpcId: string, body: any) => void posts.push(body),
+      get: async (path: string) => {
+        gets.push(path)
+        if (server === 'throws') throw new Error('network down')
+        return { ok: server.status < 400, status: server.status, json: server.json ?? null }
+      },
+    },
     log: (line: string) => void logs.push(line),
     now: () => T0,
     sleep: async () => {},
@@ -102,7 +122,7 @@ function ctxFor(fs: MemoryFs, platform: Platform, home: string, alive: number[] 
     checkupDeadlineMs: 5_000,
     verifyTimeoutMs: 0,
   }
-  return { ctx, posts, logs, spawns, kills }
+  return { ctx, posts, logs, spawns, kills, gets }
 }
 
 const checkupJob = (id = ID) => ({ op: 'checkup', targets: [{ pairingId: 3, assistantId: Number(id) }] })
@@ -239,6 +259,66 @@ for (const { platform, home, sep } of PLATFORMS) {
       assertNoPrivatePaths(run.posts.map((b) => JSON.stringify(b)), home)
       assert.equal(run.posts.some((b) => JSON.stringify(b).includes('bgos_key_value')), false, 'the key never leaves')
     }
+  })
+}
+
+// -- Round 2: a login that MOVED to another computer is not a lost login (review, blocking finding) --
+//
+// An agent re-paired onto another computer can leave its records here (a re-pair by the same owner
+// removes nothing on the computer it left: lib/agent-unbound.mjs), and the server still lists it on
+// both computers. If its old login file here is then gone too, the records alone would say "Pair it
+// again", and pairing here would pull the agent back from the computer it now lives on. Only the
+// server knows which computer holds its pairing, so it is asked, live, before a lost login is named;
+// anything it cannot vouch for keeps agent_not_on_this_machine.
+
+for (const { platform, home, sep } of PLATFORMS) {
+  test(`${platform}: records here, no login file, and the server places the agent's pairing on another computer: agent_not_on_this_machine, never a lost login`, async () => {
+    // The server's map for THIS computer names other agents, not 912: its pairing is elsewhere now.
+    for (const [what, server] of [
+      ['other agents placed here', placesHere(['913', '914'])],
+      ['no agent placed here', placesHere([])],
+    ] as const) {
+      const fs = agentFs(home, sep, { login: false })
+      const run = ctxFor(fs, platform, home, [], server)
+      const out = await runCheckupJob(run.ctx as any, 'chk-1', checkupJob())
+      const terminal = run.posts.at(-1)
+      assert.equal(out.state, 'failed', what)
+      assert.equal(terminal.message, `agent_not_on_this_machine:${ID}`, what)
+      assert.equal(terminal.findings, undefined, what)
+      assert.equal(JSON.stringify(run.posts).includes('Pair it again'), false, `${what}: never told to pair here`)
+      assert.deepEqual(run.gets, ['integrations/watchers/keep-alive'], `${what}: the server was asked`)
+      assert.ok(run.logs.some((l) => l.includes('the server does not place')), `${what}: the log says why`)
+      assert.deepEqual(run.spawns, [])
+
+      const restart = ctxFor(agentFs(home, sep, { login: false }), platform, home, [], server)
+      await runOwnerRestartJob(restart.ctx as any, 'rst-1', restartJob())
+      assert.equal(restart.posts.at(-1).message, `agent_not_on_this_machine:${ID}`, `${what}: restart`)
+      assert.deepEqual(restart.spawns, [])
+    }
+  })
+
+  test(`${platform}: when the server cannot say where the pairing is, the answer stays agent_not_on_this_machine`, async () => {
+    const rows: Array<[string, ServerAnswer]> = [
+      ['the call fails', 'throws'],
+      ['a server error', { status: 503, json: { message: 'down' } }],
+      ['the watcher refused', { status: 403, json: { message: 'Only a watcher pairing may read its machine keep-alive list.' } }],
+      ['an older server with no map', { status: 200, json: { enabled: true, enabledAt: null, assistantIds: [912], switchState: 'on' } }],
+      ['an answer that is not one', { status: 200, json: { hello: 'world' } }],
+    ]
+    for (const [what, server] of rows) {
+      const run = ctxFor(agentFs(home, sep, { login: false }), platform, home, [], server)
+      await runCheckupJob(run.ctx as any, 'chk-1', checkupJob())
+      assert.equal(run.posts.at(-1).message, `agent_not_on_this_machine:${ID}`, what)
+    }
+  })
+
+  test(`${platform}: the server is asked only when this computer keeps the agent's records, and never for a present login`, async () => {
+    const away = ctxFor(agentFs(home, sep, { login: false, records: false }), platform, home)
+    await runCheckupJob(away.ctx as any, 'chk-1', checkupJob())
+    assert.deepEqual(away.gets, [], 'no records: nothing to ask')
+    const present = ctxFor(agentFs(home, sep, { login: true }), platform, home)
+    await runCheckupJob(present.ctx as any, 'chk-1', checkupJob())
+    assert.equal(present.gets.includes('integrations/watchers/keep-alive'), false, 'a present login is unchanged')
   })
 }
 
