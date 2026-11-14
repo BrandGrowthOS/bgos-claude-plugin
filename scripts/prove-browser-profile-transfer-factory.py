@@ -34,7 +34,7 @@ if not args.native_only:
   red,log=run(name+'-red',['node','--import',loader.as_uri(),*selected],{'HOAI_FACTORY_MUTATION':str(meta)});assert red.returncode==1 and 'MUTATION_LOADED'in log and ('ERR_ASSERTION'in log or 'AssertionError'in log),(name,red.returncode,log[-2500:]);assert target.read_bytes()==original
   green,log=run(name+'-restored',['node',*selected]);assert green.returncode==0,(name,log[-2500:]);results['unit'].append({**row,'redExit':1,'directAssertion':True,'exactOriginalWorkspaceBytes':True,'restoredExit':0});save()
 if not args.unit_only:
- ssh=['ssh','-F','none','-p','6969','-o','BatchMode=yes',os.environ['BGOS_PROBE_SSH_TARGET']];probe=(root/'scripts/probe-browser-profile-transfer-factory.mjs').read_bytes();seccomp_in_home='hoai-profile-fresh.sdpd8isb/seccomp_profile.json';image='hoai-profile-fresh:418aa6dc'
+ ssh=['ssh','-F','none','-p','6969','-o','BatchMode=yes',os.environ.get('BGOS_PROBE_SSH_TARGET','factory-host')];probe=(root/'scripts/probe-browser-profile-transfer-factory.mjs').read_bytes();seccomp_in_home='hoai-profile-fresh.sdpd8isb/seccomp_profile.json';image='hoai-profile-fresh:418aa6dc'
  for kind in ['baseline','omitted-callback','restored']:
   text=source;row={}
   if kind=='omitted-callback':text,row=mutation('native-omitted-callback','        assertTransferAllowed,','        assertTransferAllowed:undefined,')
