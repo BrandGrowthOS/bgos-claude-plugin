@@ -3972,6 +3972,34 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     input: { kind: "command", command: "> log $(true)$(true)echo done" },
     ruleId: null,
   },
+  // Each script a piped shell gets from the readings of its feeder is read
+  // on its own: a quote or a heredoc one reading leaves open does not hide
+  // the script another reading gives.
+  {
+    name: "piped_script_after_a_reading_that_leaves_a_single_quote_open",
+    input: { kind: "command", command: "nice$(true) echo \"'\" $(true) \"';rm -rf build\" | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_script_after_a_reading_that_leaves_a_heredoc_open",
+    input: { kind: "command", command: "nice$(true) echo \"cat <<E\" $(true) \"x; rm -rf build\" | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_script_after_a_reading_that_leaves_a_double_quote_open",
+    input: { kind: "command", command: "env$(true) echo '\"' $(true) '\"; git push --force' | bash" },
+    ruleId: "force_push",
+  },
+  {
+    name: "piped_script_after_a_printed_apostrophe",
+    input: { kind: "command", command: "X=$(echo \"it's\") nice$(true) echo $(true) 'rm -rf x' | sh" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "piped_harmless_script_after_a_reading_that_leaves_a_single_quote_open",
+    input: { kind: "command", command: "nice$(true) echo \"'\" $(true) \"';echo done\" | sh" },
+    ruleId: null,
+  },
   {
     name: "admin_and_folder_delete_names_the_delete",
     input: { kind: "command", command: "sudo rm -rf /var/cache/app" },
@@ -4326,7 +4354,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "24d128c8d4dafcbe6a4601eb52628f6ba205598bb589feedc285a6c92021b136";
+  "ac2e29475ae76dcaca477c54a411bd6dc617df705e4092fed5dac322521d37cd";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
