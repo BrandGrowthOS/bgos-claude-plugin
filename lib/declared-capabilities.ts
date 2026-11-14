@@ -306,6 +306,29 @@
  *                       beat. PAIRING CONNECTIONS ONLY (BGOS's gate requires a
  *                       pairing) and NEVER ON WINDOWS: the pane proof reads the
  *                       process tree and tmux, which a Windows host has not.
+ *   lane_threads        a person an agent is shared with can open a THREAD
+ *                       with it, and the thread runs in that person's own
+ *                       lane: the lane daemon (lane-server.ts) answers
+ *                       thread_turn and thread_close stamped for its person
+ *                       (lib/lane-thread-rpc.ts), the thread forks the LANE's
+ *                       own session in a folder under the lane's own work
+ *                       folder, read only, and its answers go out with the
+ *                       lane session. The owner's daemon drops such a frame
+ *                       (lib/thread-rpc.ts isPersonThreadFrame). Declared only
+ *                       where person_lanes AND the thread tokens are both
+ *                       declared: a pairing, not Windows. BGOS offers a share
+ *                       recipient a thread only when the pairing declares
+ *                       message_threads, thread_sessions and this
+ *                       (backend/src/common/share-threads.ts).
+ *   lane_vault          a person's lane can have a login filled for it on
+ *                       this agent's own browser host: the lane serves
+ *                       vault_items and vault_fill (lib/lane-browser.ts), and
+ *                       bin/hoai-browser-host.mjs answers hoai_vault_fill for
+ *                       a person (lib/agent-host-vault-fill.mjs). Declared
+ *                       where person_lanes is (a pairing, not Windows) and
+ *                       the browser host is not switched off. BGOS offers the
+ *                       Vault share option only on such an agent (plan
+ *                       2026-11-13 section 1). lane_threads is kept.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -328,7 +351,14 @@ import { ASK_ANSWERED_TOKEN, ASK_MULTI_SELECT_TOKEN, HARD_FLOOR_RULES_2_TOKEN, H
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
 import { EMAIL_FILES, EMAIL_SEND, shipsEmailFilesTools, shipsEmailTools } from './agent-email-tools.ts'
-import { LANE_MEMORY_RPC_TOKEN, PERSON_LANES_TOKEN } from './lane-core.mjs'
+import { LANE_MEMORY_RPC_TOKEN, LANE_THREADS_TOKEN, LANE_VAULT_TOKEN, PERSON_LANES_TOKEN } from './lane-core.mjs'
+
+export { LANE_THREADS_TOKEN, LANE_VAULT_TOKEN }
+
+/** The browser host runs unless its kill switch says off (lib/browser-host-supervisor.ts). */
+function browserHostOn(env: Record<string, string | undefined> = process.env): boolean {
+  return String(env.HOAI_BROWSER_HOST ?? '').trim().toLowerCase() !== 'off'
+}
 
 /** Declared wherever this plugin runs, on every host and every connection. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
@@ -482,6 +512,12 @@ export function declaredCapabilities(input: {
    * is read, as the email tokens read theirs.
    */
   groupLevels?: boolean
+  /**
+   * Does this daemon run its browser host (lib/browser-host-supervisor.ts)?
+   * Absent, the daemon's own environment is read: only HOAI_BROWSER_HOST=off
+   * says no. lane_vault needs the host: it is where a login is filled.
+   */
+  browserHost?: boolean
   authMode: 'pairing' | 'apikey'
   /** The host platform; process.platform when absent. The picker and the thread tokens are never declared on win32. */
   platform?: NodeJS.Platform
@@ -500,6 +536,17 @@ export function declaredCapabilities(input: {
     ...(input.threads === true && (input.platform ?? process.platform) !== 'win32' ? THREAD_CAPABILITY_TOKENS : []),
     ...(input.authMode === 'pairing' && input.threads === true && (input.platform ?? process.platform) !== 'win32'
       ? [GROUP_THREADS_TOKEN, ...((input.groupLevels ?? groupLevelsEnabled(process.env)) ? [GROUP_LEVELS_TOKEN] : [])]
+      : []),
+    // A person's lane runs that person's threads (lib/lane-thread-rpc.ts):
+    // only where BOTH person lanes and threads are declared above, so the
+    // server never offers a share recipient a thread no lane could run.
+    ...(input.authMode === 'pairing' && input.personLanes === true && input.threads === true && (input.platform ?? process.platform) !== 'win32'
+      ? [LANE_THREADS_TOKEN]
+      : []),
+    // A person's lane has a login filled for it on this agent's own browser
+    // host: only where person lanes run and that host is not switched off.
+    ...(input.authMode === 'pairing' && input.personLanes === true && (input.platform ?? process.platform) !== 'win32' && (input.browserHost ?? browserHostOn())
+      ? [LANE_VAULT_TOKEN]
       : []),
   ]
 }

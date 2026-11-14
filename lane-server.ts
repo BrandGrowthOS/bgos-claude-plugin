@@ -38,7 +38,20 @@
  *   7. (P7) watches the share's policy (`lane_policy_changed`, every heartbeat
  *      answer, and `lanes/me` at boot) against the policy its Claude was
  *      launched with: tighter restarts the lane at once (a turn in flight is
- *      told in one sentence), looser restarts it at its next idle moment.
+ *      told in one sentence), looser restarts it at its next idle moment;
+ *   9. (0.89.0) serves the Agent Browser and the shared vault when this
+ *      launch's policy has `browser` (lib/lane-browser.ts): every browser
+ *      call goes to the relay with the lane session, vault_items and
+ *      vault_fill to the lane vault routes, and the agent's own browser host
+ *      fills a login through the relay; nothing of it takes or returns a
+ *      secret. On a revoked share it deletes the person's browser profile on
+ *      this computer (lib/person-browser-profile.mjs);
+ *   8. runs this person's THREADS (lib/lane-thread-rpc.ts): `thread_turn`
+ *      and `thread_close` on `voice_rpc`, stamped for this lane, each thread
+ *      a read only fork of THIS lane's own session in a plain folder under
+ *      the lane's work folder, answered with the lane session; the turns it
+ *      missed are replayed on every connect, and its thread lanes stop with
+ *      the lane.
  *
  * NOTICE MODE (`HOAI_LANE_NOTICE` set, no Claude, not an MCP server): the
  * supervisor runs it when the lane cannot start at all (option b with no
@@ -48,8 +61,9 @@
  *
  * No em or en dashes in this file.
  */
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -67,8 +81,11 @@ import {
   LANE_LOGIN_OWN_TOKEN,
   LANE_MEMORY_RPC_TOKEN,
   LANE_TURN_STUCK_MS,
+  personLaneStamp,
 } from './lib/lane-core.mjs'
 import { heartbeatToolPolicy, laneMePolicy, readLaneChoices, readToolPolicy } from './lib/lane-policy.mjs'
+import { LaneBrowserRelay, LaneBrowserTools, type LaneHttp } from './lib/lane-browser.ts'
+import { laneRevokedProfileCleanup } from './lib/person-browser-profile.mjs'
 import {
   laneChoiceQuestionFor,
   launchedFacts,
@@ -78,6 +95,14 @@ import {
   type RestartAsk,
 } from './lib/lane-controls.ts'
 import { classifyMemoryFrame, LaneMemoryRpcHandler } from './lib/lane-memory-rpc.ts'
+import { laneThreadDeps, laneThreadLoginEnv, LaneThreadRpcHandler } from './lib/lane-thread-rpc.ts'
+import { ThreadLaneManager, threadsPendingPath } from './lib/thread-lanes.ts'
+import { clearActiveGoal, copyTranscriptClearingGoal } from './lib/thread-transcript.ts'
+import { ThreadsCliGate, threadsCliProblem } from './lib/threads-cli.ts'
+import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-process.ts'
+import { spawnStreamJson } from './lib/stream-json-child.ts'
+import { claudeCandidates } from './lib/claude-binary.mjs'
+import { findOnPath } from './lib/lane-cli-probe.mjs'
 import { routeLaneSlash } from './lib/lane-slash.ts'
 import { acquireLaneLock, defaultPidAlive, releaseLaneLock } from './lib/lane-registry.mjs'
 import {
@@ -100,7 +125,7 @@ import {
   laneHistoryAnsweredAfter,
   laneHistoryDeliveryState,
   laneHistoryPathFor,
-  LANE_NOTICE_SENTENCES,
+  LANE_ANSWER_NOT_SENTENCES,
   LANE_HISTORY_READ_ATTEMPTS,
   LANE_HISTORY_READ_TIMEOUT_MS,
   LANE_HISTORY_RETRY_MS,
@@ -116,6 +141,7 @@ import {
   readTicketFile,
   scrubLaneDaemonEnv,
   selectLaneBacklog,
+  singleFlight,
   storedSessionUsable,
   type LaneDelivery,
   type LaneInboxState,
@@ -135,8 +161,16 @@ if (!read.ok) {
 }
 const CFG = read.config
 const LANE = { userId: CFG.userId, assistantId: CFG.assistantId }
+// A thread of this lane is a fork of the lane's own Claude session, so its
+// `claude` runs on the lane's own Claude login and config dir. Read here,
+// before the scrub, and handed to that one process only
+// (lib/lane-thread-rpc.ts laneThreadLoginEnv).
+const LANE_THREAD_LOGIN_ENV = laneThreadLoginEnv(process.env)
+// The config dir the lane's own Claude keeps its transcripts in, '' for ~/.claude.
+const LANE_CLAUDE_CONFIG_DIR = LANE_THREAD_LOGIN_ENV.CLAUDE_CONFIG_DIR ?? ''
 // The person's own sign in (option b) reaches this process through Claude
-// Code's environment; the daemon needs none, so nothing it starts inherits it.
+// Code's environment; the daemon needs none, so nothing else it starts
+// inherits it.
 scrubLaneDaemonEnv(process.env)
 
 const LOG_PATH = join(CFG.laneDir, 'lane-daemon.log')
@@ -253,6 +287,14 @@ async function mintWithTicket(ticket: string): Promise<boolean> {
 
 async function ensureSession(): Promise<boolean> {
   if (session && storedSessionUsable(session, LANE, Date.now())) return true
+  return ensureSessionOnce()
+}
+
+// The boot and the browser tool list ask at the same moment: one mint for both (0.89.0).
+const ensureSessionOnce = singleFlight(ensureSessionNow)
+
+async function ensureSessionNow(): Promise<boolean> {
+  if (session && storedSessionUsable(session, LANE, Date.now())) return true
   session = null
   const stored = readJson(SESSION_PATH)
   if (storedSessionUsable(stored, LANE, Date.now())) {
@@ -284,6 +326,9 @@ function endLane(reason: string): void {
   } catch { /* the supervisor still sees Claude exit */ }
   try { socket?.disconnect() } catch { /* closed */ }
   for (const t of timers) clearInterval(t)
+  // A revoke, a lost session or a refused login stops this person's threads
+  // at once (SIGTERM to each thread lane's process group).
+  void laneThreads.stopAll()
   setTimeout(() => shutdown(0), 500)
 }
 
@@ -367,8 +412,17 @@ function shutdown(code: number): void {
   shuttingDown = true
   for (const t of timers) clearInterval(t)
   try { socket?.disconnect() } catch { /* closed */ }
+  // Released at once, as before: a relaunched lane's daemon must never find
+  // this one still holding the lock while it waits for its thread lanes.
   releaseLaneLock(DAEMON_LOCK_PATH)
-  process.exit(code)
+  // This lane's thread lanes are its own processes and stop with it:
+  // SIGTERM now, a bounded wait, then SIGKILL for whatever is left.
+  const stopping = stopLaneThreadChildren()
+  if (!stopping) process.exit(code)
+  void stopping.then(() => {
+    laneThreads.killAll()
+    process.exit(code)
+  })
 }
 process.on('SIGTERM', () => shutdown(0))
 process.on('SIGINT', () => shutdown(0))
@@ -414,7 +468,8 @@ const claims = new LaneDeliveryClaims(inbox)
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
   capabilities: {
-    tools: {},
+    // listChanged: the browser tools appear when a host comes online (0.89.0).
+    tools: { listChanged: true },
     // The channel only. NO 'claude/channel/permission': a lane never relays a
     // permission request, and never approves one.
     experimental: { 'claude/channel': {} },
@@ -428,12 +483,78 @@ const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
 // nobody sees.
 const claudeReady = new LaneClaudeReady({ ping: () => mcp.ping(), setTimer: (fn, ms) => setTimeout(fn, ms), log })
 
+// ── 0.89.0: the Agent Browser and the shared vault (lib/lane-browser.ts) ─────
+// Served only when THIS launch's policy has `browser` (the settings allow the
+// tools by name only then, lib/lane-policy.mjs laneBrowserAllowAdditions).
+// Every call goes out with the lane session (laneFetch), never the pairing.
+
+/** The chat of the last turn handed to Claude: where a fill that waits tells the person. */
+let lastTurnChatId: string | null = null
+
+const laneHttp: LaneHttp = {
+  get: async (path, timeoutMs) => {
+    if (!(await ensureSession())) throw new LaneHttpError(401, 'no lane session')
+    return laneFetch('GET', path, undefined, { timeoutMs })
+  },
+  post: async (path, body, timeoutMs) => {
+    if (!(await ensureSession())) throw new LaneHttpError(401, 'no lane session')
+    return laneFetch('POST', path, body, { timeoutMs })
+  },
+}
+
+const laneBrowser = new LaneBrowserTools({
+  enabled: launchedFacts(LAUNCHED_ENV).policy.browser === true,
+  relay: new LaneBrowserRelay({
+    http: laneHttp,
+    assistantId: LANE.assistantId,
+    // The relay's MCP session key for this lane process: never the owner's.
+    relaySessionKey: `lane-${createHash('sha256').update(`${LANE.userId}:${process.pid}:${randomUUID()}`).digest('hex').slice(0, 40)}`,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+  }),
+  http: laneHttp,
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  now: () => Date.now(),
+  log,
+  tellPerson: async (sentence) => {
+    if (!lastTurnChatId) return
+    await laneFetch('POST', 'send-message', {
+      chatId: Number(lastTurnChatId),
+      assistantId: Number(LANE.assistantId),
+      text: sentence,
+      sender: 'assistant',
+      sentDate: new Date().toISOString(),
+      hasAttachment: false,
+      files: [],
+      options: [],
+    })
+  },
+  onListChanged: () => { void mcp.sendToolListChanged().catch(() => {}) },
+})
+
+/** The list waits at most this long for the relay; a slow relay is caught up by the next refresh. */
+const LANE_BROWSER_LIST_WAIT_MS = 15_000
+
 mcp.setRequestHandler(ListToolsRequestSchema, async () => {
   claudeReady.noteToolsListed()
-  return { tools: LANE_TOOLS.map((t) => ({ ...t })) }
+  const browser = await Promise.race([
+    laneBrowser.list().catch((err) => { log(`browser tools unreadable: ${err instanceof Error ? err.message : String(err)}`); return laneBrowser.current() }),
+    new Promise<ReturnType<typeof laneBrowser.current>>((resolve) => { setTimeout(() => resolve(laneBrowser.current()), LANE_BROWSER_LIST_WAIT_MS).unref?.() }),
+  ])
+  return { tools: [...LANE_TOOLS.map((t) => ({ ...t })), ...browser] }
 })
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+  if (laneBrowser.handles(req.params.name)) {
+    lastActivityAtMs = Date.now()
+    writeLaneState()
+    try {
+      return await laneBrowser.call(req.params.name, req.params.arguments)
+    } finally {
+      lastActivityAtMs = Date.now()
+      writeLaneState()
+    }
+  }
   if (req.params.name !== 'reply') {
     return { content: [{ type: 'text' as const, text: `Unknown tool: ${req.params.name}` }], isError: true }
   }
@@ -562,6 +683,7 @@ async function deliverRaw(raw: unknown, transport: 'lane-socket' | 'lane-poll', 
   await claudeReady.whenReady()
   // Only now is the chat one `reply` may write to: the turn is Claude's.
   deliveredChats.add(d.chatId)
+  lastTurnChatId = d.chatId
   await mcp.notification({ method: 'notifications/claude/channel', params: { content: event.content, meta: event.meta } })
   inFlightChats.add(d.chatId)
   if (!inFlight) inFlightSinceMs = Date.now()
@@ -639,6 +761,128 @@ const laneMemory = new LaneMemoryRpcHandler({
   postResult: (rpcId, body) => laneFetch('POST', `integrations/memory-rpc/${encodeURIComponent(rpcId)}/result`, body),
   log: (line) => log(line),
 })
+
+// ── Threads: this person's own threads run in this lane ─────────────────────
+// lib/lane-thread-rpc.ts. A thread is a headless `claude -p` forked from THIS
+// lane's own session (its pin), in a plain read only folder under the lane's
+// own work folder, on the lane's own Claude login, with at most the lane's
+// own tools and never Bash. Nothing here knows the agent folder, the owner's
+// session or the pairing: every post goes out with the lane session.
+
+function laneClaudeBin(): string | null {
+  // The lookup the supervisor launched this lane's own Claude with (bin/hoai-lane.mjs).
+  const pathVar = process.env.PATH ?? ''
+  return claudeCandidates({ pathVar, home: HOME })[0] ?? findOnPath('claude', { pathVar })
+}
+
+const laneThreadsCli = new ThreadsCliGate({
+  claudePath: laneClaudeBin,
+  cachePath: join(CFG.stateDir, 'threads-cli-probe.json'),
+  onAnswer: (answer) => {
+    if (!answer.ok) log(`threads: this lane cannot run threads (${answer.reason ?? `claude ${answer.version ?? 'of unknown version'} lacks ${answer.missing.join(', ')}`})`)
+  },
+})
+
+const laneThreads = new ThreadLaneManager(laneThreadDeps({
+  lane: LANE,
+  home: HOME,
+  stateRoot: process.env.BGOS_PLUGIN_STATE_DIR,
+  configDir: LANE_CLAUDE_CONFIG_DIR,
+  launchPolicy: launchedFacts(LAUNCHED_ENV).policy,
+  floorHookPath: join(dirname(fileURLToPath(import.meta.url)), 'bin', 'hoai-lane-floor-hook.mjs'),
+  nodePath: findOnPath('node', { pathVar: process.env.PATH ?? '' }) ?? 'node',
+  loginEnv: LANE_THREAD_LOGIN_ENV,
+}, {
+  spawn: spawnStreamJson,
+  claudeBin: laneClaudeBin,
+  cliProblem: async () => threadsCliProblem(await laneThreadsCli.ready(), 'turn'),
+  // A thread lane left from before a daemon restart is found by pid and start stamp, and stopped first.
+  processes: {
+    stamp: (pid) => processStamp(pid),
+    runsIn: (pid, dir) => processRunsIn(pid, dir),
+    kill: (pid, signal) => killProcessGroup(pid, signal),
+  },
+  fs: {
+    exists: (path) => existsSync(path),
+    mkdir: (path) => { mkdirSync(path, { recursive: true, mode: 0o700 }) },
+    readFile: (path) => readFileSync(path, 'utf8'),
+    writeFile: (path, data) => writeFileSync(path, data, { mode: 0o600 }),
+    appendFile: (path, data, mode) => appendFileSync(path, data, { mode: mode ?? 0o600 }),
+    copyFile: (from, to) => copyFileSync(from, to),
+    unlink: (path) => unlinkSync(path),
+    rmrf: (path) => rmSync(path, { recursive: true, force: true }),
+    list: (dir) => readdirSync(dir),
+    createExclusive: (path, data) => writeFileSync(path, data, { flag: 'wx', mode: 0o600 }),
+    rename: (from, to) => renameSync(from, to),
+  },
+  // The lane's transcript is copied on disk in pieces, never read whole on the event loop.
+  transcripts: {
+    copyClearingGoal: (from, to) => copyTranscriptClearingGoal(from, to),
+    clearGoal: (path) => clearActiveGoal(path),
+  },
+  realpath: (path) => realpathSync(path),
+  post: (path, body) => laneFetch('POST', path, body),
+  now: () => Date.now(),
+  setTimer: (fn, ms) => {
+    const timer = setTimeout(fn, ms)
+    timer.unref?.()
+    return timer
+  },
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  log,
+}))
+
+const laneThreadRpc = new LaneThreadRpcHandler({
+  lane: LANE,
+  threads: {
+    turn: (input) => {
+      // A thread turn is this person's activity: the lane does not idle out under it.
+      lastActivityAtMs = Date.now()
+      writeLaneState()
+      return laneThreads.turn(input)
+    },
+    close: (input) => laneThreads.close(input),
+  },
+  postAck: (rpcId) => laneFetch('POST', `integrations/voice-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) => laneFetch('POST', `integrations/voice-rpc/${encodeURIComponent(rpcId)}/result`, body),
+  log: (line) => log(line),
+})
+
+/**
+ * A thread turn this person sent while the lane was down (or its socket
+ * away) runs now: GET integrations/threads/pending with the lane session,
+ * which the server answers with this lane's own threads only. On every
+ * connect.
+ */
+function reconcileLaneThreads(why: string): void {
+  if (ending) return
+  const assistantIds = [String(LANE.assistantId)]
+  void laneThreadsCli.ready()
+    .then((answer) => {
+      if (!answer.ok || ending) return 0
+      return laneThreads.reconcile(() => laneFetch('GET', threadsPendingPath(assistantIds)), { assistantIds, lane: personLaneStamp(LANE.userId) })
+    })
+    .then((started) => { if (started > 0) log(`threads: ${started} pending thread turn(s) started (${why})`) })
+    .catch((err) => log(`threads: pending reconcile failed (${why}): ${err instanceof LaneHttpError ? err.status : err instanceof Error ? err.name : 'error'}`))
+}
+
+const LANE_THREAD_STOP_WAIT_MS = 3_000
+/**
+ * Shutdown: SIGTERM to every thread lane (each its own process group) and at
+ * most LANE_THREAD_STOP_WAIT_MS for them to exit. Null when none runs, so a
+ * lane without threads stops at once as before.
+ */
+function stopLaneThreadChildren(): Promise<void> | null {
+  if (laneThreads.liveChildren() === 0) return null
+  const all = laneThreads.stopAll()
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, LANE_THREAD_STOP_WAIT_MS)
+    void all.then(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
 
 // ── P7: the share's policy against the one this Claude was launched with ────
 
@@ -774,7 +1018,7 @@ async function answeredAtServer(backlog: LaneDelivery[]): Promise<{ answered: Se
       return
     }
     const after = await readHistory(laneHistoryAfterPathFor(d), d.messageId)
-    const said = after === undefined ? null : laneHistoryAnsweredAfter(after, d.messageId, LANE_NOTICE_SENTENCES)
+    const said = after === undefined ? null : laneHistoryAnsweredAfter(after, d.messageId, LANE_ANSWER_NOT_SENTENCES)
     if (said === false) return
     answered.add(d.messageId)
     if (said === null) unsure.add(d.messageId)
@@ -803,6 +1047,7 @@ function connectSocket(): void {
   socket.on('connect', () => {
     log('lane socket connected')
     void poll()
+    reconcileLaneThreads('connect')
   })
   socket.on('disconnect', (reason) => {
     log(`lane socket disconnected (${reason})`)
@@ -826,6 +1071,15 @@ function connectSocket(): void {
   })
   socket.on('lane_revoked', (frame: unknown) => {
     if (frameIsMine(frame)) endLane('revoked')
+    // The share itself ended: this person's browser profile on this computer
+    // goes (0.89.0). Any other stop keeps it.
+    if (!frameIsMine(frame)) return
+    try {
+      const removed = laneRevokedProfileCleanup(frame, LANE, join(HOME, '.bgos-agent'))
+      if (removed.length > 0) log('the share ended; this person\'s browser profile on this computer was deleted')
+    } catch (err) {
+      log(`the browser profile could not be deleted: ${err instanceof Error ? err.message : String(err)}`)
+    }
   })
   socket.on('lane_refresh_ticket', (frame: unknown) => {
     if (!frameIsMine(frame)) return
@@ -840,6 +1094,7 @@ function connectSocket(): void {
     if (!frameIsMine(frame)) return
     log('lane policy changed; reading the share\'s policy')
     void readPolicyNow('lane_policy_changed')
+    void laneBrowser.refresh().catch(() => {})
   })
   socket.on('memory_rpc', (payload: unknown) => {
     const sorted = classifyMemoryFrame(payload)
@@ -848,6 +1103,11 @@ function connectSocket(): void {
       return
     }
     void laneMemory.handle(sorted.frame).catch((err) => log(`memory_rpc failed: ${String(err)}`))
+  })
+  // This person's threads: only `thread_turn` and `thread_close` stamped
+  // exactly for this lane are taken; anything else gets no ack and no answer.
+  socket.on('voice_rpc', (payload: unknown) => {
+    void laneThreadRpc.handle(payload).catch((err) => log(`voice_rpc failed: ${String(err)}`))
   })
 }
 
@@ -859,6 +1119,8 @@ async function heartbeat(): Promise<void> {
     // answer (a database error on the server) means keep the launch flags.
     const policy = heartbeatToolPolicy(answer)
     if (policy) onPolicy(policy, 'heartbeat')
+    // A browser host that came online, or a vault the owner shared since.
+    void laneBrowser.refresh().catch(() => {})
   } catch (err) {
     if (err instanceof LaneHttpError && (err.status === 401 || err.status === 403)) await sessionRefused('lanes/heartbeat')
   }
@@ -950,6 +1212,12 @@ function tick(): void {
     inFlightSinceMs = null
     writeLaneState()
   }
+  // A thread at work is this person's activity too: the supervisor's idle
+  // stop would otherwise take the lane, and its thread with it, mid turn.
+  if (laneThreads.activeWork() > 0) {
+    lastActivityAtMs = Date.now()
+    writeLaneState()
+  }
   if (existsSync(STOP_REQUEST_PATH) && !ending) {
     // The supervisor or the owner's daemon asked; stop serving at once.
     ending = true
@@ -971,6 +1239,10 @@ function startLoops(): void {
   timers.push(setInterval(() => void heartbeat(), 60_000))
   timers.push(setInterval(checkLogin, 5_000))
   timers.push(setInterval(tick, 5_000))
+  // Threads closed more than 7 days ago lose their folder and session file.
+  const sweepThreads = (): void => { void laneThreads.sweepClosed(Date.now()).catch((err) => log(`threads: sweep failed: ${String(err)}`)) }
+  timers.push(setInterval(sweepThreads, 60 * 60_000))
+  sweepThreads()
   void heartbeat()
 }
 

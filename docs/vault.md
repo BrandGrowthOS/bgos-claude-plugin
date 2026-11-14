@@ -67,6 +67,40 @@ key. If a signing key was exposed, rotate it in HOAI before provisioning it
 again. Setup also refuses if Windows ACL inspection or protection fails.
 
 
+## A person the agent is shared with (0.89.0)
+
+With the share's Vault option on (BGOS plan 2026-11-13), a person's lane has
+two tools of its own, `vault_items` and `vault_fill`, and the agent's own
+browser host on this machine fills the login on that person's turn. Nothing
+of it takes or returns a value.
+
+| Step | Who | Route |
+|---|---|---|
+| List the logins the person may use | the lane, lane session | `GET /api/v1/vault/lane/items` |
+| Ask for a fill | the lane, lane session | `POST /api/v1/vault/lane/items/:itemId/fill` `{sessionId, tabId, origin}` |
+| Wait for the owner, when asked | the lane, lane session | `GET /api/v1/vault/lane/fills/:requestId` every 3 s, at most about 50 s per `vault_fill` call; then `{waiting: true, requestId}`, and a call with that `requestId` resumes |
+| Fill | the lane through the relay | `POST /api/v1/integrations/browser/mcp`, tool `hoai_vault_fill` `{ticket, sessionId, tabId, origin}` |
+| Redeem | the host, the agent's own pairing | `POST /api/v1/vault/host/fills/:ticket/redeem` `{assistantId, actingUserId, sessionId, tabId, origin}` |
+
+`sessionId` and `tabId` are the ones `hoai_browser_status` shows on a
+person's turn, and `itemId` is the login the lane asked for. The host refuses
+unless this host is set up and pinned (`hoai vault-host`), the owner's signed
+state verifies against the owner's account key ANCHORED here (`ownerAccount`
+in `vault-host.json`: by the account code `hoai vault-host` prints under the
+host fingerprint, compared with HOAI's, or by the desktop's same computer
+pairing door), never a key the server sends (a person's own login: the
+person's own state verifies under the key the owner's signed state names
+for them, `people[].accountPublic`, sent as `ownerVault`), the signer is not retired or
+revoked, the state is not older than one verified before,
+the person and the login are in the signed `people`, and, when the fill had to
+ask, the owner's signed approval verifies, from a device in the owner's signed
+device list, before it expires, and only once. A fill that runs past 75
+seconds closes that browser. Signed in means a new top document and no
+password field with a value; otherwise every password field is emptied. The
+tab's history is forgotten after every fill, so Back brings nothing back. It holds the page private from before the
+redeem until the login page is gone (or its fields were emptied) and answers
+`{filled: true}` or `{filled: false, reason}`.
+
 ## What this does not do
 
 The local pin confirmation is a guard on this machine. The real checks are the
