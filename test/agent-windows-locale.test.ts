@@ -29,7 +29,7 @@ import { parsePaneState } from '../lib/model-effort-pane.ts'
 import { memoryFs } from './helpers/memory-fs.ts'
 
 const T0 = Date.parse('2026-11-11T12:00:00.000Z')
-const PHOME = '/Users/kc'
+const PHOME = '/Users/person'
 const TMUX = '/opt/homebrew/bin/tmux'
 
 type Session = { name: string; created: number }
@@ -105,7 +105,7 @@ const opens = (fx: ReturnType<typeof renderingTmux>) => fx.execs.filter((c) => c
 
 test('darwin, no locale: a tmux that prints a tab in a format as _ (3.6a under launchd) still lets the pass find each agent session and open its Terminal', async () => {
   const fs = memoryFs()
-  const rows = [row('912', '/Users/kc/hoai-agents/Wolf'), row('55', '/Users/kc/hoai-agents/Nova', { supervisor: 'launcher-live' })]
+  const rows = [row('912', '/Users/person/hoai-agents/Wolf'), row('55', '/Users/person/hoai-agents/Nova', { supervisor: 'launcher-live' })]
   const fx = renderingTmux(
     {
       'hoai-912': { sessions: [{ name: 'hoai-912', created: 1794619730 }], clients: [] },
@@ -126,7 +126,7 @@ test('darwin, no locale: a tmux that prints a tab in a format as _ (3.6a under l
 
 test('darwin, no locale: switched off, the read only viewer is detached and a person\'s read-write attach is left alone, though tmux printed every tab as _', async () => {
   const fs = memoryFs()
-  const rows = [row('912', '/Users/kc/hoai-agents/Wolf')]
+  const rows = [row('912', '/Users/person/hoai-agents/Wolf')]
   const fx = renderingTmux(
     {
       'hoai-912': {
@@ -148,7 +148,7 @@ test('darwin: every tmux the pass asks gets a UTF-8 LC_ALL when the watcher has 
   for (const env of [LAUNCHD_ENV, { ...LAUNCHD_ENV, LC_ALL: 'C', LANG: 'en_US.UTF-8' }, { ...LAUNCHD_ENV, LANG: 'C' }]) {
     const fs = memoryFs()
     // A keep-alive agent in the owner's own tmux session, named by the owner.
-    const rows = [row('77', '/Users/kc/hoai-agents/Cafe', { supervisor: 'keepalive', keepalive: { tmuxSession: 'café-agent' } })]
+    const rows = [row('77', '/Users/person/hoai-agents/Cafe', { supervisor: 'keepalive', keepalive: { tmuxSession: 'café-agent' } })]
     const fx = renderingTmux({ '': { sessions: [{ name: 'café-agent', created: 1794619100 }], clients: [] } }, 'locale')
     const out = await runWindowsPass(ctx('darwin', fx, fs, rows, true, env) as any)
     assert.deepEqual(out.report, { mode: 'tmux', reason: 'showing' }, JSON.stringify(env))
@@ -163,10 +163,10 @@ test('darwin: every tmux the pass asks gets a UTF-8 LC_ALL when the watcher has 
 })
 
 test('linux: an environment that already has a UTF-8 locale reaches tmux as it is (only TMUX and TMUX_PANE dropped, no LC_ALL added), and the terminal runs the same read only attach', async () => {
-  const env = { PATH: '/usr/bin:/bin', HOME: '/home/kc', LANG: 'en_US.UTF-8', DISPLAY: ':0', TMUX: '/tmp/tmux-1000/default,1,0', TMUX_PANE: '%1' }
-  const rows = [row('912', '/home/kc/hoai-agents/Wolf', { stateDir: '/home/kc/.bgos-agent/912' })]
+  const env = { PATH: '/usr/bin:/bin', HOME: '/home/person', LANG: 'en_US.UTF-8', DISPLAY: ':0', TMUX: '/tmp/tmux-1000/default,1,0', TMUX_PANE: '%1' }
+  const rows = [row('912', '/home/person/hoai-agents/Wolf', { stateDir: '/home/person/.bgos-agent/912' })]
   const fx = renderingTmux({ 'hoai-912': { sessions: [{ name: 'hoai-912', created: 1794619730 }], clients: [] } }, 'locale')
-  const out = await runWindowsPass({ ...ctx('linux', fx, memoryFs(), rows, true, env), home: '/home/kc', hasCommand: (n: string) => n === 'gnome-terminal' } as any)
+  const out = await runWindowsPass({ ...ctx('linux', fx, memoryFs(), rows, true, env), home: '/home/person', hasCommand: (n: string) => n === 'gnome-terminal' } as any)
   assert.deepEqual(out.report, { mode: 'tmux', reason: 'showing' })
   const { TMUX: _t, TMUX_PANE: _p, ...expected } = env
   for (const call of fx.execs.filter((c) => c.file === TMUX)) assert.deepEqual(call.env, expected, call.args.join(' '))
@@ -175,10 +175,10 @@ test('linux: an environment that already has a UTF-8 locale reaches tmux as it i
 })
 
 test('linux, no locale: the tmux the pass asks gets LC_ALL=C.UTF-8, and the pass opens the window', async () => {
-  const env = { PATH: '/usr/bin:/bin', HOME: '/home/kc', DISPLAY: ':0' }
-  const rows = [row('912', '/home/kc/hoai-agents/Wolf', { stateDir: '/home/kc/.bgos-agent/912' })]
+  const env = { PATH: '/usr/bin:/bin', HOME: '/home/person', DISPLAY: ':0' }
+  const rows = [row('912', '/home/person/hoai-agents/Wolf', { stateDir: '/home/person/.bgos-agent/912' })]
   const fx = renderingTmux({ 'hoai-912': { sessions: [{ name: 'hoai-912', created: 1794619730 }], clients: [] } }, 'always')
-  const out = await runWindowsPass({ ...ctx('linux', fx, memoryFs(), rows, true, env), home: '/home/kc', hasCommand: (n: string) => n === 'gnome-terminal' } as any)
+  const out = await runWindowsPass({ ...ctx('linux', fx, memoryFs(), rows, true, env), home: '/home/person', hasCommand: (n: string) => n === 'gnome-terminal' } as any)
   assert.deepEqual(out.report, { mode: 'tmux', reason: 'showing' })
   assert.equal(fx.spawns.length, 1)
   for (const call of fx.execs.filter((c) => c.file === TMUX)) assert.equal(call.env?.LC_ALL, 'C.UTF-8')
@@ -222,7 +222,7 @@ test('real tmux, a watcher environment with no locale: the pass finds the agent 
     if (file === REAL_TMUX && !(args[0] === '-L' && args[1] === socket)) return { code: 1, stdout: '', stderr: 'no server running', error: null, timedOut: false }
     return realExec(file, args, opts)
   }
-  const rows = [row(id, `/Users/kc/hoai-agents/Real${id}`)]
+  const rows = [row(id, `/Users/person/hoai-agents/Real${id}`)]
   const out = await runWindowsPass({ platform: 'darwin', home: PHOME, env: NO_LOCALE, fs, exec, spawnDetached: () => ({ pid: null }), kill: () => {}, now: () => T0, log: () => {}, listAgents: () => rows, tmuxPath: REAL_TMUX, show: true, memory: emptyViewerMemory() } as any)
   assert.deepEqual(out.report, { mode: 'tmux', reason: 'showing' })
   assert.deepEqual(opened, [['-g', '-a', 'Terminal', `${PHOME}/.bgos-agent/${id}/${POSIX_VIEWER_FILE_NAME}`]])
