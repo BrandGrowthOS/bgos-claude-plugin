@@ -47,7 +47,7 @@ function rig(screen?: string, applies = true) {
     helpText: async () => HELP,
     readObservation: () => ({ sessionId: 'test-session', modelId: model, modelDisplayName: 'Opus', effort, version: '2.1.319', seq, observedAtMs: now }),
     exec: async (argv) => {
-      if (argv.includes('display-message')) return '%7\t/dev/ttys012\t0\t0\t800' + (argv.at(-1)!.includes('cursor_x') ? '\t2\t2\t1' : '') + '\n'
+      if (argv.includes('display-message')) return '%7:/dev/ttys012:0:0:800' + (argv.at(-1)!.includes('cursor_x') ? ':2:2:1' : '') + '\n'
       if (argv.includes('capture-pane')) return submitted ? activeScreen : [RULE, `❯\u00a0${typed || '\u001b[7m \u001b[0m'}`, RULE].join('\n')
       keys.push(argv)
       if (argv.includes('-l')) typed = argv.at(-1)!
@@ -101,7 +101,7 @@ test('2.1.319: every guard still applies before answering the switch question', 
     let sawQuestion = false
     r.control.deps.exec = async (argv) => {
       let out = await original(argv)
-      if (sawQuestion && guard === 'mode' && argv.includes('display-message')) out = out.replace('\t0\t0\t800', '\t0\t1\t800')
+      if (sawQuestion && guard === 'mode' && argv.includes('display-message')) out = out.replace(':0:0:800', ':0:1:800')
       if (out === dialog) {
         if (sawQuestion && guard === 'changed-question') return 'Allow this command?'
         sawQuestion = true
@@ -154,7 +154,7 @@ test('2.1.319: empty terminal cursors reach apply while drafts and missing curso
       const r = rig()
       const exec = r.control.deps.exec
       r.control.deps.exec = async (argv) => {
-        if (argv.includes('display-message')) return `%7\t/dev/ttys012\t0\t0\t800\t${2 + (text === ' ' ? 1 : 0)}\t2\t${flag}\n`
+        if (argv.includes('display-message')) return `%7:/dev/ttys012:0:0:800:${2 + (text === ' ' ? 1 : 0)}:2:${flag}\n`
         if (argv.includes('capture-pane') && r.keys.length === 0) return empty.replace('❯\u00a0', '❯\u00a0' + text)
         return exec(argv)
       }
@@ -260,7 +260,7 @@ test('M11: cursor moves during capture, so only the fresh pane state may license
   r.control.deps.exec = async (argv) => {
     if (argv.includes('capture-pane') && !captured) { captured = true; return empty }
     const out = await exec(argv)
-    return captured && argv.includes('display-message') ? out.replace('\t2\t2\t1', '\t3\t2\t1') : out
+    return captured && argv.includes('display-message') ? out.replace(':2:2:1', ':3:2:1') : out
   }
   const out = await r.apply('sonnet')
   assert.equal(out.ok, false)

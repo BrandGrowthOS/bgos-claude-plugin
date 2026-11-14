@@ -27,6 +27,7 @@ import {
   parsePaneState,
   readComposer,
 } from '../lib/model-effort-pane.ts'
+import { PANE_STATE_FORMAT } from '../lib/compact-inject.ts'
 
 const RULE = '─'.repeat(60)
 const DIM = '\u001b[2m'
@@ -39,23 +40,34 @@ function screen(...lines: string[]): string {
 }
 
 test('pane state: alive, dead, in a mode, and garbage', () => {
-  assert.deepEqual(parsePaneState('%7\t/dev/ttys012\t0\t0\t4242\n'), {
+  assert.deepEqual(parsePaneState('%7:/dev/ttys012:0:0:4242\n'), {
     paneId: '%7', tty: '/dev/ttys012', dead: false, inMode: false, pid: 4242,
   })
-  assert.equal(parsePaneState('%7\t/dev/ttys012\t1\t0\t4242')!.dead, true)
-  assert.equal(parsePaneState('%7\t/dev/ttys012\t0\t1\t4242')!.inMode, true)
-  for (const bad of ['', 'ok', '%7\t/dev/ttys012\t0\t0', '7\t/dev/ttys012\t0\t0\t42', '%7\tttys\t0\t0\tx']) {
+  assert.equal(parsePaneState('%7:/dev/ttys012:1:0:4242')!.dead, true)
+  assert.equal(parsePaneState('%7:/dev/ttys012:0:1:4242')!.inMode, true)
+  for (const bad of ['', 'ok', '%7:/dev/ttys012:0:0', '7:/dev/ttys012:0:0:42', '%7:ttys:0:0:x', '%7\t/dev/ttys012\t0\t0\t4242', '%7_/dev/ttys012_0_0_4242']) {
     assert.equal(parsePaneState(bad), null, JSON.stringify(bad))
   }
 })
 
 test('tmux cursor coordinates are parsed strictly and never guessed', () => {
-  const pane = '%7\t/dev/ttys012\t0\t0\t4242'
-  assert.deepEqual(parsePaneState(pane + '\t2\t17\t1')!.cursor, { x: 2, y: 17, visible: true })
-  assert.equal(parsePaneState(pane + '\t2\t17\t0')!.cursor!.visible, false)
-  for (const tail of ['\t2\t17', '\t-1\t17\t1', '\t2\tx\t1', '\t2\t17\t2', '\t9007199254740992\t17\t1']) {
+  const pane = '%7:/dev/ttys012:0:0:4242'
+  assert.deepEqual(parsePaneState(pane + ':2:17:1')!.cursor, { x: 2, y: 17, visible: true })
+  assert.equal(parsePaneState(pane + ':2:17:0')!.cursor!.visible, false)
+  for (const tail of [':2:17', ':-1:17:1', ':2:x:1', ':2:17:2', ':9007199254740992:17:1']) {
     assert.equal(parsePaneState(pane + tail), null)
   }
+})
+
+test('pane state: tmux with no UTF-8 locale (3.6a in an agent a launchd job started) prints a tab in display -p as _; the format holds nothing it rewrites, so the answer still parses', () => {
+  const vars: Record<string, string> = { pane_id: '%7', pane_tty: '/dev/ttys012', pane_dead: '0', pane_in_mode: '0', pane_pid: '4242', cursor_x: '2', cursor_y: '17', cursor_flag: '1' }
+  const answer = PANE_STATE_FORMAT.replace(/#\{(\w+)\}/g, (_, key: string) => vars[key] ?? '')
+  // What tmux with no UTF-8 locale prints: printable ASCII as it is, any other character as `_`.
+  const noLocale = Array.from(answer, (ch) => (ch >= ' ' && ch <= '~' ? ch : '_')).join('')
+  assert.equal(noLocale, answer, 'nothing in the answer for tmux to rewrite')
+  assert.deepEqual(parsePaneState(`${noLocale}\n`), {
+    paneId: '%7', tty: '/dev/ttys012', dead: false, inMode: false, pid: 4242, cursor: { x: 2, y: 17, visible: true },
+  })
 })
 
 test('the agent owns the pane only when the pane\'s root is its ancestor and its own job is in front', () => {

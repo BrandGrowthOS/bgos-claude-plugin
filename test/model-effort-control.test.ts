@@ -113,7 +113,7 @@ class FakePane {
     if (paneId !== '%7') return this.otherPane(verb, argv, paneId)
     if (verb === 'display-message') {
       if (this.failDisplay) throw new Error('no such pane')
-      const out = `%7\t${this.tty}\t${this.dead ? 1 : 0}\t${this.inMode ? 1 : 0}\t${this.rootPid}\n`
+      const out = `%7:${this.tty}:${this.dead ? 1 : 0}:${this.inMode ? 1 : 0}:${this.rootPid}\n`
       this.after?.('display-message')
       return out
     }
@@ -154,7 +154,7 @@ class FakePane {
 
   /** Another pane of the same tmux session: a shell the agent never ran in. */
   private otherPane(verb: string | undefined, argv: string[], paneId: string): string {
-    if (verb === 'display-message') return `${paneId}\t/dev/ttys013\t0\t0\t5555\n`
+    if (verb === 'display-message') return `${paneId}:/dev/ttys013:0:0:5555\n`
     if (verb === 'capture-pane') return 'kc@mac ~ % '
     if (verb === 'send-keys') {
       this.otherPaneKeys.push(argv)

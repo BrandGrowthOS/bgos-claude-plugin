@@ -36,7 +36,17 @@ import {
   windowsCapability,
   windowsHealth,
 } from '../lib/agent-windows-plan.mjs'
-import { POSIX_VIEWER_FILE_NAME, VIEWER_LAUNCHER_FILE_NAME, VIEWER_SCRIPT_FILE_NAME, findTool, runWindowsPass } from '../lib/agent-windows.mjs'
+import {
+  POSIX_VIEWER_FILE_NAME,
+  TMUX_FIELD_SEPARATOR,
+  VIEWER_LAUNCHER_FILE_NAME,
+  VIEWER_SCRIPT_FILE_NAME,
+  findTool,
+  hasUtf8Locale,
+  runWindowsPass,
+  splitTmuxFields,
+  tmuxEnv,
+} from '../lib/agent-windows.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 
@@ -516,8 +526,14 @@ function tmuxEffects(servers: Record<string, { sessions: Array<[string, number]>
     }
     const server = servers[socket]
     if (!server) return { code: 1, stdout: '', stderr: `no server running on /tmp/tmux-501/${socket || 'default'}`, error: null, timedOut: false }
-    if (list[0] === 'list-sessions') return { code: 0, stdout: server.sessions.map(([n, c]) => `${n}\t${c}`).join('\n') + '\n', stderr: '', error: null, timedOut: false }
-    if (list[0] === 'list-clients') return { code: 0, stdout: server.clients.map(([n, p, ro, s]) => `${n}\t${p}\t${ro}\t${s}`).join('\n') + '\n', stderr: '', error: null, timedOut: false }
+    // The answer is the -F format the pass asked for, rendered as tmux renders it.
+    const format = list[list.indexOf('-F') + 1] ?? ''
+    const render = (vars: Record<string, string | number>) => format.replace(/#\{(\w+)\}/g, (_, key: string) => String(vars[key] ?? ''))
+    if (list[0] === 'list-sessions') return { code: 0, stdout: server.sessions.map(([n, c]) => render({ session_name: n, session_created: c })).join('\n') + '\n', stderr: '', error: null, timedOut: false }
+    if (list[0] === 'list-clients') {
+      const lines = server.clients.map(([n, p, ro, s]) => render({ client_name: n, client_pid: p, client_readonly: ro, session_name: s }))
+      return { code: 0, stdout: lines.join('\n') + '\n', stderr: '', error: null, timedOut: false }
+    }
     return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
   }
   return {
@@ -623,4 +639,39 @@ test('findTool: PATH first, then the fixed dirs (Homebrew, /usr/local, ~/.local/
   assert.equal(findTool('tmux', { env: { PATH: '/usr/bin' }, home: '/Users/kc', exists }), '/opt/homebrew/bin/tmux')
   assert.equal(findTool('tmux', { env: { PATH: '/usr/bin' }, home: '/Users/kc', exists: (p: string) => p === '/Users/kc/.local/bin/tmux' }), '/Users/kc/.local/bin/tmux')
   assert.equal(findTool('tmux', { env: {}, home: '/Users/kc', exists: () => false }), null)
+})
+
+// -- tmux with no UTF-8 locale (board row c502fb7b; the pass itself is in test/agent-windows-locale.test.ts) --
+
+test('hasUtf8Locale: the locale tmux reads is LC_ALL, else LC_CTYPE, else LANG, the first one set; only a UTF-8 one counts', () => {
+  assert.equal(hasUtf8Locale({}), false, 'a launchd job has none')
+  assert.equal(hasUtf8Locale({ LANG: 'en_US.UTF-8' }), true)
+  assert.equal(hasUtf8Locale({ LC_CTYPE: 'C.utf8' }), true)
+  assert.equal(hasUtf8Locale({ LC_ALL: 'C', LANG: 'en_US.UTF-8' }), false, 'LC_ALL=C wins over a UTF-8 LANG')
+  assert.equal(hasUtf8Locale({ LC_ALL: '', LC_CTYPE: '', LANG: 'de_DE.UTF-8' }), true, 'an empty one is not set')
+  assert.equal(hasUtf8Locale({ LANG: 'C' }), false)
+  assert.equal(hasUtf8Locale(undefined as any), false)
+})
+
+test('tmuxEnv: drops TMUX and TMUX_PANE; adds LC_ALL only when the locale is not UTF-8 (en_US.UTF-8 on a Mac, C.UTF-8 elsewhere); never changes the caller\'s object', () => {
+  const launchd = { PATH: '/usr/bin:/bin', HOME: '/Users/kc', TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3' }
+  assert.deepEqual(tmuxEnv(launchd, 'darwin'), { PATH: '/usr/bin:/bin', HOME: '/Users/kc', LC_ALL: 'en_US.UTF-8' })
+  assert.deepEqual(tmuxEnv({ PATH: '/usr/bin' }, 'linux'), { PATH: '/usr/bin', LC_ALL: 'C.UTF-8' })
+  assert.deepEqual(tmuxEnv({ PATH: '/usr/bin', LC_ALL: 'C' }, 'darwin'), { PATH: '/usr/bin', LC_ALL: 'en_US.UTF-8' })
+  const utf8 = { PATH: '/usr/bin', LANG: 'en_GB.UTF-8', LC_CTYPE: 'en_GB.UTF-8' }
+  assert.deepEqual(tmuxEnv(utf8, 'linux'), utf8, 'a UTF-8 environment is passed on as it is')
+  assert.deepEqual(tmuxEnv(utf8, 'darwin'), utf8)
+  assert.equal('TMUX' in launchd && !('LC_ALL' in launchd), true, 'the caller keeps its own environment')
+  assert.deepEqual(tmuxEnv(undefined, 'darwin'), { LC_ALL: 'en_US.UTF-8' })
+})
+
+test('splitTmuxFields: splits on the colon, keeps any colon after the last split in the last field, and refuses a line with too few fields (a tab tmux printed as _ included)', () => {
+  assert.equal(TMUX_FIELD_SEPARATOR, ':')
+  assert.deepEqual(splitTmuxFields('1794619730:hoai-912', 2), ['1794619730', 'hoai-912'])
+  assert.deepEqual(splitTmuxFields('3003:1:hoai-912:/dev/ttys003', 4), ['3003', '1', 'hoai-912', '/dev/ttys003'])
+  assert.deepEqual(splitTmuxFields('3003:1:hoai-912:odd:name', 4), ['3003', '1', 'hoai-912', 'odd:name'])
+  assert.deepEqual(splitTmuxFields('1794619730:hoai-912\r', 2), ['1794619730', 'hoai-912'])
+  assert.equal(splitTmuxFields('hoai-912_1794619730', 2), null)
+  assert.equal(splitTmuxFields('', 2), null)
+  assert.deepEqual(splitTmuxFields('only', 1), ['only'])
 })
