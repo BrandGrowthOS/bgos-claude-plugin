@@ -29,6 +29,7 @@ import { freeLimitResult, runWatcher } from '../lib/watcher-core.mjs'
 import { checkupTarget, endOldClaudes, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
 import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
+import { CHANNEL_CORE_FILES } from '../lib/keepalive-plan.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
@@ -113,6 +114,8 @@ function agentFs(extra: Record<string, string> = {}): MemoryFs {
       [`${STATE_DIR}/supervisor.json`]: supervisorFileBody(4242, 'x'),
       [`${STATE_DIR}/session-id`]: `${SID}\n`,
       [`${AVA}/.bgos-agent-id`]: '912\n',
+      // A whole plugin root: every file the channel starts from is there (deafwatch names a missing one).
+      ...Object.fromEntries(CHANNEL_CORE_FILES.map((rel) => [`${ROOT}/${rel}`, rel.endsWith('.json') ? '{"name":"hoai"}' : '// x\n'])),
       ...extra,
     },
     [AVA],
@@ -970,12 +973,19 @@ test('finding 2: a held check up reports "not fixed yet", never a result the app
       }),
     ],
     [
-      'a dead connector under a session that was active minutes ago',
+      // deafwatch (Ares 2026-11-13 17:29Z): a dead connector past the start grace is no longer held by
+      // recent session activity, which is how this case used to be held. A job under claude still holds it.
+      'a dead connector with a job under claude',
       () => {
         const fs = agentFs()
         writeTranscript(fs, [assistantTurn(T0 - 5 * MIN)], T0 - 5 * MIN)
-        const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`)].join('\n')
-        return { fs, ps, alive: [3000, 5912] }
+        const ps = [
+          psLine(1, 0, '/sbin/init'),
+          psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`),
+          psLine(5912, 3000, `claude --resume ${SID}`),
+          psLine(6000, 5912, `/bin/zsh -c source ${HOME}/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'npm test'`),
+        ].join('\n')
+        return { fs, ps, alive: [3000, 5912, 6000] }
       },
     ],
   ]
@@ -1357,4 +1367,105 @@ test('review F2 (M20): a fix held by the pass deadline is "Not fixed yet", never
   assert.match(terminal.actions[0].detail, /^Not fixed yet \(pass_deadline: /)
   assert.match(terminal.message, /not fixed yet 1 \(held: pass_deadline\)/)
   assert.equal(restartRequested(fs), false)
+})
+
+// -- deafwatch: a live claude whose channel never came up (mission 298 goal 21) -------------------
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+/** `ps -o lstart=` for an instant, in the local zone the listing parser reads it in. */
+function lstartOf(ms: number) {
+  const d = new Date(ms)
+  const two = (n: number) => String(n).padStart(2, '0')
+  return `${WEEKDAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${String(d.getDate()).padStart(2, ' ')} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())} ${d.getFullYear()}`
+}
+/** The launcher and the agent's claude on its pin, started at `startedAt`, with NO MCP server under it. */
+const deafPs = (startedAt: number) =>
+  [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`, lstartOf(startedAt - 1_000)), psLine(5912, 3000, `claude --resume ${SID}`, lstartOf(startedAt))].join('\n')
+
+test('deafwatch: a check up during a slow start (claude up 2 min, its MCP server not up yet) finds nothing and restarts nothing', async () => {
+  const fs = agentFs()
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, deafPs(T0 - 2 * MIN), { alive: [3000, 5912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.deepEqual(terminal.findings, [], 'a launch still coming up is not a dead connector')
+  assert.equal(restartRequested(fs), false)
+  assert.equal(keepAliveRecord(fs), null, 'no restart spent')
+})
+
+test('deafwatch (Ares): past the grace with bin/bgos-launch.mjs removed, the check up names the missing file, restarts once, and reports not fixed while it stays deaf', async () => {
+  const fs = agentFs()
+  fs.rm(`${ROOT}/bin/bgos-launch.mjs`)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, deafPs(T0 - 11 * 60 * MIN), { alive: [3000, 5912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => [f.cause, f.status, f.detail]), [['daemon_down', 'FAIL', 'claude is running and no daemon is; missing bin/bgos-launch.mjs']])
+  assert.equal(restartRequested(fs), true, 'restarted through the live launcher')
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['daemon_down', 'restart_agent', 'not_fixed']])
+  assert.match(terminal.actions[0].detail, /did not answer: agent_deaf_after_restart/)
+  assert.equal(terminal.state, 'failed')
+  assert.equal(keepAliveRecord(fs).state, 'failed')
+  assertDtoShape(backend.progress('chk-1'))
+  assertNoSecrets(backend.calls.map((c) => JSON.stringify(c.body ?? {})), 'request body')
+})
+
+test('deafwatch (Ares 17:29Z): a daemon down past the grace is restarted though the session was active a minute ago (never "not fixed yet: recent_activity")', async () => {
+  const fs = agentFs()
+  // The session touched its transcript a minute ago; its channel has been down since it started 20 min ago.
+  writeTranscript(fs, [assistantTurn(T0 - 1 * MIN)], T0 - 1 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, deafPs(T0 - 20 * MIN), { alive: [3000, 5912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['daemon_down'])
+  assert.equal(restartRequested(fs), true, 'restarted, not held')
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['daemon_down', 'restart_agent', 'fixed']])
+  assert.ok(!terminal.actions.some((a: any) => /recent_activity/.test(a.detail)), JSON.stringify(terminal.actions))
+  assert.equal(terminal.state, 'done')
+})
+
+test('deafwatch review F2 (red on 3b55728): hoai wrote claude-login-expired under THIS claude: the check up names the login and restarts nothing', async () => {
+  const fs = agentFs()
+  writeTranscript(fs, [assistantTurn(T0 - 1 * MIN)], T0 - 1 * MIN)
+  // bin/hoai-core.mjs, 3 min into the claude that started 20 min ago: no heartbeat, the shared login failed, no relaunch.
+  fs.writeFile(`${STATE_DIR}/launch-status`, '2026-10-06T18:43:00.000Z outcome=claude-login-expired waited=180s\n')
+  fs.touch(`${STATE_DIR}/launch-status`, T0 - 17 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, deafPs(T0 - 20 * MIN), { alive: [3000, 5912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.ok(terminal.findings.some((f: any) => f.cause === 'login_expired'), JSON.stringify(terminal.findings))
+  assert.equal(restartRequested(fs), false, 'a restart meets the same login')
+  assert.ok(!terminal.actions.some((a: any) => a.did === 'restart_agent' && a.outcome === 'fixed'), JSON.stringify(terminal.actions))
+})
+
+test('deafwatch: a claude only a cwd lookup finds still gives its start time, so a deaf channel past the grace is restarted (Windows hand relaunch)', async () => {
+  const fs = agentFs()
+  writeTranscript(fs, [assistantTurn(T0 - 1 * MIN)], T0 - 1 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  // A plain `claude` (no pin on its command line) in the agent's folder, under the live launcher.
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`, lstartOf(T0 - 21 * MIN)), psLine(5912, 3000, 'claude', lstartOf(T0 - 20 * MIN))].join('\n')
+  const run = rig(fs, backend, clock, ps, {
+    alive: [3000, 5912],
+    exec: async (file: string, args: string[]) => {
+      if (file === 'ps') return { code: 0, stdout: `${ps}\n`, stderr: '', error: null, timedOut: false }
+      if (file === 'readlink' && args[0] === '/proc/5912/cwd') return { code: 0, stdout: `${AVA}\n`, stderr: '', error: null, timedOut: false }
+      return { code: 1, stdout: '', stderr: '', error: null, timedOut: false }
+    },
+  })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['daemon_down'])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['daemon_down', 'restart_agent', 'fixed']])
 })

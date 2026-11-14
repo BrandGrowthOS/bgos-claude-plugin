@@ -15,15 +15,28 @@
  *   decideCreateLaunch                    a new agent: supervised (on, never set) or a hidden one shot
  *   parseInstalledPluginRecord            the installed version and when it landed
  *   advanceAgentRecord / reportEntry      since, waitingSince after 24 h, pending (update or upgrade), the 120 char bound
+ *   decideChannelDeaf / channelFilesOf / channelDeafDetail   a live claude with no live channel (deafwatch)
  *
  * Run: npx tsx --test test/keepalive-plan.test.ts
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   AGENT_STATE_FRESH_MS,
+  CHANNEL_BEACON_FRESH_MS,
+  CHANNEL_CORE_FILES,
+  CHANNEL_DEAF_CONFIRM_MS,
+  CHANNEL_DEAF_SEEN_GAP_MS,
+  CHANNEL_DEAF_TARGET,
+  CHANNEL_START_GRACE_MS,
+  channelDeafDetail,
+  decideDeafConfirmed,
+  decideDeafExplained,
+  channelFilesOf,
+  decideChannelDeaf,
   CREATE_LAUNCH_REASONS,
   KEEPALIVE_SWITCH_STATES,
   KEEPALIVE_AGENT_WINDOWS_MAX,
@@ -915,4 +928,133 @@ test('decideSafeMoment with a wedge: progress that was not read keeps the hold (
   held({ ...base, stateFresh: false, wedge: wedge([NOW - 20 * M, NOW - 20 * M]) }, 'no fresh state to vouch for the hooks')
   assert.deepEqual(decideSafeMoment({ ...base, wedge: wedge([null, null]) } as any), { safe: false, reason: 'turn_in_flight' })
   assert.deepEqual(decideSafeMoment({ ...base, wedge: wedge([NOW - 20 * M, NOW - 20 * M]) } as any), { safe: true, reason: 'wedged_turn' }, 'every source read and old')
+})
+
+// -- deafwatch: a live claude whose channel never came up (mission 298 goal 21) -------------------
+
+test('decideChannelDeaf: past the start grace with no fresh beacon, no live daemon is no_channel_process and a silent one channel_silent', () => {
+  const now = Date.parse('2026-11-13T12:00:00Z')
+  const up = (ms: number) => now - ms
+  const base = { claudeRunning: true, claudeStartedAtMs: up(11 * 60 * 60_000), daemonLive: false, beaconAtMs: up(11 * 60 * 60_000), now }
+  // Ares: claude up 11 h, its MCP server never started, the beacon is the last session's.
+  assert.deepEqual(decideChannelDeaf(base), { deaf: true, reason: 'no_channel_process', upMs: 11 * 60 * 60_000, beaconAgeMs: 11 * 60 * 60_000 })
+  assert.deepEqual(decideChannelDeaf({ ...base, beaconAtMs: null }), { deaf: true, reason: 'no_channel_process', upMs: 11 * 60 * 60_000, beaconAgeMs: null })
+  assert.deepEqual(decideChannelDeaf({ ...base, daemonLive: true }), { deaf: true, reason: 'channel_silent', upMs: 11 * 60 * 60_000, beaconAgeMs: 11 * 60 * 60_000 })
+  // The grace edge: deaf from exactly CHANNEL_START_GRACE_MS on.
+  assert.equal(decideChannelDeaf({ ...base, claudeStartedAtMs: up(CHANNEL_START_GRACE_MS) }).deaf, true)
+  assert.equal(decideChannelDeaf({ ...base, claudeStartedAtMs: up(CHANNEL_START_GRACE_MS - 1) }).deaf, false)
+})
+
+test('decideChannelDeaf: never a false alarm. A slow start, a fresh beacon, an unknown start, a claude not proven running, a live daemon that never beaconed', () => {
+  const now = Date.parse('2026-11-13T12:00:00Z')
+  const base = { claudeRunning: true, claudeStartedAtMs: now - 60 * 60_000, daemonLive: false, beaconAtMs: null, now }
+  const rows: Array<[string, Record<string, unknown>, string]> = [
+    ['a slow start (2 min in, no daemon, no beacon yet)', { claudeStartedAtMs: now - 2 * 60_000 }, 'starting'],
+    ['a fresh beacon, whatever else', { beaconAtMs: now - CHANNEL_BEACON_FRESH_MS }, 'live'],
+    ['a beacon in the future (clock skew) reads as live', { beaconAtMs: now + 60_000 }, 'live'],
+    ['a start the listing did not give', { claudeStartedAtMs: null }, 'unknown'],
+    ['a process table that could not be read', { claudeRunning: null }, 'unknown'],
+    ['no claude', { claudeRunning: false }, 'not_running'],
+    ['a live daemon that has written no beacon (standing down beside another session)', { daemonLive: true }, 'no_beacon_yet'],
+  ]
+  for (const [name, over, reason] of rows) assert.deepEqual(decideChannelDeaf({ ...base, ...over } as any), { deaf: false, reason }, name)
+  // A start in the future reads as starting.
+  assert.equal(decideChannelDeaf({ ...base, claudeStartedAtMs: now + 60_000 }).reason, 'starting')
+})
+
+test('channelFilesOf: the core files plus every ${CLAUDE_PLUGIN_ROOT} file the manifest starts an MCP server with; nothing outside the root', () => {
+  const manifest = JSON.stringify({
+    mcpServers: {
+      bgos: { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/bin/bgos-launch.mjs', '${CLAUDE_PLUGIN_ROOT}/server.ts'] },
+      extra: { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/bin/new-host.mjs', '--flag', '${CLAUDE_PLUGIN_ROOT}/../escape.mjs', '/abs/path.mjs', '${CLAUDE_PLUGIN_ROOT}\\bin\\win.mjs'] },
+    },
+  })
+  assert.deepEqual(channelFilesOf(manifest), [...CHANNEL_CORE_FILES, 'bin/new-host.mjs', 'bin/win.mjs'])
+  for (const junk of [null, undefined, '', 'not json', '[]', '{"mcpServers":7}']) assert.deepEqual(channelFilesOf(junk as any), [...CHANNEL_CORE_FILES], String(junk))
+  // The real manifest: every file it names is in the list.
+  const real = JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'))
+  const named = Object.values(real.mcpServers as Record<string, { args?: string[] }>).flatMap((s) => s.args ?? []).filter((a) => a.startsWith('${CLAUDE_PLUGIN_ROOT}/')).map((a) => a.slice('${CLAUDE_PLUGIN_ROOT}/'.length))
+  for (const rel of named) assert.ok(channelFilesOf(JSON.stringify(real)).includes(rel), rel)
+  assert.ok(named.includes('bin/bgos-launch.mjs'))
+})
+
+test('channelDeafDetail: the Helper\'s word first, missing files before the hold (the bound never cuts a file name), at most 120 characters, no clock', () => {
+  assert.equal(channelDeafDetail({ reason: 'no_channel_process' }, null), 'no-channel-heartbeat: no live channel')
+  assert.equal(channelDeafDetail({ reason: 'channel_silent' }, [], 'restart_rate_limited'), 'no-channel-heartbeat: channel silent (restart_rate_limited)')
+  assert.equal(
+    channelDeafDetail({ reason: 'no_channel_process' }, ['bin/bgos-launch.mjs', 'bin/hoai-core.mjs', 'bin/hoai-browser-launch.mjs'], 'agent_deaf_after_restart'),
+    'no-channel-heartbeat: missing bin/bgos-launch.mjs, bin/hoai-core.mjs +1; no live channel (agent_deaf_after_restart)',
+  )
+  const long = channelDeafDetail({ reason: 'no_channel_process' }, ['.claude-plugin/plugin.json', 'bin/hoai-browser-launch.mjs', 'x', 'y'], 'restart_failed:' + 'z'.repeat(200))
+  assert.ok(long.length <= 120)
+  assert.ok(long.startsWith('no-channel-heartbeat: missing .claude-plugin/plugin.json, bin/hoai-browser-launch.mjs +2; '))
+})
+
+test('pendingKindOf: a deaf channel\'s restart is never an update to restart onto (no Restart now for it)', () => {
+  assert.equal(pendingKindOf({ state: 'waiting_idle', reason: 'recent_activity', target: CHANNEL_DEAF_TARGET }), null)
+  assert.equal(pendingKindOf({ state: 'waiting_idle', reason: 'recent_activity', target: '0.88.0' }), 'update')
+})
+
+test('decideSafeMoment (deafwatch, Ares 17:29Z): a deaf channel past its start grace is never held by recent session activity; a job, an unreadable tree and the daemon\'s own holds still are', () => {
+  const now = Date.parse('2026-11-13T17:29:00Z')
+  const base = { running: true, stateFresh: false, state: null, descendants: [], activityMs: [now - 60_000], now, deafChannel: true }
+  // The hold Ares's check up logged: recent_activity. A channel nobody can reach is not "at work" for the owner.
+  assert.deepEqual(decideSafeMoment(base as any), { safe: true, reason: 'deaf_channel' })
+  // Without the flag the same evidence holds, as it always did.
+  assert.deepEqual(decideSafeMoment({ ...base, deafChannel: false } as any), { safe: false, reason: 'recent_activity' })
+  // Never a kill of a job, nor on a tree that could not be read.
+  assert.deepEqual(decideSafeMoment({ ...base, descendants: ['/bin/zsh -c source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && sleep 900'] } as any), { safe: false, reason: 'background_job' })
+  assert.deepEqual(decideSafeMoment({ ...base, descendants: null } as any), { safe: false, reason: 'process_tree_unreadable' })
+  assert.deepEqual(decideSafeMoment({ ...base, running: null } as any), { safe: false, reason: 'process_tree_unreadable' })
+  // A daemon that runs and publishes a turn, an owed message or an open question still holds it (its own word).
+  const fresh = { assistantId: '1', pid: 2, claudePid: 3, runningVersion: null, pendingRestartVersion: null, turnInFlight: true, pendingMessages: 0, pendingPermissions: 0, activeOperations: 0, threadWork: 0, lastActivityAtMs: now - 60_000, sessionId: null, updatedAtMs: now, turnSignal: 'hooks' }
+  assert.deepEqual(decideSafeMoment({ ...base, stateFresh: true, state: fresh } as any), { safe: false, reason: 'turn_in_flight' })
+  assert.deepEqual(decideSafeMoment({ ...base, stateFresh: true, state: { ...fresh, turnInFlight: false, pendingPermissions: 1 } } as any), { safe: false, reason: 'pending_permission' })
+  // Quiet anyway: the usual answer.
+  assert.deepEqual(decideSafeMoment({ ...base, activityMs: [now - 60 * 60_000] } as any), { safe: true, reason: 'idle' })
+})
+
+test('decideDeafConfirmed (deafwatch review F1): a deaf verdict is acted on only after a run of looks CHANNEL_DEAF_CONFIRM_MS long with no gap over CHANNEL_DEAF_SEEN_GAP_MS', () => {
+  const now = Date.parse('2026-11-13T18:00:00Z')
+  const MIN = 60_000
+  // A first look starts a run, never confirmed.
+  assert.deepEqual(decideDeafConfirmed({ sinceMs: null, seenAtMs: null, now }), { confirmed: false, sinceMs: now, seenAtMs: now })
+  // Inside the run, not long enough yet; the run keeps its start.
+  assert.deepEqual(decideDeafConfirmed({ sinceMs: now - MIN, seenAtMs: now - MIN, now }), { confirmed: false, sinceMs: now - MIN, seenAtMs: now })
+  // Long enough, exactly at the edge, every look within the gap: confirmed. ISO stamps (the record's) read the same.
+  assert.deepEqual(decideDeafConfirmed({ sinceMs: now - CHANNEL_DEAF_CONFIRM_MS, seenAtMs: now - MIN, now }), { confirmed: true, sinceMs: now - CHANNEL_DEAF_CONFIRM_MS, seenAtMs: now })
+  assert.equal(decideDeafConfirmed({ sinceMs: new Date(now - 10 * MIN).toISOString(), seenAtMs: new Date(now - MIN).toISOString(), now }).confirmed, true)
+  // A gap (a sleep, a watcher that was down) over the limit starts over, however old the run.
+  assert.deepEqual(decideDeafConfirmed({ sinceMs: now - 3 * 60 * MIN, seenAtMs: now - CHANNEL_DEAF_SEEN_GAP_MS - 1, now }), { confirmed: false, sinceMs: now, seenAtMs: now })
+  assert.equal(decideDeafConfirmed({ sinceMs: now - 10 * MIN, seenAtMs: now - CHANNEL_DEAF_SEEN_GAP_MS, now }).confirmed, true, 'a gap of exactly the limit is still one run')
+  // A stamp in the future, or a run that ends before it starts, proves nothing: start over.
+  assert.equal(decideDeafConfirmed({ sinceMs: now - 10 * MIN, seenAtMs: now + MIN, now }).confirmed, false)
+  assert.equal(decideDeafConfirmed({ sinceMs: now, seenAtMs: now - MIN, now }).confirmed, false)
+  assert.equal(decideDeafConfirmed({ sinceMs: 'garbage', seenAtMs: now - MIN, now }).confirmed, false)
+  // The confirmation is shorter than the grace hoai-core and the watcher give a start, and longer than one sweep.
+  assert.ok(CHANNEL_DEAF_CONFIRM_MS > MIN && CHANNEL_DEAF_CONFIRM_MS < CHANNEL_START_GRACE_MS)
+  assert.ok(CHANNEL_DEAF_SEEN_GAP_MS > MIN)
+})
+
+test('decideDeafExplained (deafwatch review F2): only a claude-login-expired status written during THIS claude\'s life explains a deaf channel; it reads as the login, never as no-channel-heartbeat', () => {
+  const started = Date.parse('2026-11-13T18:00:00Z')
+  const verdict = decideDeafExplained({ outcome: 'claude-login-expired', statusAtMs: started + 3 * 60_000, claudeStartedAtMs: started })
+  assert.ok(verdict)
+  assert.equal(verdict.state, 'failed')
+  assert.match(verdict.reason, /^claude-login-expired: /)
+  assert.ok(!verdict.reason.includes('no-channel-heartbeat'), 'the Helper table matches no-channel-heartbeat before claude-login-expired')
+  assert.ok(verdict.reason.length <= 120)
+  // Written as it started (same second) still counts.
+  assert.ok(decideDeafExplained({ outcome: 'claude-login-expired', statusAtMs: started, claudeStartedAtMs: started }))
+  // Anything else is not explained: an earlier launch's status, another outcome, an unknown time.
+  for (const input of [
+    { outcome: 'claude-login-expired', statusAtMs: started - 1, claudeStartedAtMs: started },
+    { outcome: 'no-channel-heartbeat', statusAtMs: started + 60_000, claudeStartedAtMs: started },
+    { outcome: 'health-relaunch', statusAtMs: started + 60_000, claudeStartedAtMs: started },
+    { outcome: null, statusAtMs: started + 60_000, claudeStartedAtMs: started },
+    { outcome: 'claude-login-expired', statusAtMs: null, claudeStartedAtMs: started },
+    { outcome: 'claude-login-expired', statusAtMs: started + 60_000, claudeStartedAtMs: null },
+  ]) {
+    assert.equal(decideDeafExplained(input), null, JSON.stringify(input))
+  }
 })

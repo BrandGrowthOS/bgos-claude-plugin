@@ -1,0 +1,36 @@
+the agent's claude, from the real process table:
+  3614654 3614647 Fri Nov 13 21:55:05 2026 claude --resume 8c1f0000-0000-4000-8000-0000000d0912 --dangerously-load-development-channels server:bgos
+plugin root ~/.claude/plugins/cache/hoai/hoai/0.87.6: bin/bgos-launch.mjs present? false
+
+sweep 1, at the real now (the claude is seconds old, a slow start):
+  heartbeat entry: [{"id":"912","state":"supervised","reason":"canonical","since":"2026-11-13T21:55:07.872Z"}]
+
+sweep 2, six minutes on (past the five minute start grace): a first deaf look, acted on only if it holds (round 2, F1):
+  heartbeat entry: [{"id":"912","state":"supervised","reason":"canonical","since":"2026-11-13T21:55:07.872Z"}]
+
+sweep 3, a minute later (still deaf, one minute into the look):
+  heartbeat entry: [{"id":"912","state":"supervised","reason":"canonical","since":"2026-11-13T21:55:07.872Z"}]
+
+sweep 4, eight minutes on (deaf for two minutes of sweeps: confirmed; its transcript written a minute ago):
+  would run: systemctl --user show -p MainPID -p ControlGroup bgos-agent-912
+  would run: systemctl --user show --property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment bgos-agent-912
+  would run: systemctl --user restart bgos-agent-912
+  heartbeat entry: [{"id":"912","state":"failed","reason":"no-channel-heartbeat: missing bin/bgos-launch.mjs; no live channel (agent_deaf_after_restart)","since":"2026-11-13T22:03:08.504Z"}]
+  keepalive-state.json record: {"state":"failed","reason":"no-channel-heartbeat: missing bin/bgos-launch.mjs; no live channel (agent_deaf_after_restart)","target":"channel-deaf","attempts":1,"missingFiles":["bin/bgos-launch.mjs"]}
+
+sweep 5, nine minutes on (its launcher wrote claude-login-expired 30 s ago):
+  heartbeat entry: [{"id":"912","state":"failed","reason":"claude-login-expired: the shared Claude login failed, sign in with /login; not restarted","since":"2026-11-13T22:03:08.504Z"}]
+
+the watcher log:
+  keep-alive: ON (source live, status 200, 1 cleared)
+  keep-alive 912: supervised (canonical)
+  keep-alive 912: no live channel seen (no_channel_process); acting only if a sweep 2 min from now still sees it
+  keep-alive 912: claude up 8 min with no live channel (no_channel_process, last beacon 668 min ago); plugin files missing at the plugin root: bin/bgos-launch.mjs
+  keep-alive 912: no-channel-heartbeat (target channel-deaf), restart via service ok
+  keep-alive 912: verify FAILED (agent_deaf_after_restart)
+  keep-alive 912: failed (no-channel-heartbeat: missing bin/bgos-launch.mjs; no live channel (agent_deaf_after_restart))
+  keep-alive 912: no live channel, and its launcher says the Claude login failed (claude-login-expired); not restarted, sign in with /login
+  keep-alive 912: failed (claude-login-expired: the shared Claude login failed, sign in with /login; not restarted)
+
+PASS: slow start left alone, one deaf look not acted on, the deaf channel confirmed and restarted once through its service, reported not fixed with the missing file named, then the launcher's login verdict reported with no restart
+exit 0
