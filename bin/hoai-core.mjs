@@ -81,13 +81,15 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname } from 'node:path'
+import { dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   channelFlagArgsForSpec,
   claudeConfigDir,
   detectInstallMethod,
+  installedPluginsPath,
+  marketplaceNameFromPluginPath,
 } from './bgos-install-method.mjs'
 import {
   BEACON_HEARTBEAT_FILE_NAME,
@@ -1660,6 +1662,51 @@ export function channelHeartbeatSince({ beacon, startedAt, stalePid = null }) {
   return beacon.beaconAt - startedAt >= PREDECESSOR_BEACON_GRACE_MS
 }
 
+/**
+ * The idle update's way back for a staged build that never reported in (lib/idle-update.mjs rollBackNeverArrived;
+ * docs/idle-update/DESIGN.md, Rollback, "A build that dies at import"). Asked once a launch has sent no channel
+ * heartbeat: when this agent's record still says `requested` for a build the install names, the relaunch onto it
+ * never brought a daemon up, so the install goes back to the last good build and the build is held bad on this
+ * computer, before hoai's own relaunch (the one it makes for a launch with no heartbeat anyway) starts claude
+ * again. It restarts nothing itself. Its modules are imported only here, so the launcher's own start never depends
+ * on them; a failure anywhere is no rollback and leaves the launch as it was.
+ * @param {{ assistantId: string, stateDir: string, home: string, env: Record<string, string | undefined>, cwd: string, launchedAtMs: number, now: number }} input
+ * @returns {Promise<{ outcome: string, reason: string, record: any } | null>}
+ */
+export async function idleRollbackNeverArrived({ assistantId, stateDir, home, env, cwd, launchedAtMs, now }) {
+  const [idle, host] = await Promise.all([import('../lib/idle-update.mjs'), import('../lib/idle-update-host.mjs')])
+  const configDir = resolvePath(cwd, claudeConfigDir({ env, home }))
+  const pluginsPath = installedPluginsPath(configDir)
+  const machineDir = joinDir(agentDir(home), idle.IDLE_UPDATE_DIR_NAME)
+  const fs = idle.nodeIdleUpdateFs()
+  return idle.rollBackNeverArrived({
+    assistantId: String(assistantId),
+    recordPath: joinDir(stateDir, idle.IDLE_UPDATE_FILE_NAME),
+    machineDir,
+    fs,
+    installedVersion: idle.installedPluginsVersion(fs.readFile(pluginsPath)),
+    cameBack: 'none',
+    launchedAtMs,
+    now,
+    rollbackInstall: (record) => {
+      // As the daemon's own (server.ts idleRollbackInstall): the marketplace the build being gone back to came from.
+      const marketplace = marketplaceNameFromPluginPath(record.fromRoot, { env, home }) || undefined
+      return host.rollbackMarketplaceInstall({
+        record,
+        installedPluginsPath: pluginsPath,
+        holdPath: joinDir(machineDir, host.enrolmentHoldFileName(configDir)),
+        marketplace,
+        configDir,
+        fs,
+        heldBad: (version) => idle.isVersionHeldBad(version, { machineDir, fs }),
+        // Only ever a switch-off, as on the daemon's rollback.
+        setAutoUpdate: () => ensureMarketplaceAutoUpdate({ configDir, marketplace, enabled: false }),
+        now,
+      })
+    },
+  })
+}
+
 /** Login records older than this never count (lib/claude-login.ts LOGIN_STALE_MS, the daemon's rule). */
 export const LOGIN_STALE_MS = 10 * 60_000
 /** How much of each fresh transcript the shared-login check reads, from the end (the daemon's startup tail). */
@@ -2351,6 +2398,7 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  *   healthyMs?: number,
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
+ *   idleRollback?: ((input: { assistantId: string, stateDir: string, home: string, env: Record<string, string | undefined>, cwd: string, launchedAtMs: number, now: number }) => Promise<any>) | null,
  *   keepAlive?: boolean, signal?: AbortSignal | null,
  *   endProcessTree?: ((pid: number) => boolean) | null,
  *   spawnSyncImpl?: typeof spawnSync,
@@ -2735,6 +2783,21 @@ export async function superviseClaude(args, opts = {}) {
   const healthyMs = opts.healthyMs ?? RELAUNCH_HEALTHY_MS
   const setTimer = opts.setTimer ?? setTimeout
   const clearTimer = opts.clearTimer ?? clearTimeout
+  // The idle update's way back for a launch with no channel heartbeat (idleRollbackNeverArrived). Real only over the
+  // real files (main hands its reader on, which is the real one unless a test faked it): a test that fakes them passes
+  // its own, or has none.
+  const idleRollback = opts.idleRollback !== undefined ? opts.idleRollback : readFile === defaultReadText ? idleRollbackNeverArrived : null
+  const noteIdleWayBack = (back) => {
+    const rec = back?.record
+    if (!rec || back.outcome === 'none') return
+    if (back.outcome === 'rolled_back') {
+      print(`[hoai] the restart onto ${rec.target} never reported in (no daemon came up on it): the install is back on ${rec.from}, and ${rec.target} is held on this computer`)
+    } else if (back.outcome === 'rollback_failed') {
+      print(`[hoai] the restart onto ${rec.target} never reported in, and putting the install back on ${rec.from} did not take (${back.reason}); ${rec.target} is held on this computer`)
+    } else {
+      print(`[hoai] the restart onto ${rec.target} never reported in; this agent has used its one way back, so the install stays on ${rec.target}`)
+    }
+  }
   const listProcesses = opts.listProcesses ?? (() => defaultListProcesses(platform))
   const force = opts.force === true
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
@@ -3501,17 +3564,27 @@ export async function superviseClaude(args, opts = {}) {
           armHeartbeatCheck()
           return
         }
-        if (!heartbeatRelaunchSpent) {
-          heartbeatRelaunchSpent = true
-          healthRelaunch('no-channel-heartbeat', `claude has run ${waited} and its channel has sent no heartbeat (${beaconPath})`)
-          return
+        const afterWayBack = () => {
+          if (!live || restartRequested) return
+          if (!heartbeatRelaunchSpent) {
+            heartbeatRelaunchSpent = true
+            healthRelaunch('no-channel-heartbeat', `claude has run ${waited} and its channel has sent no heartbeat (${beaconPath})`)
+            return
+          }
+          noteStatus('no-channel-heartbeat', { waited, beacon: beaconPath })
+          print(
+            `[hoai] ALERT (no-channel-heartbeat): claude has run ${waited} and its channel has sent no heartbeat ` +
+              `(${beaconPath}), after the one relaunch hoai makes for that. Not relaunching again: the agent stays ` +
+              'up for a person to look at. Run hoai doctor in this folder.',
+          )
         }
-        noteStatus('no-channel-heartbeat', { waited, beacon: beaconPath })
-        print(
-          `[hoai] ALERT (no-channel-heartbeat): claude has run ${waited} and its channel has sent no heartbeat ` +
-            `(${beaconPath}), after the one relaunch hoai makes for that. Not relaunching again: the agent stays ` +
-            'up for a person to look at. Run hoai doctor in this folder.',
-        )
+        // A launch onto a staged build that never reported in: the install goes back to the last good build first,
+        // so the relaunch below boots that one (idleRollbackNeverArrived). Nothing else changes.
+        if (!idleRollback) return afterWayBack()
+        Promise.resolve()
+          .then(() => idleRollback({ assistantId: id, stateDir, home, env, cwd, launchedAtMs: startedAt, now: now() }))
+          .then(noteIdleWayBack, () => null)
+          .then(afterWayBack)
       }
       if (unattended) armHeartbeatCheck()
       // A stop request ends the live claude; the exit below then returns
@@ -4605,6 +4678,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       clearTimer: opts.clearTimer,
       hasExpect: opts.hasExpect,
       expectExists: opts.expectExists,
+      idleRollback: opts.idleRollback,
     })
   } finally {
     unwireStop()
