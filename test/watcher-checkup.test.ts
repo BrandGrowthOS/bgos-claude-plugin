@@ -615,6 +615,26 @@ test('a checkup with no agent, or with several, is refused by name and touches n
   }
 })
 
+test('board row 23415823: an agent whose login file is gone but whose records are here is a lost login, reported in the DTO shape and never restarted', async () => {
+  // The 13 Nov wipe: credentials-912.json deleted, everything else of agent 912 left in place.
+  const fs = agentFs()
+  fs.rm(`${HOME}/.bgos-agent/credentials-912.json`)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, psLine(1, 0, '/sbin/init'))
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.match(terminal.message, /found login_file_missing/)
+  assert.deepEqual(terminal.findings.map((f: any) => [f.cause, f.status, f.target, f.fix]), [['login_file_missing', 'FAIL', '912', "This agent's login file is missing on this computer. Pair it again to fix it."]])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['login_file_missing', 'report', 'not_fixed']])
+  assertDtoShape(backend.progress('chk-1'))
+  assertNoSecrets(backend.progress('chk-1').map((b) => JSON.stringify(b)), 'the lost login report')
+  assert.equal(restartRequested(fs), false)
+  assert.deepEqual(run.spawns, [])
+  assert.equal(fs.files.has(`${HOME}/.bgos-agent/credentials-912.json`), false)
+})
+
 test('the op checkup is a checkup too', async () => {
   const fs = agentFs()
   const backend = fakeBackend({ frames: [{ rpcId: 'chk-1', op: 'checkup' }], jobs: { 'chk-1': { op: 'checkup', targets: [] } } })

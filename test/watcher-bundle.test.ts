@@ -79,6 +79,9 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/keepalive-plan.mjs',
     'lib/watcher-checkup.mjs',
     'lib/agent-checkup.mjs',
+    // A lost login file named as such (board row 23415823): watcher-core imports it, so a bundle
+    // without it is an import error at the watcher's first check up.
+    'lib/lost-login.mjs',
     // The limit watch (Kc 2026-11-01): the pass, its key module, its pure rules, the Windows helper.
     'lib/watcher-limit.mjs',
     'lib/limit-keys.mjs',
