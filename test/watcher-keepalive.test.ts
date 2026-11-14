@@ -44,6 +44,7 @@ import { buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { agentTaskSpec } from '../lib/agent-task-win32.mjs'
 import { RESTART_EXEC_TIMEOUT_MS } from '../lib/agent-restart.mjs'
 import { buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
+import { RESTART_NOTICE_FILE_NAME, parseRestartNotice, restartLine } from '../lib/restart-notice.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 import { fakeAgentTasks, type FakeAgentTaskOptions, type FakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 
@@ -2625,4 +2626,46 @@ test('off the marker tier a marker on disk never blocks the restart (a canonical
   const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
   assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})
+
+// -- the restart line (board row b7276b5a): the watcher's own restarts tell the session they bring up -------
+
+const NOTICE_912 = `${HOME}/.bgos-agent/912/${RESTART_NOTICE_FILE_NAME}`
+
+test('restart line: the sweep restarting an idle agent onto an installed update leaves "restarted by the watcher ... to load an update"', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  const notice = parseRestartNotice(fs.files.get(NOTICE_912) ?? null)
+  assert.deepEqual(notice, { by: 'watcher', atMs: T0, why: 'update' })
+  assert.equal(restartLine(notice), `[hoai] You were restarted by the watcher at ${new Date(T0).toISOString().slice(11, 16)} UTC to load an update; your conversation continued.`)
+})
+
+test('restart line: the sweep upgrading a generation 1 supervisor (a reinstall that restarts the agent) leaves the same notice', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: { runningVersion: '0.62.1' } }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'reinstall']])
+  assert.deepEqual(parseRestartNotice(fs.files.get(NOTICE_912) ?? null), { by: 'watcher', atMs: T0, why: 'update' })
+})
+
+test('restart line: a sweep that restarts nothing (a turn in flight) leaves no notice', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { turnInFlight: true, lastActivityAt: new Date(T0 - 60_000).toISOString() } }])
+  const rec = recorder({ ps: IDLE_PS })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock()).ctx as any)
+  assert.notEqual(report.agents[0]?.state, 'restarted')
+  assert.equal(fs.files.has(NOTICE_912), false)
+})
+
+test('restart line (win32): a crash the watcher recovers by starting the task is a restart nobody asked for: no notice, as on posix where the service relaunches it', async () => {
+  const fs = crashedMachine()
+  const rec = recorder({ win32Ps: listed() })
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn() }) as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
+  assert.equal([...fs.files.keys()].some((p) => p.endsWith(RESTART_NOTICE_FILE_NAME)), false)
 })

@@ -28,6 +28,7 @@ import { createTurnChatTracker } from '../../lib/turn-chat.ts'
 import * as floorState from '../../lib/floor-state.mjs'
 import { daemonFloorFolders, floorKey, markFloorAttached } from '../../lib/floor-state.mjs'
 import * as privateTurn from '../../lib/private-turn.mjs'
+import { applyRestartLine, createRestartLineSlot } from '../../lib/restart-notice.mjs'
 import {
   PRIVATE_TURN_REFUSAL,
   createFireLedger,
@@ -243,12 +244,18 @@ export function agentHost(t: any) {
   }
 
   let life = daemon()
+  // The restart line's slot (lib/restart-notice.mjs): empty unless a test says this daemon was restarted (host.restarted).
+  const restartLineSlot = createRestartLineSlot()
   const notify = (content: string, meta: Record<string, string>): string => {
-    const mcp = { notification: (notification: any) => String(notification.params.content) }
+    // The text the CLI gets; the send itself is a promise, as the MCP server's is (the wrapper's restores hang on it).
+    let sentText = ''
+    const mcp = { notification: (notification: any) => { sentText = String(notification.params.content); return Promise.resolve() } }
     // The notification chain as server.ts builds it: group threads' step (summaries, lane verdicts) passes every card
-    // through with no group lane here, and the scheduled run hold (0.86.20) passes every card unchanged with no run open.
-    const notification = new Function('mcp', 'groupNotificationStep', 'privateTurns', 'holdChannelCardsDuringGrantedRun', 'scheduleGrantRuns', 'log', notificationJs)(mcp, () => null, life.tracker, holdChannelCardsDuringGrantedRun, createScheduleGrantRuns(), () => {})
-    return notification({ method: 'notifications/claude/channel', params: { content, meta } })
+    // through with no group lane here, the scheduled run hold (0.86.20) passes every card unchanged with no run open,
+    // and the restart line (lib/restart-notice.mjs) rides the next card only when host.restarted() put one in the slot.
+    const notification = new Function('mcp', 'groupNotificationStep', 'privateTurns', 'holdChannelCardsDuringGrantedRun', 'scheduleGrantRuns', 'log', 'applyRestartLine', 'restartLineSlot', notificationJs)(mcp, () => null, life.tracker, holdChannelCardsDuringGrantedRun, createScheduleGrantRuns(), () => {}, applyRestartLine, restartLineSlot)
+    void notification({ method: 'notifications/claude/channel', params: { content, meta } })
+    return sentText
   }
   const payloadOf = (event: string, extra: Record<string, unknown> = {}) =>
     ({ session_id: session, transcript_path: transcript, cwd: folder, hook_event_name: event, permission_mode: 'bypassPermissions', ...extra })
@@ -271,6 +278,10 @@ export function agentHost(t: any) {
   const host = {
     /** Every forwarder line from now on carries no startedAt (an older forwarder). */
     unstamped: false,
+    /** This daemon took a restart notice on its first arm (server.ts): its next card carries the line. */
+    restarted(line: string): void {
+      restartLineSlot.set(line)
+    },
     session, markerPaths, lines, recorded, firesPath, root, folder, folders, projectDir,
     get tracker(): any { return life.tracker },
     /** A lane delivers a frame (server.ts deliverWsInbound): actor, reason to send, fire key. The card the CLI gets. */
