@@ -3,14 +3,17 @@
  * No tracked file names one of our own machines' home folders (board row a633fb9c).
  *
  * This repository is public. Lane reports, evidence logs and code comments had
- * carried the home folders of the machines the plugin is built on, 160 tracked
- * files outside the tests at 0.87.4. test/no-home-paths.test.ts runs this
- * check in the suite, so a new one fails CI instead of shipping.
+ * carried the home folders of the machines the plugin is built on: at 0.87.4
+ * this check finds 173 tracked files outside test/ (845 lines), where a plain
+ * slash-only search found 160. test/no-home-paths.test.ts runs this check in
+ * the suite, so a new one fails CI instead of shipping.
  *
  * What counts: a path segment Users/<name> or home/<name> for each account name
  * on our machines, and the shared Linux home root mnt/data/home,
  * with either slash (a Windows path, and the doubled backslash a JSON string
- * writes) and in any letter case. The names are kept apart from the slashes in
+ * writes), a percent encoded slash (%2F, %5C), or the dash a Claude Code
+ * project folder name puts for every slash (-Users-<name>-repo), and in any
+ * letter case. The names are kept apart from the slashes in
  * this file so the check never spells a hit itself. Use a placeholder instead:
  * /Users/you, /home/you, C:\Users\you.
  *
@@ -25,14 +28,21 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 // The account names on our machines. Any of them under either home root is ours.
 const NAMES = ['kc', 'bgos', 'fitecho', 'karim', 'leonidus']
-const SLASH = String.raw`[\\/]+`
+// A slash, a backslash, or either one percent encoded (a URL query, a file:// link).
+const SLASH = String.raw`(?:[\\/]|%2F|%5C)+`
 // A name ends the segment: /Users/<name>x is someone else's folder.
 const END = '(?![A-Za-z0-9_-])'
+// Claude Code names a project folder by its cwd with every slash a dash
+// (~/.claude/projects/-Users-<name>-repo). The dash after the name is that encoding's
+// next slash, so here only a letter, digit or underscore makes it someone else's name.
+const DASH_END = '(?![A-Za-z0-9_])'
 
 export const HOME_PATH = new RegExp(
   [
     `${SLASH}(?:Users|home)${SLASH}(?:${NAMES.join('|')})${END}`,
     `${SLASH}mnt${SLASH}data${SLASH}home${END}`,
+    `-(?:Users|home)-(?:${NAMES.join('|')})${DASH_END}`,
+    `${['', 'mnt', 'data', 'home'].join('-')}${DASH_END}`,
   ].join('|'),
   'gi',
 )

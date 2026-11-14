@@ -1,10 +1,11 @@
 /**
  * No tracked file names one of our own machines' home folders (board row a633fb9c).
  *
- * The plugin repository is public. At 0.87.4, 160 tracked files outside the
- * tests named the home folders of the machines it is built on: lane reports at
- * the root, evidence logs, code comments, and one proof script that used one
- * as a real default. scripts/check-home-paths.mjs is the check; this file runs
+ * The plugin repository is public. At 0.87.4, 173 tracked files outside test/
+ * (845 lines; a plain slash-only search found 160 of them) named the home
+ * folders of the machines it is built on: lane reports at the root, evidence
+ * logs, code comments, two pinned fixture copies, and one proof script that
+ * used one as a real default. scripts/check-home-paths.mjs is the check; this file runs
  * it in the suite, so tests.yml fails the PR that brings one back.
  *
  *  - the real check, on this checkout's tracked files.
@@ -74,12 +75,22 @@ test('the check finds a planted home folder in every form it covers, and nothing
       'scripts/linux.py': `seccomp='${['', 'home', 'karim'].join('/')}/profile.json'`,
       'scripts/linux-root.sh': `cd ${['', 'mnt', 'data', 'home'].join('/')}/agent`,
       'REPORT.md': `ran in ${mac('kc')}`,
+      // Encoded forms. Claude Code names a project folder by its cwd with every slash a dash.
+      'docs/projects-dir.md': `~/.claude/projects/${['', 'Users', 'fitecho', 'BGOS'].join('-')}/`,
+      'docs/projects-dir-linux.md': `~/.claude/projects/${['', 'home', 'karim', 'lane'].join('-')}/x.jsonl`,
+      'docs/projects-dir-home.md': `cd ~/.claude/projects/${['', 'Users', 'kc'].join('-')}`,
+      // A URL query or a file:// link percent encodes the slashes, in either case.
+      'docs/url.md': `?cwd=${['', 'Users', 'kc', 'x'].join('%2F')}&y=1`,
+      'docs/url-lower.md': `?path=${['', 'home', 'karim'].join('%2f')}`,
       // Not exempt: a fixture outside test/, such as the hard floor fixture copies in lib/.
       'lib/hard-floor-fixture.ts': `input: { kind: "path", path: "${mac('kc')}/.zshrc" },`,
     }
     for (const [path, text] of Object.entries(planted)) plant(path, `first line\n${text}\nlast line\n`)
     // Near misses and placeholders: none of these is one of our folders.
-    plant('docs/near.md', [mac('you'), mac('kcx'), mac('karima'), win('you'), ['', 'home', 'you'].join('/'), ['', 'mnt', 'data', 'homes'].join('/'), 'Users kc'].join('\n'))
+    plant('docs/near.md', [
+      mac('you'), mac('kcx'), mac('karima'), win('you'), ['', 'home', 'you'].join('/'), ['', 'mnt', 'data', 'homes'].join('/'), 'Users kc',
+      ['', 'Users', 'you', 'BGOS'].join('-'), ['', 'Users', 'kcx', 'BGOS'].join('-'), 'a self-home-kcal word', ['', 'Users', 'you'].join('%2F'), ['', 'home', 'karima'].join('%2F'),
+    ].join('\n'))
     // Exempt: the tests and their fixtures, and nothing else.
     plant('test/fixture.test.ts', mac('kc'))
     plant('test/fixtures/cases.json', mac('kc'))
