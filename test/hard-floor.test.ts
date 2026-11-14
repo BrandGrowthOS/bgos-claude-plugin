@@ -216,25 +216,62 @@ test('one long pipe feeding many shells is read once', () => {
   assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
 })
 
-test('a pipe whose feeder gives no script is read once, however many readings it has', () => {
+// The next two tests time growth, not the clock: a command of size n and one
+// of size 10n are read in the same run, so a slow or busy machine slows both
+// alike. A reader that grows with the length takes about 10 times as long at
+// 10n; one that walks every earlier part again for each new one (quadratic)
+// takes about 100 times. 30 sits about three times above the first and three
+// times below the second: these reads measured 8 to 15 times on the real
+// code, pinned to one busy core too, and 64 to 99 times with the walk put
+// back. Each test's timeout only stops a hang; the ratio is the test.
+const GROWTH_BOUND = 30
+
+/**
+ * How many times as long the 10n command takes to read. The small one is read
+ * once to warm the reader up, then three times; its fastest read is the
+ * divisor, since a busy machine only ever adds time, with a 5 ms floor so a
+ * near zero time cannot blow the ratio up. The long one is read up to three
+ * times and stops at its first read under the bound.
+ */
+function growth(build: (n: number) => string, n: number): { ratio: number; small: number; long: number } {
+  const readTime = (command: string): number => {
+    const started = performance.now()
+    core.classifyFloorAll({ kind: 'command', command })
+    return performance.now() - started
+  }
+  const small = build(n)
+  readTime(small)
+  const base = Math.max(Math.min(readTime(small), readTime(small), readTime(small)), 5)
+  const long = build(10 * n)
+  let best = Infinity
+  for (let i = 0; i < 3 && best / base >= GROWTH_BOUND; i++) best = Math.min(best, readTime(long))
+  return { ratio: best / base, small: base, long: best }
+}
+
+/** The growth in plain words, for the run's log and for a failure. */
+const growthWords = ({ ratio, small, long }: { ratio: number; small: number; long: number }): string =>
+  `the command ten times as long took ${ratio.toFixed(1)} times as long to read ` +
+  `(${small.toFixed(1)} ms, then ${long.toFixed(1)} ms); keeping pace is about 10, ` +
+  `reading everything again for each part is about 100`
+
+test('a pipe whose feeder gives no script is read once, however many readings it has', { timeout: 120_000 }, (t) => {
   // A feeder with many substitutions has a reading after each one, and every
-  // shell on the pipe would walk them all again if a miss were not kept.
-  const command = 'yes ' + '$(x) a '.repeat(20000) + '| sh' + ' $(x) sh'.repeat(20000)
-  const started = performance.now()
-  core.classifyFloorAll({ kind: 'command', command })
-  const elapsed = performance.now() - started
-  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+  // shell on the pipe would walk them all again if a miss were not kept: the
+  // readings times the shells.
+  const pipe = (n: number) => 'yes ' + '$(x) a '.repeat(n) + '| sh' + ' $(x) sh'.repeat(n)
+  const measured = growth(pipe, 500)
+  t.diagnostic(growthWords(measured))
+  assert.ok(measured.ratio < GROWTH_BOUND, growthWords(measured))
 })
 
-test('a substitution where a program may go is told from a heredoc owner at once, however many heredocs wait', () => {
+test('a substitution where a program may go is told from a heredoc owner at once, however many heredocs wait', { timeout: 120_000 }, (t) => {
   // Each such substitution asks whether the command so far owns a heredoc
   // whose body comes after the line. Walking every waiting heredoc for it
   // would grow with their count times the substitutions.
-  const command = 'cat <<A;'.repeat(40000) + ' $(x);'.repeat(40000)
-  const started = performance.now()
-  core.classifyFloorAll({ kind: 'command', command })
-  const elapsed = performance.now() - started
-  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+  const heredocs = (n: number) => 'cat <<A;'.repeat(n) + ' $(x);'.repeat(n)
+  const measured = growth(heredocs, 4000)
+  t.diagnostic(growthWords(measured))
+  assert.ok(measured.ratio < GROWTH_BOUND, growthWords(measured))
 })
 
 test('a here string that many readings of one command share is scanned for a key once', () => {
