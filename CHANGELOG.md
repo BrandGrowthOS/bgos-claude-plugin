@@ -4,7 +4,7 @@ Notable changes to the HOAI Claude Code plugin.
 
 ## Unreleased
 
-Agents can use `react` to add or remove an emoji reaction on a message. Each agent has one emoji per message; a new emoji replaces the old one. The request sends only the emoji; the server identifies the agent from its pairing. Reactions can acknowledge or agree, not take the place of a reply. This needs the separate backend change and the `AGENT_REACTIONS` switch enabled.
+Agents can use `react` to add or remove an emoji reaction on a message. Each agent has one emoji per message; a new emoji replaces the old one. Reactions require this agent to be paired and a server that records agent reactions as the agent. That server change must be live before this plugin change is merged. The request identifies only this configured agent; tool input cannot choose another agent. Reactions can acknowledge or agree, not take the place of a reply.
 
 Show agent windows per agent. The watcher reads `agentWindows` (`{ "<id>": true | false }`) from the keep-alive answer, beside `showAgentWindows`, keeps it in its cache and hands it to the windows pass. With the map, an agent's window opens only when its own value is true, and an agent the server does not list yet stays off until it is listed. Setting one agent off closes its window now and forgets its 5 minute reopen wait, so setting it on again opens its window now; an agent that restarts in a loop still waits. Without the map (an older server) every agent follows `showAgentWindows` exactly as before, and the cache file is byte for byte the same. Nothing starts, stops or restarts an agent.
 

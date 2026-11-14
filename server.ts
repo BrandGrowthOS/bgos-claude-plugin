@@ -7465,7 +7465,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     }
 
     case 'react': {
-      return handleReactTool(rawArgs, { post: bgosPost })
+      return handleReactTool(rawArgs, { authMode: AUTH.mode, assistantId: ASSISTANT_ID, post: bgosPost })
     }
 
     case 'edit_message': {
