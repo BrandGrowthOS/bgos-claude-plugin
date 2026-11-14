@@ -15,7 +15,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, normalize } from 'node:path'
 
 const mod: any = await import('../lib/idle-update.mjs')
 const core: any = await import('../bin/hoai-core.mjs')
@@ -130,8 +130,18 @@ test('the ask counted is the latest one: an earlier attempt of the same version 
 
 // -- The way back, on an in-memory disk ----------------------------------------------------------
 
+// A path names one file however its separators are spelled, as on a real disk: on Windows `/` and `\` are the same
+// separator, so a key written `${CACHE}/0.80.0/...` and the lib's join(fromRoot, ...) (backslashes there) must meet.
+// A plain Map keyed by the raw string missed that, and the follower test read no canary build on Windows only.
+class DiskFiles extends Map<string, string> {
+  override get(p: string) { return super.get(normalize(p)) }
+  override set(p: string, text: string) { return super.set(normalize(p), text) }
+  override has(p: string) { return super.has(normalize(p)) }
+  override delete(p: string) { return super.delete(normalize(p)) }
+}
+
 function memDisk() {
-  const files = new Map<string, string>()
+  const files: Map<string, string> = new DiskFiles()
   return {
     files,
     fs: {
