@@ -1,6 +1,6 @@
 /**
  * A revoked share takes the person's browser profile off this computer
- * (shared agent vault, plugin 0.90.0; BGOS plan 2026-11-13 section 8):
+ * (shared agent vault, plugin 0.89.0; BGOS plan 2026-11-13 section 8):
  *
  *   - the folders are the ones the browser host keys by the person's
  *     principal (`user-<id>`), the profile and its page output, never the

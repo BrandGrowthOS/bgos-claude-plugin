@@ -39,7 +39,7 @@
  *      answer, and `lanes/me` at boot) against the policy its Claude was
  *      launched with: tighter restarts the lane at once (a turn in flight is
  *      told in one sentence), looser restarts it at its next idle moment;
- *   9. (0.90.0) serves the Agent Browser and the shared vault when this
+ *   9. (0.89.0) serves the Agent Browser and the shared vault when this
  *      launch's policy has `browser` (lib/lane-browser.ts): every browser
  *      call goes to the relay with the lane session, vault_items and
  *      vault_fill to the lane vault routes, and the agent's own browser host
@@ -290,7 +290,7 @@ async function ensureSession(): Promise<boolean> {
   return ensureSessionOnce()
 }
 
-// The boot and the browser tool list ask at the same moment: one mint for both (0.90.0).
+// The boot and the browser tool list ask at the same moment: one mint for both (0.89.0).
 const ensureSessionOnce = singleFlight(ensureSessionNow)
 
 async function ensureSessionNow(): Promise<boolean> {
@@ -468,7 +468,7 @@ const claims = new LaneDeliveryClaims(inbox)
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
   capabilities: {
-    // listChanged: the browser tools appear when a host comes online (0.90.0).
+    // listChanged: the browser tools appear when a host comes online (0.89.0).
     tools: { listChanged: true },
     // The channel only. NO 'claude/channel/permission': a lane never relays a
     // permission request, and never approves one.
@@ -483,7 +483,7 @@ const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
 // nobody sees.
 const claudeReady = new LaneClaudeReady({ ping: () => mcp.ping(), setTimer: (fn, ms) => setTimeout(fn, ms), log })
 
-// ── 0.90.0: the Agent Browser and the shared vault (lib/lane-browser.ts) ─────
+// ── 0.89.0: the Agent Browser and the shared vault (lib/lane-browser.ts) ─────
 // Served only when THIS launch's policy has `browser` (the settings allow the
 // tools by name only then, lib/lane-policy.mjs laneBrowserAllowAdditions).
 // Every call goes out with the lane session (laneFetch), never the pairing.
@@ -1072,7 +1072,7 @@ function connectSocket(): void {
   socket.on('lane_revoked', (frame: unknown) => {
     if (frameIsMine(frame)) endLane('revoked')
     // The share itself ended: this person's browser profile on this computer
-    // goes (0.90.0). Any other stop keeps it.
+    // goes (0.89.0). Any other stop keeps it.
     if (!frameIsMine(frame)) return
     try {
       const removed = laneRevokedProfileCleanup(frame, LANE, join(HOME, '.bgos-agent'))

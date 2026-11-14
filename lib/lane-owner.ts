@@ -95,7 +95,7 @@ export interface LaneOwnerDeps {
   stateRoot?: string
   platform?: string
   fs?: typeof nodeFs
-  /** The agent's owner: never treated as a person whose share ended (0.90.0). */
+  /** The agent's owner: never treated as a person whose share ended (0.89.0). */
   ownerUserId?: string
   /** Start `hoai-lane run --assistant <id> --lane <userId>`, detached. */
   startSupervisor: (userId: string) => void
@@ -152,7 +152,7 @@ export function handleLaneWake(
 
 /**
  * Handle one `lane_revoked` for this agent: ask that lane to stop. When the
- * SHARE ended (share_revoked, view_removed, agent_transferred; 0.90.0) the
+ * SHARE ended (share_revoked, view_removed, agent_transferred; 0.89.0) the
  * person's browser profile on this computer is deleted too, and the reason is
  * kept in the revoke marker, where the browser host reads it to close a
  * browser still open for them (lib/person-browser-profile.mjs).

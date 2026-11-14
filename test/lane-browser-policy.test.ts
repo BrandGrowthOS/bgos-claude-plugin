@@ -1,5 +1,5 @@
 /**
- * A person's lane and the Agent Browser (shared agent vault, plugin 0.90.0;
+ * A person's lane and the Agent Browser (shared agent vault, plugin 0.89.0;
  * BGOS plan 2026-11-13 section 9). The relay now admits a lane credential
  * (section 4.2), so the share's `browser` option is loaded, no longer only
  * recorded:

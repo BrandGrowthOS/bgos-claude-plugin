@@ -1,6 +1,6 @@
 /**
  * hoai_vault_fill on this agent's own browser host, for a PERSON (shared agent
- * vault, plugin 0.90.0; BGOS plan 2026-11-13 section 4.3):
+ * vault, plugin 0.89.0; BGOS plan 2026-11-13 section 4.3):
  *
  *   - only on a person's turn (never the owner's: the owner's own fills are
  *     their desktop's), only for the session and tab ids this host showed in

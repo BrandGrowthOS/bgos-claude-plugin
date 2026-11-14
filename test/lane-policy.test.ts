@@ -13,7 +13,7 @@
  *     or sits inside the agent state folders, a relative or missing folder.
  *   - ownerMcpServers never copies this channel's server, the browser shim,
  *     or a definition that carries the pairing.
- *   - A change: tighter beats looser; browser is a launch option (0.90.0).
+ *   - A change: tighter beats looser; browser is a launch option (0.89.0).
  *   - K7: only models and effort levels on the owner's list, or `default`;
  *     a list narrowed later drops the pinned choice at the next start.
  *   - Restart requests: `now` beats `idle`, a fresh pin is never lost, idle
@@ -146,7 +146,7 @@ test('DENY ownerMcpServers: no grant allows an owner server', () => {
   assert.deepEqual(laneAllowAdditions(only('ownerMcpServers'), { ownerServerNames: ['mail', 'drive'], platform: 'darwin' }), [])
 })
 
-test('browser adds no built in tool and no rule a thread takes; it is a launch option (0.90.0)', () => {
+test('browser adds no built in tool and no rule a thread takes; it is a launch option (0.89.0)', () => {
   for (const policy of [only('browser'), ALL_ON]) {
     const extras = [...laneToolsFor(policy, LANE_BUILTIN_TOOLS), ...laneAllowAdditions(policy, { agentFolder: AGENT, ownerServerNames: ['mail'], platform: 'darwin' })]
     assert.ok(!extras.some((t: string) => /browser/i.test(t)), 'no browser tool or rule')

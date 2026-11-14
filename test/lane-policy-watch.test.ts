@@ -78,7 +78,7 @@ test('the same policy asks nothing; one change is asked once, a new one again', 
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, shell: true }, 'heartbeat'), 'same', 'shell alone changes no launch')
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, readAgentFolder: true }, 'heartbeat'), 'looser')
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, readAgentFolder: true }, 'heartbeat'), 'already_asked')
-  assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, readAgentFolder: true, browser: true }, 'heartbeat'), 'looser', 'browser is a launch option (0.90.0)')
+  assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, readAgentFolder: true, browser: true }, 'heartbeat'), 'looser', 'browser is a launch option (0.89.0)')
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY }, 'lane_policy_changed'), 'tighter')
   assert.equal(restarts.length, 3)
 })

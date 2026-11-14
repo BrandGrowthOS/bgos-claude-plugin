@@ -67,7 +67,7 @@ key. If a signing key was exposed, rotate it in HOAI before provisioning it
 again. Setup also refuses if Windows ACL inspection or protection fails.
 
 
-## A person the agent is shared with (0.90.0)
+## A person the agent is shared with (0.89.0)
 
 With the share's Vault option on (BGOS plan 2026-11-13), a person's lane has
 two tools of its own, `vault_items` and `vault_fill`, and the agent's own

@@ -1,6 +1,6 @@
 /**
  * PERSON LANES, the Agent Browser and the shared vault in a person's lane
- * (plugin 0.90.0; BGOS plan docs/superpowers/plans/2026-11-13-shared-agent-
+ * (plugin 0.89.0; BGOS plan docs/superpowers/plans/2026-11-13-shared-agent-
  * vault-build.md sections 4.1, 4.2 and 9).
  *
  * THE BROWSER. When the share's tool policy has `browser: true` (and so the

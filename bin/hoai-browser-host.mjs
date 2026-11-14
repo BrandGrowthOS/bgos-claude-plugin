@@ -43,7 +43,7 @@
  * one person's logins to another, so an unreadable principal refuses the call
  * instead of falling back to the owner's profile.
  *
- * A PERSON'S SAVED LOGIN (0.90.0, BGOS plan 2026-11-13 section 4.3): on a
+ * A PERSON'S SAVED LOGIN (0.89.0, BGOS plan 2026-11-13 section 4.3): on a
  * person's turn the relay may send `hoai_vault_fill {ticket, sessionId,
  * tabId, origin}`. The host checks the ids it showed that person in
  * hoai_browser_status and the tab's origin, begins page secrecy (no other
@@ -2403,7 +2403,7 @@ export function toolResult(result) {
  * describe this host (no pane, gates answered as a card, one profile per
  * principal).
  */
-// ── A person's saved login fill (0.90.0) ─────────────────────────────────────
+// ── A person's saved login fill (0.89.0) ─────────────────────────────────────
 
 /** What the agent hears for any browser call while a login is being typed. */
 export const VAULT_FILL_RUNNING = 'A saved login is being filled into this page right now, so nothing can read or drive the browser until it is done. Try again in a few seconds.'
@@ -3050,7 +3050,7 @@ export class BrowserHostCore {
   async callTool(ctx, name, args, signal) {
     // What finally leaves this host, whoever built it. Captured first: a close can drop the engine during this call.
     const said = this.pool.peek(ctx)?.engine?.resultRedactor?.() || ((value) => value)
-    // PAGE SECRECY (0.90.0): while a saved login is typed into this browser,
+    // PAGE SECRECY (0.89.0): while a saved login is typed into this browser,
     // nothing reads or drives it. Status only (it shows no page content).
     if (this.pool.peek(ctx)?.vaultHold && name !== 'hoai_browser_status') return said(errorResult('vault_fill_running', VAULT_FILL_RUNNING))
     try {
@@ -3224,7 +3224,7 @@ export class BrowserHostCore {
           ...(slot.engine.vault?.lastError ? ['Persistence warning: the latest browser state could not be saved encrypted. Check available disk space and retry.'] : []),
           `Tabs: ${tabs.length ? tabs.join(' | ') : '(none)'}`,
           this._pendingLine(ctx),
-          // A person's turn: the ids vault_fill names this tab by (0.90.0).
+          // A person's turn: the ids vault_fill names this tab by (0.89.0).
           ...(this.isOwnerPrincipal?.(ctx) === false ? [fillIdsLine(slot.engine)] : []),
           ...downloadLines(this._downloadRows(ctx)),
         ].join('\n'),
@@ -3832,7 +3832,7 @@ export class BrowserHost {
       postSessionCard: (assistantId, sessionId, payload) => this.connectionFor(assistantId)?.postSessionCard(assistantId, sessionId, payload) ?? false,
       isOwnerPrincipal: (ctx) => { const owner = this.connectionFor(ctx.assistantId)?.pairing.ownerUserId; return ctx.principal === OWNER_PRINCIPAL || (typeof owner === 'string' && ctx.principal === `user-${owner}`) },
       intentCheck: (assistantId, sessionId, body) => this.connectionFor(assistantId)?.intentCheck(sessionId, body) ?? null,
-      // A person's saved login, redeemed with the agent's OWN pairing (0.90.0).
+      // A person's saved login, redeemed with the agent's OWN pairing (0.89.0).
       vaultFill: (input) => {
         const conn = this.connectionFor(input.assistantId)
         if (!conn) return Promise.resolve({ filled: false, reason: 'not_connected' })
@@ -3907,7 +3907,7 @@ export class BrowserHost {
     this._downloadsTimer.unref?.()
     this._profileTimer = setInterval(() => { for (const connection of this.connections.values()) void connection.profileCompanion?.poll() }, 2000)
     this._profileTimer.unref?.()
-    // A person whose share ended loses an open browser and its folders (0.90.0).
+    // A person whose share ended loses an open browser and its folders (0.89.0).
     this._sharesTimer = setInterval(() => {
       void sweepEndedShares({ pool: this.pool, agentRoot: this.agentRoot, isOwnerPrincipal: (ctx) => this.core.isOwnerPrincipal?.(ctx) === true, log: this._log }).catch(() => {})
       void this._drainAccessChanges().catch(() => {})

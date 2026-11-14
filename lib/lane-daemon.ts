@@ -467,7 +467,7 @@ export const LANE_NOTICE_SENTENCES: readonly string[] = Object.freeze(Object.val
 /**
  * The agent rows that answer nothing at a boot's history check: the fixed
  * notices, and the one sentence a fill that waits for the owner posts
- * (lib/lane-browser.ts, 0.90.0), which comes before the turn's real answer.
+ * (lib/lane-browser.ts, 0.89.0), which comes before the turn's real answer.
  */
 export const LANE_ANSWER_NOT_SENTENCES: readonly string[] = Object.freeze([...LANE_NOTICE_SENTENCES, LANE_VAULT_WAITING_SENTENCE])
 

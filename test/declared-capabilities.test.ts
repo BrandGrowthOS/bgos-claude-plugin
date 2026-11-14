@@ -928,7 +928,7 @@ test('lane_threads is declared only with BOTH person lanes and threads, on a pai
 
 /**
  * A person's lane can have the owner's logins filled for it (shared agent
- * vault, plugin 0.90.0): the lane serves vault_items and vault_fill, and the
+ * vault, plugin 0.89.0): the lane serves vault_items and vault_fill, and the
  * agent's own browser host on this machine answers hoai_vault_fill. The
  * server offers the Vault row only where the pairing declares lane_vault
  * (BGOS plan 2026-11-13 section 1), so it is declared only where a person's

@@ -10,7 +10,17 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
-## 0.90.0 (2026-11-13)
+## 0.89.0 (2026-11-14)
+
+A person an agent is shared with gets more of the agent in their own lane: threads, the Agent Browser, and the owner's logins filled for them without ever seeing them. The server half is BGOS PR #5147, which keeps it behind the server switches `COLLAB_SHARED_AGENT_THREADS`, `SHARE_RECIPIENT_VAULT` and `SHARE_RECIPIENT_PLUGIN_VERSION`; with them off the server offers none of it to a share recipient. This one entry replaces the branch's earlier 0.88.0 and 0.90.0 drafts, which never shipped.
+
+**A person an agent is shared with can open a thread with it, and the thread runs in that person's own lane.** Until now threads were the owner's only. A person's lane now answers `thread_turn` and `thread_close` on `voice_rpc` when the frame is for this agent and stamped exactly for that person, and nothing else: the owner's own frame, another person's, another agent's or any other op gets no ack and no answer there. The thread is a fork of that person's own lane session (the lane's session pin, so a `/new` is followed), never of the owner's main session. It runs in a plain folder under the lane's own work folder, with the lane's own Claude sign in, and its answers go out with the lane session, never the pairing. Turns a person sent while their lane was down are replayed on every connect. A thread at work keeps the lane from its idle stop, and the lane's thread lanes stop with the lane: at once on a revoke, a lost session or a refused sign in.
+
+**A person's thread is read only.** It has Read, Glob and Grep in the lane's work folder, and the web tools only when the share's web option is on. It never has Bash or an editing tool, whatever the share allows, no HOAI tool and no email files, and it does not read the agent folder even on a share that lets the lane read it. It never gets a git worktree. Its only hook is the lane's own floor hook, which fails closed. One thread runs at a time per lane and a second waits. Before this release the thread builder would have given a locked lane's thread the web tools; a thread is now cut to the tools its lane was launched with.
+
+**The owner's daemon never runs a person's thread.** A `thread_turn` or `thread_close` stamped for a person, naming a person, or carrying a stamp that cannot be read is dropped by the owner's daemon before anything is acknowledged or run.
+
+**New capability `lane_threads`.** Declared on the pairing only where person lanes and threads can both run (`person_lanes` with `message_threads` and `thread_sessions`), on a pairing and not on Windows. The server offers a thread to a share recipient only when the pairing declares all three.
 
 **A person an agent is shared with can have a login filled for them, without ever seeing it.** With the share's Vault option on, the owner's logins listed for that person (and, with Can add their own logins, the person's own) can be used on the person's turns. The password never reaches the agent, the person, the chat or a log: the agent's own browser host on this computer fills it into the page.
 
@@ -30,21 +40,9 @@ Running commands is not available for people you share with yet. Your own tools 
 
 **A share that ends removes the person's browser from this computer.** When the server says the share was revoked, the person lost access, or the agent moved to a new owner, the person's browser profile, its page output and its downloads on this computer are deleted: by the owner's daemon, by the person's lane, and by the browser host, which first closes a browser still open for them. A lane stopped for any other reason keeps the profile.
 
-Not checked against a real server in this release: the server routes are built in parallel to the same contract, and the tests drive the lane, the relay and the redeem with fakes. The page fill and the release of the page run in a real Chromium in the tests; the live view and the person's app were not checked on a screen.
+Not checked against a real server in this release: the server routes are built in parallel to the same contract, and the tests drive the lane, the relay and the redeem with fakes. The page fill and the release of the page run in a real Chromium in the tests; the live view and the person's app were not checked on a screen. A person's thread was not checked against a real Claude Code process: the unit tests drive the lane's thread manager with fakes.
 
 **New capability `lane_vault`.** Declared on a pairing where person lanes run, not on Windows, and only while the browser host is not switched off (`HOAI_BROWSER_HOST=off`). `lane_threads` is kept.
-
-## 0.88.0 (2026-11-11)
-
-**A person an agent is shared with can open a thread with it, and the thread runs in that person's own lane.** Until now threads were the owner's only. A person's lane now answers `thread_turn` and `thread_close` on `voice_rpc` when the frame is for this agent and stamped exactly for that person, and nothing else: the owner's own frame, another person's, another agent's or any other op gets no ack and no answer there. The thread is a fork of that person's own lane session (the lane's session pin, so a `/new` is followed), never of the owner's main session. It runs in a plain folder under the lane's own work folder, with the lane's own Claude sign in, and its answers go out with the lane session, never the pairing. Turns a person sent while their lane was down are replayed on every connect. A thread at work keeps the lane from its idle stop, and the lane's thread lanes stop with the lane: at once on a revoke, a lost session or a refused sign in.
-
-**A person's thread is read only.** It has Read, Glob and Grep in the lane's work folder, and the web tools only when the share's web option is on. It never has Bash or an editing tool, whatever the share allows, no HOAI tool and no email files, and it does not read the agent folder even on a share that lets the lane read it. It never gets a git worktree. Its only hook is the lane's own floor hook, which fails closed. One thread runs at a time per lane and a second waits. Before this release the thread builder would have given a locked lane's thread the web tools; a thread is now cut to the tools its lane was launched with.
-
-**The owner's daemon never runs a person's thread.** A `thread_turn` or `thread_close` stamped for a person, naming a person, or carrying a stamp that cannot be read is dropped by the owner's daemon before anything is acknowledged or run.
-
-**New capability `lane_threads`.** Declared on the pairing only where person lanes and threads can both run (`person_lanes` with `message_threads` and `thread_sessions`), on a pairing and not on Windows. The server offers a thread to a share recipient only when the pairing declares all three.
-
-Not checked against a real Claude Code process in this release: the unit tests drive the lane's thread manager with fakes.
 
 ## 0.88.0 (2026-11-14)
 

@@ -19,7 +19,7 @@ const BROWSER_RELAY_ONLY = [
   'lib/browser-profile-core/runtime-endpoint.js',
   'lib/browser-profile-pairing-client.mjs',
   'lib/browser-profile-permission-client.mjs',
-  // A person's lane calls the same relay with its own session (0.90.0).
+  // A person's lane calls the same relay with its own session (0.89.0).
   'lib/lane-browser.ts',
 ]
 
