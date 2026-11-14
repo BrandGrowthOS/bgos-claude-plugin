@@ -21,8 +21,8 @@ test at test/marketplace-attach.e2e.test.ts:2:1921
   -   tools: {}
   - }
 
-      at assertDormant (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:150:10)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:166:5)
+      at assertDormant (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:150:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:166:5)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {

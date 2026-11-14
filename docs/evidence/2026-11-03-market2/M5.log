@@ -8,7 +8,7 @@ not ok 1 - market2 launcher: legacy plus numbered launches the effective agent 4
   ---
   duration_ms: 1174.543083
   type: 'test'
-  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
+  location: '/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
   failureType: 'testCodeFailure'
   error: |-
     Expected values to be strictly equal:
@@ -21,7 +21,7 @@ not ok 1 - market2 launcher: legacy plus numbered launches the effective agent 4
   actual: ''
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:295:14)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:295:14)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1208:7)
     async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3)
@@ -31,7 +31,7 @@ not ok 2 - market2 launcher: explicit path plus numbered launches the effective 
   ---
   duration_ms: 922.579542
   type: 'test'
-  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
+  location: '/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
   failureType: 'testCodeFailure'
   error: |-
     Expected values to be strictly equal:
@@ -44,7 +44,7 @@ not ok 2 - market2 launcher: explicit path plus numbered launches the effective 
   actual: ''
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:295:14)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:295:14)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1208:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
@@ -56,7 +56,7 @@ not ok 3 - market2 launcher: legacy without home launches the effective agent 42
   ---
   duration_ms: 847.682375
   type: 'test'
-  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
+  location: '/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] marketplace dormant: this session is outside its agent home or explicit attach scope.
@@ -67,7 +67,7 @@ not ok 3 - market2 launcher: legacy without home launches the effective agent 42
   actual: false
   operator: '=='
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:292:14)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:292:14)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1208:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
@@ -79,7 +79,7 @@ not ok 4 - market2 launcher: explicit legacy without home launches the effective
   ---
   duration_ms: 874.99675
   type: 'test'
-  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
+  location: '/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:5362'
   failureType: 'testCodeFailure'
   error: |-
     [bgos] marketplace dormant: this session is outside its agent home or explicit attach scope.
@@ -90,7 +90,7 @@ not ok 4 - market2 launcher: explicit legacy without home launches the effective
   actual: false
   operator: '=='
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:292:14)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:292:14)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1208:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:831:7)

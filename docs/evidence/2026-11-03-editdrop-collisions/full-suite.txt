@@ -1,4 +1,4 @@
-{"date":"2026-11-03T19:01:05.334Z","node":"v26.0.0","root":"/Users/kc/hoai-work/mbeditdrop","parallel":397,"chromium":7,"bun":15,"maxWorkers":4,"TMPDIR":"/Users/kc/hoai-work/mbeditdrop/.editdrop-test-IlqNG3"}
+{"date":"2026-11-03T19:01:05.334Z","node":"v26.0.0","root":"/Users/you/hoai-work/mbeditdrop","parallel":397,"chromium":7,"bun":15,"maxWorkers":4,"TMPDIR":"/Users/you/hoai-work/mbeditdrop/.editdrop-test-IlqNG3"}
 FAMILY node START node --import tsx --test --test-concurrency=4 test/agent-browser-vault.test.ts; files=397
 ✔ locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries (115.190666ms)
 ✔ first setup may retain current sign-in but an existing vault cannot adopt replacement browsing state (145.768167ms)
@@ -3753,7 +3753,7 @@ FAMILY node START node --import tsx --test --test-concurrency=4 test/agent-brows
 ✔ supervised expect script: a state dir with Tcl specials is quoted, never evaluated (0.055ms)
 ✔ the person-facing script is unchanged: no launch-status, no supervised exits, interact at the end (0.109292ms)
 [hoai] this host has 2 paired agents (ids: 7, 8) and this folder declares no assistant (no .bgos-agent-id pin and no BGOS_ASSISTANT_ID in .mcp.json), so hoai cannot tell which one to launch. Run hoai from the agent's own folder (pairing bakes the pin there, and bgos-agent / bgos-claim write the id into .mcp.json), or set BGOS_ASSISTANT_ID=7 in this agent's environment.
-[hoai] this command is running from a temporary package-runner directory (/Users/kc/hoai-work/mbeditdrop/.editdrop-test-IlqNG3/hoai-sup-home-9DTMXh/.npm/_npx/c00bcfc5e22688dd/node_modules/claude-channel-bgos), which is not an install, and /Users/kc/hoai-work/mbeditdrop/.editdrop-test-IlqNG3/hoai-sup-home-9DTMXh/.claude/plugins/installed_plugins.json records no HOAI plugin install, so the channel this machine listens on cannot be determined. Run hoai from the folder the agent was set up in (a clone checkout), or install the plugin with hoai setup, rather than guessing a channel flag. hoai will not launch on a guessed channel: a wrong one starts an agent that looks connected and never receives a message.
+[hoai] this command is running from a temporary package-runner directory (/Users/you/hoai-work/mbeditdrop/.editdrop-test-IlqNG3/hoai-sup-home-9DTMXh/.npm/_npx/c00bcfc5e22688dd/node_modules/claude-channel-bgos), which is not an install, and /Users/you/hoai-work/mbeditdrop/.editdrop-test-IlqNG3/hoai-sup-home-9DTMXh/.claude/plugins/installed_plugins.json records no HOAI plugin install, so the channel this machine listens on cannot be determined. Run hoai from the folder the agent was set up in (a clone checkout), or install the plugin with hoai setup, rather than guessing a channel flag. hoai will not launch on a guessed channel: a wrong one starts an agent that looks connected and never receives a message.
 [hoai] install method: clone; channel server:bgos
 [hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
 [hoai] install method: clone; channel server:bgos
@@ -3913,7 +3913,7 @@ FAMILY node START node --import tsx --test --test-concurrency=4 test/agent-brows
 ✔ a fresh retry that dies inside the health window leaves the pin on the previous session (1246.935709ms)
 [hoai] install method: clone; channel server:bgos
 [hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
-[hoai] waiting for an incumbent claude (pid 4242) in /Users/kc/hoai-work/mbeditdrop/.editdrop-test-IlqNG3/hoai-agent-7w4GJk to exit before taking over; a pinned session can only be resumed once
+[hoai] waiting for an incumbent claude (pid 4242) in /Users/you/hoai-work/mbeditdrop/.editdrop-test-IlqNG3/hoai-agent-7w4GJk to exit before taking over; a pinned session can only be resumed once
 [hoai] the incumbent claude (pid 4242) has exited; taking over assistant 871
 [hoai] restart supervisor armed for assistant 871
 ✔ a fresh retry that stays up past the health window becomes the pinned session (1651.19775ms)

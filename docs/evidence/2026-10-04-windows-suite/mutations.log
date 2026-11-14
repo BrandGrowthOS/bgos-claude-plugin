@@ -109,24 +109,24 @@
 --- why (assertion lines):
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
-  + '\\home\\kc\\.bgos-agent\\credentials.json'
-  - '\\home\\kc\\.bgos-agent\\credentials-871.json'
-    expected: '\\home\\kc\\.bgos-agent\\credentials-871.json',
+  + '\\home\\you\\.bgos-agent\\credentials.json'
+  - '\\home\\you\\.bgos-agent\\credentials-871.json'
+    expected: '\\home\\you\\.bgos-agent\\credentials-871.json',
   AssertionError [ERR_ASSERTION]: mirror drift for env {"BGOS_ASSISTANT_ID":"871"}
   + actual - expected
-  + '\\home\\kc\\.bgos-agent\\credentials.json'
-  - '\\home\\kc\\.bgos-agent\\credentials-871.json'
-    expected: '\\home\\kc\\.bgos-agent\\credentials-871.json',
+  + '\\home\\you\\.bgos-agent\\credentials.json'
+  - '\\home\\you\\.bgos-agent\\credentials-871.json'
+    expected: '\\home\\you\\.bgos-agent\\credentials-871.json',
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
-  + 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-creds-both-YgO5f7\\.bgos-agent\\credentials.json'
-  - 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-creds-both-YgO5f7\\.bgos-agent\\credentials-871.json'
-    expected: 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-creds-both-YgO5f7\\.bgos-agent\\credentials-871.json',
+  + 'C:\\Users\\you\\AppData\\Local\\Temp\\bgos-creds-both-YgO5f7\\.bgos-agent\\credentials.json'
+  - 'C:\\Users\\you\\AppData\\Local\\Temp\\bgos-creds-both-YgO5f7\\.bgos-agent\\credentials-871.json'
+    expected: 'C:\\Users\\you\\AppData\\Local\\Temp\\bgos-creds-both-YgO5f7\\.bgos-agent\\credentials-871.json',
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
-  + '\\home\\kc\\.bgos-agent\\credentials.json'
-  - '\\home\\kc\\.bgos-agent\\credentials-1017.json'
-    expected: '\\home\\kc\\.bgos-agent\\credentials-1017.json',
+  + '\\home\\you\\.bgos-agent\\credentials.json'
+  - '\\home\\you\\.bgos-agent\\credentials-1017.json'
+    expected: '\\home\\you\\.bgos-agent\\credentials-1017.json',
 --- restored byte identical
 ================ MUTATION cred-mirror (01:15:01)
 --- diff (mutated vs original):
@@ -151,9 +151,9 @@
 --- why (assertion lines):
   AssertionError [ERR_ASSERTION]: mirror drift for env {"BGOS_ASSISTANT_ID":"871"}
   + actual - expected
-  + '\\home\\kc\\.bgos-agent\\credentials-871.json'
-  - '\\home\\kc\\.bgos-agent\\credentials.json'
-    expected: '\\home\\kc\\.bgos-agent\\credentials.json',
+  + '\\home\\you\\.bgos-agent\\credentials-871.json'
+  - '\\home\\you\\.bgos-agent\\credentials.json'
+    expected: '\\home\\you\\.bgos-agent\\credentials.json',
 --- restored byte identical
 ================ MUTATION cred-legacy (01:15:03)
 --- diff (mutated vs original):
@@ -179,11 +179,11 @@
 --- why (assertion lines):
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
-  +   path: '\\home\\kc\\.bgos-agent\\credentials-963.json',
+  +   path: '\\home\\you\\.bgos-agent\\credentials-963.json',
   +   via: 'sole-per-assistant'
-  -   path: '\\home\\kc\\.bgos-agent\\credentials.json',
+  -   path: '\\home\\you\\.bgos-agent\\credentials.json',
   -   via: 'legacy'
-    expected: { kind: 'ok', path: '\\home\\kc\\.bgos-agent\\credentials.json', via: 'legacy' },
+    expected: { kind: 'ok', path: '\\home\\you\\.bgos-agent\\credentials.json', via: 'legacy' },
 --- restored byte identical
 ================ MUTATION cred-folderpin (01:15:05)
 --- diff (mutated vs original):
@@ -211,7 +211,7 @@
 --- why (assertion lines):
   AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
   + actual - expected
-  +   agentDir: '\\home\\kc\\.bgos-agent',
+  +   agentDir: '\\home\\you\\.bgos-agent',
   +   candidateIds: [
   +     '1013',
   +     '1015',
@@ -220,9 +220,9 @@
   +   ],
   +   kind: 'refuse'
   -   kind: 'ok',
-  -   path: '\\home\\kc\\.bgos-agent\\credentials-1017.json',
+  -   path: '\\home\\you\\.bgos-agent\\credentials-1017.json',
   -   via: 'folder-pin'
-    expected: { kind: 'ok', path: '\\home\\kc\\.bgos-agent\\credentials-1017.json', via: 'folder-pin' },
+    expected: { kind: 'ok', path: '\\home\\you\\.bgos-agent\\credentials-1017.json', via: 'folder-pin' },
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
     expected: 'ok',
   AssertionError [ERR_ASSERTION]: the pin is exactly the remedy, so it must silence the warning
@@ -286,8 +286,8 @@
 ﹣ isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS) (5.1474ms) # win32 refused symlink creation (needs elevation or Developer Mode)
 --- why (assertion lines):
 ✔ pair exit codes distinguish safe completion, unexpected errors, refusal, and pinning (0.0793ms)
-  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^ {2}mkdir -p \/home\/kc\/hoai-agents\/my-agent$/m. Input:
-    expected: /^ {2}mkdir -p \/home\/kc\/hoai-agents\/my-agent$/m,
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^ {2}mkdir -p \/home\/you\/hoai-agents\/my-agent$/m. Input:
+    expected: /^ {2}mkdir -p \/home\/you\/hoai-agents\/my-agent$/m,
   AssertionError [ERR_ASSERTION]: the refusal names the exact mkdir line; got:
     expected: true,
 --- restored byte identical
@@ -316,8 +316,8 @@
 ﹣ isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS) (5.5071ms) # win32 refused symlink creation (needs elevation or Developer Mode)
 --- why (assertion lines):
 ✔ pair exit codes distinguish safe completion, unexpected errors, refusal, and pinning (0.0791ms)
-  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^ {2}cd C:\\Users\\kc\\hoai-agents\\my-agent$/m. Input:
-    expected: /^ {2}cd C:\\Users\\kc\\hoai-agents\\my-agent$/m,
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^ {2}cd C:\\Users\\you\\hoai-agents\\my-agent$/m. Input:
+    expected: /^ {2}cd C:\\Users\\you\\hoai-agents\\my-agent$/m,
   AssertionError [ERR_ASSERTION]: the refusal names the exact cd line; got:
     expected: true,
 --- restored byte identical
@@ -378,14 +378,14 @@
     expected: 384,
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
-  + 'E:\\home\\kc\\bgos-agents'
-  - 'E:\\home\\kc\\bgos-agents\\atlas'
-    expected: 'E:\\home\\kc\\bgos-agents\\atlas',
+  + 'E:\\home\\you\\bgos-agents'
+  - 'E:\\home\\you\\bgos-agents\\atlas'
+    expected: 'E:\\home\\you\\bgos-agents\\atlas',
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
-  + 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-claim-root-rbK0ii'
-  - 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-claim-root-rbK0ii\\atlas'
-    expected: 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-claim-root-rbK0ii\\atlas',
+  + 'C:\\Users\\you\\AppData\\Local\\Temp\\bgos-claim-root-rbK0ii'
+  - 'C:\\Users\\you\\AppData\\Local\\Temp\\bgos-claim-root-rbK0ii\\atlas'
+    expected: 'C:\\Users\\you\\AppData\\Local\\Temp\\bgos-claim-root-rbK0ii\\atlas',
 --- restored byte identical
 ================ MUTATION voice-join (01:16:54)
 --- diff (mutated vs original):
@@ -487,7 +487,7 @@
 ✖ failing tests:
 ✖ stable wrapper installation is atomic and executable outside checkout (7.6483ms)
 --- why (assertion lines):
-  Error: EPERM: operation not permitted, rename 'C:\Users\karim\AppData\Local\Temp\bgos-wrapper-install-4EQYev\home\.bgos-agent\runtime\bgos-daemon-wrapper.mjs.50648.29f4cd9c-f0dc-42af-8c63-c0d1d16007fb.tmp' -> 'C:\Users\karim\AppData\Local\Temp\bgos-wrapper-install-4EQYev\home\.bgos-agent\runtime\bgos-daemon-wrapper.mjs'
+  Error: EPERM: operation not permitted, rename 'C:\Users\you\AppData\Local\Temp\bgos-wrapper-install-4EQYev\home\.bgos-agent\runtime\bgos-daemon-wrapper.mjs.50648.29f4cd9c-f0dc-42af-8c63-c0d1d16007fb.tmp' -> 'C:\Users\you\AppData\Local\Temp\bgos-wrapper-install-4EQYev\home\.bgos-agent\runtime\bgos-daemon-wrapper.mjs'
 --- restored byte identical
 ================ MUTATION wrap-inplace (01:18:00)
 --- diff (mutated vs original):
@@ -573,16 +573,16 @@
   +   'C:\\Program Files/Google/Chrome/Application/chrome.exe',
   +   'C:\\Program Files/Google/Chrome Beta/Application/chrome.exe',
   +   'C:\\Program Files/Chromium/Application/chrome.exe',
-  +   'C:\\Users\\kc\\AppData\\Local/Google/Chrome/Application/chrome.exe',
-  +   'C:\\Users\\kc\\AppData\\Local/Google/Chrome Beta/Application/chrome.exe',
-  +   'C:\\Users\\kc\\AppData\\Local/Chromium/Application/chrome.exe'
+  +   'C:\\Users\\you\\AppData\\Local/Google/Chrome/Application/chrome.exe',
+  +   'C:\\Users\\you\\AppData\\Local/Google/Chrome Beta/Application/chrome.exe',
+  +   'C:\\Users\\you\\AppData\\Local/Chromium/Application/chrome.exe'
   -   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
   -   'C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe',
   -   'C:\\Program Files\\Chromium\\Application\\chrome.exe',
-  -   'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
-  -   'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome Beta\\Application\\chrome.exe',
-  -   'C:\\Users\\kc\\AppData\\Local\\Chromium\\Application\\chrome.exe'
-    expected: [ 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe', 'C:\\Program Files\\Chromium\\Application\\chrome.exe', 'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome Beta\\Application\\chrome.exe', 'C:\\Users\\kc\\AppData\\Local\\Chromium\\Application\\chrome.exe' ],
+  -   'C:\\Users\\you\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
+  -   'C:\\Users\\you\\AppData\\Local\\Google\\Chrome Beta\\Application\\chrome.exe',
+  -   'C:\\Users\\you\\AppData\\Local\\Chromium\\Application\\chrome.exe'
+    expected: [ 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe', 'C:\\Program Files\\Chromium\\Application\\chrome.exe', 'C:\\Users\\you\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Users\\you\\AppData\\Local\\Google\\Chrome Beta\\Application\\chrome.exe', 'C:\\Users\\you\\AppData\\Local\\Chromium\\Application\\chrome.exe' ],
 --- restored byte identical
 ================ MUTATION scs-ro (01:21:52)
 --- diff (mutated vs original):
@@ -889,8 +889,8 @@ Expected: not 2814749769155400n
 ✖ flushIfDirty failure keeps the store dirty so a later flush retries (0.9898ms)
 ✖ simulated crash: a failed save leaves the previous file intact (3.1095ms)
 --- why (assertion lines):
-  Error: EISDIR: illegal operation on a directory, open 'C:\Users\karim\AppData\Local\Temp\cursor-crash-GH2FtR\chat-cursors.json.87880.tmp'
-  Error: EEXIST: file already exists, mkdir 'C:\Users\karim\AppData\Local\Temp\cursor-retry-enxBmS\state'
+  Error: EISDIR: illegal operation on a directory, open 'C:\Users\you\AppData\Local\Temp\cursor-crash-GH2FtR\chat-cursors.json.87880.tmp'
+  Error: EEXIST: file already exists, mkdir 'C:\Users\you\AppData\Local\Temp\cursor-retry-enxBmS\state'
 --- restored byte identical
 ================ MUTATION cs-dirty (01:23:17)
 --- diff (mutated vs original):
@@ -1009,7 +1009,7 @@ Expected: not 2814749769155400n
     expected: true,
   AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
     expected: true,
-  Error: EPERM: operation not permitted, symlink 'C:\Users\karim\AppData\Local\Temp\bgos-outside-TwOzdE\loot.md' -> 'C:\Users\karim\AppData\Local\Temp\bgos-export-pack-rIqo9f\.claude\rules\evil.md'
+  Error: EPERM: operation not permitted, symlink 'C:\Users\you\AppData\Local\Temp\bgos-outside-TwOzdE\loot.md' -> 'C:\Users\you\AppData\Local\Temp\bgos-export-pack-rIqo9f\.claude\rules\evil.md'
 --- restored byte identical
 ================ LINUX MUTATION ep-nosep (01:25:09)
 --- diff (mutated vs original):
@@ -1291,7 +1291,7 @@ Expected: not 2814749769155400n
 ✖ real fs: an on-disk symlink escaping the workspace blocks the export (6.2221ms)
 --- why (assertion lines):
 ✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.0953ms)
-  Error: EPERM: operation not permitted, symlink 'C:\Users\karim\AppData\Local\Temp\bgos-outside-Lm2VW9\loot.md' -> 'C:\Users\karim\AppData\Local\Temp\bgos-export-pack-Isq5bJ\.claude\rules\evil.md'
+  Error: EPERM: operation not permitted, symlink 'C:\Users\you\AppData\Local\Temp\bgos-outside-Lm2VW9\loot.md' -> 'C:\Users\you\AppData\Local\Temp\bgos-export-pack-Isq5bJ\.claude\rules\evil.md'
 --- restored byte identical
 ================ MUTATION acl-nolock (01:29:08)
 --- diff (mutated vs original):
@@ -1326,7 +1326,7 @@ Expected: not 2814749769155400n
   - [
   -   {
   -     args: [
-  -       'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-claim-acl-B1SCEb\\.mcp.json',
+  -       'C:\\Users\\you\\AppData\\Local\\Temp\\bgos-claim-acl-B1SCEb\\.mcp.json',
   -       '/inheritance:r',
   -       '/grant:r',
   -       'karim:F'
@@ -1563,7 +1563,7 @@ Expected: not 2814749769155400n
 ✖ failing tests:
 ✖ on this machine the resolved bash is a real POSIX bash that can open this checkout (254.9772ms)
 --- why (assertion lines):
-  AssertionError [ERR_ASSERTION]: this bash cannot parse a file at this path form, so a parse result would mean nothing: 127 /bin/bash: C:/Users/karim/AppData/Local/Temp/hoai-bash-ctl-ByCpEc/broken.sh: No such file or directory
+  AssertionError [ERR_ASSERTION]: this bash cannot parse a file at this path form, so a parse result would mean nothing: 127 /bin/bash: C:/Users/you/AppData/Local/Temp/hoai-bash-ctl-ByCpEc/broken.sh: No such file or directory
     expected: 2,
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
@@ -2658,9 +2658,9 @@ Expected: not 2814749769155400n
 --- why (assertion lines):
   AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
   + actual - expected
-  + 'C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-changes-5GVwXq\\repo'
-  - 'C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-changes-5GVwXq\\other'
-    expected: 'C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-changes-5GVwXq\\other',
+  + 'C:\\Users\\you\\AppData\\Local\\Temp\\hoai-changes-5GVwXq\\repo'
+  - 'C:\\Users\\you\\AppData\\Local\\Temp\\hoai-changes-5GVwXq\\other'
+    expected: 'C:\\Users\\you\\AppData\\Local\\Temp\\hoai-changes-5GVwXq\\other',
 --- restored byte identical
 ================ MUTATION e2e-profile (03:17:43) [real Chrome visible: run-one-chrome.cmd]
 --- diff (mutated vs original):

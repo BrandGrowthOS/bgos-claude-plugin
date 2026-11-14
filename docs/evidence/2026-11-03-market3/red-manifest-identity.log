@@ -16,7 +16,7 @@ test at test/marketplace-attach.e2e.test.ts:2:7761
 ✖ market3 launcher: manifest agent 42 overrides legacy 41 without losing reply (612.62ms)
   AssertionError [ERR_ASSERTION]: [bgos] marketplace dormant: this session is outside its agent home or explicit attach scope.
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:323:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:323:12)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {

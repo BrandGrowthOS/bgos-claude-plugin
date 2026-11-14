@@ -17,7 +17,7 @@ test at test/message-edits.test.ts:4:14656
 
     assert.ok(h.run.notifications[0]!.content.includes('latest meeting words'))
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:579:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:579:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,

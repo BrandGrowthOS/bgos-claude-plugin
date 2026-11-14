@@ -27,8 +27,8 @@ exit=1
 test at test/catch-up-paging.test.ts:1:10761
 ✖ the cursor advance survives a read larger than a spread can carry (47.258912ms)
   RangeError [Error]: Maximum call stack size exceeded
-      at advanceCursor (/home/karim/lane-tmp/d041/mut/m21-spread-back.0ak5ljsl/lib/poll-core.ts:361:45)
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m21-spread-back.0ak5ljsl/test/catch-up-paging.test.ts:332:16)
+      at advanceCursor (/home/you/lane-tmp/d041/mut/m21-spread-back.0ak5ljsl/lib/poll-core.ts:361:45)
+      at TestContext.<anonymous> (/home/you/lane-tmp/d041/mut/m21-spread-back.0ak5ljsl/test/catch-up-paging.test.ts:332:16)
       at Test.runInAsyncScope (node:async_hooks:227:14)
       at Test.run (node:internal/test_runner/test:1402:25)
       at Test.start (node:internal/test_runner/test:1262:17)

@@ -21,7 +21,7 @@ test at test/marketplace-attach.test.ts:30:1
 
   '' !== '41'
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:35:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.test.ts:35:12)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)

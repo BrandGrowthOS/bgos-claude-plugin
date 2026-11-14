@@ -860,7 +860,7 @@ export const DEFAULT_AGENT_FOLDER_NAME = 'my-agent'
 /**
  * A path reduced to a comparable form: forward slashes, no repeated or trailing
  * separators, folded to lower case on win32 (where the filesystem is case
- * insensitive, so C:\Users\Kc and c:\users\kc are one folder). A leading UNC
+ * insensitive, so C:\Users\You and c:\users\you are one folder). A leading UNC
  * '//' survives the collapse, because it is what makes '//server/share' a root
  * rather than a folder called share.
  */
