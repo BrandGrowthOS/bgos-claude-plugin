@@ -619,6 +619,26 @@ export function buildPlanCardBody(input: {
  * in one chat, which is exactly what the retire-first ordering exists to
  * prevent.
  */
+/**
+ * MAY THIS AGENT RETIRE THE CARD `supersedes` NAMES? Only its own: the open plan this daemon holds, or a message the
+ * server answered as this agent's own create (lib/own-messages.ts). `supersedes` comes from the model and the retire
+ * PATCHes it with the owner's credential, which the backend admits for any row the owner may edit, so any other id
+ * would strip the buttons off another agent's open question or approval card, or off the owner's own row.
+ */
+export function planSupersedesAdmitted(
+  supersedes: number,
+  openPlanMessageId: unknown,
+  isOwnMessage: (id: number) => boolean,
+): boolean {
+  if (openPlanMessageId != null && Number(openPlanMessageId) === supersedes) return true
+  return isOwnMessage(supersedes)
+}
+
+/** The refusal for a `supersedes` that is not this agent's own card. One line; no plan is posted. */
+export function planSupersedesRefusal(supersedes: number): string {
+  return `Error: supersedes must be the message id of a plan card this agent posted, and message ${supersedes} is not one of them, so no plan was posted`
+}
+
 export function buildPlanRetireBody(): Record<string, unknown> {
   return { options: [] }
 }

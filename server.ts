@@ -617,6 +617,8 @@ import {
   buildPlanCardBody,
   buildPlanCardPayload,
   buildPlanRetireBody,
+  planSupersedesAdmitted,
+  planSupersedesRefusal,
   buildPlanSupersedeBody,
   describePlanClick,
   isPlanCardPayload,
@@ -7358,6 +7360,18 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       // rebuilt, so the fallback strips the chips and nothing else
       // (buildPlanRetireBody): the old card stops being answerable, which is
       // the half that matters, and loses only its explanation.
+      // ONLY THIS AGENT'S OWN CARD. `supersedes` comes from the model, and the
+      // retire below PATCHes it with the owner's credential, which the backend
+      // admits for any row the owner may edit: another agent's open question
+      // or approval card would lose its buttons, and so would the owner's own
+      // row. Refused before the retire and before the post, like a failed
+      // retire (lib/plan-card.ts, planSupersedesAdmitted).
+      if (
+        payload.supersedes !== undefined &&
+        !planSupersedesAdmitted(payload.supersedes, openPlan?.messageId, (id) => ownMessages.has(id))
+      ) {
+        return { content: [{ type: 'text', text: planSupersedesRefusal(payload.supersedes) }], isError: true }
+      }
       if (payload.supersedes !== undefined) {
         const retireBody =
           openPlan?.messageId === payload.supersedes
