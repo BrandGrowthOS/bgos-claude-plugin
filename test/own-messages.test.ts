@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -123,14 +123,14 @@ test('a write that fails never throws: the id is still known in memory, and the 
   const s = scratch()
   const lines: string[] = []
   try {
-    mkdirSync(join(s.dir, 'ro'), { recursive: true })
-    chmodSync(join(s.dir, 'ro'), 0o500)
-    const own = new OwnMessages({ filePath: join(s.dir, 'ro', 'deep', OWN_MESSAGES_FILE_NAME), assistantId: AGENT, log: (l) => lines.push(l) })
+    // A plain file where the record's folder must go: creating the folder fails on every OS, and for root too.
+    // A read only folder (chmod 0o500) did not: Windows ignores a folder's mode bits, so the write went through there.
+    writeFileSync(join(s.dir, 'blocked'), 'a file, not a folder')
+    const own = new OwnMessages({ filePath: join(s.dir, 'blocked', 'deep', OWN_MESSAGES_FILE_NAME), assistantId: AGENT, log: (l) => lines.push(l) })
     assert.equal(own.note(replyAnswer(61)), 61)
     assert.equal(own.has(61), true)
-    if (process.getuid?.() !== 0) assert.equal(lines.length, 1, 'one log line for the failed write')
+    assert.equal(lines.length, 1, 'one log line for the failed write')
   } finally {
-    chmodSync(join(s.dir, 'ro'), 0o700)
     s.done()
   }
 })
