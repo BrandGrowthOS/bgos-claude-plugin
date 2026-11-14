@@ -63,7 +63,8 @@ test('all admitted message lanes use opaque private delivery identity and author
   // What begin() decided is logged for every prompt that carried a token, and a refused call names the failed check.
   // A replayed fire is said once, by its own line (onReplay), not also by the begin line.
   assert.match(source, /if \(began !== 'repeat' && began !== 'replayed' && \(began !== 'no-token' \|\| matched !== null\)\) log\(privateBeginLine\(began, hookSessionId\)\)/)
-  assert.match(source, /onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}/)
+  // Since the quiet turn (2026-11-11) a revoke also lets go of what the quiet turn hold kept outside that turn (lib/quiet-turn.mjs).
+  assert.match(source, /onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\); quietTurns\.recheck\(\) \}/)
   assert.match(source, /if \(lockHeld\) log\(`private turn: refused \$\{req\.params\.name\}: \$\{privateTurns\.explain\(\{ markerPaths: PRIVATE_MARKER_PATHS \}\)\}`\)/)
   // The turn ends where the rail's turn ends: a Stop's turn_end reaches endHookTurn, which closes the private turn.
   assert.match(source, /function endHookTurn\(keepCard: boolean\): void \{[\s\S]*?privateTurns\.end\(\)[\s\S]*?\n\}/)
@@ -72,7 +73,7 @@ test('all admitted message lanes use opaque private delivery identity and author
   // A second record of the same prompt keeps the turn and is logged (test/private-turn-duplicate-boundary.test.ts).
   // The fires this agent opened a turn for persist in its own state folder (0.68.4): a replay after a restart opens none.
   assert.match(source, /const privateFires = createFireLedger\(\{ path: privateFiresPath\(FLOOR_STATE_ROOT, ASSISTANT_ID\) \}\)/)
-  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}, onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\), onReplay: \(replay\) => log\(privateReplayLine\(replay\)\), onUnrecorded: \(info\) => log\(privateUnrecordedLine\(info\)\), onEnded: \(info\) => log\(privateEndedLine\(info\)\) \}\)/)
+  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\); quietTurns\.recheck\(\) \}, onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\), onReplay: \(replay\) => log\(privateReplayLine\(replay\)\), onUnrecorded: \(info\) => log\(privateUnrecordedLine\(info\)\), onEnded: \(info\) => log\(privateEndedLine\(info\)\), voiceCardsUntrusted: \(\) => serverQuiet\.on\(\) \}\)/)
   // A prompt that ends an open private turn is logged (c09e214e); a card's meta reaches rawCard, which carries the
   // owner's tap, a peer conversation close and a reply reminder through a prompt of the owner's turn.
   assert.match(source, /privateTurns\.rawCard\(String\(params\?\.content \?\? ''\), params\?\.meta\)/)
