@@ -217,7 +217,7 @@ function pairFetch() {
   return async (input: string | URL | Request) => {
     const url = String(input)
     if (url.endsWith('/integrations/pair-exchange')) {
-      return Response.json({ pairing_token: 'fresh_token', pairing_id: 284, user_id: 'user_kc' }, { status: 201 })
+      return Response.json({ pairing_token: 'fresh_token', pairing_id: 284, user_id: 'user_owner' }, { status: 201 })
     }
     if (url.endsWith('/integrations/me')) {
       return Response.json({ assistants: [{ assistant_id: 1175, agent_route: 'claude', name: 'Helper Test Mac' }] })

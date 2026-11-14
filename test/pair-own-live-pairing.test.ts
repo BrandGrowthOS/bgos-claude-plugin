@@ -68,7 +68,7 @@ function backend(opts: { liveIds?: number[], refusalAgent?: number, ownTokenAnsw
       if ((!revoked || opts.refuseForever) && liveIds.length > 0) {
         return Response.json(refusal(liveIds, opts.refusalAgent ?? 1175), { status: 409 })
       }
-      return Response.json({ pairing_token: 'second_token', pairing_id: 284, user_id: 'user_kc' }, { status: 201 })
+      return Response.json({ pairing_token: 'second_token', pairing_id: 284, user_id: 'user_owner' }, { status: 201 })
     }
     if (url === `${API}/integrations/me`) {
       if (pairing === 'first_token') {
@@ -97,7 +97,7 @@ async function homeWithFirstAttempt(opts: { assistantId?: number, backendUrl?: s
     backendUrl: opts.backendUrl ?? API,
     pairingToken: 'first_token',
     pairingId: 283,
-    userId: 'user_kc',
+    userId: 'user_owner',
     assistantId,
     pairedAt: new Date(Date.now() - 60_000).toISOString(),
   })
@@ -288,7 +288,7 @@ test('C, finding 7: readOwnPairing never returns a file that names another agent
   const home = await mkdtemp(join(tmpdir(), 'oldconnect-c7-'))
   try {
     const creds = (assistantId: number, pairingId: number) => ({
-      backendUrl: API, pairingToken: `tok_${pairingId}`, pairingId, userId: 'user_kc', assistantId, pairedAt: new Date().toISOString(),
+      backendUrl: API, pairingToken: `tok_${pairingId}`, pairingId, userId: 'user_owner', assistantId, pairedAt: new Date().toISOString(),
     })
     await writeCredentialsFile(join(home, '.bgos-agent', 'credentials.json'), creds(900, 38))
     assert.equal(readOwnPairing({ home, assistantId: '1175', apiBase: API }), null)

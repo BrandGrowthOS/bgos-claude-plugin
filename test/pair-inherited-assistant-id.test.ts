@@ -45,7 +45,7 @@ function backend(codeTarget = 1175) {
           { status: 409 },
         )
       }
-      return Response.json({ pairing_token: 'tok_1175', pairing_id: 283, user_id: 'user_kc' }, { status: 201 })
+      return Response.json({ pairing_token: 'tok_1175', pairing_id: 283, user_id: 'user_owner' }, { status: 201 })
     }
     if (url.endsWith('/integrations/me')) {
       return Response.json({ assistants: [{ assistant_id: codeTarget, agent_route: 'claude', name: 'Helper Test Mac' }] })
@@ -65,7 +65,7 @@ async function macHome() {
       backendUrl: `${BACKEND}/api/v1`,
       pairingToken: `tok_${id}`,
       pairingId: id,
-      userId: 'user_kc',
+      userId: 'user_owner',
       assistantId: id,
       pairedAt: new Date().toISOString(),
     })
