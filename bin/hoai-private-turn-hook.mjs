@@ -101,7 +101,7 @@ function closeMarkers(paths, sessionId, { hold = false } = {}) {
         for (const key of HELD_TURN_KEYS) if (marker[key] !== undefined) held[key] = marker[key]
         held.staleTurn = sessionId
       }
-      const closed = { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false, ...held }
+      const closed = { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false, ...held, writtenAt: Date.now() }
       writePrivateJson(path, closed)
       keepOwnCopy(path, sessionId, closed)
     } catch {
@@ -188,6 +188,10 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
     ...(promptId ? { promptId } : {}),
     ...record,
     ...(ended ? { ended } : {}),
+    // When this marker was written, on the clock the daemon's own moments are on: the daemon orders the marker by it,
+    // never by the file's modification time, which a file clock ahead of the real one moves (lib/private-turn.mjs
+    // privateMarkerWrittenAt, board row 495d73c1). Taken last, right before the write.
+    writtenAt: Date.now(),
   }
   writePrivateJson(path, marker)
   if (event === 'SessionEnd') {
@@ -334,7 +338,7 @@ export async function main() {
 }
 // REAL paths on both sides: node resolves the module URL through symlinks but
 // leaves argv[1] as the caller wrote it, so a launch through an aliased home
-// (/Users/fitecho is /Users/bgos) skipped main() silently (board bbbf3438).
+// (/Users/you-link is /Users/you) skipped main() silently (board bbbf3438).
 function isRunAsMain(argv1 = process.argv[1], moduleUrl = import.meta.url) {
   if (typeof argv1 !== 'string' || !argv1) return false
   try {

@@ -656,7 +656,7 @@ const escapeForRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]
  * home directory becomes `~`.
  *
  * A Bash row ships the command itself, so without this the owner's row reads
- * `cat /home/karim/.bgos-agent/credentials-901.json` and the machine layout
+ * `cat /home/you/.bgos-agent/credentials-901.json` and the machine layout
  * (and the account name) is on the wire. Runs BEFORE the redaction and the 120
  * character clip, so a shortened path is what gets measured.
  */

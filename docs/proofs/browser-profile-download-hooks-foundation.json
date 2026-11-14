@@ -750,7 +750,7 @@
   },
   "excludedDiagnostics": [
     "An initial copied Runtime-manager omission left a dangling comma and produced a parse error. It is excluded; the final valid empty-spread mutation produced a direct assertion failure and all twenty-six final drills passed.",
-    "An initial Docker default-seccomp run refused before native startup; a second attempted seccomp path under /tmp was invisible to the Docker client namespace. Both are excluded and positively cleaned. The actual normal case and slow failure use the established qualified profile under an owned /home/karim directory with drop ALL/add SYS_CHROOT and no sandbox-disable flag.",
+    "An initial Docker default-seccomp run refused before native startup; a second attempted seccomp path under /tmp was invisible to the Docker client namespace. Both are excluded and positively cleaned. The actual normal case and slow failure use the established qualified profile under an owned /home/you directory with drop ALL/add SYS_CHROOT and no sandbox-disable flag.",
     "Initial synthetic TypeScript fixture shapes were corrected without changing product authorization."
   ],
   "scope": {

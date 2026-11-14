@@ -7,14 +7,14 @@
 | 5 | `cred-legacy` | Windows | `lib/agent-credentials.ts` | yes (1) | selection: fresh single-agent host (one per-assistant + legacy) does NOT regress: ok/legac: Expected values to be strictly deep-equal: |
 | 6 | `cred-folderpin` | Windows | `lib/agent-credentials.ts` | yes (3) | a folder pin makes the same host safe, and silent: Expected values to be strictly deep-equal: |
 | 7 | `pair-pathline` | Windows | `bin/bgos-pair.mjs` | yes (2) | main: a pairing whose agent is not bound YET still puts hoai on PATH: the PATH line names the bin dir it installed into; got: |
-| 8 | `pair-mkdirp` | Windows | `bin/bgos-pair.mjs` | yes (2) | main refuses a home-directory pairing BEFORE the code is spent, with the lines that fix it: The input did not match the regular expression /^ {2}mkdir -p \/home\/kc\/hoai-agents\/my-agent$/m.  |
-| 9 | `pair-cd` | Windows | `bin/bgos-pair.mjs` | yes (2) | main refuses a home-directory pairing BEFORE the code is spent, with the lines that fix it: The input did not match the regular expression /^ {2}cd C:\\Users\\kc\\hoai-agents\\my-agent$/m. Inp |
+| 8 | `pair-mkdirp` | Windows | `bin/bgos-pair.mjs` | yes (2) | main refuses a home-directory pairing BEFORE the code is spent, with the lines that fix it: The input did not match the regular expression /^ {2}mkdir -p \/home\/you\/hoai-agents\/my-agent$/m.  |
+| 9 | `pair-cd` | Windows | `bin/bgos-pair.mjs` | yes (2) | main refuses a home-directory pairing BEFORE the code is spent, with the lines that fix it: The input did not match the regular expression /^ {2}cd C:\\Users\\you\\hoai-agents\\my-agent$/m. Inp |
 | 10 | `claim-contain` | Windows | `bin/bgos-claim.mjs` | yes (2) | MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk: Expected values to be strictly equal: |
 | 11 | `claim-return` | Windows | `bin/bgos-claim.mjs` | yes (3) | MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk: Expected values to be strictly equal: |
 | 12 | `voice-join` | Windows | `lib/voice-rpc.ts` | yes (1) | loadVoiceMemory concatenates the agent home memory files, capped: The expression evaluated to a falsy value: |
 | 13 | `voice-sep` | Windows | `lib/voice-rpc.ts` | yes (1) | loadVoiceMemory concatenates the agent home memory files, capped: The expression evaluated to a falsy value: |
 | 14 | `wrap-argv` | Windows | `bin/bgos-daemon-wrapper.mjs` | yes (1) | daemon spawn uses fixed bun argv without a shell: Expected values to be strictly deep-equal: |
-| 15 | `wrap-chmod` | Windows | `bin/bgos-daemon-wrapper.mjs` | yes (1) | stable wrapper installation is atomic and executable outside checkout: EPERM: operation not permitted, rename 'C:\Users\karim\AppData\Local\Temp\bgos-wrapper-install-4EQYe |
+| 15 | `wrap-chmod` | Windows | `bin/bgos-daemon-wrapper.mjs` | yes (1) | stable wrapper installation is atomic and executable outside checkout: EPERM: operation not permitted, rename 'C:\Users\you\AppData\Local\Temp\bgos-wrapper-install-4EQYe |
 | 16 | `wrap-inplace` | Windows | `bin/bgos-daemon-wrapper.mjs` | yes (1) | stable wrapper installation is atomic and executable outside checkout: replaced by rename, not rewritten in place |
 | 17 | `chrome-hostflavor` | Windows | `bin/hoai-browser-host.mjs` | yes (2) | resolveChromeExecutable: an installed browser is found, none is said plainly, and nothing : Expected values to be strictly equal: |
 | 18 | `chrome-hostflavor` | Linux | `bin/hoai-browser-host.mjs` | yes (1) | resolveChromeExecutable: an installed browser is found, none is said plainly, and nothing : Expected values to be strictly deep-equal: |
@@ -26,7 +26,7 @@
 | 24 | `su-644` | Linux | `lib/self-update.ts` | yes (1) | durable state and shared lock > state lives next to daemon state and round trips atomicall:  |
 | 25 | `su-inplace` | Windows | `lib/self-update.ts` | yes (1) | durable state and shared lock > state lives next to daemon state and round trips atomicall:  |
 | 26 | `cs-nonatomic` | Windows | `lib/cursor-store.ts` | yes (1) | simulated crash: a failed save leaves the previous file intact: save must report failure, not throw |
-| 27 | `cs-nocatch` | Windows | `lib/cursor-store.ts` | yes (2) | flushIfDirty failure keeps the store dirty so a later flush retries: EISDIR: illegal operation on a directory, open 'C:\Users\karim\AppData\Local\Temp\cursor-crash-GH2Ft |
+| 27 | `cs-nocatch` | Windows | `lib/cursor-store.ts` | yes (2) | flushIfDirty failure keeps the store dirty so a later flush retries: EISDIR: illegal operation on a directory, open 'C:\Users\you\AppData\Local\Temp\cursor-crash-GH2Ft |
 | 28 | `cs-dirty` | Windows | `lib/cursor-store.ts` | yes (1) | flushIfDirty failure keeps the store dirty so a later flush retries: failed flush must not clear the dirty flag |
 | 29 | `cs-dirty` | Linux | `lib/cursor-store.ts` | yes (1) | flushIfDirty failure keeps the store dirty so a later flush retries: failed flush must not clear the dirty flag |
 | 30 | `ep-slash` | Linux | `lib/export-pack.ts` | yes (3) | a Windows host: a workspace at a drive root (E:\) still packages: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace r |
@@ -38,7 +38,7 @@
 | 36 | `ep-alwaysin` | Windows | `lib/export-pack.ts` | yes (5) | a Windows host: a sibling folder that only starts with the root name, or another drive, is: Expected values to be strictly equal: |
 | 37 | `ep-alwaysin` | Linux | `lib/export-pack.ts` | yes (6) | a Windows host: a sibling folder that only starts with the root name, or another drive, is: Expected values to be strictly equal: |
 | 38 | `ep-junction-posctl` | Windows | `lib/export-pack.ts` | yes (5) | a Windows host: a workspace at a drive root (E:\) still packages: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace r |
-| 39 | `ep-noskip` | Windows | `test/export-pack.test.ts` | yes (1) | real fs: an on-disk symlink escaping the workspace blocks the export: EPERM: operation not permitted, symlink 'C:\Users\karim\AppData\Local\Temp\bgos-outside-Lm2VW9\loot. |
+| 39 | `ep-noskip` | Windows | `test/export-pack.test.ts` | yes (1) | real fs: an on-disk symlink escaping the workspace blocks the export: EPERM: operation not permitted, symlink 'C:\Users\you\AppData\Local\Temp\bgos-outside-Lm2VW9\loot. |
 | 40 | `acl-nolock` | Windows | `bin/bgos-claim.mjs` | yes (3) | MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk: {"platform":"win32","aclApplied":null} |
 | 41 | `acl-nolock` | Linux | `bin/bgos-claim.mjs` | yes (2) | a Windows lock that fails says UNPROTECTED, never chmod 600: Expected values to be strictly deep-equal: |
 | 42 | `acl-noinherit` | Windows | `bin/bgos-pair.mjs` | yes (2) | MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk: no inherited access may survive on the file holding the API key: |

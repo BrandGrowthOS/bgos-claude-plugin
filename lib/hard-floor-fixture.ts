@@ -488,7 +488,7 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
   },
   {
     name: "home_env_is_env_first",
-    input: { kind: "path", path: "/home/user/.env" },
+    input: { kind: "path", path: "/home/you/.env" },
     ruleId: "env_file_write",
     ruleIds: ["env_file_write", "home_dotfile_write"],
   },
@@ -499,32 +499,32 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
   },
   {
     name: "home_ssh_config_linux",
-    input: { kind: "path", path: "/home/user/.ssh/config" },
+    input: { kind: "path", path: "/home/you/.ssh/config" },
     ruleId: "home_dotfile_write",
   },
   {
     name: "home_gitconfig_windows",
-    input: { kind: "path", path: "C:\\Users\\user\\.gitconfig" },
+    input: { kind: "path", path: "C:\\Users\\you\\.gitconfig" },
     ruleId: "home_dotfile_write",
   },
   {
     name: "home_zshrc_macos",
-    input: { kind: "path", path: "/Users/user/.zshrc" },
+    input: { kind: "path", path: "/Users/you/.zshrc" },
     ruleId: "home_dotfile_write",
   },
   {
     name: "home_claude_settings",
-    input: { kind: "path", path: "/home/user/.claude/settings.json" },
+    input: { kind: "path", path: "/home/you/.claude/settings.json" },
     ruleId: "home_dotfile_write",
   },
   {
     name: "home_xdg_config_file_is_too_deep",
-    input: { kind: "path", path: "/home/user/.config/gh/hosts.yml" },
+    input: { kind: "path", path: "/home/you/.config/gh/hosts.yml" },
     ruleId: null,
   },
   {
     name: "home_windows_seen_from_wsl",
-    input: { kind: "path", path: "/mnt/c/Users/user/.gitconfig" },
+    input: { kind: "path", path: "/mnt/c/Users/you/.gitconfig" },
     ruleId: "home_dotfile_write",
   },
   {
@@ -539,19 +539,19 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
   },
   {
     name: "home_project_file",
-    input: { kind: "path", path: "/home/user/projects/app/src/index.ts" },
+    input: { kind: "path", path: "/home/you/projects/app/src/index.ts" },
     ruleId: null,
   },
   {
     name: "home_plain_file",
-    input: { kind: "path", path: "/home/user/notes.txt" },
+    input: { kind: "path", path: "/home/you/notes.txt" },
     ruleId: null,
   },
   {
     name: "home_claude_memory_is_not_settings",
     input: {
       kind: "path",
-      path: "/home/user/.claude/projects/app/memory/MEMORY.md",
+      path: "/home/you/.claude/projects/app/memory/MEMORY.md",
     },
     ruleId: null,
   },
@@ -559,7 +559,7 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     name: "home_agent_workspace_is_not_settings",
     input: {
       kind: "path",
-      path: "/home/user/.bgos-agent/7-workspace/src/app.ts",
+      path: "/home/you/.bgos-agent/7-workspace/src/app.ts",
     },
     ruleId: null,
   },
@@ -880,7 +880,7 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
   },
   {
     name: "home_aws_credentials_macos",
-    input: { kind: "path", path: "/Users/user/.aws/credentials" },
+    input: { kind: "path", path: "/Users/you/.aws/credentials" },
     ruleId: "home_dotfile_write",
   },
   {
@@ -4354,7 +4354,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "ac2e29475ae76dcaca477c54a411bd6dc617df705e4092fed5dac322521d37cd";
+  "fd7f6addf0f0f0ae5bd1388fa092e1c4e1822d4851370e5b0db9e0c14073c437";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =

@@ -16,7 +16,7 @@ not ok 3 - an unsuccessful file and a missing executable fail without waiting fo
   ---
   duration_ms: 35.18075
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:7:772'
+  location: '/Users/you/hoai-work/mbwintest/test/run-tests-timeout.test.ts:7:772'
   failureType: 'testCodeFailure'
   error: "The argument 'args[0]' must be a string without null bytes. Received 'bad\\x00name'"
   code: 'ERR_INVALID_ARG_VALUE'
@@ -26,10 +26,10 @@ not ok 3 - an unsuccessful file and a missing executable fail without waiting fo
     validateArgumentsNullCheck (node:child_process:1033:5)
     normalizeSpawnArguments (node:child_process:602:3)
     spawn (node:child_process:806:13)
-    file:///Users/kc/hoai-work/mbwintest/scripts/run-test-files.mjs:137:19
+    file:///Users/you/hoai-work/mbwintest/scripts/run-test-files.mjs:137:19
     new Promise (<anonymous>)
-    Module.runTestFile (file:///Users/kc/hoai-work/mbwintest/scripts/run-test-files.mjs:129:10)
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:81:34)
+    Module.runTestFile (file:///Users/you/hoai-work/mbwintest/scripts/run-test-files.mjs:129:10)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/run-tests-timeout.test.ts:81:34)
     process.processTicksAndRejections (node:internal/process/task_queues:104:5)
     async Test.run (node:internal/test_runner/test:1409:7)
   ...
@@ -56,7 +56,7 @@ not ok 7 - a run reports each file whole, then its failures by name and its tota
   ---
   duration_ms: 142.83775
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:16:549'
+  location: '/Users/you/hoai-work/mbwintest/test/run-tests-timeout.test.ts:16:549'
   failureType: 'testCodeFailure'
   error: |-
     The input did not match the regular expression /^\[run-tests\] START good\.test\.cjs\n$/. Input:
@@ -117,7 +117,7 @@ not ok 7 - a run reports each file whole, then its failures by name and its tota
     
   operator: 'match'
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:184:12)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/run-tests-timeout.test.ts:184:12)
     async Test.run (node:internal/test_runner/test:1409:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
   ...
@@ -132,7 +132,7 @@ not ok 9 - no test asks for longer than the file deadline, or its hang could not
   ---
   duration_ms: 105.347542
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:16:2548'
+  location: '/Users/you/hoai-work/mbwintest/test/run-tests-timeout.test.ts:16:2548'
   failureType: 'testCodeFailure'
   error: |-
     Expected values to be strictly deep-equal:
@@ -150,7 +150,7 @@ not ok 9 - no test asks for longer than the file deadline, or its hang could not
     0: 'hoai-browser-host.downloads.chromium.test.ts: 300_000'
   operator: 'deepStrictEqual'
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:224:10)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/run-tests-timeout.test.ts:224:10)
     Test.runInAsyncScope (node:async_hooks:227:14)
     Test.run (node:internal/test_runner/test:1402:25)
     Test.processPendingSubtests (node:internal/test_runner/test:974:18)

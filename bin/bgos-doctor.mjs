@@ -50,7 +50,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 import { resolveBunPath, bunInstallHint, executableNames, pathFlavor } from './bgos-launch.mjs'
@@ -73,6 +73,7 @@ import {
   FOLDER_PIN_FILE_NAME,
   launchFolderLiveSafe,
   perAssistantCredentialsPath,
+  PLUGIN_VERSION as DOCTOR_PLUGIN_VERSION,
 } from './bgos-pair.mjs'
 
 export const DEFAULT_BACKEND_URL = 'https://api.brandgrowthos.ai/api/v1'
@@ -335,7 +336,7 @@ function joinPreservingStyle(dir, name) {
  *   credentials: { path?: string, exists: boolean, assistantId?: string | number, expectedAssistantId?: string,
  *                  homeDir?: string, homeSource?: string, workdir?: string, workdirRefused?: boolean,
  *                  identity?: string, conflict?: string, refusal?: { detail: string, fix: string } },
- *   handshake: { ok: boolean, detail?: string, command?: string } | null,
+ *   handshake: { ok: boolean, detail?: string, command?: string, fix?: string } | null,
  *   mcpList: { ok: boolean, state?: string, raw?: string } | null,
  *   backend: { ok: boolean, status?: number, url: string, error?: string },
  *   logPath: string,
@@ -697,7 +698,9 @@ export function buildDoctorRows(probes) {
       'MCP handshake (initialize)',
       false,
       handshake.detail ?? 'no initialize response',
-      `${command ? `${command}; then ` : ''}run hoai doctor again after fixing the row above`,
+      typeof handshake.fix === 'string' && handshake.fix
+        ? handshake.fix
+        : `${command ? `${command}; then ` : ''}run hoai doctor again after fixing the row above`,
     )
   }
 
@@ -1967,14 +1970,79 @@ export function probeCredentials({
   return result
 }
 
+/** The two commands that bring a marketplace install of hoai up to date. */
+const PLUGIN_UPDATE_COMMANDS = 'claude plugin marketplace update hoai && claude plugin update hoai@hoai'
+
+/**
+ * The handshake answer when the launch shim does not exist: the plugin root it
+ * was looked for in, that root's own version when its package.json says, and
+ * the update as the fix. The doctor's Node.js row is the version check; this
+ * is not one.
+ * @param {string} shim  absolute path of the missing bin/bgos-launch.mjs
+ * @param {(path: string) => string | null} readText
+ * @returns {{ ok: false, detail: string, fix: string }}
+ */
+export function missingLaunchShim(shim, readText = defaultReadText) {
+  const root = dirname(dirname(shim))
+  let version = ''
+  try {
+    const declared = JSON.parse(String(readText(join(root, 'package.json')) ?? ''))?.version
+    if (typeof declared === 'string' && declared.trim()) version = declared.trim()
+  } catch {
+    version = ''
+  }
+  const which = version ? `hoai ${version}` : 'the installed hoai plugin'
+  return {
+    ok: false,
+    detail:
+      `${which} at ${root} has no bin/bgos-launch.mjs, so it cannot start: it is older than this doctor ` +
+      `(${DOCTOR_PLUGIN_VERSION || 'unknown'}). This is not a Node.js problem; the Node.js row is the version check.`,
+    fix: `update the installed plugin: ${PLUGIN_UPDATE_COMMANDS}, then run hoai doctor again`,
+  }
+}
+
+/**
+ * The stderr a crashed server left, as one line for the row: node's own
+ * `Node.js vX.Y.Z` trailer (printed after every uncaught error) dropped, and
+ * the LAST `Error: ...` line kept when there is one, because the last three
+ * lines of a node crash are its stack and that trailer, never the reason.
+ * A line the server wrote AFTER that error (its own exit reason) is kept too,
+ * so a harmless error logged early never hides why it exited; node's stack
+ * frames and the error object it prints are not such lines (Data's review of
+ * bcfd4699, finding 4).
+ * @param {string} text
+ * @returns {string}
+ */
+export function meaningfulStderr(text) {
+  const lines = String(text ?? '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !/^Node\.js v\d+\.\d+\.\d+$/.test(l))
+  if (lines.length === 0) return ''
+  const isError = (l) => /^(?:[A-Za-z]*Error|error)(?: \[[A-Z_]+\])?:/.test(l)
+  // A stack frame, a bracket or caret line, or a field of the printed error object.
+  const isNodeNoise = (l) => /^at\s/.test(l) || /^[{}()[\]^,;]+$/.test(l) || /^[a-z][A-Za-z_]*: /.test(l)
+  let at = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (isError(lines[i])) {
+      at = i
+      break
+    }
+  }
+  if (at < 0) return lines.slice(-3).join(' | ')
+  const after = lines.slice(at + 1).filter((l) => !isError(l) && !isNodeNoise(l))
+  return after.length > 0 ? `${lines[at]} | ${after[after.length - 1]}` : lines[at]
+}
+
 /**
  * The real thing: spawn the server through the launch shim, speak MCP over
  * its stdio, and require an initialize result carrying serverInfo within
  * timeoutMs. The child is always killed afterwards. The exact command tried
  * rides back in `command` so the fix line can name it.
  * @param {{ launchArgv: string[], env?: Record<string, string | undefined>, cwd?: string,
- *           timeoutMs?: number, spawnImpl?: typeof spawn, nodePath?: string }} opts
- * @returns {Promise<{ ok: boolean, detail: string, command: string }>}
+ *           timeoutMs?: number, spawnImpl?: typeof spawn, nodePath?: string,
+ *           exists?: (path: string) => boolean, readText?: (path: string) => string | null }} opts
+ * @returns {Promise<{ ok: boolean, detail: string, command: string, fix?: string }>}
  */
 export function probeHandshake({
   launchArgv,
@@ -1983,17 +2051,27 @@ export function probeHandshake({
   timeoutMs = HANDSHAKE_TIMEOUT_MS,
   spawnImpl = spawn,
   nodePath = process.execPath,
+  exists = existsSync,
+  readText = defaultReadText,
 } = {}) {
   const command = [nodePath, ...(launchArgv ?? [])].map(quoteArg).join(' ')
+  // The launch shim first (board row 05893eed, finding B): an installed
+  // plugin older than the shim (0.31.0) has no bin/bgos-launch.mjs, node
+  // exits with "Cannot find module", and its last stderr line is its own
+  // version. On KC's MacBook that read as "the doctor fails on Node 26".
+  // Only an absolute path is checked: that is what main() builds, and the
+  // relative names the fake-spawn tests use are not files.
+  const shim = Array.isArray(launchArgv) ? launchArgv[0] : undefined
+  if (typeof shim === 'string' && isAbsolute(shim) && !exists(shim)) {
+    return Promise.resolve({ ...missingLaunchShim(shim, readText), command })
+  }
   return new Promise((resolve) => {
     let settled = false
     let child = null
     const stderrChunks = []
     const stderrTail = () => {
-      const text = stderrChunks.join('').trim()
-      if (!text) return ''
-      const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
-      return `; stderr: ${lines.slice(-3).join(' | ')}`
+      const line = meaningfulStderr(stderrChunks.join(''))
+      return line ? `; stderr: ${line}` : ''
     }
     const finish = (result) => {
       if (settled) return

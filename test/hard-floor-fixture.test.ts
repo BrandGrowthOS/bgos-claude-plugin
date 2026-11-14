@@ -75,8 +75,13 @@ test('this plugin carries exactly the fixture rule ids and words, in order', () 
  * The digests, as literals, equal to the backend spec's PINNED_FIXTURE_DIGEST
  * and PINNED_RULES_DIGEST. Change these only together with a fixture copied
  * afresh from the backend.
+ *
+ * 0.87.5 (board row a633fb9c): this copy's example paths name /Users/you and
+ * /home/you instead of our own home folders, so these three literals moved
+ * here first. The BGOS backend copy and its spec must take the same bytes and
+ * literals; until then the two repos differ only in those example paths.
  */
-const PINNED_FIXTURE_DIGEST = 'ac2e29475ae76dcaca477c54a411bd6dc617df705e4092fed5dac322521d37cd'
+const PINNED_FIXTURE_DIGEST = 'fd7f6addf0f0f0ae5bd1388fa092e1c4e1822d4851370e5b0db9e0c14073c437'
 const PINNED_CARD_FIXTURE_DIGEST = '854ceb97cc68bbe28be7f87b81e2c4238a87e1dc8942212d7804f52f8ce05bd6'
 const PINNED_RULES_DIGEST = '1129586f99287d66f67a3154eff4614c47d8a5799f057a10f9a766fb379b98c5'
 /**
@@ -85,7 +90,7 @@ const PINNED_RULES_DIGEST = '1129586f99287d66f67a3154eff4614c47d8a5799f057a10f9a
  * above let a comment, a type or the header drift in one copy while both
  * suites stay green; this does not.
  */
-const PINNED_FIXTURE_FILE_SHA256 = 'f1309d8d22d2a4249408b05c6891b1ca61f36ff433746218ae103fcdc67abdbd'
+const PINNED_FIXTURE_FILE_SHA256 = '7c34a11dbe5cd8b58752bbbfd6a1d89b81fc7d78aab60dcc21e23c05c3991ff8'
 
 test('pins the fixture data and the rules against the file AND a literal here (regenerate BOTH repos together)', () => {
   const fixture = sha256(JSON.stringify(HARD_FLOOR_FIXTURE))
