@@ -345,6 +345,7 @@ export const OWN_MCP_TOOLS = [
   // already looking at.
   'propose_plan',
   'edit_message',
+  'react',
   'rename_chat',
   'set_status',
   'ask_user_input',
