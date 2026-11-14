@@ -337,8 +337,17 @@ export function buildClearTypedArgs(t: TmuxTarget, literal: string): string[] {
   return ['tmux', ...t.socketArgs, 'send-keys', '-t', t.target, ...Array.from(literal, () => 'BSpace')]
 }
 
-/** The pane format lib/model-effort-pane.ts parsePaneState reads, tab separated. */
-export const PANE_STATE_FORMAT = '#{pane_id}\t#{pane_tty}\t#{pane_dead}\t#{pane_in_mode}\t#{pane_pid}\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}'
+/**
+ * The separator of PANE_STATE_FORMAT. Never a tab: a tmux client with no UTF-8 locale (an agent
+ * whose tmux a launchd job started has no LANG) prints every character of a display -p answer
+ * outside printable ASCII as `_`, so `%7<tab>/dev/ttys012` came back as `%7_/dev/ttys012` (board row
+ * c502fb7b). A colon is printable, and no field of the format can hold one (a pane id, a /dev path,
+ * digits). The same separator as lib/agent-windows.mjs TMUX_FIELD_SEPARATOR.
+ */
+export const PANE_STATE_SEPARATOR = ':'
+
+/** The pane format lib/model-effort-pane.ts parsePaneState reads, fields joined by PANE_STATE_SEPARATOR. */
+export const PANE_STATE_FORMAT = ['#{pane_id}', '#{pane_tty}', '#{pane_dead}', '#{pane_in_mode}', '#{pane_pid}', '#{cursor_x}', '#{cursor_y}', '#{cursor_flag}'].join(PANE_STATE_SEPARATOR)
 
 /** Read only: the pane's id, terminal, liveness, tmux mode and process. */
 export function buildPaneStateArgs(t: TmuxTarget): string[] {

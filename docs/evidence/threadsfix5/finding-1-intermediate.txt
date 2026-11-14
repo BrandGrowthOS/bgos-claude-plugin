@@ -114,7 +114,7 @@ test at test/thread-lanes.test.ts:6:19366
       '--permission-mode',
       'acceptEdits',
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:622:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbthreads-plugin/test/thread-lanes.test.ts:622:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,

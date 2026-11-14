@@ -1,0 +1,28 @@
+not ok 1 - edit_message no longer names the webhook bridge, and edits through PATCH messages/:id with { text }
+not ok 2 - an edit through the new route sends the new text to PATCH /api/v1/messages/:id and answers Edited
+not ok 3 - the edited text keeps the reply path's backslash protection
+not ok 4 - an id with spaces around it is trimmed, and the path carries the bare id
+not ok 5 - a refused edit (400) answers isError with the server's one line, never Edited
+not ok 6 - a refused edit (401) answers isError with the server's one line, never Edited
+not ok 7 - a refused edit (403) answers isError with the server's one line, never Edited
+not ok 8 - a refused edit (404) answers isError with the server's one line, never Edited
+not ok 9 - a refused edit (500) answers isError with the server's one line, never Edited
+not ok 10 - a message id that is not one ("abc") is refused before any call
+not ok 11 - a message id that is not one ("0") is refused before any call
+not ok 12 - a message id that is not one ("00") is refused before any call
+not ok 13 - a message id that is not one ("0123") is refused before any call
+not ok 14 - a message id that is not one ("-5") is refused before any call
+not ok 15 - a message id that is not one ("12.5") is refused before any call
+not ok 16 - a message id that is not one ("1e3") is refused before any call
+not ok 17 - a message id that is not one ("901; drop") is refused before any call
+not ok 18 - a message id that is not one ("901/pin") is refused before any call
+not ok 19 - a message id that is not one ("../chats/3") is refused before any call
+not ok 20 - a message id that is not one ("1234567890123456789") is refused before any call
+not ok 21 - a message id that is not one ("msg_901") is refused before any call
+not ok 22 - a message id that is not one (" ") is refused before any call
+not ok 23 - a missing message id or text is an error, before any call
+not ok 24 - a numeric message_id (the model sends a number) is edited like its string
+ok 25 - the posted buttons record follows an edit the backend took, and only that
+# tests 25
+# pass 1
+# fail 24

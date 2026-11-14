@@ -1,0 +1,78 @@
+[
+  {
+    "at": "2026-11-14T02:45:15.719Z",
+    "mode": "round1",
+    "step": "before",
+    "owner": {
+      "id": "12",
+      "chatId": "1",
+      "sender": "user",
+      "text": "Please book the large room for the launch review.",
+      "editedAt": null
+    },
+    "sibling": {
+      "id": "13",
+      "chatId": "4",
+      "sender": "assistant",
+      "text": "Kite here: the budget sheet is ready for review.",
+      "editedAt": null
+    }
+  },
+  {
+    "at": "2026-11-14T02:45:26.810Z",
+    "mode": "round1",
+    "step": "tool",
+    "session": "A",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "12",
+      "text": "Never mind, any small room is fine."
+    },
+    "isError": false,
+    "text": "Edited"
+  },
+  {
+    "at": "2026-11-14T02:45:26.814Z",
+    "mode": "round1",
+    "step": "tool",
+    "session": "A",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "13",
+      "text": "Kite here: the budget sheet is cancelled."
+    },
+    "isError": false,
+    "text": "Edited"
+  },
+  {
+    "at": "2026-11-14T02:45:26.850Z",
+    "mode": "round1",
+    "step": "rows",
+    "owner": {
+      "id": "12",
+      "chatId": "1",
+      "sender": "user",
+      "text": "Never mind, any small room is fine.",
+      "editedAt": "2026-11-14T02:45:26.803Z"
+    },
+    "sibling": {
+      "id": "13",
+      "chatId": "4",
+      "sender": "assistant",
+      "text": "Kite here: the budget sheet is cancelled.",
+      "editedAt": "2026-11-14T02:45:26.812Z"
+    }
+  },
+  {
+    "at": "2026-11-14T02:45:33.143Z",
+    "mode": "round1",
+    "step": "screenshot",
+    "file": "round1-1-atlas-chat.png"
+  },
+  {
+    "at": "2026-11-14T02:45:39.417Z",
+    "mode": "round1",
+    "step": "screenshot",
+    "file": "round1-2-kite-chat.png"
+  }
+]

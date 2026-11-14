@@ -1,0 +1,26 @@
+the agent's claude, from the real process table:
+  3616805 3616791 Fri Nov 13 21:55:18 2026 claude --resume 8c1f0000-0000-4000-8000-0000000d0912 --dangerously-load-development-channels server:bgos
+plugin root ~/.claude/plugins/cache/hoai/hoai/0.87.6: bin/bgos-launch.mjs present? false
+
+sweep 1, at the real now (the claude is seconds old, a slow start):
+  heartbeat entry: [{"id":"912","state":"supervised","reason":"canonical","since":"2026-11-13T21:55:20.716Z"}]
+
+sweep 2, six minutes on (past the five minute start grace): a first deaf look, acted on only if it holds (round 2, F1):
+  heartbeat entry: [{"id":"912","state":"supervised","reason":"canonical","since":"2026-11-13T21:55:20.716Z"}]
+
+sweep 3, a minute later (still deaf, one minute into the look):
+  heartbeat entry: [{"id":"912","state":"supervised","reason":"canonical","since":"2026-11-13T21:55:20.716Z"}]
+
+sweep 4, eight minutes on (deaf for two minutes of sweeps: confirmed; its transcript written a minute ago):
+  heartbeat entry: [{"id":"912","state":"supervised","reason":"canonical","since":"2026-11-13T21:55:20.716Z"}]
+  keepalive-state.json record: {"state":"supervised","reason":"canonical"}
+
+sweep 5, nine minutes on (its launcher wrote claude-login-expired 30 s ago):
+  heartbeat entry: [{"id":"912","state":"supervised","reason":"canonical","since":"2026-11-13T21:55:20.716Z"}]
+
+the watcher log:
+  keep-alive: ON (source live, status 200, 1 cleared)
+  keep-alive 912: supervised (canonical)
+
+FAIL: slow start left alone, one deaf look not acted on, the deaf channel confirmed and restarted once through its service, reported not fixed with the missing file named, then the launcher's login verdict reported with no restart
+exit 1

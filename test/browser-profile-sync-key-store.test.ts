@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomBytes } from 'node:crypto'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
@@ -8,6 +8,17 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { BrowserProfileSyncKeyStore, keyHelperEnvironment, runKeyHelper } from '../lib/browser-profile-sync-key-store.mjs'
+
+// The host-stop case below drives the real companion and browser host. Their first import reads about 340 module
+// files (the MCP SDK with zod and ajv, socket.io, ws and 80 lib files) and took 12 to 14 s on a slow disk, which that
+// case's own 5 s limit is not for. It is warmed once here, under its own limit, and the case takes the loaded modules.
+// A failed import still fails that case, by its name, and not this hook and every test of the file.
+const loadHost = () => Promise.all([import('../lib/browser-profile-companion.mjs'), import('../bin/hoai-browser-host.mjs')])
+let hostModules: ReturnType<typeof loadHost>
+before(async () => {
+  hostModules = loadHost()
+  await hostModules.catch(() => {})
+}, { timeout: 120_000 })
 
 const identity = { version: 1, endpointId: '11000000-0000-4000-8000-000000000001', signingPublicKey: 'synthetic-public-sign', encryptionPublicKey: 'synthetic-public-encryption' }
 const fingerprint = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -371,7 +382,7 @@ for (const mode of ['endpoint-timeout', 'endpoint-abort', 'portable-timeout', 'h
   let work: Promise<unknown> | undefined, observed: Promise<unknown> | undefined
   try {
     if (mode === 'host-stop') {
-      const { AgentBrowserProfileCompanion } = await import('../lib/browser-profile-companion.mjs'), { BrowserHost } = await import('../bin/hoai-browser-host.mjs')
+      const [{ AgentBrowserProfileCompanion }, { BrowserHost }] = await hostModules
       const client = { activity: () => ({ pendingPhysicalOperations: 0, cleanupUnknown: false }), whenDrained: async () => {}, discover: async () => ({ profiles: [{ grant: { generation: 1 }, profile: { contentKeyEpoch: 1 } }] }) }
       const connection: any = { bootId: 'synthetic-key-helper-boot', _stopped: false, pairing: { token: 'SYNTHETIC', pairingId: 7, ownerUserId: 'machine-owner', backendUrl: 'https://synthetic.invalid', assistantIds: [42] }, stop: async () => {} }
       companion = new AgentBrowserProfileCompanion({ connection, agentRoot: join(tmpdir(), 'synthetic-key-helper-no-files'), deviceLabel: 'Synthetic helper test', environment, keyStore, client, permissionClient: client, permissionRunner: {}, returnClient: client, returnHandover: {},

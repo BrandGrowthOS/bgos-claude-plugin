@@ -1,0 +1,125 @@
+[
+  {
+    "at": "2026-11-14T01:22:07.416Z",
+    "label": "after",
+    "step": "tools",
+    "count": 59,
+    "editDescription": "Edit the text of one of your previously sent messages in the BGOS chat. Answers \"Edited\" only when the backend took the edit; otherwise it returns an error with the reason, and the message is unchanged."
+  },
+  {
+    "at": "2026-11-14T01:22:12.446Z",
+    "label": "after",
+    "step": "tool",
+    "name": "reply",
+    "arguments": {
+      "chat_id": "1",
+      "text": "Draft: the launch review is on Thursday at 10:00."
+    },
+    "isError": false,
+    "text": "Sent (message_id: 11) Delivered to the main chat 1."
+  },
+  {
+    "at": "2026-11-14T01:22:16.485Z",
+    "label": "after",
+    "step": "row",
+    "when": "after reply",
+    "id": "11",
+    "status": 200,
+    "text": "Draft: the launch review is on Thursday at 10:00.",
+    "editedAt": null
+  },
+  {
+    "at": "2026-11-14T01:22:16.542Z",
+    "label": "after",
+    "step": "screenshot",
+    "file": "after-1-replied.png"
+  },
+  {
+    "at": "2026-11-14T01:22:16.556Z",
+    "label": "after",
+    "step": "tool",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "11",
+      "text": "Correction: the launch review moved to Friday at 14:00, same room."
+    },
+    "isError": false,
+    "text": "Edited"
+  },
+  {
+    "at": "2026-11-14T01:22:20.568Z",
+    "label": "after",
+    "step": "row",
+    "when": "after edit_message",
+    "id": "11",
+    "status": 200,
+    "text": "Correction: the launch review moved to Friday at 14:00, same room.",
+    "editedAt": "2026-11-14T01:22:16.548Z"
+  },
+  {
+    "at": "2026-11-14T01:22:20.605Z",
+    "label": "after",
+    "step": "screenshot",
+    "file": "after-2-after-edit.png"
+  },
+  {
+    "at": "2026-11-14T01:22:20.607Z",
+    "label": "after",
+    "step": "tool",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "abc",
+      "text": "never sent"
+    },
+    "isError": true,
+    "text": "Error: message_id must be a message id from a reply"
+  },
+  {
+    "at": "2026-11-14T01:22:20.615Z",
+    "label": "after",
+    "step": "tool",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "999999",
+      "text": "no such message"
+    },
+    "isError": true,
+    "text": "Failed: PATCH 400: Message not found or access denied."
+  },
+  {
+    "at": "2026-11-14T01:22:20.620Z",
+    "label": "after",
+    "step": "tool",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "6",
+      "text": "Atlas rewriting Leo"
+    },
+    "isError": true,
+    "text": "Failed: PATCH 400: Message not found or access denied."
+  },
+  {
+    "at": "2026-11-14T01:22:26.935Z",
+    "label": "after",
+    "step": "screenshot",
+    "file": "after-3-after-reload.png"
+  },
+  {
+    "at": "2026-11-14T01:22:33.238Z",
+    "label": "after",
+    "step": "screenshot",
+    "file": "after-4-phone-light.png"
+  },
+  {
+    "at": "2026-11-14T01:22:33.253Z",
+    "label": "after",
+    "step": "summary",
+    "messageId": "11",
+    "editAnswer": "Edited",
+    "final": {
+      "status": 200,
+      "text": "Correction: the launch review moved to Friday at 14:00, same room.",
+      "editedAt": "2026-11-14T01:22:16.548Z"
+    }
+  }
+]

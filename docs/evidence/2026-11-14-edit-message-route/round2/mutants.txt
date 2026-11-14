@@ -1,0 +1,19 @@
+M1 no own-row check: KILLED # fail 3
+    not ok 26 - the owner's own line is refused before any call, with one plain line
+    not ok 27 - the owner's other agent's line is refused before any call
+    not ok 28 - a message the daemon never created (another person's line, an id from an inbound message) is refused
+M7 record keyed by raw message_id: KILLED # fail 1
+    not ok 1 - edit_message no longer names the webhook bridge, and edits through PATCH messages/:id with { text }
+M3 bgosPost notes nothing: KILLED # fail 1
+    not ok 31 - bgosPost notes the rows the server answers as this agent's own creates, and nothing else
+M4 another agent's row counts: KILLED # fail 3
+    not ok 27 - the owner's other agent's line is refused before any call
+    not ok 31 - bgosPost notes the rows the server answers as this agent's own creates, and nothing else
+    not ok 33 - the server's answer for anything else names no own row
+M5 a user row counts: KILLED # fail 4
+    not ok 26 - the owner's own line is refused before any call, with one plain line
+    not ok 31 - bgosPost notes the rows the server answers as this agent's own creates, and nothing else
+    not ok 33 - the server's answer for anything else names no own row
+    not ok 34 - only the two create routes are read: messages and send-message
+M6 no-answer wording dropped: KILLED # fail 1
+    not ok 30 - an edit that got no answer says it may have landed (review F3); a refusal does not

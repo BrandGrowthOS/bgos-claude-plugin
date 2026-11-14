@@ -31,7 +31,7 @@ test at test/stream-json-child.test.ts:1:2516
       PATH: '/bin'
     }
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:103:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:103:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -71,7 +71,7 @@ test at test/stream-json-child.test.ts:1:3045
   +   UNRELATED_SETTING: 'also dropped'
     }
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:113:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:113:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -95,7 +95,7 @@ test at test/stream-json-child.test.ts:1:3690
   + 'fake-aws-id'
   - undefined
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:144:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:144:12)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {

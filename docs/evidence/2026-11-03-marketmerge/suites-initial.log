@@ -374,7 +374,7 @@
 ✔ supervised expect script: a state dir with Tcl specials is quoted, never evaluated (0.06825ms)
 ✔ the person-facing script is unchanged: no launch-status, no supervised exits, interact at the end (0.162916ms)
 [hoai] this host has 2 paired agents (ids: 7, 8) and this folder declares no assistant (no .bgos-agent-id pin and no BGOS_ASSISTANT_ID in .mcp.json), so hoai cannot tell which one to launch. Run hoai from the agent's own folder (pairing bakes the pin there, and bgos-agent / bgos-claim write the id into .mcp.json), or set BGOS_ASSISTANT_ID=7 in this agent's environment.
-[hoai] this command is running from a temporary package-runner directory (/Users/kc/hoai-work/mbmarket/.tmp/marketmerge/hoai-sup-home-iku4FQ/.npm/_npx/c00bcfc5e22688dd/node_modules/claude-channel-bgos), which is not an install, and /Users/kc/hoai-work/mbmarket/.tmp/marketmerge/hoai-sup-home-iku4FQ/.claude/plugins/installed_plugins.json records no HOAI plugin install, so the channel this machine listens on cannot be determined. Run hoai from the folder the agent was set up in (a clone checkout), or install the plugin with hoai setup, rather than guessing a channel flag. hoai will not launch on a guessed channel: a wrong one starts an agent that looks connected and never receives a message.
+[hoai] this command is running from a temporary package-runner directory (/Users/you/hoai-work/mbmarket/.tmp/marketmerge/hoai-sup-home-iku4FQ/.npm/_npx/c00bcfc5e22688dd/node_modules/claude-channel-bgos), which is not an install, and /Users/you/hoai-work/mbmarket/.tmp/marketmerge/hoai-sup-home-iku4FQ/.claude/plugins/installed_plugins.json records no HOAI plugin install, so the channel this machine listens on cannot be determined. Run hoai from the folder the agent was set up in (a clone checkout), or install the plugin with hoai setup, rather than guessing a channel flag. hoai will not launch on a guessed channel: a wrong one starts an agent that looks connected and never receives a message.
 [hoai] install method: clone; channel server:bgos
 [hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
 [hoai] install method: clone; channel server:bgos
@@ -534,7 +534,7 @@
 ✔ a fresh retry that dies inside the health window leaves the pin on the previous session (776.900125ms)
 [hoai] install method: clone; channel server:bgos
 [hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
-[hoai] waiting for an incumbent claude (pid 4242) in /Users/kc/hoai-work/mbmarket/.tmp/marketmerge/hoai-agent-TDotJ5 to exit before taking over; a pinned session can only be resumed once
+[hoai] waiting for an incumbent claude (pid 4242) in /Users/you/hoai-work/mbmarket/.tmp/marketmerge/hoai-agent-TDotJ5 to exit before taking over; a pinned session can only be resumed once
 [hoai] the incumbent claude (pid 4242) has exited; taking over assistant 871
 [hoai] restart supervisor armed for assistant 871
 ✔ a fresh retry that stays up past the health window becomes the pinned session (1110.611459ms)
@@ -579,7 +579,7 @@
 ✔ main(): the launch environment gains the task tools flag, and the hooks are registered (810.38675ms)
 [hoai] install method: clone; channel server:bgos
 [hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
-[hoai] WARNING: another claude of yours (pid 79918) is running and its working directory could not be read, so hoai cannot tell whether it is in /Users/kc/hoai-work/mbmarket/.tmp/marketmerge/hoai-agent-bjYMcB. Launching anyway, because an unreadable directory is not evidence of a conflict. If this agent ends up with two live sessions, check that pid with `ps -p 79918` and stop one.
+[hoai] WARNING: another claude of yours (pid 79918) is running and its working directory could not be read, so hoai cannot tell whether it is in /Users/you/hoai-work/mbmarket/.tmp/marketmerge/hoai-agent-bjYMcB. Launching anyway, because an unreadable directory is not evidence of a conflict. If this agent ends up with two live sessions, check that pid with `ps -p 79918` and stop one.
 [hoai] restart supervisor armed for assistant 871
 [hoai] install method: clone; channel server:bgos
 [hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
@@ -785,7 +785,7 @@ test at test/scratch-folder-convention.test.ts:1:911
   + ]
   - []
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/scratch-folder-convention.test.ts:51:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/scratch-folder-convention.test.ts:51:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.start (node:internal/test_runner/test:1096:17)

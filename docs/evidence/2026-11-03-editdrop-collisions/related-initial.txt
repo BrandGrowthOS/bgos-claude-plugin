@@ -7,7 +7,7 @@ Error [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Only URLs with a scheme in: file, data, 
     at defaultLoadSync (node:internal/modules/esm/load:142:3)
     at #loadAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:779:12)
     at nextStep (node:internal/modules/customization_hooks:189:26)
-    at load (file:///Users/kc/hoai-work/mbeditdrop/node_modules/tsx/dist/register-D5KIhaFJ.mjs:2:5399)
+    at load (file:///Users/you/hoai-work/mbeditdrop/node_modules/tsx/dist/register-D5KIhaFJ.mjs:2:5399)
     at nextStep (node:internal/modules/customization_hooks:189:26)
     at loadWithHooks (node:internal/modules/customization_hooks:374:18)
     at #loadSync (node:internal/modules/esm/loader:796:14)

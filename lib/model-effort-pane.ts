@@ -40,7 +40,7 @@
  * prompt's first input column, on that row. Anything else remains unknown.
  */
 
-import { EXACT_MODEL_LABELS, isModelFamily } from './compact-inject.ts'
+import { EXACT_MODEL_LABELS, PANE_STATE_SEPARATOR, isModelFamily } from './compact-inject.ts'
 
 export interface PaneState {
   /** tmux pane id, %N. */
@@ -65,7 +65,7 @@ export interface TerminalCursor {
 
 /** Parse lib/compact-inject.ts PANE_STATE_FORMAT, or null for anything else. */
 export function parsePaneState(stdout: string): PaneState | null {
-  const fields = String(stdout ?? '').replace(/\r?\n$/, '').split('\t')
+  const fields = String(stdout ?? '').replace(/\r?\n$/, '').split(PANE_STATE_SEPARATOR)
   if (fields.length !== 5 && fields.length !== 8) return null
   const [paneId, tty, dead, inMode, pid] = fields as [string, string, string, string, string]
   if (!/^%\d+$/.test(paneId)) return null
