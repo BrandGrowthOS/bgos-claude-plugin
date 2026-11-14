@@ -20,7 +20,8 @@
  *      binds the single Claude agent (self bind; one agent, nothing to pick)
  *   4. poll GET <apiBase>/integrations/me until the bound assistant appears,
  *      then resolve WHICH assistant this session is (never guessed: an
- *      explicit --assistant-id / BGOS_ASSISTANT_ID must match what bound, and
+ *      explicit --assistant-id must match what bound (an inherited
+ *      BGOS_ASSISTANT_ID is ignored, board row 05893eed E), and
  *      several bound agents with no explicit choice is an error, not a pick)
  *   5. write ~/.bgos-agent/credentials-<assistantId>.json (dir 0700, file
  *      0600; BGOS_CREDENTIALS_PATH overrides; legacy credentials.json only
@@ -61,6 +62,8 @@ import { installHoaiCli } from './hoai-core.mjs'
 import { preseedClaudeTrust } from '../lib/claude-preseed.mjs'
 import { identityFilePath, identityFromMe, writeAgentIdentity } from '../lib/agent-identity.mjs'
 import { agentStateDir } from '../lib/agent-inventory.mjs'
+import { refreshInstalledPlugin, refreshReportLines } from '../lib/installed-plugin-refresh.mjs'
+import { runClaudeCli } from '../lib/plugin-cli.mjs'
 
 export const DEFAULT_API_BASE = 'https://api.brandgrowthos.ai/api/v1'
 export const CLAUDE_INTEGRATION = 'claude-code'
@@ -130,6 +133,7 @@ export function parsePairArgs(argv) {
     help: false,
     allowUnpinned: false,
     noInstallCli: false,
+    noPluginUpdate: false,
     allowHome: false,
   }
   const errors = []
@@ -145,6 +149,10 @@ export function parsePairArgs(argv) {
       // For a caller that is NOT the owner at a terminal. The watcher's
       // create-agent job passes it: see the block above installCliOnce.
       args.noInstallCli = true
+    } else if (arg === '--no-plugin-update') {
+      // Leave an older marketplace install of hoai as it is (see
+      // lib/installed-plugin-refresh.mjs). --no-install-cli implies it.
+      args.noPluginUpdate = true
     } else if (arg === '--allow-unpinned') {
       // Escape hatch for a flow that sets BGOS_ASSISTANT_ID afterwards. It
       // suppresses the refusal, never the warning: the operator still gets
@@ -269,6 +277,155 @@ export function resolveRequestedAssistantId({ argAssistantId, env } = {}) {
   const fromEnv = String(env?.BGOS_ASSISTANT_ID ?? '').trim()
   if (fromEnv && fromEnv !== ASSISTANT_ID_PLACEHOLDER) return fromEnv
   return ''
+}
+
+// ── An agent id inherited from the shell (board row 05893eed, finding E) ─────
+//
+// KC's ~/.env exports BGOS_ASSISTANT_ID=888 and the one click Connect script
+// runs in a login shell, so pairing inherited it while Connect named the agent
+// with --assistant-id 1175 (2026-11-12). Every check after the exchange read
+// the environment, judged the folder pin for 1175 not live safe because the
+// environment named 888, and printed "NOT DONE ... not pinned". Without the
+// flag the inherited value travelled as the agent to pair. Pairing therefore
+// takes the agent ONLY from --assistant-id: main() removes BGOS_ASSISTANT_ID
+// from the environment every later step reads, and says so. Every automated
+// caller (the app's Connect script, hoai-bootstrap, the watcher's create-agent
+// job) already passes the flag.
+
+/**
+ * The BGOS_ASSISTANT_ID this process inherited, trimmed; '' when there is none
+ * or it is the unsubstituted plugin placeholder.
+ * @param {Record<string, string | undefined> | undefined} env
+ */
+export function inheritedAssistantId(env) {
+  const value = String(env?.BGOS_ASSISTANT_ID ?? '').trim()
+  return value && value !== ASSISTANT_ID_PLACEHOLDER ? value : ''
+}
+
+/**
+ * `env` without BGOS_ASSISTANT_ID (a copy; the input is never changed). The
+ * same object back when it has no such key.
+ * @param {Record<string, string | undefined>} env
+ */
+export function withoutInheritedAssistantId(env) {
+  if (!env || !Object.prototype.hasOwnProperty.call(env, 'BGOS_ASSISTANT_ID')) return env
+  const rest = { ...env }
+  delete rest.BGOS_ASSISTANT_ID
+  return rest
+}
+
+/**
+ * What pairing says about an inherited id it ignored. Nothing when there is
+ * none, or when it names the same agent as --assistant-id.
+ * @param {{ inherited: string, flagId: string }} input
+ * @returns {string[]}
+ */
+export function inheritedAssistantIdLines({ inherited, flagId }) {
+  if (!inherited || inherited === flagId) return []
+  if (flagId) {
+    return [
+      `ignored BGOS_ASSISTANT_ID=${inherited} from this shell's environment: --assistant-id ${flagId} names the agent.`,
+      `note: a Claude Code session started from this shell would still run as ${inherited}; remove that line from your shell profile (for example ~/.env) if that is not what you want.`,
+    ]
+  }
+  return [
+    `ignored BGOS_ASSISTANT_ID=${inherited} from this shell's environment: pairing takes the agent only from --assistant-id.`,
+    `to pair as agent ${inherited}, run this again with --assistant-id ${inherited}.`,
+  ]
+}
+
+// ── Retry after a failed Connect (board row 05893eed, finding C) ─────────────
+//
+// Connect's first attempt paired the computer (pairing 283) and then failed
+// at Verifying. Retry minted a new code and the backend refused it: "Helper
+// Test Mac (agent 1175) is already served by live pairing 283 ... retry in ~10
+// minutes". Pairing 283 was this computer's own, for the same agent, and its
+// token was in credentials-1175.json. The backend lets a pairing revoke itself
+// (DELETE /integrations/pairings/:id with its own X-BGOS-Pairing token), and a
+// 409 rolls the code's claim back, so the code is still good. Pairing replaces
+// its own pairing and exchanges the same code once more, only when every
+// pairing the refusal names is the one in this computer's file for that agent
+// and backend, and that token still answers for that agent.
+
+/**
+ * The live-pairing refusal of the backend's mint-time guard
+ * (PairingService.guardOverlappingPairings, pinned identity form):
+ *   "Pairing refused: <name> (agent <id>) is already served by live pairing[s]
+ *    <id> (<label>)[, ...]. Revoke pairing <id>[, <id>] in BGOS ..."
+ * The ids come from the "Revoke pairing" clause, which holds ids only, so a
+ * device label cannot leak a number in. null for anything else, including the
+ * unpinned "agents on this catalog" form, which names no agent.
+ * @param {number} status
+ * @param {unknown} body
+ * @returns {{ agentId: string, pairingIds: number[] } | null}
+ */
+export function parseLivePairingRefusal(status, body) {
+  if (status !== 409 || !body || typeof body !== 'object') return null
+  const raw = /** @type {{ message?: unknown }} */ (body).message
+  const message = typeof raw === 'string' ? raw : ''
+  const agent = /\(agent (\d+)\) is already served by live pairings? /.exec(message)
+  const ids = /Revoke pairing (\d+(?:, \d+)*) in BGOS/.exec(message)
+  if (!agent || !ids) return null
+  return { agentId: agent[1], pairingIds: ids[1].split(/,\s*/).map(Number) }
+}
+
+/**
+ * This computer's own pairing for `assistantId` on `apiBase`: its
+ * credentials-<id>.json, else the shared credentials.json when it is that
+ * same agent's. null when neither holds one.
+ * @param {{ home: string, assistantId: string, apiBase: string, read?: (path: string) => string | null }} input
+ * @returns {{ path: string, pairingId: number, pairingToken: string } | null}
+ */
+export function readOwnPairing({ home, assistantId, apiBase, read = readTextOrNull }) {
+  const id = String(assistantId ?? '').trim()
+  if (!id) return null
+  for (const path of [perAssistantCredentialsPath(home, id), credentialsPath(home)]) {
+    let creds
+    try {
+      creds = JSON.parse(String(read(path) ?? ''))
+    } catch {
+      continue
+    }
+    if (!creds || typeof creds !== 'object') continue
+    if (String(creds.assistantId ?? '').trim() !== id) continue
+    const pairingId = Number(creds.pairingId)
+    const pairingToken = typeof creds.pairingToken === 'string' ? creds.pairingToken : ''
+    if (!Number.isInteger(pairingId) || pairingId <= 0 || !pairingToken) continue
+    if (normalizeApiBase(String(creds.backendUrl ?? DEFAULT_API_BASE)) !== apiBase) continue
+    return { path, pairingId, pairingToken }
+  }
+  return null
+}
+
+/**
+ * After a live-pairing refusal: when the pairing it names is this computer's
+ * own for the same agent, revoke it with its own token. Never throws.
+ * @param {{ status: number, body: unknown, requestedId: string, home: string, apiBase: string,
+ *           fetchImpl: typeof fetch }} input
+ * @returns {Promise<{ replaced: true, pairingId: number, agentId: string, path: string } | { replaced: false }>}
+ */
+export async function replaceOwnLivePairing({ status, body, requestedId, home, apiBase, fetchImpl }) {
+  const no = /** @type {{ replaced: false }} */ ({ replaced: false })
+  const refusal = parseLivePairingRefusal(status, body)
+  if (!refusal) return no
+  if (requestedId && requestedId !== refusal.agentId) return no
+  const own = readOwnPairing({ home, assistantId: refusal.agentId, apiBase })
+  if (!own) return no
+  if (refusal.pairingIds.length === 0 || !refusal.pairingIds.every((id) => id === own.pairingId)) return no
+  try {
+    // Proof, not a guess: the token on disk still answers as a pairing that
+    // serves this agent. A dead or foreign token revokes nothing.
+    const me = await getJson(`${apiBase}/integrations/me`, { 'X-BGOS-Pairing': own.pairingToken }, fetchImpl)
+    if (!me.ok || selectAssistantBinding(me.body, refusal.agentId).kind !== 'ok') return no
+    const res = await fetchImpl(`${apiBase}/integrations/pairings/${encodeURIComponent(String(own.pairingId))}`, {
+      method: 'DELETE',
+      headers: { Accept: 'application/json', 'X-BGOS-Pairing': own.pairingToken },
+    })
+    if (!res.ok) return no
+  } catch {
+    return no
+  }
+  return { replaced: true, pairingId: own.pairingId, agentId: refusal.agentId, path: own.path }
 }
 
 /**
@@ -1187,14 +1344,22 @@ Usage:
 Options:
   --backend <url>        backend base (default ${DEFAULT_API_BASE})
   --assistant-id <id>    the HOAI assistant this session pairs as; required on
-                         accounts with several bound agents (BGOS_ASSISTANT_ID
-                         env is honoured as the fallback). If the pairing would
+                         accounts with several bound agents. The only way to
+                         name it: a BGOS_ASSISTANT_ID inherited from the shell
+                         is ignored (and said so), so pass --assistant-id
+                         "$BGOS_ASSISTANT_ID" to use it. If the pairing would
                          resolve to a different assistant, nothing is written.
-  --no-install-cli       do NOT put the hoai command on this machine's PATH.
+  --no-install-cli       do NOT put the hoai command on this machine's PATH,
+                         and leave the installed hoai plugin as it is.
                          For a caller that is not the owner at a terminal (the
                          app's background create-agent job passes it). Pairing
-                         also skips that step on its own when no terminal is
+                         also skips the PATH step on its own when no terminal is
                          attached, and prints the one line that does it by hand.
+  --no-plugin-update     leave a marketplace install of hoai that is older than
+                         this pairing command as it is. Without it, pairing
+                         updates it (claude plugin marketplace update hoai, then
+                         claude plugin update hoai@hoai), because the one click
+                         setup's "plugin install" keeps an old install.
   --allow-unpinned       proceed even when the daemon would resolve a different
                          agent's credentials file. Without this, that case exits
                          3 on a host serving other agents, because the
@@ -1431,13 +1596,20 @@ function thisScriptPath() {
  *     Promise<{ ok: boolean, binDir: string, kept?: unknown[] }>,
  *   isInteractive?: () => boolean,
  *   bindTimeoutMs?: number,
+ *   claudeRunner?: (args: string[], opts: { timeoutMs: number, env: Record<string, string | undefined> }) => Promise<unknown>,
  * }} [opts]
+ *   `claudeRunner` replaces the real claude CLI for the installed-plugin
+ *   refresh (finding A), so a test never runs `claude plugin update`.
  *   `isInteractive` is the TTY check that keeps install-cli on the path where
  *   the owner is watching. Injected so a test can describe a non-interactive
  *   caller without one, rather than the behaviour resting on discipline.
  */
 export async function main(argv = process.argv.slice(2), opts = {}) {
-  const env = opts.env ?? process.env
+  const shellEnv = opts.env ?? process.env
+  // Finding E: an inherited BGOS_ASSISTANT_ID decides nothing here. Every step
+  // below (the request, the write, the live-safe verdicts) reads this env.
+  const inherited = inheritedAssistantId(shellEnv)
+  const env = withoutInheritedAssistantId(shellEnv)
   const home = opts.home ?? homedir()
   const platform = opts.platform ?? process.platform
   const fetchImpl = opts.fetchImpl ?? fetch
@@ -1494,14 +1666,16 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     argAssistantId: args.assistantId,
     env,
   })
+  for (const line of inheritedAssistantIdLines({ inherited, flagId: requestedId })) {
+    console.log(`[bgos-pair] ${line}`)
+  }
   if (requestedId) {
     console.log(`[bgos-pair] pairing as assistant ${requestedId} (explicitly requested)`)
   }
 
   console.log('[bgos-pair] pairing this computer with your HOAI account...')
-  let exchange
-  try {
-    exchange = await postJson(
+  const exchangeOnce = () =>
+    postJson(
       `${apiBase}/integrations/pair-exchange`,
       buildExchangeBody({
         code: args.code,
@@ -1511,12 +1685,44 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       {},
       fetchImpl,
     )
+  let exchange
+  try {
+    exchange = await exchangeOnce()
   } catch (err) {
     console.error(`[bgos-pair] could not reach the backend: ${err?.message ?? err}`)
     console.error('[bgos-pair] check this computer\'s internet connection and try again.')
     return PAIR_EXIT_CODES.UNEXPECTED_ERROR
   }
-  const classified = classifyExchangeResponse(exchange.status, exchange.body)
+  let classified = classifyExchangeResponse(exchange.status, exchange.body)
+  if (classified.kind !== 'ok') {
+    // Finding C: a Retry refused by THIS computer's own pairing for the same
+    // agent replaces it and tries the same code once more, never twice.
+    const replaced = await replaceOwnLivePairing({
+      status: exchange.status,
+      body: exchange.body,
+      requestedId,
+      home,
+      apiBase,
+      fetchImpl,
+    })
+    if (replaced.replaced) {
+      console.log(
+        `[bgos-pair] pairing ${replaced.pairingId} is this computer's own pairing for agent ${replaced.agentId} ` +
+          `(from an earlier attempt, in ${replaced.path}); revoked it with its own token and trying the same code again.`,
+      )
+      try {
+        exchange = await exchangeOnce()
+        classified = classifyExchangeResponse(exchange.status, exchange.body)
+      } catch (err) {
+        classified = { kind: 'error', message: `could not reach the backend: ${err?.message ?? err}` }
+      }
+      if (classified.kind !== 'ok') {
+        console.error(
+          `[bgos-pair] the earlier pairing ${replaced.pairingId} is revoked, and the new one was not made. Press Retry in the app for a fresh code.`,
+        )
+      }
+    }
+  }
   if (classified.kind !== 'ok') {
     if (classified.kind === 'expired') {
       console.error('[bgos-pair] that code has expired. Codes last 10 minutes. Get a new one in the HOAI app.')
@@ -1611,7 +1817,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     for (const c of binding.candidates) {
       console.error(`[bgos-pair]   --assistant-id ${c.assistant_id}  ${c.name || c.agent_route}`.trimEnd())
     }
-    console.error('[bgos-pair] nothing was written. Rerun with --assistant-id <id> (or set BGOS_ASSISTANT_ID).')
+    console.error('[bgos-pair] nothing was written. Rerun with --assistant-id <id>.')
     return PAIR_EXIT_CODES.UNEXPECTED_ERROR
   }
   if (binding.kind === 'none' && requestedId) {
@@ -1679,6 +1885,34 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       '[bgos-pair] and one shared file cannot hold more than one identity. Each daemon pins BGOS_ASSISTANT_ID instead.',
     )
   }
+  // Finding A (board row 05893eed): the one click Connect script's `claude
+  // plugin install hoai@hoai` answers "already installed" for ANY installed
+  // version, so a MacBook with 0.31.0 kept it, and the doctor that runs next
+  // started a copy too old to have its launch shim. This command IS the
+  // version the app expects (Connect runs it through npx from the plugin's
+  // repository), so an older marketplace install is brought up to it here,
+  // after the pairing is saved (the code is spent, so a slow network cannot
+  // cost it) and before the doctor reads installed_plugins.json. Never fatal:
+  // a failure is printed with the two commands to run, and the doctor still
+  // judges the result. Not for a background caller (--no-install-cli: the
+  // watcher has its own update sweep) or --no-plugin-update.
+  if (!args.noInstallCli && !args.noPluginUpdate) {
+    try {
+      const refreshed = await refreshInstalledPlugin({
+        expectedVersion: PLUGIN_VERSION,
+        configDir: claudeConfigDir({ env, home }),
+        env,
+        runClaude: (cliArgs) => runClaudeCli(cliArgs, { env, ...(opts.claudeRunner ? { runner: opts.claudeRunner } : {}) }),
+      })
+      for (const line of refreshReportLines(refreshed, PLUGIN_VERSION)) {
+        if (refreshed.kind === 'failed') console.error(`[bgos-pair] ${line}`)
+        else console.log(`[bgos-pair] ${line}`)
+      }
+    } catch (err) {
+      console.error(`[bgos-pair] note: could not check the installed hoai plugin's version (${err?.message ?? err}).`)
+    }
+  }
+
   // Put `hoai` on the USER'S OWN PATH, as the last step of pairing, on EVERY
   // path where the pairing itself succeeded.
   //
