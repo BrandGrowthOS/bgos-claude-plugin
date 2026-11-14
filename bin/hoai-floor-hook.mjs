@@ -132,8 +132,15 @@ export function floorAskOutput(words) {
  * main() always passes it; without it this is the bare list contract the
  * tests pin rule by rule.
  *
+ * EVERY KIND, THE MOST DANGEROUS FIRST (0.87.7). A call can fall under more
+ * than one kind (an `.env` append, then a key file uploaded with `curl -T`).
+ * The hook reads them all (the core's classifyToolCallLead): its reason names
+ * the most dangerous kind, and the match it records carries every kind in
+ * `ruleIds` and every kind's command in `evidence`, so the relay can tell the
+ * server about all of them, not only the first in the list's order.
+ *
  * @param {string} text the raw stdin
- * @param {{ classifyToolCall: (name: unknown, input: unknown) => { words: string } | null }} core
+ * @param {{ classifyToolCallLead: (name: unknown, input: unknown) => { words: string } | null }} core
  * @param {{ attachedKey: (payload: any) => string | null,
  *   recordAsk: (key: string, payload: any, match: any) => unknown }} [deps]
  */
@@ -145,7 +152,7 @@ export function decideFloorHook(text, core, deps) {
     if (!isRecord(payload)) return ''
     const event = payload.hook_event_name
     if (event !== undefined && event !== 'PreToolUse') return ''
-    const match = core.classifyToolCall(payload.tool_name, payload.tool_input)
+    const match = core.classifyToolCallLead(payload.tool_name, payload.tool_input)
     if (!match || typeof match.words !== 'string' || !match.words) return ''
     if (deps) {
       const key = deps.attachedKey(payload)

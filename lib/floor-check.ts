@@ -59,6 +59,18 @@
  * about a different, harmless command. consultFloor re-reads its own body and
  * floorRouteFor sends such a proceed to the owner instead of auto approving.
  *
+ * EVERY KIND, THE MOST DANGEROUS FIRST (0.87.7). A command can fall under
+ * several kinds, and the four most dangerous sort after the older ones in the
+ * list. The plan's match names them all (recordFloorMatch: what the record's
+ * commands read, then what the preview shows), its `ruleId` is the most
+ * dangerous, its `evidence` carries every kind's command, one per line, and
+ * its `first` is the one match this relay took before. The body is whichever
+ * of three ways to say it the server reads the most kinds in, the top kinds
+ * counted first: the command as the CLI showed it, every kind's command
+ * (fitted, lib/floor-evidence.mjs fitFloorEvidence), and the body made from
+ * `first` the way it was made before 0.87.7. So it never reads fewer kinds
+ * than the preview alone or than before.
+ *
  * WITH AUTO APPROVE OFF (floorRouteFor's second argument). Every request is
  * interactive there already, so the question is asked only for a request the
  * hook's record vouches for, and it changes one thing: when the owner has not
@@ -75,16 +87,22 @@
 
 import type { HardFloorMatch } from './hard-floor.js'
 import {
+  FLOOR_EDIT_TOOLS,
   FLOOR_SHELL_TOOLS,
+  HARD_FLOOR_RULE_IDS,
   classifyCommand,
+  classifyFloorAll,
   classifyPath,
   classifyPermissionRequest,
+  classifyPermissionRequestAll,
+  classifyToolCallAll,
+  floorLead,
   hardFloorWords,
   isOwnSendingTool,
   previewIsElided,
   readToolInput,
 } from './hard-floor.js'
-import { compactFloorEvidence } from './floor-evidence.mjs'
+import { compactFloorEvidence, fitFloorEvidence, floorEvidenceMatches, mostRead } from './floor-evidence.mjs'
 
 /** The route's own limits (spec 4.4); a body over either is a 400. */
 export const FLOOR_CHECK_TOOL_NAME_MAX = 200
@@ -133,6 +151,14 @@ export interface FloorRecord {
   permissionMode: string | null
   sessionId: string | null
   toolUseId: string | null
+  /**
+   * Every kind the hook read, the most dangerous first (0.87.7); `ruleId` is
+   * the first of them and `evidence` its own command. Absent on a record an
+   * older hook wrote.
+   */
+  ruleIds?: string[]
+  /** Every kind's command, each once, the most dangerous first (0.87.7). */
+  evidences?: string[]
   /** The probe of the value the floor read (lib/floor-state.mjs valueProbe). */
   probe?: { head: string; tail: string }
   /**
@@ -166,12 +192,7 @@ export function planFloorRequest(input: {
       action: 'consult',
       source: 'record',
       record,
-      match: {
-        ruleId: record.ruleId as HardFloorMatch['ruleId'],
-        rulesVersion: record.rulesVersion,
-        words: hardFloorWords(record.ruleId) ?? '',
-        evidence: record.evidence,
-      },
+      match: recordFloorMatch(input.toolName, input.inputPreview, record),
     }
   }
   // With auto approve off only a request the record vouches for is asked
@@ -194,6 +215,83 @@ export function planFloorRequest(input: {
     }
   }
   return { action: 'none' }
+}
+
+/**
+ * EVERY KIND THE RELAY CAN NAME FOR A REQUEST THE HOOK RECORDED, as one lead
+ * match (the core's floorLead), most dangerous first: the kinds the record's
+ * commands read, each with its own command; then the kinds the request's own
+ * preview shows, each with its own; and last any kind the record names that
+ * neither reads any more (with no command of its own when another kind has
+ * one, else the record's evidence). Its `first` is the record's single kind
+ * and command, the match this relay took before.
+ *
+ * The hook read the WHOLE input, so a record that names its kinds (`ruleIds`)
+ * bounds them: a kind read only in a cut of a command, or only in a preview
+ * the CLI cut in the middle (whose head and tail can pair two quotes that
+ * were never a pair), is left out. A record an older hook wrote names one
+ * kind, so its command and the preview, cut or not, are read for the rest,
+ * as the relay before read that preview. A preview shown whole adds what it
+ * reads, so a record paired with another request only ever asks about more,
+ * never less; and a command the preview still reads always wins over a
+ * record's that no longer does.
+ */
+export function recordFloorMatch(
+  toolName: string,
+  inputPreview: string | undefined,
+  record: FloorRecord,
+): HardFloorMatch {
+  const name = String(toolName ?? '')
+  const evidence = String(record.evidence ?? '')
+  const key = FLOOR_SHELL_TOOLS.includes(name) ? 'command' : name === 'NotebookEdit' ? 'notebook_path' : 'file_path'
+  const listed = Array.isArray(record.ruleIds) ? record.ruleIds.filter((id): id is string => typeof id === 'string') : []
+  const known = new Set<string>(HARD_FLOOR_RULE_IDS)
+  const named = new Set([record.ruleId, ...listed].filter((id) => known.has(id)))
+  const byId = new Map<string, HardFloorMatch>()
+  const add = (match: HardFloorMatch, onlyNamed: boolean) => {
+    if (onlyNamed && !named.has(match.ruleId)) return
+    if (!byId.has(match.ruleId)) byId.set(match.ruleId, match)
+  }
+  // A shell or edit tool's command or path is read through the fitting's own
+  // reader, which keeps a long one it has read, so the body and the card do
+  // not read it again; an MCP tool's evidence is its name.
+  const shellOrEdit = FLOOR_SHELL_TOOLS.includes(name) || FLOOR_EDIT_TOOLS.includes(name)
+  for (const line of recordEvidenceLines(record)) {
+    const read = shellOrEdit ? (floorEvidenceMatches(name, line) as readonly HardFloorMatch[]) : classifyToolCallAll(name, { [key]: line })
+    for (const match of read) add(match, listed.length > 0)
+  }
+  const cut = previewIsElided(inputPreview)
+  for (const match of classifyPermissionRequestAll(name, inputPreview ?? '')) add(match, cut && listed.length > 0)
+  // A kind named that nothing here reads still counts, but its command (the
+  // record's one evidence, already read above) reads nothing: it adds no line
+  // of its own when another does read, since in front of them a command cut
+  // inside a quote would quote them away.
+  const unreadEvidence = byId.size > 0 ? '' : evidence
+  for (const id of named) {
+    add({ ruleId: id as HardFloorMatch['ruleId'], rulesVersion: record.rulesVersion, words: hardFloorWords(id) ?? '', evidence: unreadEvidence }, true)
+  }
+  // In the list's order, so floorLead's "most dangerous first" keeps that order within each part.
+  const ordered = HARD_FLOOR_RULE_IDS.filter((id) => byId.has(id)).map((id) => byId.get(id)!)
+  const lead = floorLead(ordered)
+  if (lead && known.has(record.ruleId)) return { ...lead, first: { ruleId: record.ruleId as HardFloorMatch['ruleId'], evidence } }
+  return (
+    lead ?? {
+      // Nothing this release knows: the record as it was written.
+      ruleId: record.ruleId as HardFloorMatch['ruleId'],
+      rulesVersion: record.rulesVersion,
+      words: hardFloorWords(record.ruleId) ?? '',
+      evidence,
+    }
+  )
+}
+
+/** A record's commands: its `evidences` (0.87.7), then its one `evidence`, each once. */
+function recordEvidenceLines(record: FloorRecord): string[] {
+  const listed = Array.isArray(record.evidences)
+    ? record.evidences.filter((line): line is string => typeof line === 'string' && line.length > 0)
+    : []
+  const one = String(record.evidence ?? '')
+  return [...new Set(one ? [...listed, one] : listed)]
 }
 
 /**
@@ -224,13 +322,29 @@ export function floorCheckPath(
  * middle, and the match came from the hook's record), is replaced by the
  * simple command that matched (the match's evidence), so the server reads the
  * part that matters and not a head and a tail that stop around it.
+ *
+ * EVERY KIND (0.87.7): three bodies are made and the one the list reads the
+ * most kinds in is sent, the top kinds counted first and the match's own
+ * (most dangerous) kind breaking a tie (mostRead): the input as the CLI
+ * showed it; every kind's command (the match's `evidence`, fitted top kinds
+ * first, lib/floor-evidence.mjs fitFloorEvidence); and the body made from the
+ * match's `first` the way it was made before (bodyAsBefore). A tie keeps the
+ * body as before for a match of one kind, so such a request is sent exactly
+ * as it was; for a match of more, the input as shown, or every kind's command
+ * when the CLI cut the input (its head and tail can read what the command
+ * does not say, so only the kinds the match names are counted then).
  */
 export function buildFloorCheckBody(
   toolName: string,
   inputPreview: string | undefined,
-  match: Pick<HardFloorMatch, 'evidence'> & { ruleId?: string },
+  match: Pick<HardFloorMatch, 'evidence'> & {
+    ruleId?: string
+    ruleIds?: readonly string[]
+    first?: { ruleId: string; evidence: string }
+  },
 ): FloorCheckBody {
   const name = String(toolName ?? '').slice(0, FLOOR_CHECK_TOOL_NAME_MAX)
+  const tool = String(toolName ?? '')
   const input = readToolInput(toolName, inputPreview ?? '')
   const reduced: Record<string, string> = {}
   for (const key of ['command', 'file_path', 'notebook_path'] as const) {
@@ -239,12 +353,34 @@ export function buildFloorCheckBody(
   }
   const evidence = String(match.evidence ?? '')
   const ruleId = match.ruleId
+  const first = match.first ?? { ruleId, evidence }
+  const asBefore = bodyAsBefore(tool, { ...reduced }, String(first.evidence ?? ''), first.ruleId)
+  const evidenceKey = FLOOR_SHELL_TOOLS.includes(tool) ? 'command' : tool.startsWith('mcp__') ? null : 'file_path'
+  if (!ruleId || !evidence || !evidenceKey) return { toolName: name, inputPreview: asBefore }
+  const asShown = renderWithin({ ...reduced })
+  const everyKind = renderWithin(fitField(tool, { ...reduced, [evidenceKey]: evidence }, evidenceKey))
+  const named = Array.isArray(match.ruleIds) && match.ruleIds.length > 0 ? new Set<string>(match.ruleIds) : null
+  const cut = previewIsElided(inputPreview)
+  const inOrder = !named || named.size <= 1 ? [asBefore, asShown, everyKind] : cut ? [everyKind, asShown, asBefore] : [asShown, everyKind, asBefore]
+  const read = (body: string) => {
+    const all = classifyFloorAll({ kind: 'request', toolName: name, inputPreview: body })
+    return cut && named ? all.filter((m) => named.has(m.ruleId)) : all
+  }
+  return { toolName: name, inputPreview: mostRead(inOrder, read, ruleId) }
+}
+
+/**
+ * The body as this relay made it before 0.87.7, for the match's one rule:
+ * the input when it reads that rule first, else the evidence, fitted for that
+ * rule alone.
+ */
+function bodyAsBefore(tool: string, reduced: Record<string, string>, evidence: string, ruleId: string | undefined): string {
   if (ruleId && evidence) {
-    if (FLOOR_SHELL_TOOLS.includes(String(toolName)) && classifyCommand(reduced.command ?? '') !== ruleId) {
+    if (FLOOR_SHELL_TOOLS.includes(tool) && classifyCommand(reduced.command ?? '') !== ruleId) {
       reduced.command = evidence
     } else if (
-      !FLOOR_SHELL_TOOLS.includes(String(toolName)) &&
-      !toolName.startsWith('mcp__') &&
+      !FLOOR_SHELL_TOOLS.includes(tool) &&
+      !tool.startsWith('mcp__') &&
       classifyPath(reduced.file_path ?? '') !== ruleId &&
       classifyPath(reduced.notebook_path ?? '') !== ruleId
     ) {
@@ -268,28 +404,47 @@ export function buildFloorCheckBody(
       const others = { ...reduced }
       delete others[key]
       const fitted = compactFloorEvidence({
-        toolName: String(toolName ?? ''),
+        toolName: tool,
         ruleId,
         evidence: reduced[key]!,
         max: FLOOR_CHECK_INPUT_PREVIEW_MAX,
         measure: (text: string) => JSON.stringify({ ...others, [key]: text }).length,
       })
-      if (fitted.fits) {
-        reduced[key] = fitted.evidence
-        rendered = JSON.stringify(reduced)
-      }
+      if (fitted.fits) reduced[key] = fitted.evidence
     }
   }
+  return renderWithin(reduced)
+}
+
+/** The fields with `key` fitted to the route's limit, every kind's command kept, the top kinds first. */
+function fitField(tool: string, fields: Record<string, string>, key: string): Record<string, string> {
+  if (JSON.stringify(fields).length <= FLOOR_CHECK_INPUT_PREVIEW_MAX) return fields
+  const others = { ...fields }
+  delete others[key]
+  const fitted = fitFloorEvidence({
+    toolName: tool,
+    evidence: fields[key]!,
+    max: FLOOR_CHECK_INPUT_PREVIEW_MAX,
+    measure: (text: string) => JSON.stringify({ ...others, [key]: text }).length,
+  })
+  return { ...fields, [key]: fitted.evidence }
+}
+
+/**
+ * The fields as JSON within the route's limit: while over (a path or an
+ * evidence segment of thousands of characters), the longest field is cut and
+ * the lot re-rendered, so what is sent is always JSON.
+ */
+function renderWithin(fields: Record<string, string>): string {
+  let rendered = JSON.stringify(fields)
   while (rendered.length > FLOOR_CHECK_INPUT_PREVIEW_MAX) {
-    // Still over (a path or an evidence segment of thousands of characters):
-    // cut the longest field and re-render, so what is sent is always JSON.
-    const longest = Object.keys(reduced).sort((a, b) => reduced[b]!.length - reduced[a]!.length)[0]
+    const longest = Object.keys(fields).sort((a, b) => fields[b]!.length - fields[a]!.length)[0]
     if (!longest) break
     const over = rendered.length - FLOOR_CHECK_INPUT_PREVIEW_MAX
-    reduced[longest] = reduced[longest]!.slice(0, Math.max(0, reduced[longest]!.length - over - 8))
-    rendered = JSON.stringify(reduced)
+    fields[longest] = fields[longest]!.slice(0, Math.max(0, fields[longest]!.length - over - 8))
+    rendered = JSON.stringify(fields)
   }
-  return { toolName: name, inputPreview: rendered }
+  return rendered
 }
 
 /**
@@ -386,7 +541,8 @@ export async function consultFloor(opts: {
 }): Promise<FloorDecision> {
   const { toolName, requestId, match, path } = opts
   const context = { autoApprove: opts.autoApprove ?? true, permissionMode: opts.permissionMode ?? null }
-  const where = `${toolName} [${requestId}] (rule ${match.ruleId})`
+  const kinds = match.ruleIds && match.ruleIds.length > 1 ? `rules ${match.ruleIds.join(', ')}` : `rule ${match.ruleId}`
+  const where = `${toolName} [${requestId}] (${kinds})`
   if (path === null) {
     const answer: FloorAnswer = {
       kind: 'unsupported',

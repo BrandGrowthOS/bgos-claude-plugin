@@ -1,5 +1,5 @@
 /**
- * Cross-repo anti-drift test for the LANE floor, rules version 4 (person
+ * Cross-repo anti-drift test for the LANE floor, rules version 5 (person
  * lanes, shared agents Phase 3, P3; design 7.2 item 8).
  *
  * lib/hard-floor-lane-fixture.ts is COPIED BYTE FOR BYTE from the backend's
@@ -25,12 +25,12 @@ import { LANE_USER_ID_RE } from '../lib/lane-core.mjs'
 const ROOT = join(import.meta.dirname, '..')
 
 /** The same literal the backend's hard-floor-lane.spec.ts pins. */
-const LANE_FIXTURE_FILE_SHA256 = 'c812fbd2e48ecdbf861c5d21a16c3e5bd387669954867ca040926228542fa467'
+const LANE_FIXTURE_FILE_SHA256 = '818cec62efbd22d55f74424225aefff30f0ff519cfc1faa126c4f773617611d3'
 
-test('version 4, one above the owner list it extends, which stays 3', () => {
-  assert.equal(HARD_FLOOR_LANE_RULES_VERSION, 4)
-  assert.equal(HARD_FLOOR_LANE_FIXTURE_RULES_VERSION, 4)
-  assert.equal(HARD_FLOOR_OWNER_RULES_VERSION, 3)
+test('version 5, one above the owner list it extends, which is 4', () => {
+  assert.equal(HARD_FLOOR_LANE_RULES_VERSION, 5)
+  assert.equal(HARD_FLOOR_LANE_FIXTURE_RULES_VERSION, 5)
+  assert.equal(HARD_FLOOR_OWNER_RULES_VERSION, 4)
 })
 
 test('the fixture file is the backend\'s bytes, at LF', () => {
@@ -49,7 +49,7 @@ for (const c of HARD_FLOOR_LANE_FIXTURE) {
   test(`fixture: ${c.name}`, () => {
     const rule = classifyLaneFloor({ kind: 'request', toolName: c.toolName, inputPreview: c.inputPreview }, { actorUserId: c.actorUserId })
     assert.equal(rule?.ruleId ?? null, c.expected)
-    if (rule) assert.equal(rule.rulesVersion, 4)
+    if (rule) assert.equal(rule.rulesVersion, 5)
   })
 }
 

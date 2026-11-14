@@ -42,10 +42,11 @@ import {
 } from '../lib/hard-floor.ts'
 import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
 
-test('the seven rules, their ids and their words, exactly as spec section 1 writes them', () => {
+test('the eleven rules, their ids and their words, exactly as spec section 1 writes them', () => {
   // Rules version 2 (BGOS DSH parity item 10, 2026-10-02): adds_skill_or_plugin.
   // Rules version 3 (Data, 2026-10-13): the channel's own email_send acts on the owner's behalf.
-  assert.equal(HARD_FLOOR_RULES_VERSION, 3)
+  // Rules version 4: every risk a command carries is kept, plus file_delete, admin_rights, uses_secret_key, sends_data_off.
+  assert.equal(HARD_FLOOR_RULES_VERSION, 4)
   assert.deepEqual(
     HARD_FLOOR_RULES.map((r) => [r.id, r.words]),
     [
@@ -56,6 +57,10 @@ test('the seven rules, their ids and their words, exactly as spec section 1 writ
       ['home_dotfile_write', 'changing a settings file in your home folder'],
       ['acts_on_owners_behalf', 'sending, posting, paying or deleting on your behalf'],
       ['adds_skill_or_plugin', 'installing a new plugin or tool that stays after this chat'],
+      ['file_delete', 'deleting a file'],
+      ['admin_rights', 'using admin rights on this computer'],
+      ['uses_secret_key', 'using a secret key or a key file'],
+      ['sends_data_off', 'sending data off this computer'],
     ],
   )
   assert.deepEqual([...HARD_FLOOR_RULE_IDS], HARD_FLOOR_RULES.map((r) => r.id))
@@ -78,7 +83,7 @@ test('a match carries the rule, the version, the words and what matched', () => 
   const match = classifyToolCall('Bash', { command: 'cd app && rm -rf build', description: 'x' })
   assert.deepEqual(match, {
     ruleId: 'recursive_delete',
-    rulesVersion: 3,
+    rulesVersion: 4,
     words: 'deleting a folder and everything in it',
     evidence: 'rm -rf build',
   })
@@ -105,7 +110,8 @@ test('the shell reader: simple commands, quotes removed, a comment and a heredoc
     ['cd', 'a'],
     ['bash', '-c', 'rm -rf b'],
     ['tee', 'c'],
-    ['echo'],
+    // The substitution's output becomes words of echo, so a stand-in keeps its place.
+    ['echo', '$(...)'],
     ['ls'],
   ])
   // A backslash before a newline continues the line; before a plain letter it is a character.
@@ -152,6 +158,111 @@ test('a shell\'s script is read as a command, four levels deep and no deeper', (
   assert.equal(classifyCommand(five), null, 'a fifth level is not read')
 })
 
+test("find's exec family: each command is read once, to its own end, however many there are", () => {
+  // About 100K characters of commands that each end at their own `;`, so a
+  // reader that walks on past each end reads the rest again every time and
+  // spends the hook's budget.
+  const chain = '-exec nice -n \\; '.repeat(6000)
+  const kinds = (command: string) => core.classifyFloorAll({ kind: 'command', command }).map((m) => m.ruleId)
+  const started = performance.now()
+  assert.deepEqual(kinds(`find . ${chain}-exec rm -rf build \\;`), ['recursive_delete'])
+  assert.deepEqual(kinds(`find . ${chain}-exec sudo reboot \\;`), ['admin_rights'])
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test("find's exec family: other long chains stay quick too (no end at all, batch ends, bare -exec words)", () => {
+  for (const chain of ['-exec nice '.repeat(9000), '-exec x {} + '.repeat(7500), '-exec '.repeat(16000)]) {
+    const started = performance.now()
+    core.classifyFloorAll({ kind: 'command', command: `find . ${chain}` })
+    const elapsed = performance.now() - started
+    assert.ok(elapsed < 2000, `${chain.slice(0, 12)}... read in ${Math.round(elapsed)} ms`)
+  }
+})
+
+test('a long command that goes on after each of many substitutions stays quick', () => {
+  // One command keeps its words across its substitutions, so a check that
+  // wrote the whole command out at every match would read it over and over.
+  for (const command of [
+    'find . ' + '-exec rm $(x) {} + '.repeat(10000),
+    'find . ' + '-exec rm -rf $(x) {} + '.repeat(5000),
+    'echo ' + '$(x) w > f '.repeat(10000),
+    'x ' + '$(a) >> log '.repeat(10000),
+  ]) {
+    const started = performance.now()
+    core.classifyFloorAll({ kind: 'command', command })
+    const elapsed = performance.now() - started
+    assert.ok(elapsed < 2000, `${command.slice(0, 16)}... read in ${Math.round(elapsed)} ms`)
+  }
+})
+
+test('one script fed to many shells is read once', () => {
+  // Every shell a find runs is handed the same input, so reading that input
+  // again for each shell would cost its length times the number of shells.
+  const command = 'find . ' + '-exec sh \\; '.repeat(3000) + "<<'EOF'\n" + 'echo hello\n'.repeat(3000) + 'EOF'
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('one long pipe feeding many shells is read once', () => {
+  // Each shell after a substitution takes the same pipe, so the check that
+  // the pipe was already read comes before its words are read at all.
+  const command = 'echo ' + '-n '.repeat(20000) + 'x | sh' + ' $(x) sh'.repeat(20000)
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('a pipe whose feeder gives no script is read once, however many readings it has', () => {
+  // A feeder with many substitutions has a reading after each one, and every
+  // shell on the pipe would walk them all again if a miss were not kept.
+  const command = 'yes ' + '$(x) a '.repeat(20000) + '| sh' + ' $(x) sh'.repeat(20000)
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('a substitution where a program may go is told from a heredoc owner at once, however many heredocs wait', () => {
+  // Each such substitution asks whether the command so far owns a heredoc
+  // whose body comes after the line. Walking every waiting heredoc for it
+  // would grow with their count times the substitutions.
+  const command = 'cat <<A;'.repeat(40000) + ' $(x);'.repeat(40000)
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('a here string that many readings of one command share is scanned for a key once', () => {
+  // The words after each substitution are a reading of their own that keeps
+  // the command's here strings. Scanning them all again for each reading
+  // would grow with the readings times the here strings.
+  const command = '0<<<x $(x) sh '.repeat(6000)
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('a long heredoc body that many readings of one command share is scanned for a key once', () => {
+  const command = 'cat <<E' + ' $(x) a'.repeat(30000) + '\n' + 'z'.repeat(200000) + '\nE'
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('a very long list of words after a double dash is read without running out of room', () => {
+  // The words after the dash are gathered one at a time, never handed over as
+  // one call's arguments, which has a limit far below the longest command.
+  const command = 'scp -- ' + 'a '.repeat(200000) + 'backup/'
+  assert.deepEqual(core.classifyFloorAll({ kind: 'command', command }), [])
+})
+
 test('spec 4.2: a mention is not the action, and neither is a comment or a script written to a file', () => {
   // The shapes an agent uses all day, each of which the server says null to.
   // With the switch off, every one of these that asked cost a round trip, a
@@ -184,8 +295,8 @@ test('GNU long option prefixes (--r, --rec, --recur) are in the SHARED fixture n
     ['rm_long_prefix_r', 'rm --r build', 'recursive_delete'],
     ['rm_long_prefix_rec_with_force', 'rm --rec -f build', 'recursive_delete'],
     ['rm_long_prefix_recur', 'rm --recur build', 'recursive_delete'],
-    ['rm_long_force_is_not_recursive', 'rm --force build', null],
-    ['rm_double_dash_then_a_file_named_like_a_flag', 'rm -- --r', null],
+    ['rm_long_force_is_not_recursive', 'rm --force build', 'file_delete'],
+    ['rm_double_dash_then_a_file_named_like_a_flag', 'rm -- --r', 'file_delete'],
   ] as const) {
     const c = byName.get(name)
     assert.deepEqual(c?.input, { kind: 'command', command }, name)
@@ -516,6 +627,6 @@ test('a plugin install reads in a Claude Code permission request and names its w
     inputPreview: JSON.stringify({ command: 'claude plugin install page-checker@site-tools', description: 'Add it' }),
   })
   assert.equal(match?.ruleId, 'adds_skill_or_plugin')
-  assert.equal(match?.rulesVersion, 3)
+  assert.equal(match?.rulesVersion, 4)
   assert.equal(match?.words, 'installing a new plugin or tool that stays after this chat')
 })

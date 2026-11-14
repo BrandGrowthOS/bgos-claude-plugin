@@ -39,6 +39,10 @@ export type HardFloorRuleId =
   | 'home_dotfile_write'
   | 'acts_on_owners_behalf'
   | 'adds_skill_or_plugin'
+  | 'file_delete'
+  | 'admin_rights'
+  | 'uses_secret_key'
+  | 'sends_data_off'
 
 export interface HardFloorRule {
   readonly id: HardFloorRuleId
@@ -52,6 +56,19 @@ export interface HardFloorMatch {
   words: string
   /** What matched: the command segment, the path, or the tool name. */
   evidence: string
+  /**
+   * EVERY kind the call falls under, the most dangerous first, on a lead
+   * match (floorLead): `ruleId` is its first, and `evidence` carries every
+   * kind's command, one per line.
+   */
+  ruleIds?: HardFloorRuleId[]
+  /** On a lead match: every kind's command, each once, the most dangerous first. */
+  evidences?: string[]
+  /**
+   * On a lead match: the match a reader of one kind took before 0.87.7, the
+   * first kind in the list's order and its own command.
+   */
+  first?: { ruleId: HardFloorRuleId; evidence: string }
 }
 
 /** The four input kinds the shared fixture exercises, the same on both sides. */
@@ -83,6 +100,10 @@ export function classifyFloor(input: HardFloorInput): HardFloorMatch | null {
   return core.classifyFloor(input) as HardFloorMatch | null
 }
 
+export function classifyFloorAll(input: HardFloorInput): HardFloorMatch[] {
+  return core.classifyFloorAll(input) as HardFloorMatch[]
+}
+
 export function classifyCommand(command: unknown): HardFloorRuleId | null {
   return core.classifyCommand(command) as HardFloorRuleId | null
 }
@@ -112,6 +133,61 @@ export function classifyPermissionRequest(
   inputPreview: unknown,
 ): HardFloorMatch | null {
   return core.classifyPermissionRequest(toolName, inputPreview) as HardFloorMatch | null
+}
+
+/**
+ * The four most dangerous kinds, deletes counted both ways, in the server's
+ * order (its HARD_FLOOR_TOP_RULE_IDS): a card whose command reads one is asked
+ * about every time and never allowed for good.
+ */
+export const HARD_FLOOR_TOP_RULE_IDS: readonly HardFloorRuleId[] =
+  core.HARD_FLOOR_TOP_RULE_IDS as readonly HardFloorRuleId[]
+
+export function isTopFloorRuleId(ruleId: unknown): ruleId is HardFloorRuleId {
+  return core.isTopFloorRuleId(ruleId)
+}
+
+/** What stands between two kinds' commands in one evidence text. */
+export const FLOOR_EVIDENCE_SEPARATOR: string = core.FLOOR_EVIDENCE_SEPARATOR
+
+/** Matches reordered most dangerous first: the top kinds, then the rest, each in list order. */
+export function mostDangerousFirst<T extends { ruleId: string }>(matches: readonly T[]): T[] {
+  return core.mostDangerousFirst(matches) as T[]
+}
+
+/** Each distinct matched command once, the most dangerous first. */
+export function floorEvidenceLines(matches: readonly { ruleId: string; evidence: string }[]): string[] {
+  return core.floorEvidenceLines(matches)
+}
+
+/** Each distinct matched command once, the most dangerous first, one per line. */
+export function floorEvidenceOf(matches: readonly { ruleId: string; evidence: string }[]): string {
+  return core.floorEvidenceOf(matches)
+}
+
+/** The one match a reader of a single kind takes: the most dangerous kind, carrying every kind. */
+export function floorLead(matches: readonly HardFloorMatch[]): HardFloorMatch | null {
+  return core.floorLead(matches) as HardFloorMatch | null
+}
+
+/** Every rule one tool call matches, in list order (classifyToolCall is the first). */
+export function classifyToolCallAll(toolName: unknown, toolInput: unknown): HardFloorMatch[] {
+  return core.classifyToolCallAll(toolName, toolInput) as HardFloorMatch[]
+}
+
+/** The hook's question, every kind: the most dangerous kind, carrying every kind. */
+export function classifyToolCallLead(toolName: unknown, toolInput: unknown): HardFloorMatch | null {
+  return core.classifyToolCallLead(toolName, toolInput) as HardFloorMatch | null
+}
+
+/** Every rule a permission request's preview shows, in list order. */
+export function classifyPermissionRequestAll(toolName: unknown, inputPreview: unknown): HardFloorMatch[] {
+  return core.classifyPermissionRequestAll(toolName, inputPreview) as HardFloorMatch[]
+}
+
+/** The relay's question, every kind: the most dangerous kind its preview shows, carrying every kind. */
+export function classifyPermissionRequestLead(toolName: unknown, inputPreview: unknown): HardFloorMatch | null {
+  return core.classifyPermissionRequestLead(toolName, inputPreview) as HardFloorMatch | null
 }
 
 /** What a permission request's preview says the tool input was. */

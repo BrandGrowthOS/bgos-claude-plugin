@@ -212,9 +212,10 @@ test('a record carries only what the relay needs: the rule, the matched command,
     now: 7,
   })
   assert.deepEqual(Object.keys(record).sort(), [
-    'at', 'evidence', 'permissionMode', 'probe', 'ruleId', 'rulesVersion', 'sessionId', 'toolName', 'toolUseId', 'v',
+    'at', 'evidence', 'evidences', 'permissionMode', 'probe', 'ruleId', 'ruleIds', 'rulesVersion', 'sessionId', 'toolName', 'toolUseId', 'v',
   ])
   assert.equal(record.evidence, 'rm -rf build', 'the matched command, not the whole input')
+  assert.deepEqual(record.ruleIds, ['recursive_delete'], 'every kind it names, here the one')
   assert.equal(JSON.stringify(record).includes('Bearer'), false)
 })
 
