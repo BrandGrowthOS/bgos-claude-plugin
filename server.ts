@@ -670,6 +670,7 @@ import {
   VERSION_HEARTBEAT_INTERVAL_MS,
 } from './lib/version-heartbeat'
 import { errorBodyText } from './lib/error-body'
+import { OwnMessages, ownMessageRefusal, ownMessagesFilePath } from './lib/own-messages'
 import { mcpServerInfo } from './lib/mcp-server-info'
 import { markConnectionText } from './lib/connection-texts.ts'
 import { createVerdictSender } from './lib/verdict-sender.ts'
@@ -1031,6 +1032,15 @@ const USER_ID = AUTH.userId
 const ASSISTANT_ID = AUTH.assistantId
 const POLL_INTERVAL_MS = Number(process.env.BGOS_POLL_INTERVAL_MS) || 2000
 const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
+
+// The messages this agent sent, as the server answered their creates (lib/own-messages.ts). edit_message edits only
+// these: with the owner's credential the edit route would otherwise rewrite the owner's own lines and the lines of
+// the owner's other agents. Declared up here, before anything can post, so bgosPost can always note an answer.
+const ownMessages = new OwnMessages({
+  filePath: ownMessagesFilePath(resolveCursorFilePath({ assistantId: ASSISTANT_ID, cwd: process.cwd() })),
+  assistantId: ASSISTANT_ID,
+  log: (line) => log(line),
+})
 
 // Person lanes (P3): asked by the three declaredCapabilities call sites, so it
 // lives above them all.
@@ -2013,7 +2023,15 @@ async function bgosPost(
           text.slice(0, 8192),
         )
       }
-      return response.json()
+      const answer = await response.json()
+      // A create of this agent's own row is noted for edit_message (lib/own-messages.ts), from the server's answer.
+      // Noting never fails the post.
+      try {
+        ownMessages.noteCreate(path, answer)
+      } catch (err) {
+        log(`own messages: answer to POST ${path} not noted: ${String(err)}`)
+      }
+      return answer
     },
   )
 }
@@ -5326,7 +5344,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'edit_message',
       description:
-        'Edit the text of one of your previously sent messages in the BGOS chat. ' +
+        'Edit the text of one of your previously sent messages in the BGOS chat. Only a message this agent ' +
+        'sent can be edited, never the owner\'s or another agent\'s. ' +
         'Answers "Edited" only when the backend took the edit; otherwise it returns an error with the reason, ' +
         'and the message is unchanged.',
       inputSchema: {
@@ -7481,6 +7500,15 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       if (!/^[1-9]\d{0,17}$/.test(id)) {
         return { content: [{ type: 'text', text: 'Error: message_id must be a message id from a reply' }], isError: true }
       }
+      // ONLY A MESSAGE THIS AGENT SENT. The PATCH below carries the owner's
+      // credential, and the backend admits any row the owner may edit: the
+      // owner's own lines (in a room, the ones other members read) and the
+      // lines of the owner's other agents. The model sees the owner's message
+      // ids all the time, so the id must be one the server answered as this
+      // agent's own row when the daemon created it (lib/own-messages.ts).
+      if (!ownMessages.has(id)) {
+        return { content: [{ type: 'text', text: ownMessageRefusal(id) }], isError: true }
+      }
       try {
         // Same CommonMark backslash protection as the reply path, an edited
         // message is rendered the same way, so it needs the same fix.
@@ -7501,7 +7529,18 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         return { content: [{ type: 'text', text: 'Edited' }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
-        return { content: [{ type: 'text', text: `Failed: ${errMsg}` }], isError: true }
+        // The backend answered and refused (HttpError): its own line. Anything
+        // else got no usable answer (a timeout or a dropped connection after
+        // the request left, or an unreadable 2xx), so the edit may have
+        // landed; sending the same text again is harmless.
+        if (err instanceof HttpError) {
+          return { content: [{ type: 'text', text: `Failed: ${errMsg}` }], isError: true }
+        }
+        const line = errMsg.replace(/\s+/g, ' ').trim().replace(/\.?$/, '.')
+        return {
+          content: [{ type: 'text', text: `Failed: ${line} The edit may have landed; editing again with the same text is safe.` }],
+          isError: true,
+        }
       }
     }
 

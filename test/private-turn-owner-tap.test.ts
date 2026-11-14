@@ -885,6 +885,10 @@ test('re-verify (Low): server.ts\'s edit_message tells the record only an edit t
     const scope: Record<string, unknown> = {
       BACKEND_URL: 'https://backend.invalid/api/v1', HTTP_TIMEOUT_MS: 1000, USER_ID: OWNER, postedButtons,
       protectBackslashesForMarkdown: (text: string) => text,
+      // 901 is this agent's own message (test/edit-message-route.test.ts covers the record itself).
+      ownMessages: { has: (id: unknown) => String(id) === '901' },
+      ownMessageRefusal: (id: string) => `refused ${id}`,
+      HttpError: class HttpError extends Error {},
       // bgosPatch's contract: a 2xx resolves, anything else throws.
       bgosPatch: async (path: string) => {
         if (status >= 200 && status < 300) return status === 204 ? null : { id: 901 }

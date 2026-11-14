@@ -48,5 +48,33 @@ also show message 10 from the `before` run, still unedited above the edited mess
 - Mutation: moving `postedButtons.edited` above the PATCH fails both the new record test and the updated
   "re-verify (Low)" test.
 
+## Round 2: only a message this agent sent (review F1)
+
+The PATCH carries the owner's credential, and the backend admits any row the owner may edit, so round 1 let the tool
+rewrite the owner's own lines and the lines of the owner's other agents. `lib/own-messages.ts` keeps the ids the
+server answered as this agent's own rows when the daemon created them (`bgosPost` notes the answer of
+`POST /send-message` and `POST /messages` when `sender` is `assistant` and `senderAssistantId` is absent or this
+agent), in `own-messages.json` beside the chat cursors, bounded and kept across restarts. `edit_message` refuses any
+other id with one line before anything is sent. An edit that got no answer now says it may have landed (F3).
+
+Same rig, two targets made through the API as Maya: her own line in Atlas's chat (message 12) and a line of her
+other agent Kite in Kite's chat (message 13). `harness/drive2.mjs`.
+
+| Call | round 1 (`851630e`) | round 2 (this commit) |
+|---|---|---|
+| edit Maya's own line 12 | `Edited`; her bubble now reads "Never mind, any small room is fine.", marked edited (`round2/round1-1-atlas-chat.png`) | `Error: edit_message edits only a message this agent sent, and message 12 is not one of them, so nothing was changed`; nothing sent (`round2/round2-1-atlas-chat.png`) |
+| edit Kite's line 13 | `Edited`; Kite's line rewritten (`round2/round1-2-kite-chat.png`) | the same refusal; Kite's line intact (`round2/round2-2-kite-chat.png`) |
+| its own reply 14 | | `Edited` |
+| its own reply 14, after the daemon restarted | | `Edited` (the record survived; `round2/round2-3-after-restart.png`) |
+
+Round 2 ran first; the round 1 shots therefore also show reply 14 as round 2 left it.
+
+Tests: `round2/red-first.tap` (the route tests against round 1's `server.ts`: 6 red, the owner's line, the other
+agent's line, an id never created, F3, the bgosPost note, and the source check); `round2/green.tap` (the route tests,
+`test/own-messages.test.ts` and the private turn test: 128 of 128); `round2/mutants.txt` (six mutants, all killed:
+no own row check, the record keyed by the raw id (F2, killed by a source pin, since the posted buttons record keys by
+`Number()`, which ignores the same whitespace `trim()` removes), no note in bgosPost, another agent's row counted, a
+user row counted, the no-answer wording dropped).
+
 Not covered here: native iOS and Android (the change is in the plugin daemon, the app's rendering of
 `edited_message` is unchanged; phone width is shown in the web export).
