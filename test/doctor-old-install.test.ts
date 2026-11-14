@@ -22,7 +22,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { buildDoctorRows, probeHandshake } from '../bin/bgos-doctor.mjs'
+import { buildDoctorRows, meaningfulStderr, probeHandshake } from '../bin/bgos-doctor.mjs'
 
 /** The rows a healthy machine produces, with one probe replaced. */
 function rowsWith(over: Record<string, unknown>) {
@@ -94,6 +94,49 @@ test('B: a server that crashes shows node\'s error line, never only the version 
     assert.match(result.detail, /server exited \(code 1\)/)
     assert.match(result.detail, /Error: boom from the server/)
     assert.doesNotMatch(result.detail, nodeTrailer)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Round 2 (Data, finding 4): the FIRST Error line won, so a harmless error
+// logged early hid the reason the server exited, which base still showed.
+test('B: an early harmless error never hides the reason the server exited', async () => {
+  assert.equal(
+    meaningfulStderr('Error: early warning logged\n[bgos] credentials rejected for 888, exiting\n'),
+    'Error: early warning logged | [bgos] credentials rejected for 888, exiting',
+  )
+  // The last Error line is the one kept, and node's stack, object dump and
+  // version trailer after it are not reasons.
+  assert.equal(
+    meaningfulStderr(
+      [
+        'Error: early warning logged',
+        'node:internal/modules/cjs/loader:1228',
+        '  throw err;',
+        '  ^',
+        "Error: Cannot find module '/x/bin/bgos-launch.mjs'",
+        '    at Module._resolveFilename (node:internal/modules/cjs/loader:1225:15)',
+        '    at node:internal/main/run_main_module:28:49 {',
+        "  code: 'MODULE_NOT_FOUND',",
+        '  requireStack: []',
+        '}',
+        '',
+        'Node.js v26.0.0',
+      ].join('\n'),
+    ),
+    "Error: Cannot find module '/x/bin/bgos-launch.mjs'",
+  )
+  // A real child: the early error, then the line it exits on.
+  const root = await mkdtemp(join(tmpdir(), 'oldconnect-b3-'))
+  try {
+    const script = join(root, 'exits.mjs')
+    await writeFile(
+      script,
+      "console.error('Error: early warning logged')\nconsole.error('[bgos] credentials rejected for 888, exiting')\nprocess.exit(1)\n",
+    )
+    const result = await probeHandshake({ launchArgv: [script], env: { PATH: process.env.PATH ?? '' }, timeoutMs: 20_000 })
+    assert.match(result.detail, /credentials rejected for 888, exiting/)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

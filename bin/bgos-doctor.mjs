@@ -2004,8 +2004,12 @@ export function missingLaunchShim(shim, readText = defaultReadText) {
 /**
  * The stderr a crashed server left, as one line for the row: node's own
  * `Node.js vX.Y.Z` trailer (printed after every uncaught error) dropped, and
- * the `Error: ...` line kept when there is one, because the last three lines
- * of a node crash are its stack and that trailer, never the reason.
+ * the LAST `Error: ...` line kept when there is one, because the last three
+ * lines of a node crash are its stack and that trailer, never the reason.
+ * A line the server wrote AFTER that error (its own exit reason) is kept too,
+ * so a harmless error logged early never hides why it exited; node's stack
+ * frames and the error object it prints are not such lines (Data's review of
+ * bcfd4699, finding 4).
  * @param {string} text
  * @returns {string}
  */
@@ -2015,8 +2019,19 @@ export function meaningfulStderr(text) {
     .map((l) => l.trim())
     .filter((l) => l && !/^Node\.js v\d+\.\d+\.\d+$/.test(l))
   if (lines.length === 0) return ''
-  const error = lines.find((l) => /^(?:[A-Za-z]*Error|error)(?: \[[A-Z_]+\])?:/.test(l))
-  return error ?? lines.slice(-3).join(' | ')
+  const isError = (l) => /^(?:[A-Za-z]*Error|error)(?: \[[A-Z_]+\])?:/.test(l)
+  // A stack frame, a bracket or caret line, or a field of the printed error object.
+  const isNodeNoise = (l) => /^at\s/.test(l) || /^[{}()[\]^,;]+$/.test(l) || /^[a-z][A-Za-z_]*: /.test(l)
+  let at = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (isError(lines[i])) {
+      at = i
+      break
+    }
+  }
+  if (at < 0) return lines.slice(-3).join(' | ')
+  const after = lines.slice(at + 1).filter((l) => !isError(l) && !isNodeNoise(l))
+  return after.length > 0 ? `${lines[at]} | ${after[after.length - 1]}` : lines[at]
 }
 
 /**

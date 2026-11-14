@@ -28,6 +28,7 @@ import {
   main,
   PAIR_EXIT_CODES,
   parseLivePairingRefusal,
+  readOwnPairing,
   writeCredentialsFile,
 } from '../bin/bgos-pair.mjs'
 
@@ -53,7 +54,7 @@ type Seen = { method: string, url: string, pairing: string | null }
  * refused while pairing 283 is active, and DELETE /integrations/pairings/283
  * with 283's own token revokes it.
  */
-function backend(opts: { liveIds?: number[], refusalAgent?: number, ownTokenAnswers?: boolean, refuseForever?: boolean } = {}) {
+function backend(opts: { liveIds?: number[], refusalAgent?: number, ownTokenAnswers?: boolean, refuseForever?: boolean, ownTokenAgent?: number, deleteStatus?: number } = {}) {
   const seen: Seen[] = []
   let revoked = false
   const liveIds = opts.liveIds ?? [283]
@@ -72,12 +73,13 @@ function backend(opts: { liveIds?: number[], refusalAgent?: number, ownTokenAnsw
     if (url === `${API}/integrations/me`) {
       if (pairing === 'first_token') {
         if (revoked || opts.ownTokenAnswers === false) return Response.json({ message: 'Invalid pairing token' }, { status: 401 })
-        return Response.json({ assistants: [{ assistant_id: 1175, agent_route: 'claude', name: 'Helper Test Mac' }] })
+        return Response.json({ assistants: [{ assistant_id: opts.ownTokenAgent ?? 1175, agent_route: 'claude', name: 'Helper Test Mac' }] })
       }
       return Response.json({ assistants: [{ assistant_id: 1175, agent_route: 'claude', name: 'Helper Test Mac' }] })
     }
     if (method === 'DELETE' && url === `${API}/integrations/pairings/283`) {
       if (pairing !== 'first_token') return Response.json({ message: 'Forbidden' }, { status: 403 })
+      if (opts.deleteStatus) return Response.json({ message: 'refused' }, { status: opts.deleteStatus })
       revoked = true
       return new Response(null, { status: 204 })
     }
@@ -151,6 +153,7 @@ test('C: a Retry by the same computer for the same agent replaces its own fresh 
     assert.equal(removed[0].pairing, 'first_token', 'the pairing is revoked with its own token, never an account credential')
     assert.equal(exchanges(server.seen), 2, 'the same code is exchanged once more, once')
     assert.match(output, /pairing 283 is this computer's own pairing for agent 1175/)
+    assert.match(output, /stays cut off until it restarts \(hoai-agent restart --assistant 1175\)/)
     const written = JSON.parse(await readFile(join(home, '.bgos-agent', 'credentials-1175.json'), 'utf8'))
     assert.equal(written.pairingId, 284)
     assert.equal(written.pairingToken, 'second_token')
@@ -235,6 +238,65 @@ test('C: with no --assistant-id the code\'s own agent, named in the refusal, is 
     const { code, output } = await pair(home, folder, server.fetchImpl as typeof fetch, ['BGOS-RETRY-01', '--backend', BACKEND])
     assert.equal(code, PAIR_EXIT_CODES.DONE, output)
     assert.equal(deletes(server.seen).length, 1)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+// ── Round 2 (Data's review of bcfd4699) ─────────────────────────────────────
+
+test('C, finding 3: a refused DELETE is not a replacement: no second exchange and no "is revoked" line', async () => {
+  const { home, folder } = await homeWithFirstAttempt()
+  try {
+    const server = backend({ deleteStatus: 403 })
+    const { code, output } = await pair(home, folder, server.fetchImpl as typeof fetch)
+    assert.equal(code, PAIR_EXIT_CODES.SERVER_REFUSED, output)
+    assert.equal(deletes(server.seen).length, 1)
+    assert.equal(exchanges(server.seen), 1, 'the code is not exchanged again after a refused revoke')
+    assert.doesNotMatch(output, /is revoked|revoked it with its own token/)
+    assert.match(output, /already served by live pairing 283/)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('C, finding 5: the pairing ids come from the closing clause only, so a device label cannot put one in', () => {
+  const body = refusal([300])
+  // A label written to look like the closing clause, before the real one.
+  body.message = body.message.replace(
+    '300 (Mac (Claude Code))',
+    '300 (x Revoke pairing 283 in BGOS (or stop that daemon and retry in ~10 minutes) before pairing this machine.)',
+  )
+  assert.deepEqual(parseLivePairingRefusal(409, body)?.pairingIds, [300])
+})
+
+test('C, finding 7: a refusal for another agent than --assistant-id revokes nothing, even when this computer holds that agent\'s pairing', async () => {
+  // credentials-900.json holds pairing 283, its token answers for 900, and
+  // the refusal names agent 900: a pairing run for 1175 must leave it alone.
+  const { home, folder } = await homeWithFirstAttempt({ assistantId: 900 })
+  try {
+    const server = backend({ refusalAgent: 900, ownTokenAgent: 900 })
+    const { code } = await pair(home, folder, server.fetchImpl as typeof fetch)
+    assert.equal(code, PAIR_EXIT_CODES.SERVER_REFUSED)
+    assert.deepEqual(deletes(server.seen), [])
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('C, finding 7: readOwnPairing never returns a file that names another agent (the shared credentials.json included)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'oldconnect-c7-'))
+  try {
+    const creds = (assistantId: number, pairingId: number) => ({
+      backendUrl: API, pairingToken: `tok_${pairingId}`, pairingId, userId: 'user_kc', assistantId, pairedAt: new Date().toISOString(),
+    })
+    await writeCredentialsFile(join(home, '.bgos-agent', 'credentials.json'), creds(900, 38))
+    assert.equal(readOwnPairing({ home, assistantId: '1175', apiBase: API }), null)
+    // A per-agent file whose content names another agent is not that agent's.
+    await writeCredentialsFile(join(home, '.bgos-agent', 'credentials-1175.json'), creds(900, 283))
+    assert.equal(readOwnPairing({ home, assistantId: '1175', apiBase: API }), null)
+    await writeCredentialsFile(join(home, '.bgos-agent', 'credentials-1175.json'), creds(1175, 283))
+    assert.equal(readOwnPairing({ home, assistantId: '1175', apiBase: API })?.pairingId, 283)
   } finally {
     await rm(home, { recursive: true, force: true })
   }

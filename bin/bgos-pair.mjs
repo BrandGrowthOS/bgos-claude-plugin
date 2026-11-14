@@ -352,9 +352,17 @@ export function inheritedAssistantIdLines({ inherited, flagId }) {
  * (PairingService.guardOverlappingPairings, pinned identity form):
  *   "Pairing refused: <name> (agent <id>) is already served by live pairing[s]
  *    <id> (<label>)[, ...]. Revoke pairing <id>[, <id>] in BGOS ..."
- * The ids come from the "Revoke pairing" clause, which holds ids only, so a
- * device label cannot leak a number in. null for anything else, including the
- * unpinned "agents on this catalog" form, which names no agent.
+ * The ids come from the closing "Revoke pairing <ids> in BGOS (...) before
+ * pairing this machine." clause, matched at the END of the message: it holds
+ * ids only and nothing follows it, so a device label (which comes before it)
+ * cannot put an id in. The agent id is read from "(agent <id>) is already
+ * served by live pairing[s] <first id> (": the agent's name comes before that
+ * and is the owner's own text, so it is a hint, never the authority.
+ * replaceOwnLivePairing compares it with --assistant-id when one was passed,
+ * and revokes nothing unless this computer's own token for that agent still
+ * answers for it (Data's review of bcfd4699, finding 5). null for anything
+ * else, including the unpinned "agents on this catalog" form, which names no
+ * agent.
  * @param {number} status
  * @param {unknown} body
  * @returns {{ agentId: string, pairingIds: number[] } | null}
@@ -363,10 +371,12 @@ export function parseLivePairingRefusal(status, body) {
   if (status !== 409 || !body || typeof body !== 'object') return null
   const raw = /** @type {{ message?: unknown }} */ (body).message
   const message = typeof raw === 'string' ? raw : ''
-  const agent = /\(agent (\d+)\) is already served by live pairings? /.exec(message)
-  const ids = /Revoke pairing (\d+(?:, \d+)*) in BGOS/.exec(message)
-  if (!agent || !ids) return null
-  return { agentId: agent[1], pairingIds: ids[1].split(/,\s*/).map(Number) }
+  const ids = /Revoke pairing (\d+(?:, \d+)*) in BGOS \(or stop that daemon and retry in ~10 minutes\) before pairing this machine\.\s*$/.exec(message)
+  if (!ids) return null
+  const pairingIds = ids[1].split(/,\s*/).map(Number)
+  const agent = new RegExp(`\\(agent (\\d+)\\) is already served by live pairings? ${pairingIds[0]} \\(`).exec(message)
+  if (!agent) return null
+  return { agentId: agent[1], pairingIds }
 }
 
 /**
@@ -1709,6 +1719,14 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       console.log(
         `[bgos-pair] pairing ${replaced.pairingId} is this computer's own pairing for agent ${replaced.agentId} ` +
           `(from an earlier attempt, in ${replaced.path}); revoked it with its own token and trying the same code again.`,
+      )
+      // A daemon still running on the revoked pairing does not reload the new
+      // credentials file; one click Connect restarts it in its next step
+      // (hoai-agent install --always-on). Said for a pairing run by hand
+      // (Data's review of bcfd4699, finding 6).
+      console.log(
+        `[bgos-pair] if agent ${replaced.agentId} is running on this computer, it stays cut off until it restarts ` +
+          `(hoai-agent restart --assistant ${replaced.agentId}); one click Connect restarts it for you.`,
       )
       try {
         exchange = await exchangeOnce()

@@ -305,3 +305,32 @@ test('A, end to end: a current install is not touched, and --no-install-cli (a b
     await rm(home, { recursive: true, force: true })
   }
 })
+
+// Round 2 (Data, finding 2): the flag was parsed and read, and nothing failed
+// when a caller passing it still got `claude plugin update`.
+test('A, end to end: --no-plugin-update leaves an older install alone and runs no claude command', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'oldconnect-a3-'))
+  try {
+    const configDir = join(home, '.claude')
+    const folder = join(home, '.bgos-agent', '1175-workspace')
+    await mkdir(folder, { recursive: true })
+    await writeInstalled(configDir, '0.31.0')
+    const calls: string[][] = []
+    const claudeRunner = async (args: string[]) => {
+      calls.push(args)
+      return { code: 1, stderr: 'must not run' }
+    }
+    const { code, output } = await runPair(
+      ['BGOS-7F3A-2K', '--assistant-id', '1175', '--backend', 'https://pair.test', '--no-plugin-update'],
+      home,
+      folder,
+      claudeRunner,
+    )
+    assert.equal(code, PAIR_EXIT_CODES.DONE, output)
+    assert.deepEqual(calls, [])
+    const after = JSON.parse(await readFile(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'))
+    assert.equal(after.plugins['hoai@hoai'][0].version, '0.31.0')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
