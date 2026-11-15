@@ -86,8 +86,9 @@ export const MODEL_LITERALS = Object.freeze({
   fable: '/model fable',
 } as const)
 
-/** Exact ids supported by Claude Code 2.1.319. No request text is interpolated. */
+/** Exact ids supported by Claude Code 2.1.319 and later (see EXACT_MODEL_SINCE). No request text is interpolated. */
 export const EXACT_MODEL_LITERALS = Object.freeze({
+  'claude-fable-5-2': '/model claude-fable-5-2',
   'claude-fable-5-1': '/model claude-fable-5-1',
   'claude-fable-5': '/model claude-fable-5',
   'claude-opus-5-5': '/model claude-opus-5-5',
@@ -114,6 +115,7 @@ export const EXACT_MODEL_LITERALS = Object.freeze({
 
 /** Display names copied from the same installed CLI model registry. */
 export const EXACT_MODEL_LABELS = Object.freeze({
+  'claude-fable-5-2': 'Fable 5.2',
   'claude-fable-5-1': 'Fable 5.1',
   'claude-fable-5': 'Fable 5',
   'claude-opus-5-5': 'Opus 5.5',
@@ -137,6 +139,17 @@ export const EXACT_MODEL_LABELS = Object.freeze({
   'claude-mythos-5-1': 'Mythos 5.1',
   'claude-mythos-5': 'Mythos 5',
 } as const)
+
+/**
+ * The first Claude Code release whose model registry carries an id, for ids
+ * newer than 2.1.319 (read from the installed binaries on kc-server,
+ * 2026-11-12: claude-fable-5-2 is absent from 2.1.319 and present in 2.1.321
+ * and 2.1.322). An id is offered only by a CLI at least this new: typing it
+ * into an older one would be refused by the CLI.
+ */
+export const EXACT_MODEL_SINCE: Readonly<Partial<Record<keyof typeof EXACT_MODEL_LITERALS, string>>> = Object.freeze({
+  'claude-fable-5-2': '2.1.321',
+})
 
 export function modelLiteral(value: unknown): string | null {
   if (isModelFamily(value)) return MODEL_LITERALS[value]
