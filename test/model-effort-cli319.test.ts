@@ -139,6 +139,22 @@ test('2.1.319: an exact model is typed verbatim and confirmed exactly', async ()
   assert.equal(r.keys.find((a) => a.includes('-l'))!.at(-1), '/model claude-opus-5')
 })
 
+// Asked on 2026-11-15 (HOAI chat 4875 msg 228420): Autonomee's settings pin
+// claude-opus-5-5 while its process runs claude-opus-5, so could a switch from
+// the picker have moved the model back? Not this code: the only model literal
+// a switch ever types is the one the owner chose, typed once, and a switch
+// that is not confirmed types no second one (there is no rollback).
+test('a switch never puts another model back: the one model literal typed is the one chosen, confirmed or not', async () => {
+  for (const applies of [true, false]) {
+    const r = rig(undefined, applies)
+    const out = await r.apply('claude-opus-5')
+    const literals = r.keys.filter((argv) => argv.includes('-l')).map((argv) => String(argv.at(-1)))
+    assert.deepEqual(literals.filter((l) => l.startsWith('/model ')), ['/model claude-opus-5'], `applies=${applies}`)
+    assert.ok(!literals.some((l) => l.includes('claude-opus-5-5')), 'the model it replaced is never typed')
+    assert.equal(out.ok, applies, JSON.stringify(out))
+  }
+})
+
 test('2.1.319: another version in the same family is never exact confirmation', async () => {
   const r = rig(dialog, false)
   const read = r.control.deps.readObservation

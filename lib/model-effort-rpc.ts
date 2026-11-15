@@ -133,7 +133,7 @@ export type SessionSettingsBody = {
 }
 
 /** The session settings body for a report, or null when the route would refuse it. */
-export function sessionSettingsBody(report: ModelEffortReport | null, nowMs: number): SessionSettingsBody | null {
+export function sessionSettingsBody(report: Pick<ModelEffortReport, 'model' | 'effort'> | null, nowMs: number): SessionSettingsBody | null {
   if (!report || !SESSION_REPORT_MODEL_PATTERN.test(report.model)) return null
   const effort = report.effort !== null && SESSION_REPORT_EFFORT_PATTERN.test(report.effort) ? report.effort : null
   return { model: report.model, effort, serviceTier: null, rerouted: false, reportedAt: new Date(nowMs).toISOString() }
