@@ -2078,7 +2078,7 @@ test('review: with auto approve off and no hook record, the floor still decides 
   // Any other tool keeps today's rule.
   const bash = '{ "command": "rm -rf build" }'
   assert.equal(planFloorRequest({ autoApprove: false, toolName: 'Bash', inputPreview: bash, record: null, previewMatch: classifyPermissionRequest('Bash', bash) }).action, 'none')
-  assert.match(SRC, /floorRecord === null && \(AUTO_APPROVE \|\| isOwnSendingTool\(tool_name\)\)\n\s*\? classifyPermissionRequest\(tool_name, input_preview\)/)
+  assert.match(SRC, /floorRecord === null && \(AUTO_APPROVE \|\| isOwnSendingTool\(tool_name\)\)\n\s*\? classifyPermissionRequestLead\(tool_name, input_preview\)/)
 })
 
 test('review: an email id or an approval id is a uuid as the server reads one (version 1 to 8, variant 8 to b)', async (t) => {
