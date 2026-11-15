@@ -47,3 +47,17 @@ Other::new(std::env::temp_dir().join("x.exe"))
 note "$env:TEMP\tool.exe"
 writeFile(join(tmpdir(), 'tool.txt'))
 writeFile(process.env['TEMP'] + '/tool.txt')
+command.creation_flags(0x04000000);
+let flags = 0x04000000 | 0x00000400;
+flags: 0x00000400,
+command.creation_flags(67108864);
+command.creation_flags(0x00000010);
+dwCreationFlags = 0x00000200 | 0x00000010;
+let show = SW_SHOW;
+ShowWindowed(hwnd, 0);
+si.wShowWindow = SW_SHOW as u16;
+si.wShowWindow = 1;
+wShowWindow: 5,
+si.dwFlags |= STARTF_USESHOWWINDOW; si.wShowWindow = 5;
+ITaskServiceExtra
+schtasks_note /Create

@@ -48,7 +48,21 @@
     {"name":"temp-rust-command","ruleId":"TEMP_LAUNCH","line":46},
     {"name":"temp-call-operator","ruleId":"TEMP_LAUNCH","line":47},
     {"name":"temp-bare-tmpdir","ruleId":"TEMP_LAUNCH","line":48},
-    {"name":"temp-env-index","ruleId":"TEMP_LAUNCH","line":49}
+    {"name":"temp-env-index","ruleId":"TEMP_LAUNCH","line":49},
+    {"name":"no-window-hex","ruleId":"HIDDEN_FLAG_NUMBER","line":50,"native":true},
+    {"name":"no-window-or","ruleId":"HIDDEN_FLAG_NUMBER","line":51,"native":true},
+    {"name":"no-window-sum","ruleId":"HIDDEN_FLAG_NUMBER","line":52,"native":true},
+    {"name":"no-window-decimal","ruleId":"HIDDEN_FLAG_NUMBER","line":53,"native":true},
+    {"name":"detached-hex","ruleId":"HIDDEN_FLAG_NUMBER","line":54,"native":true},
+    {"name":"detached-or","ruleId":"HIDDEN_FLAG_NUMBER","line":55,"native":true},
+    {"name":"sw-hide","ruleId":"SHOW_WINDOW","line":56,"native":true},
+    {"name":"show-window-zero-already-caught","ruleId":"SHOW_WINDOW","line":57,"native":true},
+    {"name":"startup-hide-name","ruleId":"HIDDEN_STARTUP","line":58,"native":true},
+    {"name":"startup-hide-zero","ruleId":"HIDDEN_STARTUP","line":59,"native":true},
+    {"name":"startup-hide-field","ruleId":"HIDDEN_STARTUP","line":60,"native":true},
+    {"name":"startup-flag-and-hide","ruleId":"HIDDEN_STARTUP","line":61,"native":true},
+    {"name":"task-scheduler-com","ruleId":"SCHEDULED_TASK","line":62},
+    {"name":"schtasks-create-already-caught","ruleId":"SCHEDULED_TASK","line":63}
   ],
   "extensions": [
     {"path":"bin/tool.vbs","ruleId":"SCRIPT_RUNNER","near":"bin/tool.vbs.txt"},
