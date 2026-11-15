@@ -5,8 +5,8 @@ use hoai_common::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT};
 use std::{fs, path::Path, time::Duration};
+use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT};
 
 fn example_config() -> Config {
     Config {

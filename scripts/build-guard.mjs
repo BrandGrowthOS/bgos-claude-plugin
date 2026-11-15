@@ -47,15 +47,19 @@ const nativeRules = [
   ['SHOW_WINDOW', /\b(?:ShowWindow(?:Async)?|SW_HIDE)\b/g],
   ['ALLOC_CONSOLE', /\bAllocConsole\b/g],
   // STARTF_USESHOWWINDOW only acts with a wShowWindow, so the hidden value is what counts. 0 is SW_HIDE.
-  ['HIDDEN_STARTUP', /\b(?:wShowWindow|w_show_window)\s*[:=]\s*(?:SW_HIDE\b|0(?:x0+)?(?![\w.]))/g],
+  ['HIDDEN_STARTUP', /\b(?:wShowWindow|w_show_window)\s*[:=]\s*(?:SW_HIDE\b|(?:0[xXbBoO]0[0_]*|0[0_]*)(?:_?[ui](?:8|16|32|64|size))?(?![\w.]))/g],
 ]
 // CREATE_NO_WINDOW (0x08000000) and DETACHED_PROCESS (0x00000008) written as numbers: alone, OR'ed in a list, or already summed.
 // A hex number counts on any line that names flags. A decimal is too common (offsets, sizes), so it counts only on a line
 // that names creation flags or a CreateProcess call. Same line only, like the other heuristics here.
 const hiddenCreationBits = 0x08000000n | 0x8n
-const creationFlagsLine = /\b(?:\w*creation_?flags|CreateProcess\w*|flags)\b/i
+// A name for flags: flags, launch_flags, LAUNCH_FLAGS, dwFlags. A keyword that only ends in FLAGS (FILEFLAGS) is not one.
+const flagsName = /(?<![A-Za-z0-9])flags?(?![A-Za-z0-9])|\bCreateProcess\w*/i
+const camelFlagsName = /[a-z]Flags?(?![A-Za-z0-9])/
+// A call that ends its line (rustfmt splits long builder chains) takes its numbers from the next line.
+const launchCallOpen = /\b(?:\w*creation_?flags|CreateProcess\w*)\s*\(\s*$/i
 const launchCallLine = /\b(?:\w*creation_?flags|CreateProcess\w*)\b/i
-const numberLiteral = /(?<![\w.])(0x[0-9a-f][0-9a-f_]*|\d[\d_]*)(?:[ui](?:8|16|32|64|size)|u?l{1,2})?(?![\w.])/gi
+const numberLiteral = /(?<![\w.])(0x[0-9a-f][0-9a-f_]*|0b[01][01_]*|0o[0-7][0-7_]*|\d[\d_]*)(?:[ui](?:8|16|32|64|size)|u?l{1,2})?(?![\w.])/gi
 const shellOnLine = /\b(?:powershell|pwsh)(?:\.exe)?\b/i
 const shellInvocation = /\bshell\s*\.\s*Run\b|\bshell\s*[:=]\s*true\b|\bexec(?:Sync)?\s*\((?![^\r\n]*\bshell\s*:\s*false\b)/i
 const scriptCommand = /["'][^"'\r\n]*?\.(?:cmd|bat)(?=[\s"'])[^"'\r\n]*["']/gi
@@ -79,12 +83,13 @@ function addMatches(results, file, line, text, ruleId, pattern) {
   for (const match of text.matchAll(pattern)) results.push(finding(file, line, ruleId, match[0]))
 }
 
-function hiddenFlagFindings(file, lineNumber, text) {
-  if (!creationFlagsLine.test(text)) return []
+function hiddenFlagFindings(file, lineNumber, text, previousLine = '') {
+  const afterOpener = launchCallOpen.test(previousLine)
+  if (!afterOpener && !flagsName.test(text) && !camelFlagsName.test(text)) return []
   const result = []
-  const inLaunchCall = launchCallLine.test(text)
+  const inLaunchCall = afterOpener || launchCallLine.test(text)
   for (const match of text.matchAll(numberLiteral)) {
-    if (!inLaunchCall && !/^0x/i.test(match[1])) continue
+    if (!inLaunchCall && !/^0[xbo]/i.test(match[1])) continue
     if ((BigInt(match[1].replace(/_/g, '')) & hiddenCreationBits) !== 0n) result.push(finding(file, lineNumber, 'HIDDEN_FLAG_NUMBER', match[1]))
   }
   return result
@@ -132,7 +137,7 @@ export function scanContent(file, content) {
     if (shellInvocation.test(line)) addMatches(result, file, index + 1, line, 'COMMAND_PROMPT', scriptCommand)
     if (isNative(file)) {
       for (const [ruleId, pattern] of nativeRules) addMatches(result, file, index + 1, line, ruleId, pattern)
-      result.push(...hiddenFlagFindings(file, index + 1, line))
+      result.push(...hiddenFlagFindings(file, index + 1, line, lines[index - 1]))
     }
     if (launchOperation.test(line)) {
       const adjacent = [line, lines[index + 1]].filter((value) => value !== undefined)

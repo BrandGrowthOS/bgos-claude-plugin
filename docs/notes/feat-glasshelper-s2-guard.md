@@ -15,8 +15,8 @@ This slice closes what a hidden window could still slip through.
 
 ## How the number rule decides
 
-- A hex number counts on any line that names flags (`creation_flags`, `dwCreationFlags`, `CreateProcess...`, or the word `flags`), in every native file, tests and build scripts included.
-- A decimal counts only on a line that names creation flags or a `CreateProcess` call, so a byte offset on a line that merely says flags (`offset + 78`) passes.
+- A hex, binary or octal number counts on any line that names a flag (`creation_flags`, `dwFlags`, `launch_flags`, `flag`, `CreateProcess...`), in every native file, tests and build scripts included. A call that ends its line takes its numbers from the next line.
+- A decimal counts only on a line that names creation flags or a `CreateProcess` call (or just after one that ends its line), so a byte offset on a line that merely says flags (`offset + 78`) passes.
 - A number is flagged when it has either hidden bit set. So `0x08000400` is reported and `0x04000000` is not.
 - Same line only, like the other heuristics. A number built up on one line and used on another is not seen.
 - Names are allowed: `CREATE_NO_WINDOW` is not reported, a number for it is. There are still no exemptions and no suppression comments, and a comment that holds the number is reported like any other text.
@@ -43,3 +43,6 @@ The constants are in the pinned windows-sys 0.61.2 source, module `Win32::System
 - A flag built across lines, from a variable, or read from a config file.
 - `STARTF_USESHOWWINDOW` on its own is not reported: it only hides when `wShowWindow` is hidden, and that is what is matched.
 - Task Scheduler through a type library import or a wrapper with another name.
+- A shift such as `1 << 27` is not evaluated. It is reported only when the shift count happens to share a bit with a hidden flag, so do not rely on it.
+- A number followed by a method call (`0x08000000.into()`) is not reported.
+- `STARTF_USESHOWWINDOW`'s hidden value is matched only on the field's own line, `wShowWindow: 0` or `wShowWindow = SW_HIDE` (with typed, hex, binary and octal zeros), not through a separate variable.

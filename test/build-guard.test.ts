@@ -180,6 +180,13 @@ test('hidden_creation_flags_written_as_numbers_need_a_flags_line_and_the_exact_b
     'command.creation_flags(0x08000000)', 'command.creation_flags(0x0800_0000)', 'command.creation_flags(0x08000000u32)',
     'command.creation_flags(0x00000200 | 0x08000000)', 'command.creation_flags(CREATE_UNICODE_ENVIRONMENT | 0x08000000)',
     'flags: 0x08000400,', 'let dwCreationFlags = 0x10000000 | 0x08000000;', 'CreateProcessW(null, cmd, 0x08000000)',
+    // The call split over two lines (rustfmt does this to long builder chains): the number is on the line after the opener.
+    '.creation_flags(\n    CREATE_UNICODE_ENVIRONMENT | 0x08000000,\n)', 'CreateProcessW(\n    0x08000000,\n)',
+    // Other names for flags, and binary and octal spellings of the same bits.
+    'dwFlags |= 0x8;', 'let launch_flags = 0x08000000 | 0x400;', 'let flag = 0x08000000;',
+    'command.creation_flags(0b1000)', 'command.creation_flags(0o10)', 'command.creation_flags(0o1000000000)', 'command.creation_flags(0b1000_0000_0000_0000_0000_0000_0000)',
+    // A comment that holds the number is reported like any other text: there is no suppression.
+    '// creation_flags(0x08000000)',
     'command.creation_flags(0x00000008)', 'command.creation_flags(0x0A)', 'command.creation_flags(8)', 'command.creation_flags(134217728)', 'flags: 0x0800_0000_u32,',
   ]) assert.equal(flagged(text).length > 0, true, text)
   assert.equal(flagged('command.creation_flags(0x00000200 | 0x08000000)')[0].matchedText, '0x08000000')
@@ -189,6 +196,10 @@ test('hidden_creation_flags_written_as_numbers_need_a_flags_line_and_the_exact_b
     'command.creation_flags(0x0800000)', 'command.creation_flags(0x04000000)', 'command.creation_flags(0x00000010)', 'command.creation_flags(16)',
     'command.creation_flags(CREATE_UNICODE_ENVIRONMENT)', 'let color = 0x08000000;', 'let mask = 0x8;', 'let size = 8;',
     'command.creation_flags(0x08000000x)', 'command.creation_flags(1.8)',
+    'command.creation_flags(\n    CREATE_UNICODE_ENVIRONMENT,\n)', 'let call = foo(\n    0x08000000,\n)', 'let launch_flags = 0x04000000;', 'let hdr = 0x8;',
+    // A resource script keyword that merely ends in FLAGS is not a flags name.
+    'let text = "FILEFLAGSMASK 0x3fL\\nFILEFLAGS 0x0L\\nVALUE \\"Translation\\", 0x409, 1200";',
+    'command.creation_flags(0b10000)', 'command.creation_flags(0o20)', 'command.creation_flags(0b0)',
     // A decimal counts only inside a launch call: a byte offset on a line that merely says flags passes.
     'let flags = read_u16(&pe.bytes, offset + 78);', 'let flags = 134217728;', 'let flags = 8;', 'flags: 8,',
   ]) assert.equal(flagged(text).length, 0, text)
@@ -223,10 +234,11 @@ test('hide_window_words_report_only_a_hidden_value', () => {
   for (const text of [
     'si.wShowWindow = 0;', 'si.wShowWindow=0', 'wShowWindow: 0,', 'wShowWindow: 0x0,', 'si.wShowWindow = 0x00;', 'si.wShowWindow = SW_HIDE as u16;',
     'si.dwFlags |= STARTF_USESHOWWINDOW; si.wShowWindow = 0;', 'w_show_window: SW_HIDE,',
+    'wShowWindow: 0u16,', 'si.wShowWindow = 0_u16;', 'wShowWindow: 0usize', 'wShowWindow = 00', 'wShowWindow = 0b0', 'wShowWindow = 0o0', 'wShowWindow = 0X0', 'wShowWindow = 0x0_0',
   ]) assert.equal(rules(text).includes('HIDDEN_STARTUP'), true, text)
   for (const text of [
     'si.dwFlags |= STARTF_USESHOWWINDOW;', 'si.wShowWindow = SW_SHOW as u16;', 'si.wShowWindow = 1;', 'wShowWindow: 5,', 'si.wShowWindow = 05;', 'si.wShowWindow = 0.5;',
-    'si.wShowWindow = SW_HIDEOUT;', 'xwShowWindow = 0;', '// wShowWindow stays visible', 'si.dwFlags |= STARTF_USESHOWWINDOW; si.wShowWindow = 5;',
+    'si.wShowWindow = SW_HIDEOUT;', 'wShowWindow: 1u16,', 'wShowWindow: 5u16', 'wShowWindow = 05', 'wShowWindow = 0b1', 'wShowWindow = 0x01', 'xwShowWindow = 0;', '// wShowWindow stays visible', 'si.dwFlags |= STARTF_USESHOWWINDOW; si.wShowWindow = 5;',
   ]) assert.equal(rules(text).includes('HIDDEN_STARTUP'), false, text)
   assert.equal(rules('si.wShowWindow = 0;', 'lib/unit.mjs').includes('HIDDEN_STARTUP'), false)
 })
