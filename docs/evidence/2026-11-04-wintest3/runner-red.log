@@ -55,7 +55,7 @@ not ok 27 - the focus check reads every way of focusing a test, and nothing that
   code: 'ERR_TEST_FAILURE'
   name: 'TypeError'
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/run-tests-timeout.test.ts:523:53)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/run-tests-timeout.test.ts:523:53)
     Test.runInAsyncScope (node:async_hooks:227:14)
 not ok 28 - a focused test fails its file by name, in both families, without running it
   error: |-

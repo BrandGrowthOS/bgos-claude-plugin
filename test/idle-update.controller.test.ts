@@ -92,7 +92,7 @@ type Rig = ReturnType<typeof agent>
 
 function agent(
   disk: ReturnType<typeof memDisk>,
-  o: { id?: number; running?: string; staged?: string | null; random?: number; authority?: string; ownsUs?: boolean; scale?: number; platform?: string; launcher?: any; unattended?: any; installMethod?: string; install?: { version: string }; fromCommit?: string } = {},
+  o: { id?: number; running?: string; staged?: string | null; random?: number; authority?: string; ownsUs?: boolean; scale?: number; platform?: string; launcher?: any; unattended?: any; installMethod?: string; install?: { version: string }; fromCommit?: string; bootAtMs?: number } = {},
 ) {
   const m = need()
   const id = o.id ?? 912
@@ -171,7 +171,7 @@ function agent(
     assistantId: String(id),
     ownPid: b + 50,
     platform: o.platform ?? 'darwin',
-    bootAtMs: T0 - 2 * HOUR,
+    bootAtMs: o.bootAtMs ?? T0 - 2 * HOUR,
     runningVersion: s.running,
     installMethod: o.installMethod ?? 'marketplace',
     fromRoot: `/c/plugins/cache/hoai/hoai/${s.running}`,
@@ -1592,6 +1592,72 @@ test('came back on the old version: a failed attempt, the canary voided for the 
   assert.ok(disk.files.has(join(MACHINE, '0.81.0', 'void-1')))
   assert.equal(disk.files.has(join(MACHINE, 'lease.json')), false)
   assert.equal(lastReport(a)?.code, 'scheduled_update_failed')
+})
+
+// A staged build that dies at import never settles the record: no daemon on it ever holds the lock. The relaunch that
+// comes back on the old build while the install still names the new one is that build never reporting in
+// (lib/idle-update.mjs rollBackNeverArrived; DESIGN.md, Rollback, "A build that dies at import").
+test('came back on the old build after the ask, the install still on the new one: it goes back at once, held bad, reported once', async () => {
+  const disk = await afterAsk()
+  const install = { version: '0.81.0' }
+  const a = agent(disk, { running: '0.80.0', install, bootAtMs: disk.clock.now - 5 * SEC })
+  await a.c.tick()
+  const rec = readJson(disk, a.record)
+  assert.equal(rec.state, 'rolled_back')
+  assert.equal(rec.neverArrived, 'came_back_old')
+  assert.equal(rec.attempts.at(-1).outcome, 'rolled_back')
+  assert.ok(rec.reportedAt, 'reported by this boot, so the next does not say it again')
+  assert.equal(install.version, '0.80.0', 'the install is back on the build that runs')
+  assert.deepEqual(a.badAtInstall, [true], 'the mark comes before the install is touched')
+  assert.equal(readJson(disk, join(MACHINE, '0.81.0', 'bad')).reason, 'never_arrived')
+  assert.equal(disk.files.has(join(MACHINE, '0.81.0', 'void-1')), false, "the canary's failure is the version's verdict, not voided")
+  assert.equal(disk.files.has(join(MACHINE, 'lease.json')), false, 'lease released')
+  assert.deepEqual(a.rollbackRestarts, [], 'it already runs the old build: no restart')
+  assert.equal(a.c.phase(), 'watch', 'and none is waited for')
+  assert.deepEqual(a.reports.filter((r: any) => r?.code === 'idle_update_rolled_back').length, 1)
+  assert.match(lastReport(a).message, /went back to 0\.80\.0/)
+  assert.equal(a.logs.filter((l) => l.includes('never reported in')).length, 1)
+  await a.c.tick()
+  assert.equal(a.rollbackInstalls.length, 1, 'once')
+  assert.deepEqual(a.rollbackRestarts, [])
+  const next = agent(disk, { running: '0.80.0', install, bootAtMs: disk.clock.now })
+  await next.c.tick()
+  assert.equal(next.logs.some((l) => l.includes('after rolling 0.81.0 back')), false, 'the next boot does not say it again')
+  const other = agent(disk, { id: 913, install: { version: '0.81.0' } })
+  disk.clock.now += 3 * MIN
+  assert.equal(await other.c.tick(), 'version_held_bad')
+})
+
+test('came back on the old build with the install already moved off the new one: the plain came_back_old, nothing marked', async () => {
+  const disk = await afterAsk()
+  const install = { version: '0.80.0' }
+  const a = agent(disk, { running: '0.80.0', install, bootAtMs: disk.clock.now - 5 * SEC })
+  await a.c.tick()
+  assert.equal(readJson(disk, a.record).state, 'came_back_old')
+  assert.deepEqual(a.rollbackInstalls, [])
+  assert.equal(disk.files.has(join(MACHINE, '0.81.0', 'bad')), false)
+})
+
+test('a boot from before the ask is no launch onto the new build: the plain came_back_old', async () => {
+  const disk = await afterAsk()
+  const a = agent(disk, { running: '0.80.0', bootAtMs: disk.clock.now - HOUR })
+  await a.c.tick()
+  assert.equal(readJson(disk, a.record).state, 'came_back_old')
+  assert.deepEqual(a.rollbackInstalls, [])
+  assert.equal(disk.files.has(join(MACHINE, '0.81.0', 'bad')), false)
+})
+
+test('came back on the old build, the install still on the new one, and the way back fails: held bad, said, never a restart', async () => {
+  const disk = await afterAsk()
+  const install = { version: '0.81.0' }
+  const a = agent(disk, { running: '0.80.0', install, bootAtMs: disk.clock.now - 5 * SEC })
+  a.s.rollbackOk = false
+  await a.c.tick()
+  assert.equal(readJson(disk, a.record).state, 'rollback_failed')
+  assert.ok(disk.files.has(join(MACHINE, '0.81.0', 'bad')))
+  assert.equal(lastReport(a)?.code, 'idle_update_rollback_failed')
+  assert.deepEqual(a.rollbackRestarts, [])
+  assert.equal(disk.files.has(join(MACHINE, 'lease.json')), false)
 })
 
 test('a nonce read from disk never names a path: one that climbs out of the machine folder moves and deletes nothing there', async () => {

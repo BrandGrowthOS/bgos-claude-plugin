@@ -6,6 +6,7 @@ import { REACT_TOOL, handleReactTool } from '../lib/react-tool.ts'
 import { OWN_MCP_TOOLS } from '../lib/hook-events.ts'
 import { messagesCallerHeaders } from '../lib/messages-caller-header.ts'
 import { authHeaders, resolveAuth, type ResolvedAuth } from '../lib/agent-credentials.ts'
+import { OwnMessages } from '../lib/own-messages'
 
 const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
 const ast = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true)
@@ -23,10 +24,11 @@ const AMBIGUOUS_SERVER_MESSAGE = 'This computer runs more than one agent in this
 // Importing server.ts would boot a daemon and read the installed pairing.
 function fixture(status = 200, responseBody = '', auth: ResolvedAuth = paired) {
   const calls: Array<{ url: string; init: { method: string; headers: Record<string, string>; body: string } }> = []
+  const ownMessages = new OwnMessages({ filePath: null, assistantId: auth.assistantId })
   const postNode = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'bgosPost')!
   const errorNode = ast.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'HttpError')!
   const postJs = ts.transpileModule(`${errorNode.getText(ast)}\n${postNode.getText(ast)}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
-  const bgosPost = new Function('API_BASE', 'ASSISTANT_ID', 'AUTH', 'authHeaders', 'HTTP_TIMEOUT_MS', 'bgosCall', 'errorBodyText', 'messagesCallerHeaders', 'classifyPeerRefusal',
+  const bgosPost = new Function('API_BASE', 'ASSISTANT_ID', 'AUTH', 'authHeaders', 'HTTP_TIMEOUT_MS', 'bgosCall', 'errorBodyText', 'messagesCallerHeaders', 'classifyPeerRefusal', 'ownMessages', 'log',
     `${postJs}; return bgosPost`)(
     'https://api.example.test/api/v1', auth.assistantId, auth, authHeaders, 100,
     async (request: any, consume: any) => {
@@ -35,6 +37,7 @@ function fixture(status = 200, responseBody = '', auth: ResolvedAuth = paired) {
     },
     (text: string) => text,
     messagesCallerHeaders, () => null,
+    ownMessages, () => assert.fail('recording a reaction response must not throw'),
   )
   const start = source.indexOf("    case 'react':")
   assert.ok(start >= 0, 'react must be dispatched by the real tool handler')

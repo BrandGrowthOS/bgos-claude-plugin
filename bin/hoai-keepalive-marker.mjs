@@ -142,7 +142,7 @@ export function main(argv) {
 }
 
 // REAL paths on both sides: the launcher calls this through an aliased home
-// (/Users/fitecho is /Users/bgos), and a plain URL compare silently skipped
+// (/Users/you-link is /Users/you), and a plain URL compare silently skipped
 // main(), leaving keepalive.json stale (board bbbf3438).
 if (isRunAsMain(process.argv[1], import.meta.url)) {
   process.exit(main(process.argv.slice(2)))
