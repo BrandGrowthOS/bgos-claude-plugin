@@ -3030,7 +3030,7 @@ const reportSessionSettings = (chatId: string, body: SessionSettingsBody): Promi
     body as unknown as Record<string, unknown>,
   )
 
-// The pill follows the session (KC, HOAI chat 4875 msg 228420, 2026-11-15):
+// The pill follows the session (asked for on 2026-11-15):
 // the report above used to go out from the picker's apply only, so a model
 // changed in the agent's own terminal, or by a restart, never reached the
 // app. The bridge's observation is looked at on a timer and reported when it

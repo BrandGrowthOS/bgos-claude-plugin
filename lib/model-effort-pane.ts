@@ -332,9 +332,9 @@ export function readComposer(capture: string, cursor?: TerminalCursor): Composer
   if (first !== 'unknown') return first
   // 2.1.319 leaves the cursor to the terminal. A row is empty only with the
   // visible terminal cursor immediately after the prompt, and nothing on it
-  // but, at most, the CLI's own dim hint starting at that cursor (BGOS 1048
-  // msg 219939: "restart the session to load it" and suggested prompts sat
-  // in 6 of 8 agents' boxes on kc-server, 2026-11-12, so refusing every dim
+  // but, at most, the CLI's own dim hint starting at that cursor (seen on
+  // 2026-11-12: "restart the session to load it" and suggested prompts sat
+  // in 6 of 8 agents' boxes on one machine, so refusing every dim
   // word refused every switch). Typed text is never dim and moves the
   // cursor; a typed space moves it too; the CLI's reference tags are the
   // owner's content and stay unknown.

@@ -1,7 +1,7 @@
-# Claude Code 2.1.319, Autonomee's pane (2026-11-12)
+# Claude Code 2.1.319, an agent's pane (2026-11-12)
 
-`pane.ansi` is the bottom of assistant 863's tmux pane on kc-server, read only with
-`tmux -S /tmp/tmux-1000/hoai-863 capture-pane -p -e -t %0`. The first line (the
+`pane.ansi` is the bottom of an agent's tmux pane, read only with
+`tmux -S <that agent's socket> capture-pane -p -e -t %0`. The first line (the
 agent's last answer) is replaced with `● Done.`; the rest is byte for byte. tmux
 reported the cursor at x=2, y=46 of the full 50 row pane, visible; in this 8 row
 crop (rows 46 to 50 become rows 3 to 7) that is x=2, y=3.

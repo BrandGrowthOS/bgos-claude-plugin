@@ -29,7 +29,7 @@ test('2.1.319: a terminal cursor never licenses a draft or an uncertain prompt',
     assert.notEqual(readComposer(empty.replace('❯\u00a0', '❯\u00a0' + text), { x: 2, y: 2, visible: true }), 'empty', JSON.stringify(text))
   }
   // The CLI's own dim hint, with the cursor at its first cell, is the empty box
-  // (BGOS 1048 msg 219939; test/model-effort-autonomee.test.ts has the capture).
+  // (test/model-effort-composer319.test.ts has the capture).
   assert.equal(readComposer(empty.replace('❯\u00a0', '❯\u00a0\u001b[2mhint\u001b[22m'), { x: 2, y: 2, visible: true }), 'empty')
 })
 
@@ -139,7 +139,7 @@ test('2.1.319: an exact model is typed verbatim and confirmed exactly', async ()
   assert.equal(r.keys.find((a) => a.includes('-l'))!.at(-1), '/model claude-opus-5')
 })
 
-// Asked on 2026-11-15 (HOAI chat 4875 msg 228420): Autonomee's settings pin
+// Asked on 2026-11-15: one agent's settings pin
 // claude-opus-5-5 while its process runs claude-opus-5, so could a switch from
 // the picker have moved the model back? Not this code: the only model literal
 // a switch ever types is the one the owner chose, typed once, and a switch
@@ -213,7 +213,7 @@ test('2.1.319 captures: both blank after-turn prompts are empty only with the te
     assert.equal(readComposer(screen, { x: 3, y: 1, visible: true }), 'unknown')
   }
   assert.equal(readComposer(CAPTURED.typed, { x: 2, y: 1, visible: true }), 'draft')
-  // A fresh prompt holds only the CLI's dim hint: with the cursor at its first cell it is empty (BGOS 1048 msg 219939).
+  // A fresh prompt holds only the CLI's dim hint: with the cursor at its first cell it is empty (seen on 2026-11-12).
   assert.equal(readComposer(CAPTURED.fresh, { x: 2, y: 1, visible: true }), 'empty')
   assert.equal(readComposer(CAPTURED.fresh, { x: 3, y: 1, visible: true }), 'unknown')
 })

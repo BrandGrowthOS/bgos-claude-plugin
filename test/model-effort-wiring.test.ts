@@ -71,7 +71,7 @@ test('the picker answers only the owner\'s main chat, from the daemon\'s own cha
 })
 
 test('the pill follows the session: the daemon looks on a timer, through the picker\'s own gates', () => {
-  // KC, HOAI chat 4875 msg 228420 (2026-11-15): the session settings report
+  // Seen on 2026-11-15: the session settings report
   // went out from the picker's apply only, so a model changed in the agent's
   // own terminal never reached the app.
   const at = server.indexOf('const modelEffortLiveReporter = new SessionSettingsLiveReporter(')

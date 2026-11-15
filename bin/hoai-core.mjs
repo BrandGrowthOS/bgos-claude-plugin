@@ -2023,8 +2023,8 @@ export function buildGateAutoAcceptExpect({ claudePath, args, gateBlock = readGa
       '}',
       // Not into a LIVE session: Claude Code has drawn its screen by then, the line
       // lands on the message box's bottom rule and is never repainted, so the
-      // model picker can no longer find the box (BGOS 1048 msg 219939, assistant
-      // 863, 2026-11-12). launch-status above records every outcome, live included.
+      // model picker can no longer find the box (seen on 2026-11-12). launch-status
+      // above records every outcome, live included.
       'if {$hoai_outcome ne "live"} { puts "\\n\\[hoai\\] launch: $hoai_line" }',
       `if {[string match "gate-*" $hoai_outcome]} { catch {close}; exit ${EXIT_SUPERVISED_GATE} }`,
       `if {$hoai_outcome eq "exited-during-startup"} { exit ${EXIT_SUPERVISED_STARTUP_EXIT} }`,

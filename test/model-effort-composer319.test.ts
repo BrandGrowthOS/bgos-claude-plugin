@@ -1,4 +1,4 @@
-/** BGOS 1048 msg 219939 (2026-11-12): Autonomee's picker refused every switch with composer_unknown. */
+/** Seen on 2026-11-12: an agent's picker refused every switch with composer_unknown. */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -6,7 +6,7 @@ import { readComposer } from '../lib/model-effort-pane.ts'
 import { parseHelpCatalog } from '../lib/model-effort-catalog.ts'
 import { buildGateAutoAcceptExpect, readGateBlock } from '../bin/hoai-core.mjs'
 
-const pane = readFileSync(new URL('./fixtures/claude-2.1.319-autonomee/pane.ansi', import.meta.url), 'utf8')
+const pane = readFileSync(new URL('./fixtures/claude-2.1.319-composer/pane.ansi', import.meta.url), 'utf8')
 const repaired = pane.replace('[hoai] launch: outcome=live answered=[channels] compact=on', '─'.repeat(58))
 const cursor = { x: 2, y: 3, visible: true }
 

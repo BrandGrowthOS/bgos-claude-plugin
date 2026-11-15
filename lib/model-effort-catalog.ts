@@ -76,7 +76,7 @@ export function parseHelpCatalog(help: string | null | undefined, version?: stri
   // aliases. The frozen table mirrors that registry, not arbitrary ids seen in
   // text. It used to be offered to 2.1.319 ONLY, so every later CLI (2.1.321,
   // 2.1.322) fell back to three aliases with no Haiku and no exact version
-  // (BGOS 1048 msg 219939, 2026-11-12). An id newer than 2.1.319 is offered
+  // (seen on 2026-11-12). An id newer than 2.1.319 is offered
   // only from the release that carries it (EXACT_MODEL_SINCE).
   if (atLeast(version, '2.1.319') && models.length > 0) {
     const ids = (Object.keys(EXACT_MODEL_LITERALS) as (keyof typeof EXACT_MODEL_LITERALS)[]).filter((id) => {

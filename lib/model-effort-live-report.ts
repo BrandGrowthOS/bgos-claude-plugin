@@ -1,5 +1,5 @@
 /**
- * The pill follows the session (KC, HOAI chat 4875 msg 228420, 2026-11-15).
+ * The pill follows the session (asked for on 2026-11-15).
  *
  * The chip under the owner's message box shows the model and effort the
  * server last stored for the chat (chats.session_settings). This daemon is
@@ -8,7 +8,7 @@
  * THROUGH the picker. A model changed any other way never reached the app:
  * /model typed in the agent's own terminal (which the app's own refusal text
  * tells the owner to do), or a restart that resumes a conversation on the
- * model it had. Autonomee's chip read a value last written six days before.
+ * model it had. One agent's chip read a value last written six days before.
  *
  * The daemon already reads the truth all the time: the status line bridge
  * (lib/model-control-store.mjs) stores what the session itself says, every

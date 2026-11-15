@@ -142,7 +142,7 @@ export const EXACT_MODEL_LABELS = Object.freeze({
 
 /**
  * The first Claude Code release whose model registry carries an id, for ids
- * newer than 2.1.319 (read from the installed binaries on kc-server,
+ * newer than 2.1.319 (read from the installed binaries on one machine,
  * 2026-11-12: claude-fable-5-2 is absent from 2.1.319 and present in 2.1.321
  * and 2.1.322). An id is offered only by a CLI at least this new: typing it
  * into an older one would be refused by the CLI.

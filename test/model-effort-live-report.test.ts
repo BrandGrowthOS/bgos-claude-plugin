@@ -1,8 +1,7 @@
 /**
  * The pill follows the session (lib/model-effort-live-report.ts).
  *
- * KC, HOAI chat 4875 msg 228420 (2026-11-15), agent Autonomee (assistant 863,
- * plugin 0.88.0): the chip under the message box shows the model the server
+ * Seen on 2026-11-15, on one agent on plugin 0.88.0: the chip under the message box shows the model the server
  * last stored for the chat. This daemon sent that report from one place only,
  * the picker's apply (lib/model-effort-rpc.ts), so the stored value was the
  * outcome of the last switch made THROUGH the picker (9 Nov, claude-opus-5).
@@ -104,7 +103,7 @@ test('nothing changed: nothing is sent again, however many looks', async () => {
   assert.equal(r.reports.length, 1)
 })
 
-test('KC\'s case: the model changed outside the picker reaches the app on the next look', async () => {
+test('the owner\'s case: the model changed outside the picker reaches the app on the next look', async () => {
   const r = rig()
   await r.reporter.tick()
   // The owner types /model claude-opus-5-5 in the agent's own terminal.
