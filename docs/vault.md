@@ -22,7 +22,7 @@ Every call goes to `/api/v1/vault/agent/<id>/...` with the pairing credential
 turn admitted for anyone but the owner is refused before any request. Failures
 are fixed `VAULT_*` codes that never echo a response body.
 
-## Setting up the host: nothing to do (0.88.0)
+## Setting up the host: nothing to do (0.90.0)
 
 Where the HOAI server takes host offers (`VAULT_ZERO_SETUP_ENABLED`), this
 machine sets itself up. Nobody opens a terminal, pastes a key, compares a
