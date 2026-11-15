@@ -190,7 +190,8 @@ import {
 } from './lib/compact-inject.js'
 import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
 import { holdChannelCardsWhileBusy, ModelEffortControl } from './lib/model-effort-control.js'
-import { ModelEffortPickerHandler, pickerChatAllowed, rpcLogOp, rpcLogTag } from './lib/model-effort-rpc.js'
+import { ModelEffortPickerHandler, pickerChatAllowed, rpcLogOp, rpcLogTag, type SessionSettingsBody } from './lib/model-effort-rpc.js'
+import { SessionSettingsLiveReporter } from './lib/model-effort-live-report.js'
 import { parseHelpCatalog } from './lib/model-effort-catalog.js'
 import { processAncestry } from './lib/model-effort-pane.js'
 import { modelControlDir, readObservation, readOptIn, refreshBridgeCopy } from './lib/model-control-store.mjs'
@@ -3018,16 +3019,42 @@ function modelEffortDeclared(): boolean {
 // The picker's answers. Owner only and main chat only from the daemon's own
 // records (pickerChatAllowed), on top of BGOS's gate; voiceRpc below routes
 // the two ops here.
+/** The owner's own main chat, by the daemon's own records: the one rule for the picker and the pill. */
+const modelEffortChatAllowed = (chatId: string): boolean =>
+  pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => chatOwnership.isOwners(c), isOthers: (c) => chatOwnership.isOthers(c) })
+
+/** The session settings report (the pill), the one route for it. */
+const reportSessionSettings = (chatId: string, body: SessionSettingsBody): Promise<unknown> =>
+  bgosPatch(
+    `integrations/assistants/${encodeURIComponent(String(ASSISTANT_ID ?? ''))}/chats/${encodeURIComponent(chatId)}/session-settings`,
+    body as unknown as Record<string, unknown>,
+  )
+
+// The pill follows the session (KC, HOAI chat 4875 msg 228420, 2026-11-15):
+// the report above used to go out from the picker's apply only, so a model
+// changed in the agent's own terminal, or by a restart, never reached the
+// app. The bridge's observation is looked at on a timer and reported when it
+// changed, through the picker's own gates (lib/model-effort-live-report.ts).
+const MODEL_EFFORT_LIVE_REPORT_MS = 15_000
+const modelEffortLiveReporter = new SessionSettingsLiveReporter({
+  optedIn: () => readOptIn(MODEL_CONTROL_DIR, String(ASSISTANT_ID ?? '')),
+  sessionId: () => provenSessionId(),
+  readObservation: (sessionId) => readObservation(MODEL_CONTROL_DIR, sessionId),
+  chats: () => mainChatIds.filter(modelEffortChatAllowed),
+  reportSettings: reportSessionSettings,
+  now: Date.now,
+  log,
+}, { staleMs: MODEL_EFFORT_STALE_MS, timeoutMs: HTTP_TIMEOUT_MS + 5_000 })
+
 const modelEffortPicker = new ModelEffortPickerHandler({
   assistantId: () => String(ASSISTANT_ID ?? ''),
-  chatAllowed: (chatId) =>
-    pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => chatOwnership.isOwners(c), isOthers: (c) => chatOwnership.isOthers(c) }),
+  chatAllowed: modelEffortChatAllowed,
   control: modelEffortControl,
   reportSettings: (chatId, body) =>
-    bgosPatch(
-      `integrations/assistants/${encodeURIComponent(String(ASSISTANT_ID ?? ''))}/chats/${encodeURIComponent(chatId)}/session-settings`,
-      body as unknown as Record<string, unknown>,
-    ),
+    reportSessionSettings(chatId, body).then((answer) => {
+      modelEffortLiveReporter.noteReported(chatId, body)
+      return answer
+    }),
   sendNote: (chatId, text) =>
     bgosPost('send-message', {
       chatId: Number(chatId),
@@ -21621,6 +21648,9 @@ async function main(): Promise<void> {
     // so the owner's chat never shows a silently dead agent. Cheap (reads only
     // appended bytes) and deduped per rest episode inside reportResting.
     setInterval(reportResting, 30_000).unref()
+    // The pill follows the session: one look now, then on a timer.
+    void modelEffortLiveReporter.tick()
+    setInterval(() => void modelEffortLiveReporter.tick(), MODEL_EFFORT_LIVE_REPORT_MS).unref()
     // Same cadence, same transcripts: the shared Claude login state.
     setInterval(sweepClaudeLogin, 30_000).unref()
     // The goal lane's belt: a Stop that never reached this process, or a
