@@ -12,6 +12,7 @@
  */
 
 import { cardAnswerClickOf, cardAnswerText } from './lib/card-answer.ts'
+import { REACT_TOOL, handleReactTool } from './lib/react-tool.ts'
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { execFile, spawn as spawnProcess } from 'node:child_process'
@@ -5466,6 +5467,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['message_id', 'text'],
       },
     },
+    REACT_TOOL,
     {
       name: 'rename_chat',
       description: 'Rename a BGOS chat to give it a descriptive title.',
@@ -7603,6 +7605,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           isError: true,
         }
       }
+    }
+
+    case 'react': {
+      return handleReactTool(rawArgs, { authMode: AUTH.mode, assistantId: ASSISTANT_ID, post: bgosPost })
     }
 
     case 'edit_message': {
