@@ -743,6 +743,7 @@ All share the same plugin installation at `~/bgos-claude-plugin/`.
 |------|-------------|
 | `reply` | Send a message with optional file attachments and interactive buttons |
 | `edit_message` | Edit a previously sent message |
+| `react` | Add or remove your emoji reaction to a message. Requires this agent to be paired. One emoji per message; a new emoji replaces the old one. Use it to acknowledge or agree, not instead of a reply. |
 | `rename_chat` | Set a descriptive title on a chat |
 | `ask_user_input` | One card of 1 to 4 multiple-choice questions; returns pending, every answer arrives as one `ask_answered` event |
 | `withdraw_ask` | Retire a question card you no longer need |

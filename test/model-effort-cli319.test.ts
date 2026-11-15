@@ -25,9 +25,12 @@ test('2.1.319: a terminal cursor never licenses a draft or an uncertain prompt',
   for (const cursor of [undefined, { x: 3, y: 2, visible: true }, { x: 2, y: 1, visible: true }, { x: 2, y: 2, visible: false }]) {
     assert.equal(readComposer(empty, cursor), 'unknown')
   }
-  for (const text of ['draft', ' ', '\u001b[2m[Pasted text #1]\u001b[22m', '\u001b[2mhint\u001b[22m']) {
+  for (const text of ['draft', ' ', '\u001b[2m[Pasted text #1]\u001b[22m', 'x\u001b[2mhint\u001b[22m']) {
     assert.notEqual(readComposer(empty.replace('❯\u00a0', '❯\u00a0' + text), { x: 2, y: 2, visible: true }), 'empty', JSON.stringify(text))
   }
+  // The CLI's own dim hint, with the cursor at its first cell, is the empty box
+  // (test/model-effort-composer319.test.ts has the capture).
+  assert.equal(readComposer(empty.replace('❯\u00a0', '❯\u00a0\u001b[2mhint\u001b[22m'), { x: 2, y: 2, visible: true }), 'empty')
 })
 
 function rig(screen?: string, applies = true) {
@@ -136,6 +139,22 @@ test('2.1.319: an exact model is typed verbatim and confirmed exactly', async ()
   assert.equal(r.keys.find((a) => a.includes('-l'))!.at(-1), '/model claude-opus-5')
 })
 
+// Asked on 2026-11-15: one agent's settings pin
+// claude-opus-5-5 while its process runs claude-opus-5, so could a switch from
+// the picker have moved the model back? Not this code: the only model literal
+// a switch ever types is the one the owner chose, typed once, and a switch
+// that is not confirmed types no second one (there is no rollback).
+test('a switch never puts another model back: the one model literal typed is the one chosen, confirmed or not', async () => {
+  for (const applies of [true, false]) {
+    const r = rig(undefined, applies)
+    const out = await r.apply('claude-opus-5')
+    const literals = r.keys.filter((argv) => argv.includes('-l')).map((argv) => String(argv.at(-1)))
+    assert.deepEqual(literals.filter((l) => l.startsWith('/model ')), ['/model claude-opus-5'], `applies=${applies}`)
+    assert.ok(!literals.some((l) => l.includes('claude-opus-5-5')), 'the model it replaced is never typed')
+    assert.equal(out.ok, applies, JSON.stringify(out))
+  }
+})
+
 test('2.1.319: another version in the same family is never exact confirmation', async () => {
   const r = rig(dialog, false)
   const read = r.control.deps.readObservation
@@ -194,7 +213,9 @@ test('2.1.319 captures: both blank after-turn prompts are empty only with the te
     assert.equal(readComposer(screen, { x: 3, y: 1, visible: true }), 'unknown')
   }
   assert.equal(readComposer(CAPTURED.typed, { x: 2, y: 1, visible: true }), 'draft')
-  assert.equal(readComposer(CAPTURED.fresh, { x: 2, y: 1, visible: true }), 'unknown', 'the row still holds a dim hint, so the blank-row fallback does not apply')
+  // A fresh prompt holds only the CLI's dim hint: with the cursor at its first cell it is empty (seen on 2026-11-12).
+  assert.equal(readComposer(CAPTURED.fresh, { x: 2, y: 1, visible: true }), 'empty')
+  assert.equal(readComposer(CAPTURED.fresh, { x: 3, y: 1, visible: true }), 'unknown')
 })
 
 test('2.1.319 captures: the recorded model question is accepted and confirmed', async () => {
@@ -276,17 +297,20 @@ test('M13: a version alone cannot enable exact ids without recognized model help
   for (const help of [HELP.split('\n')[0], HELP.replace("'fable', 'opus', or 'sonnet'", "'unknown'")]) {
     assert.deepEqual(parseHelpCatalog(help, '2.1.319').models, [])
   }
-  assert.deepEqual(parseHelpCatalog(HELP, '2.1.320').models, ['fable', 'opus', 'sonnet'])
+  // Before 2.1.319 the help's aliases; from it on, the exact table (no longer 2.1.319 only).
+  assert.deepEqual(parseHelpCatalog(HELP, '2.1.318').models, ['fable', 'opus', 'sonnet'])
+  assert.ok(parseHelpCatalog(HELP, '2.1.320').models.includes('claude-opus-5-5'))
 })
 
 test('retired CLI registry spellings are excluded using the same release deprecation table', async () => {
   const { readFileSync } = await import('node:fs')
   const rows = JSON.parse(readFileSync(new URL('./fixtures/claude-2.1.319-deprecations.json', import.meta.url), 'utf8')) as Array<{ ids: string[]; status: string }>
-  const { EXACT_MODEL_LITERALS } = await import('../lib/compact-inject.ts')
+  const { EXACT_MODEL_LITERALS, EXACT_MODEL_SINCE } = await import('../lib/compact-inject.ts')
   const retired = Object.keys(EXACT_MODEL_LITERALS).filter((id) => rows.some((row) => row.status === 'retired' && row.ids.some((old) => old === id || old === `${id}-latest`)))
   assert.equal(retired.length, 6)
   const catalog = parseHelpCatalog(HELP, '2.1.319')
-  assert.deepEqual(catalog.models, Object.keys(EXACT_MODEL_LITERALS).filter((id) => !retired.includes(id)))
+  // Ids newer than 2.1.319 (EXACT_MODEL_SINCE) are not offered to it either.
+  assert.deepEqual(catalog.models, Object.keys(EXACT_MODEL_LITERALS).filter((id) => !retired.includes(id) && !Object.hasOwn(EXACT_MODEL_SINCE, id)))
   assert.ok(catalog.models.includes('claude-sonnet-4-5'), 'deprecated is not retired')
   for (const model of retired) {
     const r = rig()

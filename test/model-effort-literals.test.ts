@@ -103,7 +103,8 @@ test('every injection attempt builds NO argv at all', () => {
 test('exact models have frozen literals; near misses never build argv', () => {
   assert.ok(Object.isFrozen(EXACT_MODEL_LITERALS))
   assert.ok(Object.isFrozen(EXACT_MODEL_LABELS))
-  assert.equal(Object.keys(EXACT_MODEL_LITERALS).length, 22, 'the installed 2.1.319 registry has 22 id/family/display_name rows')
+  // The installed 2.1.319 registry has 22 id/family/display_name rows; 2.1.321 added claude-fable-5-2 (EXACT_MODEL_SINCE).
+  assert.equal(Object.keys(EXACT_MODEL_LITERALS).length, 23)
   assert.deepEqual(Object.keys(EXACT_MODEL_LABELS), Object.keys(EXACT_MODEL_LITERALS))
   for (const [id, literal] of Object.entries(EXACT_MODEL_LITERALS)) {
     assert.equal(buildSetModelInjectionSteps(T, id)![0]!.argv.at(-1), literal)
