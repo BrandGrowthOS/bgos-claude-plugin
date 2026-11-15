@@ -95,7 +95,7 @@ test('fixture_inventory_is_complete', () => {
   api()
   assert.equal(positive.length, negative.length)
   assert.equal(expected.cases.length, positive.length)
-  const expectedRules = ['SCRIPT_RUNNER', 'POLICY_BYPASS', 'ENCODED_COMMAND', 'SCHEDULED_TASK', 'POWERSHELL', 'WMI', 'COMMAND_PROMPT', 'HIDDEN_POWERSHELL', 'TEMP_LAUNCH', 'NEW_CONSOLE', 'DETACHED', 'SHOW_WINDOW', 'ALLOC_CONSOLE']
+  const expectedRules = ['SCRIPT_RUNNER', 'POLICY_BYPASS', 'ENCODED_COMMAND', 'SCHEDULED_TASK', 'POWERSHELL', 'WMI', 'COMMAND_PROMPT', 'HIDDEN_POWERSHELL', 'TEMP_LAUNCH', 'NEW_CONSOLE', 'DETACHED', 'SHOW_WINDOW', 'ALLOC_CONSOLE', 'HIDDEN_FLAG_NUMBER', 'HIDDEN_STARTUP']
   assert.deepEqual([...new Set(expected.cases.map((row: any) => row.ruleId))].sort(), expectedRules.sort())
   for (const line of positive) {
     assert.equal(/https?:|[A-Za-z0-9+/]{80,}={0,2}/.test(line), false, 'no executable payload or URL in text fixture')
@@ -169,6 +169,76 @@ test('native_flags_are_rejected_only_under_native', () => {
     assert.equal(ownsRule('native-ish/unit.rs', text, rule), false)
     assert.equal(ownsRule('native/unit.rs', `prefix${text}`, rule), false)
     assert.equal(ownsRule('native/unit.rs', `${text}Suffix`, rule), false)
+  }
+})
+
+test('hidden_creation_flags_written_as_numbers_need_a_flags_line_and_the_exact_bit', () => {
+  api()
+  const flagged = (text: string, file = 'native/unit.rs') => api().scanContent(file, text).filter((item: any) => item.ruleId === 'HIDDEN_FLAG_NUMBER')
+  // CREATE_NO_WINDOW 0x08000000 and DETACHED_PROCESS 0x00000008: alone, OR'ed with other numbers or names, or already summed.
+  for (const text of [
+    'command.creation_flags(0x08000000)', 'command.creation_flags(0x0800_0000)', 'command.creation_flags(0x08000000u32)',
+    'command.creation_flags(0x00000200 | 0x08000000)', 'command.creation_flags(CREATE_UNICODE_ENVIRONMENT | 0x08000000)',
+    'flags: 0x08000400,', 'let dwCreationFlags = 0x10000000 | 0x08000000;', 'CreateProcessW(null, cmd, 0x08000000)',
+    'command.creation_flags(0x00000008)', 'command.creation_flags(0x0A)', 'command.creation_flags(8)', 'command.creation_flags(134217728)', 'flags: 0x0800_0000_u32,',
+  ]) assert.equal(flagged(text).length > 0, true, text)
+  assert.equal(flagged('command.creation_flags(0x00000200 | 0x08000000)')[0].matchedText, '0x08000000')
+  assert.equal(flagged('flags: 0x08000400,')[0].matchedText, '0x08000400')
+  // Visible or unrelated bits, a number cut short, and a number with no creation flags on its line, all pass.
+  for (const text of [
+    'command.creation_flags(0x0800000)', 'command.creation_flags(0x04000000)', 'command.creation_flags(0x00000010)', 'command.creation_flags(16)',
+    'command.creation_flags(CREATE_UNICODE_ENVIRONMENT)', 'let color = 0x08000000;', 'let mask = 0x8;', 'let size = 8;',
+    'command.creation_flags(0x08000000x)', 'command.creation_flags(1.8)',
+    // A decimal counts only inside a launch call: a byte offset on a line that merely says flags passes.
+    'let flags = read_u16(&pe.bytes, offset + 78);', 'let flags = 134217728;', 'let flags = 8;', 'flags: 8,',
+  ]) assert.equal(flagged(text).length, 0, text)
+  // A decimal inside a launch call, or as a creation flags argument on the same statement, still fails.
+  for (const text of ['command.creation_flags(134217728)', 'CreateProcessW(null, cmd, 134217728)', 'let dwCreationFlags = 134217728;', 'dwCreationFlags: 8,']) {
+    assert.equal(flagged(text).length > 0, true, text)
+  }
+  // A hex number stays red on any flags line, in every native file including tests and build scripts.
+  for (const file of ['native/crates/x/tests/contract.rs', 'native/crates/x/build.rs']) {
+    assert.equal(flagged('assert_eq!(plan.flags, 0x08000400);', file).length, 1, file)
+    assert.equal(flagged('assert_eq!(plan.flags & 0x00000008, 0);', file).length, 1, file)
+  }
+  // Like the other native rules: only under native.
+  assert.equal(flagged('command.creation_flags(0x08000000)', 'lib/unit.mjs').length, 0)
+  assert.equal(flagged('command.creation_flags(0x08000000)', 'native-ish/unit.rs').length, 0)
+  // A comment or doc string without the number passes; one that holds it is reported like every comment (no suppression).
+  assert.equal(flagged('// start with a visible console window').length, 0)
+  assert.equal(flagged('/// creation_flags the plan sets, kept visible').length, 0)
+})
+
+test('hide_window_words_report_only_a_hidden_value', () => {
+  api()
+  const rules = (text: string, file = 'native/unit.rs') => api().scanContent(file, text).map((item: any) => item.ruleId)
+  assert.deepEqual(rules('ShowWindow(hwnd, SW_HIDE)'), ['SHOW_WINDOW', 'SHOW_WINDOW'])
+  assert.deepEqual(rules('ShowWindow(hwnd, 0)'), ['SHOW_WINDOW'])
+  for (const text of ['SW_HIDE', 'cmd_show = SW_HIDE;']) assert.deepEqual(rules(text), ['SHOW_WINDOW'], text)
+  for (const text of ['SW_SHOW', 'SW_SHOWNORMAL', 'SW_HIDEOUT', 'XSW_HIDE', 'SW_HIDE_', '// SW_SHOW keeps it visible', '/// the window stays visible']) {
+    assert.equal(rules(text).includes('SHOW_WINDOW'), false, text)
+  }
+  assert.equal(rules('SW_HIDE', 'lib/unit.mjs').includes('SHOW_WINDOW'), false)
+  // The start-up record: STARTF_USESHOWWINDOW matters only with a hidden wShowWindow.
+  for (const text of [
+    'si.wShowWindow = 0;', 'si.wShowWindow=0', 'wShowWindow: 0,', 'wShowWindow: 0x0,', 'si.wShowWindow = 0x00;', 'si.wShowWindow = SW_HIDE as u16;',
+    'si.dwFlags |= STARTF_USESHOWWINDOW; si.wShowWindow = 0;', 'w_show_window: SW_HIDE,',
+  ]) assert.equal(rules(text).includes('HIDDEN_STARTUP'), true, text)
+  for (const text of [
+    'si.dwFlags |= STARTF_USESHOWWINDOW;', 'si.wShowWindow = SW_SHOW as u16;', 'si.wShowWindow = 1;', 'wShowWindow: 5,', 'si.wShowWindow = 05;', 'si.wShowWindow = 0.5;',
+    'si.wShowWindow = SW_HIDEOUT;', 'xwShowWindow = 0;', '// wShowWindow stays visible', 'si.dwFlags |= STARTF_USESHOWWINDOW; si.wShowWindow = 5;',
+  ]) assert.equal(rules(text).includes('HIDDEN_STARTUP'), false, text)
+  assert.equal(rules('si.wShowWindow = 0;', 'lib/unit.mjs').includes('HIDDEN_STARTUP'), false)
+})
+
+test('task_scheduler_com_is_reported_in_every_root', () => {
+  api()
+  for (const file of ['bin/unit.mjs', 'lib/unit.mjs', 'hooks/unit.mjs', 'native/unit.rs']) {
+    assert.equal(ownsRule(file, 'let service: ITaskService = create();', 'SCHEDULED_TASK'), true, file)
+    assert.equal(ownsRule(file, 'new ActiveXObject("Schedule.Service")', 'SCHEDULED_TASK'), true, file)
+    assert.equal(ownsRule(file, 'execFile("schtasks.exe", ["/Create"])', 'SCHEDULED_TASK'), true, file)
+    assert.equal(ownsRule(file, 'ITaskServiceExtra', 'SCHEDULED_TASK'), false, file)
+    assert.equal(ownsRule(file, 'MyITaskService', 'SCHEDULED_TASK'), false, file)
   }
 })
 

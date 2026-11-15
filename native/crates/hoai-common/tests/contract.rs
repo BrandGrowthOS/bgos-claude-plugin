@@ -5,6 +5,7 @@ use hoai_common::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT};
 use std::{fs, path::Path, time::Duration};
 
 fn example_config() -> Config {
@@ -378,9 +379,8 @@ fn launch_flags_are_windowless_before_spawn() {
         ("a".into(), "first".into()),
     ];
     let plan = build_launch_plan(&config, &input);
-    assert_eq!(plan.flags, 0x08000400);
+    assert_eq!(plan.flags, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT);
     assert_eq!(plan.flags & 0x00000010, 0);
-    assert_eq!(plan.flags & 0x00000008, 0);
     assert!(!plan.inherit_handles);
     assert_eq!(plan.application, config.node_path);
     assert_eq!(

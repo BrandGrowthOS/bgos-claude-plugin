@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, fmt, path::PathBuf};
 use windows_sys::Win32::Globalization::CompareStringOrdinal;
+use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -202,7 +203,7 @@ pub fn build_launch_plan(config: &Config, inherited: &[(String, String)]) -> Lau
         application: config.node_path.clone(),
         command_line: format!("\"{}\" \"{}\" run", config.node_path, watcher),
         current_directory: config.watcher_dir.clone(),
-        flags: 0x08000400,
+        flags: CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
         inherit_handles: false,
         environment,
     }

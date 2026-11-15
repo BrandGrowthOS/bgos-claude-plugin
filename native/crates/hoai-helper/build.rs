@@ -3,6 +3,7 @@ use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 // D11: replace this one placeholder when the certificate's legal name is known.
 const COMPANY_NAME: &str = "HOAI";
@@ -56,7 +57,7 @@ fn main() {
         .arg("/fo")
         .arg(&resource)
         .arg(&source)
-        .creation_flags(0x08000000)
+        .creation_flags(CREATE_NO_WINDOW)
         .env("TMP", &out)
         .env("TEMP", &out)
         .current_dir(&out)

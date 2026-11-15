@@ -27,6 +27,8 @@ export const RULE_IDS = Object.freeze([
   'DETACHED',
   'SHOW_WINDOW',
   'ALLOC_CONSOLE',
+  'HIDDEN_FLAG_NUMBER',
+  'HIDDEN_STARTUP',
   'GUARD_ROOT_MISSING',
   'GUARD_LINK_SKIPPED',
   'GUARD_IO',
@@ -34,7 +36,7 @@ export const RULE_IDS = Object.freeze([
 
 const textRules = [
   ['SCRIPT_RUNNER', /\b(?:WScript\.Shell|wscript(?:\.exe)?|cscript(?:\.exe)?)\b/gi],
-  ['SCHEDULED_TASK', /\b(?:schtasks(?:\.exe)?|Register-ScheduledTask|New-ScheduledTask|Schedule\.Service)\b/gi],
+  ['SCHEDULED_TASK', /\b(?:schtasks(?:\.exe)?|Register-ScheduledTask|New-ScheduledTask|Schedule\.Service|ITaskService)\b/gi],
   ['POWERSHELL', /\b(?:powershell|pwsh)(?:\.exe)?\b/gi],
   ['WMI', /\b(?:Get-CimInstance|Get-WmiObject|Win32_Process|wmic(?:\.exe)?)\b/gi],
   ['COMMAND_PROMPT', /\bcmd\.exe\b|\bcmd\s+\/c\b|\b(?:spawn(?:Sync)?|exec(?:File)?(?:Sync)?|Command::new)\s*\(\s*["'`]cmd["'`]|\bcomspec\b[^\r\n]*["'`]\/c["'`]|\bspawn(?:Sync)?\s*\(\s*["'`][^"'`\r\n]*\.(?:cmd|bat)(?=[\s"'`])(?![^\r\n]*\bshell\s*:\s*false\b)/gi],
@@ -42,9 +44,18 @@ const textRules = [
 const nativeRules = [
   ['NEW_CONSOLE', /\bCREATE_NEW_CONSOLE\b/g],
   ['DETACHED', /\bDETACHED_PROCESS\b/g],
-  ['SHOW_WINDOW', /\bShowWindow(?:Async)?\b/g],
+  ['SHOW_WINDOW', /\b(?:ShowWindow(?:Async)?|SW_HIDE)\b/g],
   ['ALLOC_CONSOLE', /\bAllocConsole\b/g],
+  // STARTF_USESHOWWINDOW only acts with a wShowWindow, so the hidden value is what counts. 0 is SW_HIDE.
+  ['HIDDEN_STARTUP', /\b(?:wShowWindow|w_show_window)\s*[:=]\s*(?:SW_HIDE\b|0(?:x0+)?(?![\w.]))/g],
 ]
+// CREATE_NO_WINDOW (0x08000000) and DETACHED_PROCESS (0x00000008) written as numbers: alone, OR'ed in a list, or already summed.
+// A hex number counts on any line that names flags. A decimal is too common (offsets, sizes), so it counts only on a line
+// that names creation flags or a CreateProcess call. Same line only, like the other heuristics here.
+const hiddenCreationBits = 0x08000000n | 0x8n
+const creationFlagsLine = /\b(?:\w*creation_?flags|CreateProcess\w*|flags)\b/i
+const launchCallLine = /\b(?:\w*creation_?flags|CreateProcess\w*)\b/i
+const numberLiteral = /(?<![\w.])(0x[0-9a-f][0-9a-f_]*|\d[\d_]*)(?:[ui](?:8|16|32|64|size)|u?l{1,2})?(?![\w.])/gi
 const shellOnLine = /\b(?:powershell|pwsh)(?:\.exe)?\b/i
 const shellInvocation = /\bshell\s*\.\s*Run\b|\bshell\s*[:=]\s*true\b|\bexec(?:Sync)?\s*\((?![^\r\n]*\bshell\s*:\s*false\b)/i
 const scriptCommand = /["'][^"'\r\n]*?\.(?:cmd|bat)(?=[\s"'])[^"'\r\n]*["']/gi
@@ -66,6 +77,17 @@ export function scanPath(file) {
 function addMatches(results, file, line, text, ruleId, pattern) {
   pattern.lastIndex = 0
   for (const match of text.matchAll(pattern)) results.push(finding(file, line, ruleId, match[0]))
+}
+
+function hiddenFlagFindings(file, lineNumber, text) {
+  if (!creationFlagsLine.test(text)) return []
+  const result = []
+  const inLaunchCall = launchCallLine.test(text)
+  for (const match of text.matchAll(numberLiteral)) {
+    if (!inLaunchCall && !/^0x/i.test(match[1])) continue
+    if ((BigInt(match[1].replace(/_/g, '')) & hiddenCreationBits) !== 0n) result.push(finding(file, lineNumber, 'HIDDEN_FLAG_NUMBER', match[1]))
+  }
+  return result
 }
 
 function switchFindings(file, lineNumber, text, nextLine = '') {
@@ -110,6 +132,7 @@ export function scanContent(file, content) {
     if (shellInvocation.test(line)) addMatches(result, file, index + 1, line, 'COMMAND_PROMPT', scriptCommand)
     if (isNative(file)) {
       for (const [ruleId, pattern] of nativeRules) addMatches(result, file, index + 1, line, ruleId, pattern)
+      result.push(...hiddenFlagFindings(file, index + 1, line))
     }
     if (launchOperation.test(line)) {
       const adjacent = [line, lines[index + 1]].filter((value) => value !== undefined)
