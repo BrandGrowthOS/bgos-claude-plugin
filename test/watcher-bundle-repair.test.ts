@@ -40,6 +40,7 @@ import { pathToFileURL } from 'node:url'
 
 import {
   FALLBACK_GUARD,
+  attemptBundleRepair,
   HIDDEN_LAUNCHER_FILE,
   NO_REPAIR_ENV,
   main,
@@ -423,6 +424,31 @@ test('missingBundleModule: only a module missing INSIDE the bundle dir is a bund
   assert.equal(missingBundleModule(Object.assign(new Error("Cannot find package 'zod' imported from x"), { code: 'ERR_MODULE_NOT_FOUND' }), bundle), null)
   assert.equal(missingBundleModule(new Error('boom'), bundle), null)
   assert.equal(missingBundleModule(null, bundle), null)
+})
+
+test("missingBundleModule: bun's wording counts too: \"Cannot find package 'x' from '<file>'\" and \"Cannot find module './x' from '<file>'\"", async () => {
+  const bundle = '/home/example/.bgos-agent/watcher'
+  // What bun 1.3 throws (a ResolveMessage): no url, the importing file in `referrer`, the bare text in `specifier`.
+  const bunError = (message: string, specifier: string, referrer: string) =>
+    Object.assign(new Error(message), { name: 'ResolveMessage', code: 'ERR_MODULE_NOT_FOUND', specifier, referrer })
+  const importer = `${bundle}/lib/watcher-core.mjs`
+
+  const pkg = bunError(`Cannot find package 'zod' from '${importer}'`, 'zod', importer)
+  assert.equal(missingBundleModule(pkg, bundle), 'package zod (imported by lib/watcher-core.mjs)')
+  const textOnly = new Error(`Cannot find package '@scope/x' from '${importer}'`)
+  assert.equal(missingBundleModule(textOnly, bundle), 'package @scope/x (imported by lib/watcher-core.mjs)', 'the message alone is enough')
+  const nodeWording = Object.assign(new Error(`Cannot find package 'zod' imported from ${importer}`), { code: 'ERR_MODULE_NOT_FOUND' })
+  assert.equal(missingBundleModule(nodeWording, bundle), 'package zod (imported by lib/watcher-core.mjs)', "node's wording, from a bundle file")
+
+  const rel = bunError(`Cannot find module './win32-script-text.mjs' from '${importer}'`, './win32-script-text.mjs', importer)
+  assert.equal(missingBundleModule(rel, bundle), 'lib/win32-script-text.mjs', 'a relative specifier resolves against its importer')
+
+  const outside = bunError("Cannot find package 'zod' from '/somewhere/else/x.mjs'", 'zod', '/somewhere/else/x.mjs')
+  assert.equal(missingBundleModule(outside, bundle), null, 'imported from outside the bundle')
+
+  // Treated as missing: the repair is asked (here it stops at the missing manifest), where before it returned null.
+  const outcome = await attemptBundleRepair(pkg, { bundleDir: bundle, home: '/home/example', log: () => {} })
+  assert.deepEqual(outcome, { repaired: false, message: 'bundle repair skipped: the bundle has no manifest.json' })
 })
 
 test('restartAfterRepair: posix exits 75; win32 starts the successor through run-hidden.vbs and exits 0, else 75', () => {
