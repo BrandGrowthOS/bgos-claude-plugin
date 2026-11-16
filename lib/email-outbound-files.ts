@@ -20,7 +20,9 @@
 //      form: G1);
 //   3. realpath.native, then steps 1 and 2 again on the real path: a link in
 //      a plain folder that leads into ~/.aws is caught here;
-//   4. a regular file, read through one open handle checked against the
+//   4. a regular file with one name only (hardening 2: a hard link passes
+//      every path rule above, so more than one name is refused, on the stat
+//      and on the handle), read through one open handle checked against the
 //      stat, at most 25 MB each and 25 MB in all, at most 10, and its bytes
 //      the type its name says, on the same safe list as an inbound file
 //      (lib/email-files.ts isType); a text file whose header has a password
@@ -273,6 +275,8 @@ export interface OutboundStat {
   size: number | bigint
   dev?: number | bigint
   ino?: number | bigint
+  /** How many names the file has (hardening 2: more than one is refused); a stat with none (a test's) counts as one. */
+  nlink?: number | bigint
   /** The modified, change and birth times in ns, which a stat asked for bigints gives. */
   mtimeNs?: bigint
   ctimeNs?: bigint
@@ -293,6 +297,7 @@ function readStat(stat: OutboundStat): ReadStat {
     size: Number(stat.size),
     dev: stat.dev,
     ino: stat.ino,
+    nlink: stat.nlink,
     mtimeNs: stat.mtimeNs,
     ctimeNs: stat.ctimeNs,
     birthtimeNs: stat.birthtimeNs,
@@ -383,6 +388,11 @@ export const OUTBOUND_REAL_FS_FOR_TESTS = REAL_FS
 
 function fsOf(ctx: OutboundFileCtx): OutboundFs {
   return { ...REAL_FS, ...(ctx.fs ?? {}) } as OutboundFs
+}
+
+/** Hardening 2: a file with more than one name (a hard link); a stat that gives no count (a test's) counts as one name. */
+function moreThanOneName(stat: OutboundStat): boolean {
+  return stat.nlink !== undefined && Number(stat.nlink) > 1
 }
 
 /** The path as the agent wrote it, kept to one line of a sentence. */
@@ -1101,6 +1111,10 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     return { ok: false, error: notFound }
   }
   if (!stat.isFile()) return { ok: false, error: `${shown(path)} is not a regular file, so it is not attached.` }
+  // Hardening 2: a second name of a file (a hard link, which an ordinary user can make) passes every path rule, since
+  // realpath answers each name as its own; the file may also live in a key folder. Read here and again on the handle.
+  const hardLinked = `${shown(path)} has more than one name (a hard link), so it is not attached.`
+  if (moreThanOneName(stat)) return { ok: false, error: hardLinked }
   const tooBig = (size: number) =>
     `${shown(path)} is ${megabytes(size)} MB; one email can carry at most ${AGENT_EMAIL_OUTBOUND_MAX_BYTES / MB} MB of files, so it is not attached.`
   if (stat.size > AGENT_EMAIL_OUTBOUND_MAX_BYTES) return { ok: false, error: tooBig(stat.size) }
@@ -1130,6 +1144,8 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     if (!opened.isFile() || !sameFile) {
       return { ok: false, error: changed }
     }
+    // Hardening 2: the count of the open file itself (fstat), so a second name made after the lstat is caught too.
+    if (moreThanOneName(opened)) return { ok: false, error: hardLinked }
     // Final pre push fix: and the path, resolved again, still leads to this very file through no refused place.
     if (!(await stillLeadsTo(fs, path, ctx, opened, realCtx))) return { ok: false, error: changed }
     if (opened.size > AGENT_EMAIL_OUTBOUND_MAX_BYTES) return { ok: false, error: tooBig(opened.size) }

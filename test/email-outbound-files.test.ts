@@ -20,6 +20,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { lstat as lstatPromise } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -3891,9 +3892,10 @@ test('final fix: a path that leads somewhere else when HOAI looks again after op
   }
   assert.equal((await readOne(clean, { home, fs: swapTo(secret) })).error, changedSentence(clean), 'into a key folder')
   assert.equal((await readOne(clean, { home, fs: swapTo(other) })).error, changedSentence(clean), 'onto another plain file')
-  // The very same file (a second name of it in the key folder): the second look still runs steps 1 and 2.
-  const sameInKeys = join(home, '.ssh', 'same.pdf')
-  linkSync(clean, sameInKeys)
+  // The very same file, reached through the key folder (a junction in it to the file's folder; a hard link, a second
+  // name of the file, is refused before the open since hardening 2): the second look still runs steps 1 and 2.
+  symlinkSync(join(home, 'docs', 'sw'), join(home, '.ssh', 'same'), 'junction')
+  const sameInKeys = join(home, '.ssh', 'same', 'report.pdf')
   assert.equal((await readOne(clean, { home, fs: swapTo(sameInKeys) })).error, changedSentence(clean), 'the same file, now reached through a key folder')
   // A second look that cannot resolve at all is refused the same way.
   let n = 0
@@ -4809,6 +4811,8 @@ test('the main thread is free while a large text file is checked: a timer queued
 
 // ── hardenings: a home behind a link, a file with two names, a FIFO swapped in ──
 
+const hardLinkSentence = (path: string) => `${path} has more than one name (a hard link), so it is not attached.`
+
 test('hardening 1: a home reached through a link (macOS /var is one) is the home by its real path too: a file named by that path is not refused', async (t) => {
   const lib = await m()
   // The temp folder by its real path first (on Windows it can hold an 8.3 name), so the one link here is the one made below.
@@ -4857,4 +4861,40 @@ test('hardening 1: a home reached through a link (macOS /var is one) is the home
   symlinkSync(sibling, join(realHome, 'Documents', 'jane'), 'junction')
   const viaHome = join(home, 'Documents', 'jane', 'report.pdf')
   assert.equal(await refusal(viaHome, { home }), `${viaHome} leads to a key or password file (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`)
+})
+
+test('hardening 2: a file with more than one name (a hard link) is refused, by its path and again on the open handle', async (t) => {
+  const home = scratchHome(t)
+  mkdirSync(join(home, '.ssh'))
+  // A file in a key folder, refused by its own path, and a second name of it in a plain folder (an ordinary user can make
+  // one): realpath answers the second name as its own, so only the link count tells.
+  const key = join(home, '.ssh', 'backup.pdf')
+  writeFileSync(key, Buffer.concat([PDF, Buffer.from('% rig dummy\n')]))
+  const named = join(home, 'docs', 'report.pdf')
+  linkSync(key, named)
+  assert.equal(await refusal(named, { home }), hardLinkSentence(named))
+  // Refused by the path's own count, before the file is opened.
+  const opens: string[] = []
+  const counted = { open: async (p: string) => { opens.push(p); throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) } }
+  assert.equal(await refusal(named, { home, fs: counted }), hardLinkSentence(named))
+  assert.deepEqual(opens, [], 'not opened')
+  // The control: with one name again it goes.
+  rmSync(key)
+  assert.equal(await refusal(named, { home }), null, 'one name')
+  // On the handle: a second name made after the lstat (which saw one) and before the open is caught by the open file's
+  // own count (fstat).
+  const late = join(home, '.ssh', 'late.pdf')
+  let made = false
+  const fs = {
+    lstat: async (p: string, options?: { bigint: true }) => {
+      const st = await lstatPromise(p, options)
+      if (!made) {
+        made = true
+        linkSync(p, late)
+      }
+      return st
+    },
+  }
+  assert.equal(await refusal(named, { home, fs }), hardLinkSentence(named))
+  assert.ok(made, 'the second name was made after the lstat')
 })
