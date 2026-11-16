@@ -25,6 +25,8 @@ import {
   stdinHasEnded,
   watchStdinEof,
   isBrokenPipe,
+  isReaderGone,
+  createCleanEndSignals,
   shouldShutdownOnStdin,
   type ShutdownCause,
 } from '../lib/process-lifecycle.ts'
@@ -60,6 +62,13 @@ test('every shutdown names its cause, so a silent exit is never a mystery', () =
   }
   assert.match(describeShutdownCause('stdin-end'), /session/i)
   assert.match(describeShutdownCause('SIGTERM'), /SIGTERM/)
+})
+
+test('a hangup and a broken pipe on some other stream name their causes too', () => {
+  const causes: ShutdownCause[] = ['SIGHUP', 'broken-pipe', 'stdout-epipe']
+  for (const cause of causes) assert.match(describeShutdownCause(cause), /shutting down/i, cause)
+  assert.match(describeShutdownCause('SIGHUP'), /SIGHUP.*terminal went away/)
+  assert.match(describeShutdownCause('broken-pipe'), /stream/i)
 })
 
 test('an unknown cause still produces a usable line rather than throwing', () => {
@@ -259,10 +268,83 @@ test('boot enrolment into marketplace auto-update respects the same brakes as ev
   // The one path that could ignore the stop switch. BGOS_AUTO_UPDATE=0 and a latched rollback both
   // mean "this machine does not take updates right now"; enrolling it into unattended updates at
   // boot would quietly undo a user's or a bad release's decision.
-  const at = serverSource.indexOf('ensureMarketplaceAutoUpdate({')
+  const at = serverSource.indexOf('const enrolled = ensureMarketplaceAutoUpdate({')
   assert.notEqual(at, -1, 'the enrolment call must exist')
+  // Every other call only switches it off (the idle update's rollback holding a bad build out),
+  // which no brake has to allow.
+  const enrolment = at + 'const enrolled = '.length
+  const others = [...serverSource.matchAll(/ensureMarketplaceAutoUpdate\(\{[^}]*\}\)/g)].filter((m) => m.index !== enrolment).map((m) => m[0])
+  for (const call of others) assert.match(call, /enabled: false/, `a call outside the boot enrolment must only switch off: ${call}`)
   const before = serverSource.slice(Math.max(0, at - 1200), at)
   assert.match(before, /isAutoUpdateEnabled\(process\.env\.BGOS_AUTO_UPDATE\)/, 'must honour the kill switch')
   assert.match(before, /readRollbackLatch\(/, 'must honour a latched rollback')
   assert.match(before, /updatesAllowed/, 'and the guard must actually gate the call')
+})
+
+test('the reader gone is an EPIPE only: a write after end or a destroyed stream is this process\'s own doing', () => {
+  assert.equal(isReaderGone(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })), true)
+  assert.equal(isReaderGone(new Error('Broken pipe: EPIPE')), true, 'a code-less EPIPE (bun)')
+  assert.equal(isReaderGone(Object.assign(new Error('broken pipe'), { code: 'EPIPE' })), true, 'the code alone')
+  for (const code of ['ERR_STREAM_WRITE_AFTER_END', 'ERR_STREAM_DESTROYED', 'ECONNRESET']) {
+    assert.equal(isReaderGone(Object.assign(new Error(code), { code })), false, code)
+  }
+  assert.equal(isReaderGone(null), false)
+  assert.equal(isReaderGone('EPIPE'), false)
+})
+
+/** A process's signal listeners, on a real EventEmitter so a once() listener leaves as it does on a process. */
+function signalRig(platform = 'darwin') {
+  const emitter = new EventEmitter()
+  const ended: Array<[string, number]> = []
+  const signals = createCleanEndSignals({
+    platform,
+    on: (signal, fn) => emitter.on(signal, fn),
+    off: (signal, fn) => emitter.off(signal, fn),
+    shutdown: (cause, code) => ended.push([String(cause), code]),
+  })
+  // server.ts's own lines, as on main: one shot each.
+  for (const signal of ['SIGINT', 'SIGTERM']) emitter.once(signal, () => ended.push([signal, signal === 'SIGINT' ? 130 : 143]))
+  return { emitter, ended, signals }
+}
+
+test('clean end signals: shut, they change nothing: a second signal finds no listener and a hangup keeps its default action', () => {
+  const { emitter, ended } = signalRig()
+  assert.equal(emitter.listenerCount('SIGHUP'), 0)
+  emitter.emit('SIGTERM')
+  assert.deepEqual(ended, [['SIGTERM', 143]])
+  assert.equal(emitter.listenerCount('SIGTERM'), 0, 'with none left, the default action ends a stuck shutdown')
+})
+
+test('clean end signals: open, a second signal stays handled through the shutdown, and a hangup goes through it', () => {
+  const { emitter, ended, signals } = signalRig()
+  signals.set(true)
+  emitter.emit('SIGTERM')
+  assert.deepEqual(ended, [['SIGTERM', 143]])
+  assert.equal(emitter.listenerCount('SIGTERM'), 1, 'a systemd stop and its forward both arrive')
+  emitter.emit('SIGTERM')
+  assert.deepEqual(ended, [['SIGTERM', 143]], 'and the second changes nothing')
+  emitter.emit('SIGINT')
+  assert.equal(emitter.listenerCount('SIGINT'), 1)
+  emitter.emit('SIGHUP')
+  assert.deepEqual(ended.at(-1), ['SIGHUP', 129])
+})
+
+test('clean end signals: shut again, the daemon is back to main\'s behaviour, and opening twice stacks nothing', () => {
+  const { emitter, signals } = signalRig()
+  signals.set(true)
+  signals.set(true)
+  assert.equal(emitter.listenerCount('SIGHUP'), 1)
+  assert.equal(emitter.listenerCount('SIGTERM'), 2)
+  signals.set(false)
+  signals.set(false)
+  assert.equal(emitter.listenerCount('SIGHUP'), 0)
+  assert.equal(emitter.listenerCount('SIGTERM'), 1, 'only server.ts\'s own one shot')
+  assert.equal(emitter.listenerCount('SIGINT'), 1)
+})
+
+test('clean end signals: no hangup listener on Windows', () => {
+  const { emitter, signals } = signalRig('win32')
+  signals.set(true)
+  assert.equal(emitter.listenerCount('SIGHUP'), 0)
+  assert.equal(emitter.listenerCount('SIGTERM'), 2)
 })

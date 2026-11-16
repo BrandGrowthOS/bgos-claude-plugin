@@ -7,7 +7,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, appendFileSync, mkdirSync, utimesSync } from 'node:fs'
+import { writeFileSync, appendFileSync, mkdirSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -20,6 +20,7 @@ import {
   UsageTracker,
   windowForModel,
 } from '../lib/usage-report.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const assistantLine = (over: {
   id?: string
@@ -117,7 +118,7 @@ test('mungeCwd matches Claude Code project-dir naming', () => {
 })
 
 test('UsageTracker reports only appended-after-startup usage, exactly once', () => {
-  const home = mkdtempSync(join(tmpdir(), 'bgos-usage-'))
+  const home = scratchDir('bgos-usage-')
   const cwd = '/tmp/agent-workspace'
   const projectDir = join(home, 'projects', mungeCwd(cwd))
   mkdirSync(projectDir, { recursive: true })
@@ -337,7 +338,7 @@ test('latestContextPctFromJsonl returns null when no usage entry exists', () => 
 })
 
 test('readContextPct reads the NEWEST transcript in the project dir', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'bgos-ctx-'))
+  const home = scratchDir('bgos-ctx-')
   const cwd = '/tmp/agent-workspace'
   const projectDir = join(home, 'projects', mungeCwd(cwd))
   mkdirSync(projectDir, { recursive: true })
@@ -364,7 +365,7 @@ test('readContextPct returns null on missing dir / no transcripts / no usage', a
     await readContextPct('/nowhere/at/all', join(tmpdir(), 'bgos-ctx-none')),
     null,
   )
-  const home = mkdtempSync(join(tmpdir(), 'bgos-ctx-empty-'))
+  const home = scratchDir('bgos-ctx-empty-')
   const cwd = '/tmp/agent-workspace'
   const projectDir = join(home, 'projects', mungeCwd(cwd))
   mkdirSync(projectDir, { recursive: true })

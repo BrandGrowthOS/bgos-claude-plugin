@@ -23,9 +23,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const SHIM = join(process.cwd(), 'bin', 'hoai-browser-mcp.mjs')
 const PAIRING = 'pair-token-abcdefghijklmnopqrstuvwxyz'
@@ -312,7 +312,7 @@ async function fakeLocal() {
 }
 
 function tempHome() {
-  return mkdtempSync(join(tmpdir(), 'hoai-shim-relay-'))
+  return scratchDir('hoai-shim-relay-')
 }
 
 function client(env: Record<string, string>) {
@@ -1081,4 +1081,29 @@ test('local wins over relay when the discovery file answers', async () => {
     await local.close()
     await relay.close()
   }
+})
+
+
+test('relay: composite submission and activation keys never reach the host', async () => {
+  const relay = await fakeRelay()
+  const c = client({ HOAI_HOME: tempHome(), HOAI_RELAY_BACKEND_URL: relay.url, HOAI_RELAY_PAIRING_TOKEN: PAIRING })
+  try {
+    await c.init()
+    for (const [name, args] of [['browser_fill_form', { fields: [{ target: 'e1', type: 'textbox', name: 'Reference', value: 'hello' }, { target: 'e2', type: 'checkbox', name: 'Include summary', value: 'true' }] }], ['browser_type', { target: 'e1', text: 'hello', submit: true }], ['browser_type', { target: 'e1', text: 'hello\n', slowly: true }], ['browser_press_key', { key: 'Shift+Enter' }], ['browser_press_key', { key: 'Space' }], ...[
+      'Enter+Shift', 'Space+Shift', 'NumpadEnter+Control', 'Return+Alt',
+      'Spacebar+Meta', ' +Shift', 'h+Enter+Shift', 'Shift+Enter+ArrowLeft',
+      'h+ArrowLeft', 'Backspace+Shift', 'shift+ArrowLeft', 'Shift++ArrowLeft', '',
+      'Shift+\n+ArrowLeft',
+    ].map(key => ['browser_press_key', { key }] as const)] as const) {
+      const count = relay.state.seen.length
+      const refused = await c.request('tools/call', { name, arguments: args })
+      assert.equal(refused.result.isError, true)
+      assert.match(refused.result.content[0].text, /separate.*browser_click/i)
+      assert.equal(relay.state.seen.length, count)
+    }
+    const fill = await c.request('tools/call', { name: 'browser_type', arguments: { target: 'e1', text: 'hello' } })
+    assert.equal(fill.result.isError, false)
+    const batch = await c.request('tools/call', { name: 'browser_fill_form', arguments: { fields: [{ target: 'e1', type: 'textbox', name: 'Reference', value: 'hello' }] } })
+    assert.equal(batch.result.isError, false)
+  } finally { c.close(); await relay.close() }
 })

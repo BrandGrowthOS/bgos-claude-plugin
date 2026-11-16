@@ -5,11 +5,12 @@
 // the file's bytes (transferred, not copied), and terminates the Worker at the job's hard deadline whatever it is
 // doing, so no input can keep the daemon's main thread busy. For each job this runs the whole content stage
 // (lib/email-outbound-content.ts) and posts back the job's id, the verdict and the same bytes (transferred again).
-// Round 9: the stage keeps its own budget (sized from the larger of the file and its words) and answers 'unsafe' past
+// Round 9: the stage keeps its own budget (sized from the larger of the file and its words) and answers 'over_budget' past
 // it, so a slow file is refused by this Worker, which then takes the next file; the hard deadline ends after that
-// budget. Anything else (it cannot start, it throws at load, it exits, it is late, its reply does not parse or has
-// another id) refuses that file on the main thread as "could not be read safely", and the next file gets a new
-// Worker, at most OUTBOUND_CONTENT_WORKERS_MAX in the daemon's life (round 9).
+// budget. Late at that deadline, the file gets the same try again words on the main thread. Anything else (it cannot
+// start, it throws at load, it exits, its reply does not parse or has another id) refuses that file there as "could
+// not be read safely". Either way the next file gets a new Worker, at most OUTBOUND_CONTENT_WORKERS_MAX in the daemon's
+// life (round 9).
 //
 // It runs under bun (the daemon runs server.ts with bun) and under node with tsx (the tests): both load a .ts worker
 // from its file URL (new URL('./email-outbound-content-worker.ts', import.meta.url)). Under node its stdout and stderr

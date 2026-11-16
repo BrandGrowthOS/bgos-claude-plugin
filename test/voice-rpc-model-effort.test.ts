@@ -171,5 +171,6 @@ test('a voice dispatch during a change is accepted at once, its card queued behi
 test('server.ts tells the voice handler when cards are held', () => {
   const server = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.ts'), 'utf8')
   const at = server.indexOf('const voiceRpc = new VoiceRpcHandler(')
-  assert.match(server.slice(at, server.indexOf('\n})\n', at)), /cardsHeld: \(\) => modelEffortControl\.busy,/)
+  // The model and effort lock first; since the quiet turn (2026-11-11) the owner's trusted turn holds a card too (lib/quiet-turn.mjs).
+  assert.match(server.slice(at, server.indexOf('\n})\n', at)), /cardsHeld: \(card\) => modelEffortControl\.busy \|\| quietTurns\.holds\(/)
 })

@@ -1,0 +1,30 @@
+✖ a cursor taken from the shared file drops the read floor: the holder delivered those rows, and its ids are not in this process (39.380614ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1623.994578
+
+✖ failing tests:
+
+test at test/external-email-label.test.ts:32:2974
+✖ a cursor taken from the shared file drops the read floor: the holder delivered those rows, and its ids are not in this process (39.380614ms)
+  AssertionError [ERR_ASSERTION]: another daemon read this chat up to there
+  
+  true !== false
+  
+      at TestContext.<anonymous> (/mnt/e/bgos-worktrees/d041/plugin/test/external-email-label.test.ts:815:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at Test.start (node:internal/test_runner/test:1262:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

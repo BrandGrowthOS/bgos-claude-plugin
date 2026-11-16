@@ -1,0 +1,82 @@
+{
+  "source_sha256": "c440c1b4f5cd4cb3fb621313e2a5f98549d04a7aba72e6da4d548e24a722350a",
+  "tests_sha256": "484985819364e73e32cf7c1ee28d2a20a90b8c1628a463ace726c9d90c182e72",
+  "max_workers": 4,
+  "killed": 12,
+  "survivors": 0,
+  "source_unchanged": true,
+  "results": [
+    {
+      "mutation": "skip equal-time reconciliation",
+      "test": "review R4: socket rejects replayed B after C with identical timestamps",
+      "exit": 1,
+      "assertion": "the current row is still C; replayed B must not become a fourth card"
+    },
+    {
+      "mutation": "skip equal-time reconciliation",
+      "test": "review R4: socket rejects replayed B after C with microsecond timestamps",
+      "exit": 1,
+      "assertion": "the current row is still C; replayed B must not become a fourth card"
+    },
+    {
+      "mutation": "skip equal-time reconciliation",
+      "test": "review R4: poll rejects replayed B after C with identical timestamps",
+      "exit": 1,
+      "assertion": "the current row is still C; replayed B must not become a fourth card"
+    },
+    {
+      "mutation": "skip equal-time reconciliation",
+      "test": "review R4: poll rejects replayed B after C with microsecond timestamps",
+      "exit": 1,
+      "assertion": "the current row is still C; replayed B must not become a fourth card"
+    },
+    {
+      "mutation": "skip equal-time reconciliation",
+      "test": "review R4: stream rejects replayed B after C with identical timestamps",
+      "exit": 1,
+      "assertion": "the current row is still C; replayed B must not become a fourth card"
+    },
+    {
+      "mutation": "skip equal-time reconciliation",
+      "test": "review R4: stream rejects replayed B after C with microsecond timestamps",
+      "exit": 1,
+      "assertion": "the current row is still C; replayed B must not become a fourth card"
+    },
+    {
+      "mutation": "reject all equal timestamps",
+      "test": "review R4: socket delivers a later edit and genuine revert with identical timestamps",
+      "exit": 1,
+      "assertion": "timestamp equality must not discard the current C"
+    },
+    {
+      "mutation": "reject all equal timestamps",
+      "test": "review R4: socket delivers a later edit and genuine revert with microsecond timestamps",
+      "exit": 1,
+      "assertion": "timestamp equality must not discard the current C"
+    },
+    {
+      "mutation": "reject all equal timestamps",
+      "test": "review R4: poll delivers a later edit and genuine revert with identical timestamps",
+      "exit": 1,
+      "assertion": "timestamp equality must not discard the current C"
+    },
+    {
+      "mutation": "reject all equal timestamps",
+      "test": "review R4: poll delivers a later edit and genuine revert with microsecond timestamps",
+      "exit": 1,
+      "assertion": "timestamp equality must not discard the current C"
+    },
+    {
+      "mutation": "reject all equal timestamps",
+      "test": "review R4: stream delivers a later edit and genuine revert with identical timestamps",
+      "exit": 1,
+      "assertion": "timestamp equality must not discard the current C"
+    },
+    {
+      "mutation": "reject all equal timestamps",
+      "test": "review R4: stream delivers a later edit and genuine revert with microsecond timestamps",
+      "exit": 1,
+      "assertion": "timestamp equality must not discard the current C"
+    }
+  ]
+}

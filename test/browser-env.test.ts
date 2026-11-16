@@ -26,8 +26,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -35,6 +34,7 @@ import { chromeEnv, resolveChromeExecutable } from '../bin/hoai-browser-host.mjs
 import { hostEnv, startBrowserHostSupervisor } from '../lib/browser-host-supervisor.ts'
 import { resolveNodePath } from '../lib/watcher-install.mjs'
 import { startFakeRelay } from './helpers/fake-browser-relay.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 /** A realistic daemon environment. Values are markers, never real secrets. */
 const FIXTURE: Record<string, string> = {
@@ -188,7 +188,7 @@ test(
     // every developer and agent machine in the fleet. Canonicalising the TEST root
     // keeps the production check exactly as strict: ~/.bgos-agent, the real
     // profile root, has no symlink in its chain.
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bh-env-e2e-')))
+    const dir = realpathSync(scratchDir('bh-env-e2e-'))
     const home = join(dir, 'home')
     const dump = join(dir, 'chrome-env-names.txt')
     // Stands in front of the real Chrome: records the NAMES it was started

@@ -1,0 +1,16 @@
+workstation paths: zero added-line matches
+private IPv4 networks: zero added-line matches
+credential-token patterns: zero added-line matches
+em/en dashes: zero added-line matches
+Package, plugin and lockfile versions unchanged from the starting commit (0.86.3)
+Staged paths exactly match the explicit four source/test files and fourteen evidence files
+No REPORT, BRIEF or .lane paths are staged; no force-add used
+git diff --check and git diff --cached --check: passed
+Focused tests: 128 passed, zero failed
+Mutation audit: 10 of 10 faults caught by named assertions; unmodified control passed
+Typecheck: npm run build exited zero
+[run-tests] 10067 passed, 0 failed, 60 skipped, 473 files, 773.6 s
+Full-suite exit code zero; both families green; runner cleanup passed
+Commit author and committer will use SeraphKc <194126295+SeraphKc@users.noreply.github.com>
+No push, publish, deployment or production call performed
+Scan is targeted public hygiene, not proof that pattern matching detects every secret

@@ -17,12 +17,12 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const SCRIPT = fileURLToPath(new URL('../docs/evidence/2026-10-16-gate-attach/gate-proof.ps1', import.meta.url))
 const skip = process.platform !== 'win32' ? 'the proof script is PowerShell' : false
@@ -42,8 +42,8 @@ interface Run {
 
 /** A fake USERPROFILE with the gate log, the daemon log (a boot) and a fresh channel beacon. */
 function profile(runs: Run[], { supervisorPid = 0, bootAt = NOW - 60_000 }: { supervisorPid?: number; bootAt?: number } = {}) {
-  const home = mkdtempSync(join(tmpdir(), 'gate-proof-home-'))
-  const temp = mkdtempSync(join(tmpdir(), 'gate-proof-temp-'))
+  const home = scratchDir('gate-proof-home-')
+  const temp = scratchDir('gate-proof-temp-')
   const logs = join(home, '.bgos-agent', 'logs')
   mkdirSync(logs, { recursive: true })
   mkdirSync(join(home, '.bgos-agent', ID), { recursive: true })

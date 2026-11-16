@@ -1,0 +1,10 @@
+Command: node --import tsx --test --test-concurrency=1 test/remote-browser-controls.chromium.test.ts
+Exit status: 0
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 16639.489875

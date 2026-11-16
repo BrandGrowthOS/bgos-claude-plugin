@@ -1,0 +1,53 @@
+Test-first evidence
+
+Before production port (existing behavior): node --import tsx --test --test-concurrency=4 test/mission-goal-checks-tools.test.ts test/mission-private.test.ts test/turn-chat.test.ts test/declared-capabilities.test.ts test/capabilities.test.ts test/claude-preseed.test.ts test/clone-hooks.test.ts test/hooks-manifest.test.ts; exit 1.
+Selected feature failures, excluding two incomplete imported test constants corrected before green:
+FAIL: the daemon's own base declaration reaches the fetch, boards_playbook included
+FAIL: a corrupt settings file is replaced rather than failing the install
+FAIL: a clone workspace with no hoai entry gets the rail and the private turn hook, and NOT the floor hook
+FAIL: a host that cannot type declares the READ half only
+FAIL: boards_playbook is declared on every host, because the tool is typed and has no platform limit
+FAIL: permission_card is declared on every host, because the relay has no platform limit
+FAIL: the stop pause token rides with mission_pause and nothing else, the gate the stop pause runs behind
+FAIL: the fullest declaration, every token in its place, is exactly this list
+FAIL: mission_server_checks is declared on every host, beside and distinct from mission_goal_checks
+FAIL: every FORWARDER entry is the exec form, async, with the plugin root placeholder
+FAIL: create, fill and add pass a goal check through unchanged, every key kept
+FAIL: a check that is not an object is refused before the network, naming the goal
+FAIL: set_goal_waiting: the body and the pairing path
+FAIL: the summary shows a goal check, a server tick and a waiting state in one clause each
+FAIL: the goal checks read is the pairing family, by mission
+FAIL: the next suggested goal skips an earlier waiting goal
+FAIL: nested waiting uses current validation and rejects mixed flat and nested calls
+FAIL: nested waiting reaches the admitted recipient mission with their headers, and null clears it
+FAIL: deliveredRecently answers only for a chat this daemon delivered to, or whose turn it ran, recently (missions that stay true, review fix 4)
+
+Heartbeat declaration before port: bun test --max-concurrency=1 test/version-heartbeat.test.ts; exit 1.
+ 37 pass
+ 1 fail
+Ran 38 tests across 1 file. [267.00ms]
+
+Review regressions before their fixes: node --import tsx --test --test-concurrency=1 test/mission-turn-snapshots.test.ts; exit 1.
+FAIL: a parsed mission update retains server checks, waiting and server ticks for the turn hook
+FAIL: an ambiguous snapshot is never cached under an unrelated active recipient chat
+FAIL: a snapshot uses its explicit chat or the event envelope chat, never a live-turn fallback
+ℹ tests 5
+ℹ suites 0
+ℹ pass 2
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 430.194959
+
+Cache regressions before their fixes: node --import tsx --test --test-concurrency=1 test/mission-turn.test.ts; exit 1.
+FAIL: a cancelled goal loses its cached passing result when a newer snapshot removes it
+FAIL: twenty-goal chats stay readable when their combined state exceeds the file budget
+ℹ tests 23
+ℹ suites 0
+ℹ pass 21
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 169.690667

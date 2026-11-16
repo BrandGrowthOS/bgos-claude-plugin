@@ -1,0 +1,16 @@
+✔ market2 launcher: legacy plus numbered launches the effective agent 42 (779.112375ms)
+✔ market2 launcher: explicit path plus numbered launches the effective agent 42 (793.335667ms)
+✔ market2 launcher: legacy without home launches the effective agent 42 (1488.055792ms)
+✔ market2 launcher: explicit legacy without home launches the effective agent 42 (1334.973208ms)
+✔ market2 diagnostics: installed marketplace CLI reports effective home and the legacy setting (265.0925ms)
+✔ market2 forecast: pin admission still forecasts its strict refusal (3.238708ms)
+✔ market2 forecast: recorded home admission still forecasts its strict refusal (0.848916ms)
+✔ market2 diagnostics: doctor preserves the effective marketplace home mode (0.3995ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4823.1485

@@ -1,0 +1,9 @@
+Control: unmodified mission-turn behavioral tests pass
+{"mutation":"missing block","status":"caught","failingTests":["BLOCKS while a goal whose check passes is unticked, naming it and its evidence","the daemon file answer preserves mission identities when goal ids overlap"]}
+{"mutation":"second Stop blocks again","status":"caught","failingTests":["ALLOWS the second stop of the same turn (stop_hook_active): the agent already answered"]}
+{"mutation":"missing answer blocks","status":"caught","failingTests":["a missing or late answer ALLOWS, even with a fresh passing list on disk (review fix 3)","ALLOWS on a missing or malformed state and answer"]}
+{"mutation":"forged embedded chat tag","status":"caught","failingTests":["promptChatId reads ONLY the channel tag that opens the prompt (review fix 1)"]}
+{"mutation":"expired ask answered","status":"caught","failingTests":["answerMissionTurnAsk ignores an ask older than the hook can wait for, and removes it (review fix 5)"]}
+{"mutation":"newer ask deleted","status":"caught","failingTests":["answerMissionTurnAsk never removes a NEWER ask written while it answered the old one (review confirmation A)"]}
+{"mutation":"freshness inverted","status":"caught","failingTests":["unchanged checks reuse a report across goal reordering, waiting updates and ticks","freshMissionTurnEntry answers from a chat entry checked under 30 s ago, and only then (review fix 6)"]}
+Result: 7 of 7 mutants caught; production files untouched; one worker

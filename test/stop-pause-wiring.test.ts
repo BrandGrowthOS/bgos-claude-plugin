@@ -60,7 +60,7 @@ test('the stop reads the goal lane as it is at that moment, gated on the heartbe
   // The SAME expression the version heartbeat declares from (main 0.53.0
   // made floorHook and authMode required, for hard_floor).
   const declaration =
-    'declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), authMode: AUTH.mode })'
+    'declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, personLanes: laneSupport().ok, modelEffortPicker: modelEffortDeclared(), threads: threadsDeclared(), authMode: AUTH.mode })'
   assert.match(
     server,
     new RegExp(`capabilities: \\(\\) => \\[\\s*\\.\\.\\.${declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')},?\\s*\\]`),
@@ -117,7 +117,8 @@ test('every inbound rail reports an owner message, after its content guard and b
     assert.ok(guard > rail.start, `${rail.name}: the content guard moved`)
     const call = calls.find((c) => c > guard)
     assert.ok(call !== undefined, `${rail.name}: no owner message report after the content guard`)
-    const delivery = server.indexOf("method: 'notifications/claude/channel'", guard)
+    // A channel card is sent through channelNotify since 0.86.20.
+    const delivery = server.indexOf('channelNotify(() =>', guard)
     assert.ok(call! < delivery, `${rail.name}: the report must come before the delivery`)
     // Nothing between the guard and the report returns early.
     const between = server.slice(guard + rail.guard.length, call)

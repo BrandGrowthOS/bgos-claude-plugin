@@ -160,7 +160,7 @@ async function startBackend(): Promise<Backend> {
   const reads: Read[] = []
   const started = new Map<number, number>()
   const holds = new Map<number, () => Promise<void>>()
-  const failures = new Set<number>()
+  const failures = new Map<number, number>()
   const holdErrors: string[] = []
   let refuse = false
   let lastConnectAt = 0
@@ -193,7 +193,10 @@ async function startBackend(): Promise<Backend> {
           holdErrors.push(String(err))
         })
       }
-      if (isPoll && failures.delete(chatId)) return json({ message: 'stand in failure' }, 500)
+      if (isPoll && (failures.get(chatId) ?? 0) > 0) {
+        failures.set(chatId, failures.get(chatId)! - 1)
+        return json({ message: 'stand in failure' }, 500)
+      }
       const afterParam = url.searchParams.get('afterId')
       const afterId = afterParam === null ? null : Number(afterParam)
       // The real route: the NEWEST 50 rows above the cursor, oldest first.
@@ -230,9 +233,9 @@ async function startBackend(): Promise<Backend> {
       holds.set(chatId, during)
     },
     failNextRead: (chatId) => {
-      failures.add(chatId)
+      failures.set(chatId, (failures.get(chatId) ?? 0) + 1)
     },
-    pending: () => ({ holds: holds.size, failures: failures.size, holdErrors: [...holdErrors] }),
+    pending: () => ({ holds: holds.size, failures: [...failures.values()].reduce((sum, n) => sum + n, 0), holdErrors: [...holdErrors] }),
     emit: (event, payload) => {
       io.emit(event, payload)
     },
@@ -493,10 +496,14 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       // must not start a read of a chat the inbox does not list.
       w.backend.pushLive(ownerRow(ELSEWHERE, 300))
       await waitFor(() => d.cards.some((c) => c.messageId === 200) && d.cards.some((c) => c.messageId === 300), 'the live cards')
-      assert.equal(cardOf(d.cards, 200)?.transport, 'ws', 'the live message came over the socket')
+      // Since 0.81.1 a live message waits for the read that hands over the rows
+      // under it, and that read delivers it too (D04-1, in order). A chat the
+      // daemon does not poll has no such read, and stays the socket's.
+      assert.equal(cardOf(d.cards, 200)?.transport, 'poll', 'the live message came in its place, with the read')
+      assert.equal(cardOf(d.cards, 300)?.transport, 'ws', 'the chat the daemon does not poll keeps the socket')
       await forceRead(w.backend, MAIN)
       await settle(() => d.cards, MAIN, [...ids(101, 114), 200])
-      assert.deepEqual(delivered(d.cards, MAIN), [...ids(101, 114), 200])
+      assert.deepEqual(d.cards.filter((c) => c.chatId === MAIN).map((c) => c.messageId), [...ids(101, 114), 200], 'oldest first')
       assert.deepEqual(delivered(d.cards, ELSEWHERE), [300])
       assert.equal(w.backend.readsOf(ELSEWHERE).length, 0, 'a live message never starts a read of a chat the daemon does not poll')
     } finally {
@@ -512,7 +519,7 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
       w.backend.pushLive(ownerRow(MAIN, 200))
       await waitFor(() => d.cards.some((c) => c.messageId === 200), 'the live card')
-      assert.equal(cardOf(d.cards, 200)?.transport, 'ws', 'the live message came over the socket')
+      assert.equal(cardOf(d.cards, 200)?.transport, 'poll', 'the live message waited for the read (D04-1)')
       // A model turn takes at least a second; the answer lands then.
       await sleep(1_000)
       w.backend.rows.push(replyRow(MAIN, 201))
@@ -551,9 +558,13 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       const d = await w.boot()
       await quietAfterBoot(w.backend, MAIN)
       for (const id of ids(101, 114)) w.backend.rows.push(ownerRow(MAIN, id))
+      // Twice since 0.81.1: the live message's read fails, it is let through
+      // rather than wait on a server that cannot answer, and that reads the chat
+      // once more (D04-1). Both fail here, so nothing has read the rows yet.
+      w.backend.failNextRead(MAIN)
       w.backend.failNextRead(MAIN)
       w.backend.pushLive(ownerRow(MAIN, 200))
-      await waitFor(() => d.cards.some((c) => c.messageId === 200) && w.backend.pending().failures === 0, 'the live card and the failed read')
+      await waitFor(() => d.cards.some((c) => c.messageId === 200) && w.backend.pending().failures === 0, 'the live card and the failed reads')
       await sleep(500)
       // The failed read is over; a second live message must be able to
       // start a read of its own (no scheduled read is due for 5 minutes).
@@ -580,7 +591,9 @@ describe('a chat first read at cursor 0 forwards every row it reaches, once', { 
       w.backend.holdNextRead(MAIN, async () => {
         const before = w.backend.readsStarted(MAIN)
         for (const id of ids(200, 204)) w.backend.pushLive(ownerRow(MAIN, id))
-        await waitFor(() => hasAll(d.cards, MAIN, ids(200, 204)), 'the burst of live cards')
+        // They wait for a read now (D04-1), so the sign they arrived is the daemon's line.
+        const heard = (id: number) => d.stderr.some((l) => l.includes(`Live message ${id} in chat ${MAIN} waits for the catch up read`))
+        await waitFor(() => ids(200, 204).every(heard), 'the burst of live messages')
         await sleep(500)
         readsStartedDuringBurst = w.backend.readsStarted(MAIN) - before
       })

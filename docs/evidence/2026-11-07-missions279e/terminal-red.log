@@ -1,0 +1,186 @@
+TAP version 13
+# Subtest: unversioned terminal completed clears missed frames and cannot be resurrected
+not ok 1 - unversioned terminal completed clears missed frames and cannot be resurrected
+  ---
+  duration_ms: 10.925792
+  type: 'test'
+  location: '<checkout>/test/mission-turn-refresh.test.ts:8:26943'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+    +   '- 1. Date (done when: chosen)\n' +
+    +   '- 2. Draft (done when: written)\n' +
+    +   '- 3. Merge release (done when: merged; server check: PR example/project#42 merged)\n' +
+    +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+    - null
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: ~
+  actual: |-
+    HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+    - 1. Date (done when: chosen)
+    - 2. Draft (done when: written)
+    - 3. Merge release (done when: merged; server check: PR example/project#42 merged)
+    Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (<checkout>/test/mission-turn-refresh.test.ts:716:14)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3)
+  ...
+# Subtest: unversioned terminal abandoned clears missed frames and cannot be resurrected
+not ok 2 - unversioned terminal abandoned clears missed frames and cannot be resurrected
+  ---
+  duration_ms: 1.029416
+  type: 'test'
+  location: '<checkout>/test/mission-turn-refresh.test.ts:8:26943'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+    +   '- 1. Date (done when: chosen)\n' +
+    +   '- 2. Draft (done when: written)\n' +
+    +   '- 3. Merge release (done when: merged; server check: PR example/project#42 merged)\n' +
+    +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+    - null
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: ~
+  actual: |-
+    HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+    - 1. Date (done when: chosen)
+    - 2. Draft (done when: written)
+    - 3. Merge release (done when: merged; server check: PR example/project#42 merged)
+    Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (<checkout>/test/mission-turn-refresh.test.ts:716:14)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: unversioned terminal failed clears missed frames and cannot be resurrected
+not ok 3 - unversioned terminal failed clears missed frames and cannot be resurrected
+  ---
+  duration_ms: 0.931125
+  type: 'test'
+  location: '<checkout>/test/mission-turn-refresh.test.ts:8:26943'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+    +   '- 1. Date (done when: chosen)\n' +
+    +   '- 2. Draft (done when: written)\n' +
+    +   '- 3. Merge release (done when: merged; server check: PR example/project#42 merged)\n' +
+    +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+    - null
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: ~
+  actual: |-
+    HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+    - 1. Date (done when: chosen)
+    - 2. Draft (done when: written)
+    - 3. Merge release (done when: merged; server check: PR example/project#42 merged)
+    Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (<checkout>/test/mission-turn-refresh.test.ts:716:14)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: unversioned terminal confirmation rejects wrong id
+ok 4 - unversioned terminal confirmation rejects wrong id
+  ---
+  duration_ms: 2.328084
+  type: 'test'
+  ...
+# Subtest: unversioned terminal confirmation rejects different status
+ok 5 - unversioned terminal confirmation rejects different status
+  ---
+  duration_ms: 0.643791
+  type: 'test'
+  ...
+# Subtest: unversioned terminal confirmation rejects different goals
+ok 6 - unversioned terminal confirmation rejects different goals
+  ---
+  duration_ms: 0.481917
+  type: 'test'
+  ...
+# Subtest: unversioned terminal confirmation rejects read failure
+ok 7 - unversioned terminal confirmation rejects read failure
+  ---
+  duration_ms: 0.697167
+  type: 'test'
+  ...
+# Subtest: unversioned terminal confirmation rejects unknown status
+ok 8 - unversioned terminal confirmation rejects unknown status
+  ---
+  duration_ms: 0.532125
+  type: 'test'
+  ...
+# Subtest: unversioned terminal read 1 cannot cross a newer chat revision
+ok 9 - unversioned terminal read 1 cannot cross a newer chat revision
+  ---
+  duration_ms: 1.097667
+  type: 'test'
+  ...
+# Subtest: unversioned terminal read 2 cannot cross a newer chat revision
+ok 10 - unversioned terminal read 2 cannot cross a newer chat revision
+  ---
+  duration_ms: 0.699708
+  type: 'test'
+  ...
+# Subtest: unversioned completion preserves other missions without an implicit lookup
+not ok 11 - unversioned completion preserves other missions without an implicit lookup
+  ---
+  duration_ms: 2.30875
+  type: 'test'
+  location: '<checkout>/test/mission-turn-refresh.test.ts:8:29918'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input was expected to not match the regular expression /Mission #101/. Input:
+
+    'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+      '- 1. Merge 101 (done when: merged; server check: PR example/project#42 merged)\n' +
+      "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.\n" +
+      '\n' +
+      'HOAI: Mission #102 "Demo 102" is active in this chat. Its open mini goals:\n' +
+      '- 1. Merge 102 (done when: merged; server check: PR example/project#42 merged)\n' +
+      "Tick a goal with tick_mini_goal (mission_id: 102) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+    - 1. Merge 101 (done when: merged; server check: PR example/project#42 merged)
+    Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+
+    HOAI: Mission #102 "Demo 102" is active in this chat. Its open mini goals:
+    - 1. Merge 102 (done when: merged; server check: PR example/project#42 merged)
+    Tick a goal with tick_mini_goal (mission_id: 102) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+  operator: 'doesNotMatch'
+  stack: |-
+    TestContext.<anonymous> (<checkout>/test/mission-turn-refresh.test.ts:789:10)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+1..11
+# tests 11
+# suites 0
+# pass 7
+# fail 4
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1531.243417

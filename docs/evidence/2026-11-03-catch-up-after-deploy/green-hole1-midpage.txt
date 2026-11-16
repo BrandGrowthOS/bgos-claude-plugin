@@ -1,0 +1,18 @@
+▶ hole 1: the reconnect skip
+  ✔ rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first (11453.075053ms)
+  ✔ the catch up read fails, then a live message: the rows under it are still read, every row once (17729.240291ms)
+  ✔ a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message (30409.550384ms)
+✔ hole 1: the reconnect skip (30413.292546ms)
+▶ a reconnect or a failure in the middle of a page
+  ✔ the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first (12182.729466ms)
+  ✔ an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page (20966.491986ms)
+  ✔ the daemon restarts while an older page is in flight: every row once, oldest first, across both lives (17898.157464ms)
+✔ a reconnect or a failure in the middle of a page (20967.310362ms)
+ℹ tests 6
+ℹ suites 2
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 62984.903545

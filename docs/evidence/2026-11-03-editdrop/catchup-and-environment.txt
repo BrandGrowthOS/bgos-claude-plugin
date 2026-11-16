@@ -1,0 +1,22 @@
+✔ provePairedTopology: pin, credentials and a marketplace route together prove it, and the channel is the RESOLVER spec, never one typed here (1.515166ms)
+✔ provePairedTopology: each missing proof is a NAMED refusal, and no channel is ever returned with one (0.604959ms)
+✔ provePairedTopology: both verifiers are asked about the SUPERVISED environment, which keeps CLAUDE_CONFIG_DIR and drops the rest (0.144208ms)
+✔ provePairedTopology, with the REAL verifiers on a real folder: what pairing and the plugin step leave behind is proven, from where npx runs it (2.872334ms)
+✔ provePairedTopology, with the REAL verifiers: the same folder is refused when any one of the three is taken away (7.825542ms)
+✔ provePairedTopology, with the REAL verifiers: a plugin installed ONLY under the custom CLAUDE_CONFIG_DIR the service will carry is proven (2.658375ms)
+✔ provePairedTopology: an installer running from a marketplace install under a CUSTOM config dir is proven, because the service carries that config dir (0.158125ms)
+✔ provePairedTopology: a route only the installing SHELL sees (a session variable the service does not carry) is named as that, not as a clone (0.119542ms)
+▶ hole 4: a row the server never pushes
+  ✔ a live message right after it, no outage: it still reaches the agent, once, on the next read (11784.187541ms)
+✔ hole 4: a row the server never pushes (11784.672583ms)
+▶ what a long read must not break
+  ✔ a wake card that never fills does not pin the cursor: the rows above it arrive once and the next read starts above them (13254.09675ms)
+✔ what a long read must not break (13254.322042ms)
+ℹ tests 10
+ℹ suites 2
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 25493.334875

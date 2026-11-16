@@ -1,0 +1,25 @@
+Earlier four-worker run: interrupted after unrelated files hit long timeouts. Several unrelated file durations were about 900 seconds, far beyond their 270-second idle deadlines. No pass is claimed. Only this checkout runner was stopped through its owned-worker cleanup. A four-file check with caffeinate -i passed 75 tests, but still showed a 1004-second wall gap. System power logs showed repeated Sleep/Wake/DarkWake cycles. The final full run uses temporary caffeinate -dimsu -t 7200 assertions.
+[run-tests] TIMEOUT test/browser-gate.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/browser-gate.test.ts (402.161s)
+[run-tests] TIMEOUT test/browser-host-supervisor.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/browser-host-supervisor.test.ts (392.976s)
+[run-tests] TIMEOUT test/bgos-agent.home-scope.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/bgos-agent.home-scope.test.ts (461.187s)
+[run-tests] TIMEOUT test/browser-downloads.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/browser-downloads.test.ts (413.582s)
+[run-tests] TIMEOUT test/channel-transport.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/channel-transport.test.ts (898.919s)
+[run-tests] TIMEOUT test/browser-runtime-folder.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/browser-runtime-folder.test.ts (901.108s)
+[run-tests] TIMEOUT test/channel-presence.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/channel-presence.test.ts (899.145s)
+[run-tests] TIMEOUT test/catch-up-after-deploy.e2e.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/catch-up-after-deploy.e2e.test.ts (899.930s)
+[run-tests] TIMEOUT test/hoai-browser-host.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/hoai-browser-host.test.ts (918.352s)
+[run-tests] TIMEOUT test/hoai-browser-host.downloads.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/hoai-browser-host.downloads.test.ts (919.216s)
+[run-tests] TIMEOUT test/gate-block.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/gate-block.test.ts (941.737s)
+[run-tests] TIMEOUT test/email-outbound-files.test.ts: no test completed for 270000ms
+[run-tests] FAIL test/email-outbound-files.test.ts (949.293s)

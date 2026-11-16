@@ -1,0 +1,3 @@
+Initial full-suite run used three workers. It was deliberately stopped after review corrections, through only this checkout runner and its cleanup handler. Exit 130. No complete-suite success is claimed. The final run uses four workers on unchanged final source.
+[run-tests] FAIL test/bgos-agent.home-scope.test.ts (368.295s)
+[run-tests] FAIL test/catch-up-after-deploy.e2e.test.ts (163.724s)

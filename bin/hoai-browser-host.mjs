@@ -30,8 +30,8 @@
  * Playwright's own MCP tool implementations, `tools.BrowserBackend` over the
  * `tools.filteredTools` roster, called in process by name. The one swap: the
  * desktop connects to its Electron bridge, this host launches an INSTALLED
- * Chrome or Chromium with --remote-debugging-port and --user-data-dir and
- * connects over CDP. If no browser is installed, the pinned Playwright
+ * Chrome or Chromium through Playwright, over a private pipe that only this
+ * process holds, with --user-data-dir. If no browser is installed, the pinned Playwright
  * dependency installs its Chromium into the user cache on first use.
  *
  * THE PROFILE IS KEYED BY PRINCIPAL, NOT BY AGENT. A frame names the person
@@ -59,17 +59,21 @@
 
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, unlinkSync } from 'node:fs'
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, rmdirSync, unlinkSync } from 'node:fs'
 import { readdir, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir, hostname, tmpdir } from 'node:os'
-import { delimiter, dirname, isAbsolute, join, posix as posixPath, win32 as win32Path } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, relative, resolve, posix as posixPath, win32 as win32Path } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { EventEmitter } from 'node:events'
 import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
 import { ensureBrowser, bundledChromium, browserBootstrapReadiness, browserInstallActivity, cancelBrowserInstallations, whenBrowserInstallationsDrained } from '../lib/browser-bootstrap.mjs'
 import { terminateBrowserDaemon } from '../lib/browser-profile-daemon-stop.mjs'
 import { launcherProcessQuery, parseLauncherProcesses, readBootClock } from '../lib/agent-inventory.mjs'
 import { BrowserSecretRedactor } from '../lib/browser-secret-redactor.mjs'
+import privacy from '../lib/browser-host-core/answer-privacy.js'
+const { AnswerPrivacy, SAFE_TOOLS, DIALOG, validateTool, privateRoute, closesPage, leavesPage } = privacy
+const READS_THE_TREE = new Set(['browser_snapshot', 'browser_find', 'browser_wait_for'])
 import { DOWNLOAD_ASK_WAIT_S, DownloadStore, SlotDownloads, downloadLines, downloadPaths } from '../lib/browser-downloads.mjs'
 import { SAVED_GRANT_WORDS, SAVED_SITES_MAX, forgetInGrants, readSavedSitesRequest, savedSiteDirs, savedSitesOf, withoutSavedSites } from '../lib/browser-saved-sites.mjs'
 
@@ -84,6 +88,7 @@ import { GateKeeper, deniedMessage, waitSecondsFrom, GATE_ATTACH_MS, GATE_WAIT_M
 import { RemoteBrowserViews, REMOTE_BROWSER_TAB_MAX } from '../lib/remote-view.mjs'
 import { OWNER_CONTROL_MESSAGE, runAgentBrowserWork } from '../lib/remote-input.mjs'
 import { AgentBrowserProfileCompanion } from '../lib/browser-profile-companion.mjs'
+import { loadMachineSignIns } from '../lib/browser-sign-in-copy.mjs'
 import { reviewAgentProfilePeer } from '../lib/browser-profile-peer-review.mjs'
 
 /**
@@ -102,6 +107,7 @@ const hostCoreRequire = createRequire(import.meta.url)
 export const policy = hostCoreRequire('../lib/browser-host-core/policy.js')
 export const hostSettings = hostCoreRequire('../lib/browser-host-core/settings.js')
 export const hostProfiles = hostCoreRequire('../lib/browser-host-core/profiles.js')
+const { factsOfTargets, gateFactsFor, readWithTree, snapshotTextOf, targetsNamedBy } = hostCoreRequire('../lib/browser-host-core/snapshot-target.js')
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -297,6 +303,31 @@ export const WAIT_SECONDS_SCHEMA = {
     "How long the owner may take to answer the permission this action may need, in seconds (default 60, max 1800). Past 60 seconds the request moves to a card in the owner's chat with you and this call answers gate_parked with a gateId; keep waiting with hoai_browser_wait_gate. Use it when the owner may be away from the browser pane.",
 }
 
+/**
+ * Page code and raw diagnostics can read cookies and stored tokens through aliases,
+ * frames, headers and page logs, the same set the desktop refuses (engine.js). A
+ * machine's browser can hold a person's sealed sign-ins, so these are not served and
+ * do not answer. The fixed DOM reading tools stay.
+ */
+/** How long a card waits for the intent check before it posts without it. A person is waiting on this. */
+export const INTENT_CHECK_WAIT_MS = 2_500
+
+/** The purpose a browser opened with none is given. Any part of an address after the site can hold a secret. */
+export function defaultPurposeFor(url) {
+  if (typeof url !== 'string') return 'Browsing on request'
+  try {
+    return `Browsing ${new URL(url).origin}`.slice(0, 200)
+  } catch { return 'Browsing on request' }
+}
+
+/** The words after "<agent> wants to" on a card for another person's browsing: nothing of their page. */
+export const SOMEONE_ELSES_TURN = 'do something in the browser of someone you share this agent with, and it needs your yes'
+
+/** What the agent hears where a person's sealed copy will not open on this machine. */
+export const SIGN_IN_STAYS_SENTENCE = 'Your owner\'s sign-ins stay on their computer: no copy comes to this machine, because you and this browser run as the same OS user.'
+
+export const PRIVATE_PAGE_TOOLS = new Set(['browser_evaluate', 'browser_console_messages', 'browser_network_requests', 'browser_network_request', 'browser_pdf_save'])
+
 /** Never reachable through HOAI (policy.js NEVER_TOOLS). */
 export const NEVER_TOOLS = new Set([
   'browser_run_code_unsafe',
@@ -369,9 +400,57 @@ export function withWaitSeconds(tool) {
   }
 }
 
-/** Playwright's browser_ roster as the desktop serves it. */
+// Every supported tool is classified here. Missing classifications fail closed on a filled tab.
+export const FORM_TOOL_CLASSES = Object.freeze({
+  browser_snapshot: 'read', browser_find: 'read', browser_take_screenshot: 'read', browser_wait_for: 'read',
+  browser_type: 'fill', browser_fill_form: 'fill',
+  browser_navigate: 'action', browser_navigate_back: 'action', browser_tabs: 'action', browser_close: 'action',
+  browser_click: 'action', browser_select_option: 'action', browser_press_key: 'action', browser_hover: 'action',
+  browser_drag: 'action', browser_handle_dialog: 'action', browser_resize: 'action', browser_file_upload: 'action', browser_drop: 'action',
+})
+const submitApprovals = new WeakMap()
+const submitRequired = () => new HostError('form_submit_approval_required', 'Filled fields need a separate owner approval for this specific next action. For form submission, use a separate browser_click on its current control.')
+
+const FORM_CLICK_REQUIRED = "Fill only enters text. To submit a form, make a separate browser_click on its current submit control, with its own approval and exact target check.";
+function refusesCompositeAction(name, args = {}) {
+  if (name === "browser_press_sequentially") return true;
+  // No batch may click a control after an earlier field changes that control.
+  if (name === "browser_fill_form" && (!Array.isArray(args.fields) || args.fields.some(field => field?.type !== "textbox"))) return true;
+  if (name === "browser_type" && ["submit", "slowly"].some(key => Object.hasOwn(args, key) && args[key] !== false)) return true;
+  if (name !== "browser_press_key") return false;
+  const key = args.key;
+  // Playwright presses every component, not just the final key. Only real
+  // modifiers may precede it. A literal plus is valid as the final key.
+  return typeof key !== "string" || /[\r\n]/.test(key) ||
+    !/^(?:(?:Alt|Control|ControlOrMeta|Meta|Shift)\+)*(?:[^+]+|\+)$/.test(key) ||
+    key.split("+").some(part => /^(?:Enter|NumpadEnter|Return| |Space|Spacebar)$/i.test(part));
+}
+function fillOnlyTool(tool) {
+  if (tool?.name === "browser_fill_form") {
+    const schema = tool.inputSchema || { type: "object" }, fields = schema.properties?.fields;
+    const items = fields?.items;
+    return { ...tool, description: "Fill textbox fields only. Checkbox, radio and select changes require separate actions. " + FORM_CLICK_REQUIRED,
+      inputSchema: { ...schema, properties: { ...schema.properties, ...(items ? { fields: { ...fields, items: { ...items, properties: { ...items.properties, type: { type: "string", enum: ["textbox"] }, value: { type: "string", description: "Text to fill in the textbox" } } } } } : {}) } } };
+  }
+  if (!["browser_type", "browser_press_key"].includes(tool?.name)) return tool;
+  const schema = tool.inputSchema || { type: "object" };
+  const { submit: _submit, slowly: _slowly, ...properties } = schema.properties || {};
+  return { ...tool, description: tool.name === "browser_type" ? "Fill text into an editable element. " + FORM_CLICK_REQUIRED : "Press a non-activating key, optionally preceded by Alt, Control, ControlOrMeta, Meta or Shift modifiers. Enter, Return and Space are unavailable in any chord position. " + FORM_CLICK_REQUIRED,
+    inputSchema: { ...schema, properties, ...(Array.isArray(schema.required) ? { required: schema.required.filter(key => key !== "submit" && key !== "slowly") } : {}) } };
+}
+function validateHostTool(name, args = {}) {
+  if (refusesCompositeAction(name, args)) throw new HostError('not_available', FORM_CLICK_REQUIRED)
+  validateTool(name, args)
+}
+
+/** Playwright's browser_ roster with fill and submission as separate actions. */
 export function servedBrowserTools(playwrightTools) {
-  return playwrightTools.filter((t) => !NEVER_TOOLS.has(t.name)).map(withWaitSeconds)
+  return playwrightTools.filter((t) => SAFE_TOOLS.has(t.name) && !NEVER_TOOLS.has(t.name) && !PRIVATE_PAGE_TOOLS.has(t.name)).map(fillOnlyTool).map((t) => {
+    // No page is written to a file on this host, so no tool offers to.
+    if (!t.inputSchema?.properties?.filename) return withWaitSeconds(t)
+    const { filename: _none, ...properties } = t.inputSchema.properties
+    return withWaitSeconds({ ...t, inputSchema: { ...t.inputSchema, properties, ...(t.inputSchema.required ? { required: t.inputSchema.required.filter((name) => name !== 'filename') } : {}) } })
+  })
 }
 
 /**
@@ -388,7 +467,7 @@ export function hostInstructions(deviceLabel) {
 Workflow:
 1. hoai_browser_open_session with a one line purpose. Browsing starts without saved logins. The owner can unlock encrypted login storage for this agent and person in the pane; never request passwords or the vault passphrase in chat. One person's saved state is never restored for another. If you skip this, the first browser_ tool opens the session for you.
 2. browser_navigate to a URL, then browser_snapshot: it returns the page as an accessibility tree with refs like [ref=e12]. Act with browser_click, browser_type, browser_select_option and friends by passing that ref as "target" plus a short human description as "element". Use browser_find for one element instead of a whole snapshot, and browser_wait_for instead of polling.
-3. Screenshots (browser_take_screenshot) are for visual checks.
+3. ${FORM_CLICK_REQUIRED} After filling, every other page action needs a fresh allow-once approval, even with a saved grant. Reads and more textbox fills can continue; scripts cannot run while filled fields are pending. Screenshots (browser_take_screenshot) are for visual checks.
 4. hoai_browser_close_session when you are done; the browser closes by itself after 30 idle minutes. Unlocked login state is saved encrypted and locked. Other browsing state is discarded.
 
 Permissions work here, and nobody is watching this machine, so there is no strip to answer: the owner is asked as a CARD in their chat with you, and they may be minutes away from it. A new site, any write on one, a download, an upload, running scripts, and every sensitive action is asked for. If the answer does not come inside your call you get gate_parked with a gateId: call hoai_browser_wait_gate with it rather than retrying the action, which would ask them a second time. Use wait_seconds (up to 1800) when you know they are away. policy_denied is final, explain and ask, never retry it. You never type passwords, one time codes or card numbers: at a login, a CAPTCHA or a payment form, stop and tell the owner in one line.
@@ -408,9 +487,11 @@ hoai_browser_open_session and hoai_browser_status report the already authorized 
 
 Supported page mutations wait for the person's fresh allow-once approval of the original request and exact page, for at most 60 seconds. Managed mode has no parked chat gate or hoai_browser_wait_gate. wait_seconds does not extend that deadline. A denial, expiry, unconfirmed outcome or recipient_handover_required is a refusal: explain it and let the person review the original page. Never automatically repeat an action after an unknown outcome.
 
-browser_type without submit or slowly, and browser_fill_form textbox fields, support positively classified ordinary input/textarea fields after fresh Enter page text approval. Passwords, codes, payment fields, unknown fields, subframes, contenteditable, generic keys and scripts require the person to use the browser directly. Saved managed cookies and logins use OS-protected encrypted profile state, separate from legacy login storage. Never request credentials in chat or tool arguments.
+${FORM_CLICK_REQUIRED}
 
-A collapsed pane retains the live session. Hand back to agent keeps that same live page. Moving between machines transfers supported saved state after stopping the source; it does not preserve a live heap, POST action, popup opener, unfinished sign-in or device-bound session. hoai_browser_close_session or browser_close retires this runtime and commits its encrypted stopped checkpoint; report an unconfirmed server commit and use explicit reconciliation.
+browser_type and browser_fill_form textbox fields, support positively classified ordinary input/textarea fields after fresh Enter page text approval. Passwords, codes, payment fields, unknown fields, subframes, contenteditable, generic keys and scripts require the person to use the browser directly. Saved managed cookies and logins use OS-protected encrypted profile state, separate from legacy login storage. Never request credentials in chat or tool arguments.
+
+A collapsed pane retains the live session. Hand back to agent keeps that same live page. A person's computer moves a browser to a machine only once that machine proves it runs it as a separate OS user, and no machine can yet, so say that plainly when asked to move one here. A move transfers supported saved state after stopping the source; it does not preserve a live heap, POST action, popup opener, unfinished sign-in or device-bound session. hoai_browser_close_session or browser_close retires this runtime and commits its encrypted stopped checkpoint; report an unconfirmed server commit and use explicit reconciliation.
 
 hoai_browser_files and hoai_browser_send_file use opaque file/artifact tokens and separate per-file recipient consent. browser_file_upload accepts one hoai-file token plus its original site approval, never a host path. Managed downloads are private owned artifacts; cross-device release needs explicit recipient consent. Unknown uploads are not resent. Automatic encrypted backups are advisory snapshots, not authority to activate or fail over.
 
@@ -562,6 +643,20 @@ export function resultUrl(base, rpcId) {
  * socketId must be a socket the gateway registered as an agent host of that
  * pairing, which a plain daemon holding the same token does not have.
  */
+/**
+ * The live browsing card of a browser on this machine. Without one a person on a
+ * phone has no way in (portable browser, screen 6). It says where the browser is,
+ * what it is for and whether it lives; no page text and no value.
+ */
+export function sessionCardPayload({ sessionId, seq, state, agentName, purpose, startedAt, signedIn = false }) {
+  const now = new Date().toISOString()
+  return {
+    kind: 'browser_session', v: 1, session_id: sessionId, seq, state, agent_name: agentName, purpose: purpose || 'Browsing',
+    profile: signedIn ? 'signed_in' : 'preview', placement: 'daemon', started_at: startedAt, step_count: 0, steps: [],
+    ...(state === 'ended' ? { ended_at: now, end_reason: 'closed_by_agent' } : {}),
+  }
+}
+
 export function gateCardUrl(base) {
   return `${backendBase(base)}/api/v1/browser/gate/card`
 }
@@ -675,7 +770,7 @@ export function readPairings({ agentRoot, allow = null, listDir = defaultListDir
     const pairedAt = Date.parse(String(creds.pairedAt ?? '')) || 0
     let group = groups.get(key)
     if (!group) {
-      group = { key, pairingId, backendUrl: base, token, pairedAt, assistantIds: new Set(), tokens: new Set() }
+      group = { key, pairingId, backendUrl: base, token, pairedAt, ownerUserId: typeof creds.userId === 'string' && creds.userId ? creds.userId : null, assistantIds: new Set(), tokens: new Set() }
       groups.set(key, group)
     }
     group.assistantIds.add(assistantId)
@@ -695,6 +790,7 @@ export function readPairings({ agentRoot, allow = null, listDir = defaultListDir
       pairingId: g.pairingId,
       backendUrl: g.backendUrl,
       token: g.token,
+      ownerUserId: g.ownerUserId,
       staleTokens: g.tokens.size - 1,
       assistantIds: ids.slice(0, MAX_AGENTS_PER_PAIRING),
     }
@@ -892,7 +988,8 @@ export class HostError extends Error {
 /** The command line for one profile. Headless unless asked otherwise. */
 export function chromeArgs({ profileDir, headless = true, platform = process.platform }) {
   const args = [
-    '--remote-debugging-port=0',
+    // A pipe only this host holds, never a port: a listening port answers any local process with no credential.
+    '--remote-debugging-pipe',
     `--user-data-dir=${profileDir}`,
     '--no-first-run',
     '--no-default-browser-check',
@@ -919,10 +1016,6 @@ export function readDevToolsActivePort(profileDir, readText = defaultReadText) {
 }
 
 /**
- * Starts Chrome on one profile and resolves its browser CDP endpoint, read
- * from the "DevTools listening on" line Chrome prints for port 0.
- */
-/**
  * Every Chrome this host started that has not exited yet, including one still launching. When a
  * stop runs out of time (stopWithin) the host kills these before it exits: off Windows nothing
  * ends a node child when its parent exits, so a Chrome still launching, or one whose close hung,
@@ -939,61 +1032,128 @@ export function killStartedChromes(chromes = startedChromes) {
   }
 }
 
-export function launchChromium({ executable, profileDir, headless = true, timeoutMs = BROWSER_START_TIMEOUT_MS, killWaitMs = BROWSER_KILL_WAIT_MS, spawnImpl = spawn, platform = process.platform, env = process.env }) {
-  return new Promise((resolve, reject) => {
-    let child
+/** Ends a Chrome and the helpers in its process group. Playwright starts it as a group leader off Windows. */
+export function killChromeProcess(pid, signal, platform = process.platform) {
+  // kill(-1) signals every process this user owns, so pid 1 and below never get here.
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return
+  if (platform !== 'win32') {
     try {
-      child = spawnImpl(executable, chromeArgs({ profileDir, headless, platform }), { stdio: ['ignore', 'ignore', 'pipe'], env: chromeEnv(env, { platform, headed: !headless }) })
-    } catch (err) {
-      reject(new HostError('browser_start_failed', `Could not start ${executable}: ${err?.message ?? err}`))
+      process.kill(-pid, signal)
       return
+    } catch {}
+  }
+  try {
+    process.kill(pid, signal)
+  } catch {}
+}
+
+/**
+ * The Chrome one launch started, as the rest of this file treats a child process: it can be
+ * killed from the moment the launch begins, and it says when it has really gone. Playwright owns
+ * the process and the pipe, so `exit` is the pipe closing and then the pid being gone.
+ */
+class ChromeProcess extends EventEmitter {
+  constructor({ kill, alive, pollMs = 50 }) {
+    super()
+    this.pid = undefined
+    this.exitCode = null
+    this.signalCode = null
+    this._kill = kill
+    this._alive = alive
+    this._pollMs = pollMs
+    this._pendingKill = null
+  }
+
+  attach(pid) {
+    this.pid = pid
+    if (this._pendingKill) this._kill(pid, this._pendingKill)
+  }
+
+  kill(signal = 'SIGTERM') {
+    if (this.pid === undefined) this._pendingKill = signal
+    else if (this.signalCode === null && this.exitCode === null) this._kill(this.pid, signal)
+    return true
+  }
+
+  /** The pipe closed: reports the exit once the pid has gone too. */
+  watchExit() {
+    const check = () => {
+      if (this.pid !== undefined && this._alive(this.pid)) {
+        setTimeout(check, this._pollMs).unref?.()
+        return
+      }
+      this.markExited()
     }
-    startedChromes.add(child)
-    const forget = () => startedChromes.delete(child)
-    child.once('exit', forget)
-    child.once('error', forget)
-    let tail = ''
-    let settled = false
-    const finish = (err, endpoint) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      if (err) {
-        try {
-          child.kill('SIGKILL')
-        } catch {}
-        // The killed Chrome holds its runtime folder until it has exited (Windows; elsewhere its
-        // SingletonLock names its pid), and the caller removes that folder next. Bounded: a Chrome
-        // that never exits still fails the start.
-        if (child.pid !== undefined) void waitForExit(child, killWaitMs).then(() => reject(err))
-        else reject(err)
-      } else resolve({ child, endpoint })
+    check()
+  }
+
+  markExited() {
+    if (this.exitCode !== null || this.signalCode !== null) return
+    this.exitCode = 0
+    this.emit('exit', 0, null)
+  }
+}
+
+/**
+ * Starts Chrome on one profile through Playwright, over the pipe (no port, no endpoint file), and
+ * resolves the live browser with its process. A failed start ends its own Chrome and rejects once
+ * that Chrome has gone, bounded: until then it still holds the runtime folder the caller removes
+ * next. A start killed while launching (the host's stop deadline) ends as soon as its pid is known.
+ */
+export async function launchChromium({ executable, profileDir, headless = true, artifactsDir = /** @type {string | null} */ (null), timeoutMs = BROWSER_START_TIMEOUT_MS, killWaitMs = BROWSER_KILL_WAIT_MS, launchImpl = /** @type {any} */ (null), killImpl = killChromeProcess, aliveImpl = pidAlive, platform = process.platform, env = process.env }) {
+  // Playwright allocates temporary folders before rejecting a missing binary.
+  // Refuse it first so a start that cannot spawn Chrome leaves nothing behind.
+  if (!launchImpl && !existsSync(executable)) throw new HostError('browser_start_failed', `Could not start ${executable}: the browser executable does not exist.`)
+  const child = new ChromeProcess({ kill: killImpl, alive: aliveImpl })
+  startedChromes.add(child)
+  child.once('exit', () => startedChromes.delete(child))
+  const launch = launchImpl ?? ((/** @type {any} */ options) => loadPlaywright().chromium.launch(options))
+  let browser
+  try {
+    browser = await launch({
+      executablePath: executable,
+      args: chromeArgs({ profileDir, headless, platform }),
+      // Exactly the arguments above: Playwright's own would add its automation defaults, and a second user data folder.
+      ignoreDefaultArgs: true,
+      headless,
+      env: chromeEnv(env, { platform, headed: !headless }),
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
+      timeout: timeoutMs,
+      ...(artifactsDir ? { artifactsDir } : {}),
+    })
+  } catch (err) {
+    const message = String(err?.message ?? err)
+    const pid = Number(/<launched> pid=(\d+)/.exec(message)?.[1])
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      child.pid = pid
+      // The folder Chrome holds is free only once it has exited. Bounded: one that never exits still fails the start.
+      child.kill('SIGKILL')
+      const deadline = Date.now() + killWaitMs
+      while (aliveImpl(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25))
     }
-    const timer = setTimeout(
-      () => finish(new HostError('browser_start_failed', `Chrome did not report its DevTools endpoint within ${timeoutMs} ms. ${lastLines(tail)}`)),
-      timeoutMs,
+    child.markExited()
+    const inUse = /already running|ProcessSingleton|profile.*in use/i.test(message)
+    throw new HostError(
+      'browser_start_failed',
+      inUse
+        ? `Chrome could not lock ${profileDir}: another Chrome that this host cannot reach is using that profile, or this Chrome may not write there (a sandboxed build such as a Snap). ${lastLines(message)}`
+        : `Could not start ${executable}: ${lastLines(message)}`,
     )
-    // Chrome keeps writing to stderr for its whole life. The pipe is drained
-    // for good, or a full pipe would stall the browser mid-page.
-    child.stderr?.on('data', (chunk) => {
-      tail = (tail + chunk.toString()).slice(-8192)
-      if (settled) return
-      const m = /DevTools listening on (ws:\/\/\S+)/.exec(tail)
-      if (m) finish(null, m[1])
-    })
-    child.on('error', (err) => finish(new HostError('browser_start_failed', `Could not start ${executable}: ${err?.message ?? err}`)))
-    child.on('exit', (code, signal) => {
-      const inUse = /already running|ProcessSingleton|profile.*in use/i.test(tail)
-      finish(
-        new HostError(
-          'browser_start_failed',
-          inUse
-            ? `Chrome could not lock ${profileDir}: another Chrome that this host cannot reach is using that profile, or this Chrome may not write there (a sandboxed build such as a Snap). ${lastLines(tail)}`
-            : `Chrome exited before it was ready (code ${code}, signal ${signal}). ${lastLines(tail)}`,
-        ),
-      )
-    })
-  })
+  }
+  browser.on('disconnected', () => child.watchExit())
+  try {
+    const session = await browser.newBrowserCDPSession()
+    const { processInfo } = await session.send('SystemInfo.getProcessInfo')
+    await session.detach().catch(() => {})
+    child.attach(processInfo.find((row) => row.type === 'browser')?.id)
+  } catch (err) {
+    await browser.close().catch(() => {})
+    child.markExited()
+    throw new HostError('browser_start_failed', `Chrome started but did not say which process it is: ${err?.message ?? err}`)
+  }
+  return { child, browser }
 }
 
 function lastLines(text, n = 3) {
@@ -1022,6 +1182,13 @@ export function loadPlaywright() {
     tools.Tab.prototype._downloadStarted = function () {
       return Promise.resolve()
     }
+    // A page can log what it holds, and Playwright's tab writes every console line to
+    // a log file in the agent's own output folder that a snapshot links to. On a
+    // machine holding sealed sign-ins no value reaches the agent's files, so the tab
+    // keeps no console, as the desktop engine does (engine.js _isolatePageDiagnostics).
+    // Gone with a Playwright update, no browser starts rather than one that keeps them.
+    if (typeof tools?.Tab?.prototype?._handleConsoleMessage !== 'function') throw new HostError('browser_unavailable', 'Browser diagnostic isolation unavailable')
+    tools.Tab.prototype._handleConsoleMessage = function () {}
     playwrightModules = { chromium, tools, z }
   }
   return playwrightModules
@@ -1033,7 +1200,7 @@ export function toMcpTool(tool, z) {
   return {
     name: tool.name,
     description: tool.description,
-    inputSchema: z.toJSONSchema(tool.inputSchema),
+    inputSchema: (() => { const schema = z.toJSONSchema(tool.inputSchema); if (tool.name === 'browser_tabs') delete schema.properties.isolatedContext; return schema })(),
     annotations: {
       title: tool.title,
       readOnlyHint: readOnly,
@@ -1049,14 +1216,80 @@ export async function resolveConfig({ caps, outputDir }) {
   const config = await tools.resolveCLIConfigForMCP({ webmcp: false, caps: caps.join(','), imageResponses: 'allow', outputDir }, {})
   config.outputDir = outputDir
   config.saveSession = false
+  // Playwright writes the whole page tree to a file on every action and links it. On this host the
+  // agent asks for the page with browser_snapshot, which answers in the reply and writes no file.
+  config.snapshot = { ...config.snapshot, mode: 'none' }
+  // Generated code prints a control's name. It is off, so no reply carries it.
+  config.codegen = 'none'
   return config
+}
+
+/**
+ * Makes one tool call write no page to a file. A page holds whatever the person's signed in
+ * session shows, and the agent's folder is readable by the agent and everything it runs. Fails
+ * closed: a Playwright update that moves these methods stops the call, not the guard.
+ */
+export function keepPageOutOfFiles(tool, params, response) {
+  if (typeof response?._writeFile !== 'function' || typeof response?.addFileResult !== 'function' || typeof response?.addCode !== 'function') throw new HostError('browser_unavailable', 'Browser file guard unavailable')
+  response._writeFile = async () => { throw new HostError('not_available', 'This browser writes no page to a file on this machine.') }
+  // An image still goes back in the reply; only the copy on disk and its link go.
+  response.addFileResult = async () => {}
+  if (tool === 'browser_take_screenshot') response.addCode = () => {}
+  if (params && typeof params === 'object' && 'filename' in params) {
+    const { filename: _named, ...rest } = params
+    return rest
+  }
+  return params
+}
+
+/** Every directory on the cleanup path must be a real directory, including junctions on Windows. */
+function pageDirectory(dir, agentDir) {
+  const base = resolve(agentDir), target = resolve(dir), inside = relative(base, target)
+  if (!inside || inside === '..' || inside.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(inside)) return false
+  const ancestors = []
+  for (let at = target;; at = dirname(at)) {
+    ancestors.push(at)
+    if (dirname(at) === at) break
+  }
+  try {
+    for (const at of ancestors.reverse()) {
+      const stat = lstatSync(at)
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return false
+    }
+    return true
+  } catch { return false }
+}
+
+/** Remove entries without traversing links. Recheck the owned path at every descent and removal. */
+export function clearPageFiles(dir, agentDir) {
+  if (typeof agentDir !== 'string' || !pageDirectory(dir, agentDir)) return
+  const remove = (entry) => {
+    if (!pageDirectory(dirname(entry), agentDir)) return
+    const stat = lstatSync(entry)
+    if (stat.isDirectory() && !stat.isSymbolicLink()) {
+      if (!pageDirectory(entry, agentDir)) return
+      for (const name of readdirSync(entry)) { try { remove(join(entry, name)) } catch {} }
+      if (pageDirectory(entry, agentDir)) rmdirSync(entry)
+    } else if (pageDirectory(dirname(entry), agentDir)) unlinkSync(entry)
+  }
+  try {
+    for (const name of readdirSync(dir)) { try { remove(join(dir, name)) } catch {} }
+  } catch {}
+}
+
+/** Retire only this agent's earlier page output, never a linked root or ancestor. */
+export function sweepPageFiles({ agentRoot, assistantId }) {
+  const id = assistantIdOrNull(assistantId)
+  if (id === null) return
+  const agentDir = join(agentRoot, String(id))
+  clearPageFiles(join(agentDir, 'browser-output'), agentDir)
 }
 
 /** engine.js listTools: the roster for a cap set, without a browser. */
 export async function listTools({ caps, outputDir }) {
   const { tools, z } = loadPlaywright()
   const config = await resolveConfig({ caps, outputDir })
-  return tools.filteredTools(config).map((t) => toMcpTool(t.schema, z))
+  return tools.filteredTools(config).filter(t => SAFE_TOOLS.has(t.schema.name)).map((t) => fillOnlyTool(toMcpTool(t.schema, z)))
 }
 
 /**
@@ -1064,8 +1297,8 @@ export async function listTools({ caps, outputDir }) {
  * when the browser under it goes away, so the pool relaunches it.
  */
 export class PlaywrightEngine {
-  constructor({ endpoint, caps, outputDir, clientName, clientVersion, connectTimeoutMs = 0, artifactsDir = /** @type {string | null} */ (null), acceptDownloads = false, onDownload = /** @type {((download: any) => void) | null} */ (null), managedRuntime = /** @type {any} */ (null), log = /** @type {(line: string) => void} */ (() => {}) }) {
-    this._endpoint = endpoint
+  constructor({ browser = /** @type {any} */ (null), caps, outputDir, clientName, clientVersion, artifactsDir = /** @type {string | null} */ (null), acceptDownloads = false, onDownload = /** @type {((download: any) => void) | null} */ (null), managedRuntime = /** @type {any} */ (null), log = /** @type {(line: string) => void} */ (() => {}) }) {
+    this._launched = browser
     // Chrome writes downloads into Playwright's artifacts folder. Given here it
     // is the held folder inside the agent's own folder; never given, Playwright
     // would make one in the system temp folder.
@@ -1073,7 +1306,6 @@ export class PlaywrightEngine {
     this._acceptDownloads = acceptDownloads === true
     this.onDownload = onDownload
     this._log = log
-    this._connectTimeoutMs = connectTimeoutMs
     this._managedRuntime = managedRuntime
     this._caps = caps
     this._outputDir = outputDir
@@ -1086,31 +1318,56 @@ export class PlaywrightEngine {
     this.onDisconnected = null
     this.onSelectedPage = null
     this._secrets = new BrowserSecretRedactor()
+    this._privacy = new AnswerPrivacy()
+    this._privacyListeners = new Set()
+    this._privacy.onReloadRequired = () => { for (const work of this._privacyListeners) work() }
+    this._agentPages = new WeakSet()
+    this._filledTabs = new WeakMap()
+    this._toolWork = Promise.resolve()
   }
 
   async start() {
-    const { chromium, tools } = loadPlaywright()
+    const { tools, z } = loadPlaywright()
     this._managedRuntime?.assertCurrent()
-    this._browser = this._managedRuntime ? this._managedRuntime.browser : await chromium.connectOverCDP(this._endpoint, { isLocal: true, timeout: this._connectTimeoutMs, noDefaults: true, ...(this._artifactsDir ? { artifactsDir: this._artifactsDir } : {}) })
+    this._browser = this._managedRuntime ? this._managedRuntime.browser : this._launched
+    if (!this._browser) throw new HostError('browser_start_failed', 'No browser was started for this engine.')
     this._browser.on('disconnected', () => this.onDisconnected?.())
     // Downloads are accepted only into a guarded held folder; otherwise Chrome
     // is told to refuse them (Browser.setDownloadBehavior deny).
     const context = this._managedRuntime ? this._managedRuntime.context : await this._browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: this._acceptDownloads && !!this._artifactsDir })
-    context.on('page', page => { if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
+    context.on('page', page => { this._privacy.protectPage(page); if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
+    for (const page of context.pages()) { this._privacy.protectPage(page); await this._privacy.watchPersonInput(page) }
     context.on('download', (download) => this._download(download))
-    if (!this._managedRuntime) await context.newPage()
+    if (!this._managedRuntime) this._agentPages.add(await context.newPage())
     const config = await resolveConfig({ caps: this._caps, outputDir: this._outputDir })
-    const filtered = tools.filteredTools(config)
-    this._toolSchemas = filtered.map(tool => tool.schema)
+    const filtered = tools.filteredTools(config).filter(tool => SAFE_TOOLS.has(tool.schema.name))
+    this._toolSchemas = filtered.map(tool => toMcpTool(tool.schema, z))
     this._toolNames = new Set(filtered.map((t) => t.schema.name))
-    this._backend = new tools.BrowserBackend(config, context, filtered)
+    this._backend = new tools.BrowserBackend(config, context, filtered.map(tool => this._withoutPageFiles(tool)))
     await this._backend.initialize({ cwd: this._outputDir, name: this._clientName, version: this._clientVersion })
     // Playwright uses this hook for snapshots, console collection, artifacts
     // and serialized MCP text. Hook before an owner can fill any login.
     if (typeof this._backend._context?.redactSecrets !== 'function') throw new Error('Browser secret redaction unavailable')
     this._backend._context.redactSecrets = text => this._secrets.text(text)
+    const toolContext = this._backend._context, created = toolContext._onPageCreated.bind(toolContext)
+    toolContext._onPageCreated = page => { created(page); this._privacy.protectTab(tools.Tab.forPage(page)) }
     this._context = context
     return this
+  }
+
+  /** Playwright's shared tool descriptors stay as they are: the guard belongs to this engine's copy. */
+  _withoutPageFiles(tool) {
+    if (typeof tool.handle !== 'function') throw new HostError('browser_unavailable', 'Browser file guard unavailable')
+    return { ...tool, handle: async (context, params, response, signal) => {
+      // A PDF is a file of the page by nature, and a person can sign in here in ways the host cannot see.
+      if (tool.schema.name === 'browser_pdf_save') throw new HostError('not_available', 'A page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.')
+      params = this._privacy.guardResponse(tool.schema.name, keepPageOutOfFiles(tool.schema.name, params, response), response)
+      if (tool.schema.name === 'browser_wait_for' && (params.text || params.textGone)) {
+        await this._privacy.waitFor(await context.ensureTab(), params, response, signal)
+        return
+      }
+      return tool.handle(context, params, response, signal)
+    } }
   }
 
   hasTool(name) {
@@ -1170,14 +1427,239 @@ export class PlaywrightEngine {
     return (await this._backend._context.newTab()).page
   }
 
-  async callTool(name, args, signal) {
+  toolPage(name, args = {}) { return name === 'browser_tabs' && args.action === 'close' && args.index !== undefined ? this._backend?._context?.tabs()?.[args.index]?.page : this.selectedPage() }
+  ownsToolTarget(name, args) { return this._agentPages.has(this.toolPage(name, args)) }
+  closeTarget(name, args) {
+    const page = this.toolPage(name, args)
+    if (!page || page.isClosed()) throw new HostError('target_changed', this._privacy.privacyState().language === 'ar' ? 'علامة تبويب المتصفح غير متاحة.' : 'The browser tab is unavailable.')
+    // Playwright updates this identity on every committed document. Reading its
+    // existing notification state keeps close available even when page JS is stuck.
+    const document = page._connection.toImpl(page.mainFrame())._currentDocument
+    if (!document) throw new HostError('target_changed', this._privacy.privacyState().language === 'ar' ? 'مستند المتصفح غير متاح.' : 'The browser document is unavailable.')
+    return { page, document }
+  }
+
+  /** Capture only identities and protected descriptions, never field values. */
+  async actionTarget(name, args) {
+    await this._backend._context.ensureBrowserContext()
+    const bound = this.closeTarget(name, args), tab = this._currentTab()
+    const url = bound.page.url(), nodes = []
+    const reads = policy.readsBefore(name, args)
+    const identify = async (handle) => {
+      const frame = handle._frame, document = frame._currentDocument
+      const ids = await handle.evaluateInUtility(([injected, element, mode]) => {
+        const key = Symbol.for('hoai.browser.actionIdentity')
+        const state = injected[key] ||= { nodes: new WeakMap(), next: 0 }
+        const id = (node) => {
+          if (!node) return null
+          if (!state.nodes.has(node)) state.nodes.set(node, ++state.next)
+          return state.nodes.get(node)
+        }
+        const actions = 'button,a[href],summary,input,select,textarea,[role=button],[role=link],[role=menuitem],[role=tab],[role=checkbox],[role=radio],[role=switch],[role=option],[contenteditable]:not([contenteditable=false])'
+        const label = element.localName === 'label' ? element : element.closest?.('label')
+        let control = element
+        if (label?.control && !element.matches(actions)) control = label.control
+        else for (let at = element; at; at = at.parentNode || at.host) if (at.nodeType === 1 && at.matches(actions)) { control = at; break }
+        const submits = mode === 'form' || mode === 'focused' && control.matches('input:not([type=submit],[type=button],[type=reset],[type=image]),select,textarea')
+        const form = submits ? control.form || control.closest?.('form') : null
+        const button = form && Array.from(form.elements || []).find(node => node.matches('button:not([type]),button[type=submit],input[type=submit],input[type=image]'))
+        return [id(element), id(control), id(form), id(button)]
+      }, reads)
+      if (!Array.isArray(ids)) throw new HostError('target_changed', 'The browser target is unavailable. Read the page and ask again.')
+      nodes.push({ frame, document, ids: JSON.stringify(ids) })
+    }
+    for (const target of this.dialogWaiting() ? [] : targetsNamedBy(args)) {
+      let handle
+      try {
+        const { locator } = await tab.targetLocator({ target })
+        handle = await locator.elementHandle({ timeout: 1500 })
+        if (!handle) throw new Error('missing target')
+        await identify(bound.page._connection.toImpl(handle))
+      } catch { throw new HostError('target_changed', 'The browser target is unavailable. Read the page and ask again.') }
+      finally { await handle?.dispose().catch(() => {}) }
+    }
+    // Every key acts on focus, including keys that the sensitivity policy treats as inert.
+    if (name === 'browser_press_key' && !this.dialogWaiting()) {
+      const utility = await bound.page._connection.toImpl(bound.page.mainFrame()).utilityContext()
+      const injected = await utility.injectedScript()
+      const handle = await injected.evaluateHandle(() => globalThis[Symbol.for('hoai.browser.answerPrivacy')]?.focused() || document.activeElement)
+      try { await identify(handle.asElement()) } finally { await handle.dispose() }
+    }
+    const read = targetsNamedBy(args).length || name === 'browser_press_key' || this.dialogWaiting() ? await this.describeAction(name, args) : null
+    const current = this.closeTarget(name, args)
+    if (current.page !== bound.page || current.document !== bound.document || bound.page.url() !== url) throw new HostError('target_changed', 'The browser page changed. Read the page and ask again.')
+    const destination = name === 'browser_tabs' && args.action === 'select' ? this._backend._context.tabs()[args.index]?.page : null
+    return { ...bound, url, nodes, read, description: JSON.stringify(read), destination, dialog: tab.modalStates?.().find(state => state.type === 'dialog')?.dialog }
+  }
+
+  async assertActionTarget(approved, name, args) {
+    const changed = () => new HostError('target_changed', 'The approved browser target changed. Read the page and ask again.')
+    try {
+      const current = await this.actionTarget(name, args)
+      if (current.page !== approved.page || current.document !== approved.document || current.url !== approved.url || current.destination !== approved.destination || current.dialog !== approved.dialog || current.description !== approved.description || current.nodes.length !== approved.nodes.length || current.nodes.some((node, index) => node.frame !== approved.nodes[index].frame || node.document !== approved.nodes[index].document || node.ids !== approved.nodes[index].ids)) throw changed()
+    } catch { throw changed() }
+  }
+
+  _currentTab() { return this._backend?._context?.currentTab?.() || null }
+  dialogWaiting() { return this._currentTab()?.modalStates?.().some(state => state.type === 'dialog') === true }
+
+  /** One page: the one this call is about. A dialog in another tab stops nothing, and that page is left alone. */
+  formSubmitRequirement(name, args = {}) {
+    const page = this.toolPage(name, args), state = page && this._filledTabs.get(page)
+    if (!state?.fields.size) return null
+    const kind = Object.hasOwn(FORM_TOOL_CLASSES, name) ? FORM_TOOL_CLASSES[name] : null
+    if (kind === 'fill' && refusesCompositeAction(name, args)) throw submitRequired()
+    if (kind === 'read' || kind === 'fill') return null
+    // Scripts and tools we have not classified never become approvable while dirty.
+    if (kind !== 'action') throw submitRequired()
+    return { engine: this, page, state, revision: state.revision, name, args: JSON.stringify(args) }
+  }
+
+  _checkSubmitApproval(name, args, approval, consume = false) {
+    const required = this.formSubmitRequirement(name, args)
+    if (!required) return
+    const granted = approval && submitApprovals.get(approval)
+    if (!granted || granted.engine !== this || granted.page !== required.page || granted.state !== required.state ||
+        granted.revision !== required.revision || granted.name !== name || granted.args !== required.args) throw submitRequired()
+    if (consume) {
+      submitApprovals.delete(approval)
+      // Approval permits this exact dispatch once. It says nothing about the
+      // lifetime of fields, including when an action fails or a submit stays put.
+    }
+  }
+
+  _markFilled(page, name, args) {
+    if (!page || FORM_TOOL_CLASSES[name] !== 'fill' && !['browser_press_key', 'browser_select_option'].includes(name)) return
+    let state = this._filledTabs.get(page)
+    if (!state) this._filledTabs.set(page, state = { fields: new Set(), revision: 0 })
+    for (const ref of name === 'browser_fill_form' ? args.fields.map(field => field.target ?? field.ref) : [args.target || 'focused-control']) state.fields.add(ref)
+    ++state.revision
+  }
+
+  callTool(name, args = {}, signal, approved, submitApproval) {
+    // Serialize the entire dispatch, including direct-engine callers and tab changes.
+    const work = this._toolWork.then(async () => {
+      this._managedRuntime?.assertCurrent()
+      const backend = this._backend
+      // Playwright chooses its first tab lazily. Bind every guard to that actual tab.
+      await backend?._context?.ensureBrowserContext?.()
+      this._managedRuntime?.assertCurrent()
+      if (this._backend !== backend) throw new HostError('target_changed', 'The browser session changed. Ask again.')
+      return this._privacy.response(this._currentTab()?.page || this.pages()[0], () => this._callProtectedTool(name, args, signal, approved, submitApproval))
+    })
+    this._toolWork = work.catch(() => {})
+    return work
+  }
+
+  async _callProtectedTool(name, args, signal, approved, submitApproval) {
     this._managedRuntime?.assertCurrent()
+    this._checkSubmitApproval(name, args, submitApproval)
+    if (name === 'browser_pdf_save') return errorResult('not_available', 'A page is not saved as a file on this machine. Use a snapshot or a screenshot to read it.')
+    if (!SAFE_TOOLS.has(name)) return errorResult('not_available', 'This browser tool is not available.')
+    validateHostTool(name, args)
+    this._privacy.validate(args)
     if (!this._backend) throw new Error('Engine not started')
     if (name === 'browser_tabs' && args?.action === 'new' && this.pages().length >= REMOTE_BROWSER_TAB_MAX) throw new HostError('browser_tabs_full', 'The browser has reached its tab limit.')
-    try { return this._secrets.value(await this._backend.callTool(name, args || {}, signal)) }
-    catch (error) { throw Object.assign(new Error(this._secrets.text(String(error?.message || 'Browser command failed'))), { code: error?.code }) }
-    finally { this.onSelectedPage?.(this.selectedPage()) }
+    const dialogReply = () => ({ content: [{ type: 'text', text: DIALOG }] })
+    this._privacy.busy = true
+    try {
+      if (this._privacy.personMode(this._currentTab()?.page)) return this._privacy.handoff()
+      if (closesPage(name, args)) {
+        const tab = name === 'browser_tabs' && args.index !== undefined ? this._backend._context.tabs()[args.index] : this._currentTab()
+        if (!tab) throw new Error('The browser tab is unavailable.')
+        if (this._privacy.personMode(tab.page)) return this._privacy.forPage(tab.page, () => this._privacy.handoff())
+        if (this.pages().length === 1) throw new HostError('last_tab', this._privacy.privacyState().language === 'ar' ? 'أبق علامة تبويب واحدة مفتوحة على الأقل.' : 'Keep at least one tab open.')
+        signal?.throwIfAborted()
+        this._checkSubmitApproval(name, args, submitApproval, true)
+        await tab.page.close({ runBeforeUnload: false })
+        return this._privacy.keep(text(this._privacy.copy.closed))
+      }
+      if (this._unreadablePage && this._unreadablePage === this._currentTab()?.page && ['browser_navigate', 'browser_navigate_back'].includes(name)) {
+        const page = this._currentTab().page
+        const utility = await page._connection.toImpl(page.mainFrame()).utilityContext()
+        await utility.delegate._client.send('Runtime.terminateExecution')
+        this._unreadablePage = null
+      }
+      if (!this.dialogWaiting() && (!READS_THE_TREE.has(name) || args?.target)) { const held = await this._privacy.preflight(this._currentTab()?.page, this._currentTab(), name, args); if (held) return held }
+      else if (this.dialogWaiting() && this._privacy.blocked && name !== 'browser_handle_dialog') return this._privacy.handoff()
+      const up = this.dialogWaiting()
+      if (up && name !== 'browser_handle_dialog') return dialogReply()
+      // A read of the tree reads the page first by itself.
+      const back = name === 'browser_navigate_back' && this._privacy.blocked ? await this.previousUrl() : null
+      const page = this._currentTab()?.page
+      const needsReload = this._privacy.reloadRequired(page)
+      const reload = needsReload && name === 'browser_navigate' && args.url === page.url()
+      const execute = async () => {
+        if (approved) await this.assertActionTarget(approved, name, args)
+        signal?.throwIfAborted()
+        this._checkSubmitApproval(name, args, submitApproval, true)
+        // Record before dispatch: a partial fill or error must retain the barrier.
+        this._markFilled(page, name, args)
+        if (!reload) return this._backend.callTool(back ? 'browser_navigate' : name, back ? {url: back} : args || {}, signal)
+        signal?.throwIfAborted()
+        await page.reload({waitUntil: 'domcontentloaded'})
+        signal?.throwIfAborted()
+        return {content: []}
+      }
+      const reply = await this._privacy.agentAction(page, () =>
+        needsReload && ['browser_navigate', 'browser_navigate_back'].includes(name)
+          ? this._privacy.reloadPage(page, execute) : execute())
+      if (name === 'browser_tabs' && args?.action === 'new' && !reply?.isError) this._agentPages.add(this.selectedPage())
+      if (this.dialogWaiting() && name !== 'browser_handle_dialog') return dialogReply()
+      return await this._privacy.forPage(this._currentTab()?.page, async () => {
+        if (!READS_THE_TREE.has(name)) await this._privacy.after(this._currentTab()?.page)
+        if (name === 'browser_tabs' && !reply?.isError) return this.tabsOverview()
+        return this._privacy.keep(this._secrets.value(this._privacy.value(await this._privacy.image(reply, this._currentTab()?.page, { element: !!args?.target }))))
+      })
+    } catch (error) {
+      if (this._privacy.blocked) return this._privacy.handoff()
+      if (error instanceof HostError || this._privacy.isUnreadable(error)) throw error
+      throw Object.assign(new Error(this._secrets.text(this._privacy.error(String(error?.message || 'Browser command failed')))), { code: error?.code })
+    } finally { await this._privacy.endWriting(this._currentTab()?.page); this._privacy.busy = false; this.onSelectedPage?.(this.selectedPage()) }
   }
+
+  tabsOverview() { return this._privacy.tabList(this._backend?._context?.tabs?.() || [], this._currentTab()?.page) }
+
+  async previousUrl() {
+    const page = this._currentTab()?.page
+    if (!page) return null
+    const utility = await page._connection.toImpl(page.mainFrame()).utilityContext()
+    const history = await utility.delegate._client.send('Page.getNavigationHistory')
+    return history.entries?.[history.currentIndex - 1]?.url || null
+  }
+
+  async inspectPrivacy(name, args = {}) {
+    const page = this.toolPage(name, args)
+    return this._privacy.forPage(page, async () => {
+      if (!closesPage(name, args) && !this.dialogWaiting() && page) {
+        try { await this._privacy.read(page) }
+        catch (error) {
+          if (!leavesPage(name, args)) throw error
+          this._unreadablePage = page
+          return { ...this._privacy.privacyState(), blocked: true, unavailable: true }
+        }
+      }
+      return this._privacy.privacyState()
+    })
+  }
+  reloadPagePrivacy(page, work) { return this._privacy.reloadPage(page, work) }
+  pagePrivacy(page) { return {reloadRequired: this._privacy.reloadRequired(page)} }
+  onPrivacyChange(work) { this._privacyListeners.add(work); return () => this._privacyListeners.delete(work) }
+  holdPersonPrivacy(page = this._currentTab()?.page) { this._privacy.holdPerson(page) }
+  handBackPrivacy(page = this._currentTab()?.page) { return this._privacy.handBack(page) }
+
+  /** What the host read of this call before anyone is asked, never the agent's words. */
+  async describeAction(name, args) {
+    const tab = this._currentTab()
+    if (!tab) return null
+    return this._privacy.describeAction(tab.page, tab, name, args, { targets: targetsNamedBy(args), reads: policy.readsBefore(name, args) })
+  }
+
+  /** The last whole page tree this host read for itself: proved, with no text removed. A gate reads this, not the model's copy. */
+  lastPageTree() { return this._privacy.forPage(this._currentTab()?.page, () => this._privacy.lastTree) }
+
+  /** A page's address, as a reply may show it. */
+  shownAddress(url, page = this._currentTab()?.page) { return this._privacy.forPage(page, () => this._privacy.page(url)) }
 
   registerSecret(secret) { this._secrets.register(secret) }
 
@@ -1206,7 +1688,7 @@ export class PlaywrightEngine {
 /** Shared by the daemon factory and the bounded native download probe. */
 export async function createManagedProfileEngine({ runtime, directory, onDownload, log = /** @type {(line:string)=>void} */ (() => {}) }) {
   ensurePrivateDir(directory)
-  return new PlaywrightEngine({ endpoint: null, managedRuntime: runtime, caps: DEFAULT_CAPS, outputDir: directory, onDownload, clientName: 'hoai-profile-companion', clientVersion: readPackageVersion(), log }).start()
+  return new PlaywrightEngine({ managedRuntime: runtime, caps: DEFAULT_CAPS, outputDir: directory, onDownload, clientName: 'hoai-profile-companion', clientVersion: readPackageVersion(), log }).start()
 }
 
 function waitForExit(child, ms) {
@@ -1430,11 +1912,14 @@ export class ChromiumEngine {
     this._scope = scope || JSON.stringify({ profile: profileDir })
     this.vault = null
     this._runtimeDir = null
+    /** Set by the pool once a sealed copy opened in this browser. */
+    this.holdsSignIns = false
   }
 
   async start() {
-    this.vault = new AgentBrowserVault({ profileDir: this.profileDir, scope: this._scope })
+    this.vault = await AgentBrowserVault.create({ profileDir: this.profileDir, scope: this._scope })
     ensurePrivateDir(this.outputDir)
+    this._clearPageFiles()
     // Windows: runtime folders an earlier stop had to leave while Chrome still held them.
     for (const dir of leftRuntimeDirs) {
       try {
@@ -1454,6 +1939,11 @@ export class ChromiumEngine {
     return this
   }
 
+  /** The output folder holds nothing the host keeps; a profile folder does, so one handed in as both is left alone. */
+  _clearPageFiles() {
+    if (this.outputDir !== this.profileDir) clearPageFiles(this.outputDir, dirname(dirname(this.profileDir)))
+  }
+
   async _startIn() {
     ensurePrivateDir(this._runtimeDir)
     // Downloads only into the held folder, and only when its guard holds
@@ -1470,12 +1960,10 @@ export class ChromiumEngine {
     }
     this._acceptDownloads = acceptDownloads
     if (!this._engine) {
-      const { child, endpoint } = await this._launch({ executable: this._executable, profileDir: this._runtimeDir, headless: this._headless, platform: this._platform })
+      const { child, browser } = await this._launch({ executable: this._executable, profileDir: this._runtimeDir, headless: this._headless, platform: this._platform, artifactsDir: acceptDownloads ? this.heldDir : null })
       this._child = child
       child.on('exit', () => this._gone())
-      // Bounded: a connect that hangs after Chrome printed its endpoint would
-      // otherwise hold this principal's launch, and every call behind it.
-      const engine = this._newEngine(endpoint, BROWSER_START_TIMEOUT_MS)
+      const engine = this._newEngine(browser)
       try {
         await engine.start()
       } catch (err) {
@@ -1526,14 +2014,13 @@ export class ChromiumEngine {
     await this._removeRuntimeDir().catch((err) => this._log(`the browser's runtime folder ${this._runtimeDir} could not be removed (${err?.code ?? err?.message ?? err})`))
   }
 
-  _newEngine(endpoint, connectTimeoutMs = 0) {
+  _newEngine(browser) {
     return new PlaywrightEngine({
-      endpoint,
+      browser,
       caps: this._caps,
       outputDir: this.outputDir,
       clientName: this._clientName,
       clientVersion: this._clientVersion,
-      connectTimeoutMs,
       artifactsDir: this.heldDir,
       acceptDownloads: this._acceptDownloads === true,
       onDownload: (download) => this._onDownload(download),
@@ -1558,13 +2045,36 @@ export class ChromiumEngine {
   }
 
   selectedPage() { return this._engine?.selectedPage() }
+  toolPage(name, args) { return this._engine?.toolPage(name, args) }
+  ownsToolTarget(name, args) { return this._engine?.ownsToolTarget(name, args) === true }
+  closeTarget(name, args) { return this._engine?.closeTarget(name, args) }
+  actionTarget(name, args) { return this._engine.actionTarget(name, args) }
+  assertActionTarget(approved, name, args) { return this._engine.assertActionTarget(approved, name, args) }
   selectPage(page) { return this._engine.selectPage(page) }
   newPage() { return this._engine.newPage() }
 
-  callTool(name, args, signal) {
+  formSubmitRequirement(name, args) { return this._engine?.formSubmitRequirement(name, args) || null }
+
+  callTool(name, args, signal, approved, submitApproval) {
     if (!this._engine || !this.alive) throw new HostError('browser_gone', 'The browser closed; call again to reopen it.')
-    return this._engine.callTool(name, args, signal)
+    return this._engine.callTool(name, args, signal, approved, submitApproval)
   }
+
+  dialogWaiting() { return this._engine?.dialogWaiting() === true }
+
+  describeAction(name, args) { return this._engine ? this._engine.describeAction(name, args) : Promise.resolve(null) }
+  tabsOverview() { return this._engine?._privacy ? this._engine.tabsOverview() : undefined }
+  previousUrl() { return this._engine?.previousUrl() }
+  inspectPrivacy(name, args) { return this._engine ? this._engine.inspectPrivacy(name, args) : Promise.resolve(null) }
+  reloadPagePrivacy(page, work) { return this._engine.reloadPagePrivacy(page, work) }
+  pagePrivacy(page) { return this._engine?.pagePrivacy(page) }
+  onPrivacyChange(work) { return this._engine?.onPrivacyChange(work) }
+  holdPersonPrivacy(page) { return this._engine?.holdPersonPrivacy(page) }
+  handBackPrivacy(page) { return this._engine?.handBackPrivacy(page) }
+
+  lastPageTree() { return this._engine?.lastPageTree() ?? null }
+
+  shownAddress(url, page) { return this._engine?._privacy ? this._engine.shownAddress(url, page) : url }
 
   registerSecret(secret) {
     if (!this._engine || !this.alive) throw new HostError('browser_gone', 'The browser is unavailable.')
@@ -1576,7 +2086,9 @@ export class ChromiumEngine {
     // Capture patterns for that result without retaining secrets after it returns.
     const redactor = new BrowserSecretRedactor()
     redactor.patterns = this._engine?._secrets.patterns || []
-    return value => redactor.value(value)
+    const engine = this._engine, privacy = engine?._privacy, originalPage = privacy ? engine._currentTab()?.page : null
+    // The response is filtered under its own page even if another tab finishes a read after it.
+    return (value) => redactor.value(privacy ? privacy.forPage(engine?._currentTab()?.page || originalPage, () => privacy.host(value)) : value)
   }
 
   async stop() {
@@ -1600,6 +2112,7 @@ export class ChromiumEngine {
     await engine?.stop().catch(() => {})
     await this._killChild()
     await this.vault?.lock()
+    this._clearPageFiles()
     if (this._runtimeDir) await this._removeRuntimeDir()
     if (persistenceFailed) throw Object.assign(new HostError('credential_storage', 'The browser closed and locked, but its latest state could not be saved encrypted. The previous saved state is retained.'), { browserClosed: true })
   }
@@ -1654,11 +2167,13 @@ export class ChromiumEngine {
  * Chrome, and one principal's concurrent first calls share one launch.
  */
 export class BrowserPool {
-  constructor({ agentRoot, createEngine, idleMs = BROWSER_IDLE_MS, log = () => {}, bindEngine = /** @type {((engine: any, slot: any, ctx: any) => void) | null} */ (null) }) {
+  constructor({ agentRoot, createEngine, idleMs = BROWSER_IDLE_MS, log = () => {}, loadSignIns = null, bindEngine = /** @type {((engine: any, slot: any, ctx: any) => void) | null} */ (null) }) {
     this._agentRoot = agentRoot
     this._createEngine = createEngine
     /** Called with each new engine, its slot and the call's context, before it starts. */
     this.bindEngine = bindEngine
+    /** An approved machine's sealed sign-ins for this call's person and agent (lib/browser-sign-in-copy.mjs). */
+    this._loadSignIns = loadSignIns
     this._idleMs = idleMs
     this._log = log
     this._slots = new Map()
@@ -1710,6 +2225,17 @@ export class BrowserPool {
             engine.onStarted?.()
           } catch {}
           slot.engine = engine
+          // With nobody there: an approved machine opens its own sealed copy. A locked key
+          // store or a failed read leaves an ordinary browser with no sign-ins, never a stop.
+          slot.signIns = null; slot.signInsApplied = false; slot.signInsRefused = false
+          if (this._loadSignIns) {
+            try {
+              slot.signIns = await this._loadSignIns(ctx)
+              slot.signInsRefused = slot.signIns?.refused === true
+              slot.signInsApplied = (await slot.signIns?.applyTo(engine.vault?.context)) === true
+              engine.holdsSignIns = slot.signInsApplied
+            } catch (err) { this._log(`sign-ins: not opened (${err?.code || 'unavailable'})`) }
+          }
           slot.openedAt = new Date().toISOString()
           return engine
         })().finally(() => {
@@ -1756,12 +2282,22 @@ export class BrowserPool {
     return [...this._slots.values()].filter((s) => s.engine && s.engine.alive !== false).map((s) => s.paths.profileDir)
   }
 
+  /** A sign-in made here goes back sealed. Never holds up or fails a close. */
+  async _sendSignInsBack(slot) {
+    const holder = slot.signIns
+    slot.signIns = null
+    if (!holder) return
+    try { await holder.sendBack(slot.engine?.vault?.context) } catch (err) { this._log(`sign-ins: not sent back (${err?.code || 'failed'})`) }
+    try { holder.dispose?.() } catch {}
+  }
+
   _stopSlot(slot, beforeStop) {
     if (slot.stopping) return slot.stopping
     // Reserve synchronously, before draining input. Agent admission cannot
     // slip between the last owner event and the encrypted profile snapshot.
     const stopping = Promise.resolve().then(async () => {
       await beforeStop?.()
+      await this._sendSignInsBack(slot)
       return this._finishStopSlot(slot)
     })
     slot.stopping = stopping.finally(() => { slot.stopping = null })
@@ -1842,7 +2378,12 @@ export class BrowserHostCore {
    * resident), and an idle host that never receives a frame should not pay
    * for it, so it is loaded on the first tools/list or tools/call.
    */
-  constructor({ pool, browserTools, deviceLabel, gates = /** @type {any} */ (null), downloadStore = /** @type {((assistantId: number) => any) | null} */ (null), log = () => {} }) {
+  constructor({ pool, browserTools, deviceLabel, gates = /** @type {any} */ (null), downloadStore = /** @type {((assistantId: number) => any) | null} */ (null), postSessionCard = /** @type {any} */ (null), isOwnerPrincipal = /** @type {((ctx: any) => boolean) | null} */ (null), intentCheck = /** @type {((assistantId: number, sessionId: string, body: any) => Promise<any>) | null} */ (null), log = () => {} }) {
+    this.postSessionCard = postSessionCard
+    /** A browsing card is the owner's: another person's or a room's browsing is not told in the owner's chat. */
+    this.isOwnerPrincipal = isOwnerPrincipal
+    this.intentCheck = intentCheck
+    this.intentCheckWaitMs = INTENT_CHECK_WAIT_MS
     this.pool = pool
     /** The permission gate, or null on a host with no way to reach a backend. */
     this.gates = gates
@@ -1898,11 +2439,12 @@ export class BrowserHostCore {
       key: slot.paths.key,
       gates: this.gates,
       gateKey: this.pool.slotKey(ctx),
-      context: () => ({ agentName: slot.agentName ?? null, purpose: slot.purpose ?? null }),
+      context: () => ({ agentName: slot.agentName ?? null, purpose: slot.purpose ?? null, ownerTurn: this.isOwnerPrincipal?.(ctx) === true }),
       decide: (origin) => policy.decide({ profile: 'signed-in', classification: { kind: 'download', origin }, grants: this._grantsFor(ctx, slot), settings: this._settingsFor(slot), preapproved: [] }),
       remember: (origin, choice) => this._remember(ctx, slot, this._settingsFor(slot), { gate: 'download', origin, choice }),
       // The owner holding the browser (not while the agent's work drains).
       ownerControl: () => !!slot.ownerInputLease && slot.ownerInputLease.pending !== true,
+      ownerHeldSinceAgent: () => slot.ownerHeldSinceAgent === true,
       choices: policy.gateChoices('download'),
       originOf: (url) => policy.originOf(url),
       log: this._log,
@@ -1944,10 +2486,11 @@ export class BrowserHostCore {
     }
   }
 
-  /** "### Download" for the downloads a call started, so the agent learns of them in that reply. */
-  _withDownloads(slot, seqBefore, result) {
-    const started = slot?.downloads?.since?.(seqBefore) ?? []
-    if (!started.length || !result || !Array.isArray(result.content)) return result
+  /** "### Download" for the downloads no reply has named yet: this call's, or one Chrome raised after the last reply went. */
+  _withDownloads(slot, result) {
+    if (!result || !Array.isArray(result.content)) return result
+    const started = slot?.downloads?.untold?.() ?? []
+    if (!started.length) return result
     const lines = started.map((d) => {
       if (d.state === 'asking') return `- ${d.fileName} (${d.handle}): your owner is asked before it is saved; if they do not answer it is kept for them when it fits the keep limits (otherwise deleted), and you are not given it. Do not start it again; hoai_browser_status shows its state.`
       if (d.state === 'saving' || d.state === 'saved') return `- ${d.fileName} (${d.handle}): allowed by your owner's rules; it is saved in your browser folder when it finishes, and hoai_browser_status gives its path.`
@@ -2003,7 +2546,30 @@ export class BrowserHostCore {
    */
   async _permit(ctx, slot, name, engineArgs, waitSeconds, signal) {
     const settings = this._settingsFor(slot)
-    const classification = policy.classifyToolCall(name, engineArgs, { currentOrigin: await this._currentOrigin(slot) })
+    const engine = slot.engine
+    const submitRequirement = engine.formSubmitRequirement?.(name, engineArgs)
+    validateHostTool(name, engineArgs)
+    const bindsAction = !closesPage(name, engineArgs) && (submitRequirement || policy.WRITE_TOOLS.has(name) || ['browser_navigate', 'browser_tabs', 'browser_drop', 'browser_file_upload'].includes(name))
+    const privateState = await engine.inspectPrivacy?.(name, engineArgs)
+    if (privateState?.personMode) return { allowed: true, ran: Promise.resolve(text(privateState.handoff)) }
+    if (closesPage(name, engineArgs) && slot.engine.pages?.().length === 1) throw new HostError('last_tab', privateState?.language === 'ar' ? 'أبق علامة تبويب واحدة مفتوحة على الأقل.' : 'Keep at least one tab open.')
+    const route = privateRoute(name, engineArgs, privateState, slot.engine.selectedPage?.()?.url())
+    if (route === 'hold') return { allowed: true, ran: Promise.resolve(text(privateState.handoff)) }
+    const approved = bindsAction ? await engine.actionTarget?.(name, engineArgs) : null
+    // Private pages never contribute target words or raise a page-derived card.
+    // Otherwise judge the host's own live target beside the agent's description.
+    const read = !privateState?.blocked && !closesPage(name, engineArgs) && (policy.WRITE_TOOLS.has(name) || name === 'browser_drop') ? readWithTree((approved?.read ?? await slot.engine.describeAction?.(name, engineArgs).catch(() => null)) || { targets: targetsNamedBy(engineArgs).map(() => ({ readable: false })), actuated: null, dialog: null }, engineArgs, slot.lastSnapshotText || null) : null
+    if (read?.blocked || read?.targets?.some(item => item.sealed) && ['browser_type','browser_fill_form','browser_drag','browser_drop'].includes(name) || name === 'browser_press_key' && (read?.actuated?.sealed || read?.actuated?.focusUnreadable)) return { allowed: true, ran: Promise.resolve(text(read?.blocked ? privateState.handoff : (privateState?.person || privacy.COPY[privateState?.language === 'ar' ? 'ar' : 'en'].person))) }
+    const readTargets = read ? [...read.targets, read.actuated].filter((item) => item?.name) : null
+    const rawFacts = readTargets ? factsOfTargets(name, readTargets) : gateFactsFor(name, engineArgs, slot.lastSnapshotText || null)
+    const facts = rawFacts?.targetName ? { ...rawFacts, targetName: slot.engine.shownAddress?.(rawFacts.targetName) ?? rawFacts.targetName } : rawFacts
+    const currentOrigin = closesPage(name, engineArgs) && slot.engine.toolPage ? policy.originOf(slot.engine.toolPage(name, engineArgs)?.url() || '') : await this._currentOrigin(slot)
+    const previous = name === 'browser_navigate_back' ? await slot.engine.previousUrl?.() : null
+    if (previous && /^(?:about:blank|chrome:\/\/newtab\/?)$/.test(previous)) return { allowed: true, ran: Promise.resolve(text(privateState?.language === 'ar' ? 'لا توجد صفحة ويب سابقة للعودة إليها.' : 'There is no previous web page to go back to.')) }
+    if (previous) validateTool('browser_navigate', { url: previous })
+    const classification = previous ? policy.classifyToolCall('browser_navigate', { url: previous }) : policy.classifyRead(name, engineArgs, read, { currentOrigin })
+    // The owner answers every gate, and on another person's turn reads nothing of that person's page.
+    const ownersTurn = !this.isOwnerPrincipal || this.isOwnerPrincipal(ctx) === true
     const grants = this._grantsFor(ctx, slot)
     const decision = policy.decide({
       // Site permission policy remains the signed-in policy even while the
@@ -2015,8 +2581,28 @@ export class BrowserHostCore {
       settings,
       preapproved: [],
     })
-    const run = () => runAgentBrowserWork(slot, () => slot.engine.callTool(name, engineArgs, signal))
-    if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(run) }
+    const personClose = closesPage(name, engineArgs) && !slot.engine.ownsToolTarget?.(name, engineArgs)
+    const privacyExit = route === 'reload' || route === 'leave' || route === 'dialog' || personClose
+    if (privacyExit && decision.verdict !== 'deny') { decision.verdict = 'ask'; decision.gate = route === 'dialog' ? 'credential' : 'sensitive' }
+    if (closesPage(name, engineArgs) && !personClose) decision.verdict = 'allow'
+    if (submitRequirement && decision.verdict !== 'deny') { decision.verdict = 'ask'; decision.gate = 'sensitive' }
+    const closing = closesPage(name, engineArgs) ? await slot.engine.closeTarget?.(name, engineArgs) : null
+    const closingPage = closing?.page
+    const run = (freshApproval = false) => runAgentBrowserWork(slot, async () => {
+      if (slot.engine !== engine) throw new HostError('target_changed', 'The approved browser session changed. Ask again.')
+      if (approved) await engine.assertActionTarget(approved, name, engineArgs)
+      if (closingPage) {
+        const current = await slot.engine.closeTarget(name, engineArgs)
+        if (current.page !== closingPage || current.document !== closing.document || closingPage.isClosed() || policy.originOf(closingPage.url()) !== currentOrigin) throw new HostError('target_changed', privateState?.language === 'ar' ? 'تغيرت علامة التبويب الموافق عليها. اطلب الإذن مجددا قبل إغلاقها.' : 'The approved tab changed. Ask again before closing it.')
+        const latest = slot.engine.ownsToolTarget?.(name, engineArgs) ? { verdict: 'allow' } : policy.decide({ profile: 'signed-in', classification, grants: this._grantsFor(ctx, slot), settings: this._settingsFor(slot), preapproved: [] })
+        if (latest.verdict === 'deny') throw new HostError('policy_denied', this._refusedMessage(latest, classification))
+      }
+      slot.ownerHeldSinceAgent = false
+      const submitApproval = freshApproval && submitRequirement ? {} : null
+      if (submitApproval) submitApprovals.set(submitApproval, submitRequirement)
+      return engine.callTool(name, engineArgs, signal, approved, submitApproval)
+    })
+    if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(() => run()) }
     if (decision.verdict === 'deny') {
       return { allowed: false, message: this._refusedMessage(decision, classification) }
     }
@@ -2030,7 +2616,8 @@ export class BrowserHostCore {
     const wait = waitSecondsFrom(waitSeconds)
     // The words after "<agent> wants to" on the card: the imperative the
     // desktop's strip prints, never the trail's past tense ("wants to opened").
-    const summary = policy.intentPhrase(name, engineArgs, { kind: decision.gate, origin: classification.origin ?? null })
+    // Where the host read the target's name, the card says that and not the agent's description.
+    const summary = route === 'reload' ? privateState.reloadOffer : route === 'dialog' ? privacy.privateDialogSummary(privateState, engineArgs) : route === 'leave' ? privateState.leave : personClose ? (privateState?.language === 'ar' ? 'إغلاق علامة تبويب هذا الشخص والتخلي عن التغييرات غير المحفوظة؟' : "Close this person's tab and discard unsaved changes?") : slot.engine.shownAddress?.(policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })) ?? policy.hostCardPhrase(name, engineArgs, read, { kind: decision.gate, origin: classification.origin ?? null }, { blind: classification.blind === true })
     // A download ask the page raised is not the agent's: its action waits for
     // it (at most its 60 s) rather than being told the browser is busy. The
     // wait comes out of this call's own budget: the relay cuts a call at
@@ -2042,18 +2629,31 @@ export class BrowserHostCore {
       key: this.pool.slotKey(ctx),
       assistantId: ctx.assistantId,
       kind: decision.gate,
-      origin: classification.origin ?? null,
-      summary,
+      origin: ownersTurn ? classification.origin ?? null : null,
+      summary: ownersTurn ? summary : SOMEONE_ELSES_TURN,
       agentName: ctx.assistantName ?? null,
-      purpose: slot.purpose ?? null,
+      purpose: ownersTurn ? slot.purpose ?? null : null,
       waitSeconds: wait,
       // The owner's buttons, from the policy rather than from here, so this
       // host offers exactly what the desktop offers for the same gate kind.
-      choices: policy.gateChoices(decision.gate),
+      // Nothing an owner could remember for good about a page they were not shown.
+      // A control the host could not read is answered once, or not at all.
+      choices: ownersTurn && !classification.blind && !privacyExit && !submitRequirement ? policy.gateChoices(decision.gate) : ['allow_once', 'deny'],
       // The gate HOLDS the action and is the only thing that runs it, so a
       // call that parks and a wait_gate that re-attaches share one run.
-      action: run,
+      action: () => run(true),
       attachMs,
+      beforePost: ownersTurn ? async (gate) => {
+        if (privacyExit) return
+        const current = await slot.engine.inspectPrivacy?.()
+        if (current?.blocked) { gate.summary = current.handoff; return }
+        gate.summary = slot.engine.shownAddress?.(gate.summary) ?? gate.summary
+        const displayedFacts = facts?.targetName ? { ...facts, targetName: slot.engine.shownAddress?.(facts.targetName) ?? facts.targetName } : facts
+        if (decision.gate === 'sensitive') {
+          const caution = await this._cautionFromIntentCheck(ctx, slot, gate, displayedFacts)
+          return caution ? (slot.engine.shownAddress?.(caution) ?? caution) : null
+        }
+      } : undefined,
     })
     if (raised.parked) return raised
     if (!raised.allowed) return { allowed: false, message: deniedMessage(raised.reason, wait) }
@@ -2237,28 +2837,79 @@ export class BrowserHostCore {
   }
 
   async callTool(ctx, name, args, signal) {
-    const redact = this.pool.peek(ctx)?.engine?.resultRedactor?.() || (value => value)
+    // What finally leaves this host, whoever built it. Captured first: a close can drop the engine during this call.
+    const said = this.pool.peek(ctx)?.engine?.resultRedactor?.() || ((value) => value)
     try {
-      return redact(await this._call(ctx, name, args || {}, signal))
+      const pendingSubmit = name.startsWith('browser_') ? this.pool.peek(ctx)?.engine?.formSubmitRequirement?.(name, args || {}) : null
+      if (refusesCompositeAction(name, args || {})) throw pendingSubmit ? submitRequired() : new HostError('not_available', FORM_CLICK_REQUIRED)
+      if (name.startsWith('browser_')) new AnswerPrivacy().validate(args)
+      return said(await this._call(ctx, name, args || {}, signal))
     } catch (err) {
-      if (err instanceof HostError) return redact(errorResult(err.code, err.message))
-      return redact(errorResult('tool_error', String(err?.message ?? err)))
+      if (err instanceof HostError || err?.code === 'privacy_unavailable') return said(errorResult(err.code, err.message))
+      return said(errorResult('tool_error', String(err?.message ?? 'Browser command failed')))
     }
   }
 
+  /**
+   * The intent check on a sensitive gate (backend POST session/:id/intent-check, as the desktop's
+   * renderer sends it). It only adds caution, and only a definite mismatch reaches the card. A check
+   * that is switched off, slow or unreachable leaves the card as it was and holds nothing up.
+   */
+  async _cautionFromIntentCheck(ctx, slot, gate, facts) {
+    if (!this.intentCheck || !slot.cardId || !facts?.tool) return null
+    const body = { assistantId: ctx.assistantId, gateId: gate.gateId, kind: 'sensitive', tool: facts.tool, action: gate.summary.slice(0, 200),
+      ...(gate.origin ? { origin: String(gate.origin).slice(0, 120) } : {}),
+      ...(facts.targetRole && facts.targetRole.length <= 40 ? { targetRole: facts.targetRole } : {}),
+      ...(facts.targetName ? { targetName: facts.targetName.slice(0, 80) } : {}) }
+    let timer
+    const answer = await Promise.race([
+      Promise.resolve().then(() => this.intentCheck(ctx.assistantId, slot.cardId, body)),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), this.intentCheckWaitMs); timer.unref?.() }),
+    ]).finally(() => clearTimeout(timer))
+    if (answer?.verdict !== 'does_not_match' || typeof answer.quote !== 'string' || !answer.quote) return null
+    const caution = `This does not match what you asked ("${answer.quote.slice(0, 70)}"). `
+    return `${caution}${gate.summary}`.slice(0, 200)
+  }
+
+  /**
+   * What the gate's facts read: the host's own last whole page tree. A snapshot of one element is
+   * not the whole page. A call that moves the page drops the tree before it runs (_call).
+   */
+  _keepPageTree(slot, name, args, result) {
+    if (name !== 'browser_snapshot' || args?.target || args?.depth !== undefined) return
+    slot.lastSnapshotText = slot.engine.lastPageTree?.() ?? snapshotTextOf(name, result)
+  }
+
+  /** The slot's one browsing card, in order. Best effort, and never awaited by a tool call. */
+  _postSlotCard(ctx, slot, state) {
+    if (!this.postSessionCard) return
+    // The owner's chat is told of the owner's own browsing. Another person's or a room's is not theirs to read.
+    if (this.isOwnerPrincipal?.(ctx) !== true) return
+    slot.cardId ||= `bs_${randomBytes(9).toString('base64url').replace(/[^A-Za-z0-9]/g, 'x')}`
+    slot.cardSeq = (slot.cardSeq || 0) + 1
+    slot.cardStartedAt ||= new Date().toISOString()
+    void Promise.resolve(this.postSessionCard(ctx.assistantId, slot.cardId, sessionCardPayload({ sessionId: slot.cardId, seq: slot.cardSeq, state, agentName: ctx.assistantName || slot.agentName || 'Agent', purpose: slot.purpose, startedAt: slot.cardStartedAt, signedIn: slot.signInsApplied === true }))).catch(() => {})
+    if (state === 'ended') { slot.cardId = null; slot.cardSeq = 0; slot.cardStartedAt = null }
+  }
+
   async _call(ctx, name, args, signal) {
+    if (PRIVATE_PAGE_TOOLS.has(name)) return errorResult('not_available', 'This browser tool is not available. Use snapshots, element search or screenshots to read the page.')
     if (name === 'hoai_browser_open_session') {
       const slot = await this.pool.acquire(ctx)
       const purpose = typeof args.purpose === 'string' ? args.purpose.trim().slice(0, 200) : ''
       if (purpose) slot.purpose = purpose
+      this._postSlotCard(ctx, slot, 'browsing')
       // One browser per agent (BGOS mission 173): the agent never chooses a profile, so an older
       // client's profile argument changes nothing here.
+      if (slot.signInsApplied) return text(`Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, already signed in where your owner's sealed copy reaches. The browser tools return no cookie or stored value of those sign-ins, but what a signed in page displays does reach your snapshots and screenshots, so treat it as your owner's. Browse as usual. A site that needs your owner asks them.`)
       return text(
-        `Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, with login storage locked until the owner unlocks it in the pane. Browsing state is discarded at close unless the owner unlocks encrypted storage. Navigate with browser_navigate, then browser_snapshot.`,
+        `Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, with login storage locked until the owner unlocks it in the pane. Browsing state is discarded at close unless the owner unlocks encrypted storage. ${slot.signInsRefused ? `${SIGN_IN_STAYS_SENTENCE} ` : ''}Navigate with browser_navigate, then browser_snapshot.`,
       )
     }
     if (name === 'hoai_browser_close_session') {
       if (this.pool.peek(ctx)?.ownerInputLease) return errorResult('owner_control', OWNER_CONTROL_MESSAGE)
+      const live = this.pool.peek(ctx)
+      if (live) this._postSlotCard(ctx, live, 'ended')
       const closed = await this.pool.release(ctx)
       return text(closed ? 'Session closed. Any unlocked login state was saved encrypted; the vault is now locked.' : 'No session was open.')
     }
@@ -2268,13 +2919,16 @@ export class BrowserHostCore {
         // What is kept for the owner from an earlier session still reads as kept.
         return text(['No browser session is open. Call hoai_browser_open_session to start one.', ...downloadLines(this._downloadRows(ctx))].join('\n'))
       }
-      const tabs = await Promise.all(
+      const overview = await slot.engine.tabsOverview?.()
+      const tabWords = overview?.content?.find(part => part.type === 'text')?.text
+      if (tabWords && Object.values(privacy.COPY).some(copy => copy.handoff === tabWords || copy.using === tabWords)) return overview
+      const tabs = tabWords ? [tabWords] : await Promise.all(
         slot.engine.pages().map(async (page, index) => {
           let title = ''
           try {
             title = await page.title()
           } catch {}
-          return `${index}: ${title || '(untitled)'} ${page.url()}`
+          return `${index}: ${slot.engine.shownAddress?.(title || '(untitled)', page) ?? title} ${slot.engine.shownAddress?.(page.url(), page) ?? page.url()}`
         }),
       )
       return text(
@@ -2318,8 +2972,10 @@ export class BrowserHostCore {
     const slot = await this.pool.acquire(ctx)
     if (slot.ownerInputLease) throw new HostError('owner_control', OWNER_CONTROL_MESSAGE)
     if (ctx.assistantName) slot.agentName = ctx.assistantName
-    if (!slot.purpose) slot.purpose = typeof engineArgs.url === 'string' ? `Browsing ${engineArgs.url}` : 'Browsing on request'
-    const downloadsBefore = slot.downloads?.seq ?? 0
+    if (!slot.purpose) slot.purpose = defaultPurposeFor(engineArgs.url)
+    if (!slot.cardId) this._postSlotCard(ctx, slot, 'browsing')
+    if (name === 'browser_navigate' || name === 'browser_navigate_back' || name === 'browser_tabs') slot.lastSnapshotText = null
+    // A call that cannot run while a dialog is up asks nobody.
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
     if (verdict.parked) return this._parkedResult(verdict)
     if (!verdict.allowed) return errorResult('policy_denied', verdict.message)
@@ -2329,7 +2985,9 @@ export class BrowserHostCore {
     // aborted the first (net::ERR_ABORTED). One owner is the only way "at
     // most once, whichever call returns it" can be true, because a parked
     // gate's action is run by whichever wait_gate re-attaches to it.
-    return this._withDownloads(slot, downloadsBefore, await this._runHeld(verdict))
+    const result = await this._runHeld(verdict)
+    this._keepPageTree(slot, name, engineArgs, result)
+    return this._withDownloads(slot, result)
   }
 }
 
@@ -2719,6 +3377,35 @@ export class PairingConnection {
    * the agent wait longer to be told the same thing. A 4xx is a refusal the
    * host should see in its log, not a transient.
    */
+  /** Best effort: a card that cannot post never stops a browser. */
+  async postSessionCard(assistantId, sessionId, payload) {
+    if (!this.socketId) return false
+    try {
+      const res = await this._fetch(`${backendBase(this.pairing.backendUrl)}/api/v1/browser/session/card`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-BGOS-Pairing': this.pairing.token },
+        body: JSON.stringify({ socketId: this.socketId, assistantId, sessionId, payload }),
+        signal: AbortSignal.timeout(RESULT_POST_TIMEOUT_MS),
+      })
+      if (!res.ok) this._log(`${this._name}: the browsing card was refused with ${res.status}`)
+      return res.ok
+    } catch { return false }
+  }
+
+  /** The intent check on a sensitive gate. Null when it could not be asked; a card never waits on why. */
+  async intentCheck(sessionId, body) {
+    if (!this.socketId) return null
+    try {
+      const res = await this._fetch(`${backendBase(this.pairing.backendUrl)}/api/v1/browser/session/${encodeURIComponent(sessionId)}/intent-check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-BGOS-Pairing': this.pairing.token },
+        body: JSON.stringify({ ...body, socketId: this.socketId }),
+        signal: AbortSignal.timeout(RESULT_POST_TIMEOUT_MS),
+      })
+      return res.ok ? await res.json() : null
+    } catch { return null }
+  }
+
   async postGateCard(card) {
     if (!this.socketId) {
       this._log(`${this._name}: cannot post permission ${card.gateId}: this host has no live socket`)
@@ -2821,9 +3508,12 @@ export class BrowserHost {
     this._deviceLabel = deviceLabel
     /** assistantId -> DownloadStore: what is held and kept for that agent (lib/browser-downloads.mjs). */
     this.downloadStores = new Map()
+    /** Agents whose earlier page files this host has removed. Once each, before it opens them a browser. */
+    this._swept = new Set()
     this._downloadsTimer = null
     this._lastSweep = 0
-    this.pool = new BrowserPool({ agentRoot, createEngine, log, bindEngine: (engine, slot, ctx) => this.core?.bindEngine(engine, slot, ctx) })
+    this.pool = new BrowserPool({ agentRoot, createEngine, log, bindEngine: (engine, slot, ctx) => this.core?.bindEngine(engine, slot, ctx),
+      loadSignIns: ctx => this._machineSignIns(ctx) })
     this.remoteViews = new RemoteBrowserViews({ pool: this.pool })
     this.connections = new Map()
     this.retiringConnections = new Map()
@@ -2847,7 +3537,12 @@ export class BrowserHost {
       sleep,
       log,
     })
-    this.core = new BrowserHostCore({ pool: this.pool, browserTools, deviceLabel, gates: this.gates, downloadStore: (id) => this.downloadStore(id), log })
+    this._signInEnv = env
+    this.core = new BrowserHostCore({ pool: this.pool, browserTools, deviceLabel, gates: this.gates,
+      postSessionCard: (assistantId, sessionId, payload) => this.connectionFor(assistantId)?.postSessionCard(assistantId, sessionId, payload) ?? false,
+      isOwnerPrincipal: (ctx) => { const owner = this.connectionFor(ctx.assistantId)?.pairing.ownerUserId; return ctx.principal === OWNER_PRINCIPAL || (typeof owner === 'string' && ctx.principal === `user-${owner}`) },
+      intentCheck: (assistantId, sessionId, body) => this.connectionFor(assistantId)?.intentCheck(sessionId, body) ?? null,
+      downloadStore: (id) => this.downloadStore(id), log })
     const version = readPackageVersion()
     this.relay = new RelaySessions({ core: this.core, serverInfo: { name: 'hoai-agent-browser', version }, instructions: hostInstructions(deviceLabel), log })
     this._rescanTimer = null
@@ -2891,6 +3586,13 @@ export class BrowserHost {
    * a disconnected pairing must read as "cannot ask" rather than be handed a
    * blank id the backend would refuse.
    */
+  /** This machine's sealed sign-ins for a call's person and agent, on the pairing that serves it. */
+  _machineSignIns(ctx) {
+    const conn = this.connectionFor(ctx.assistantId)
+    if (!conn) return null
+    return loadMachineSignIns({ agentRoot: this.agentRoot, pairing: conn.pairing, assistantId: ctx.assistantId, principal: ctx.principal, environment: this._signInEnv, log: line => this._log(line) })
+  }
+
   connectionFor(assistantId) {
     const id = assistantIdOrNull(assistantId)
     if (id === null) return null
@@ -2933,6 +3635,7 @@ export class BrowserHost {
     for (const id of ids || []) {
       const store = this.downloadStore(id)
       void Promise.resolve(store?.ready).then(() => store?.tellOwners()).catch(() => {})
+      if (!this._swept.has(id)) { this._swept.add(id); sweepPageFiles({ agentRoot: this.agentRoot, assistantId: id }) }
     }
   }
 

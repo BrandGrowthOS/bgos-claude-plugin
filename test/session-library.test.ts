@@ -21,8 +21,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, utimesSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync, utimesSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import {
@@ -39,6 +38,7 @@ import {
   SESSION_TITLE_MAX,
   SESSIONS_LIST_MAX,
 } from '../lib/session-controls-contract.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -701,7 +701,7 @@ test('the library asks for the bound session on every list', () => {
 // ── Real files ──────────────────────────────────────────────────────────────
 
 test('on disk: newest first, a large file read at both ends, and a missing folder lists nothing', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'session-library-'))
+  const dir = scratchDir('session-library-')
   writeFileSync(join(dir, file(1)), transcript(channel('Older work')))
   const big = transcript(
     channel('Big session'),

@@ -16,8 +16,8 @@
  *   - it delivers a turn ONLY when the backend stamped it for this lane
  *     (`lane: person:<id>`), and acknowledges nothing it refused, so the row
  *     stays for the lane it belongs to (the second lock);
- *   - it declares no permission relay: under `--permission-mode dontAsk`
- *     nothing reaches one, and a lane never approves anything by itself.
+ *   - it declares no permission relay: dontAsk refuses what would ask, and a
+ *     lane never approves anything by itself.
  *
  * This file holds the parts that are pure or take their effects as
  * parameters, so they are tested without a backend; lane-server.ts wires them

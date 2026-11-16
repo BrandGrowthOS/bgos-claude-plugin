@@ -182,3 +182,21 @@ test('an empty chat id is refused rather than remembered as blank', () => {
 test('TURN_CHAT_STALE_MS is longer than a long tool turn, shorter than a working day', () => {
   assert.equal(TURN_CHAT_STALE_MS, 15 * 60_000)
 })
+
+test('deliveredRecently answers only for a chat this daemon delivered to, or whose turn it ran, recently (missions that stay true, review fix 4)', () => {
+  const tracker = createTurnChatTracker()
+  const now = 1_000_000
+  assert.equal(tracker.deliveredRecently('12', now), false)
+  tracker.note({ chatId: '12', messageId: 1, kind: 'user', text: 'please ship the pricing page', now })
+  tracker.note({ chatId: '13', messageId: 2, kind: 'user', text: 'and look at the second thing', now })
+  assert.equal(tracker.deliveredRecently('12', now + 1000), true, 'an earlier delivery in the ring still counts')
+  assert.equal(tracker.deliveredRecently('13', now + 1000), true)
+  assert.equal(tracker.deliveredRecently('99', now + 1000), false, 'a chat never delivered to is not one')
+  assert.equal(tracker.deliveredRecently('12', now + TURN_CHAT_STALE_MS + 1), false, 'stale is not recent')
+  // A live turn keeps its chat however long it runs.
+  tracker.beginTurn({ chatId: '12', now: now + 2000 })
+  assert.equal(tracker.deliveredRecently('12', now + 10 * TURN_CHAT_STALE_MS), true)
+  tracker.end(now + 10 * TURN_CHAT_STALE_MS)
+  assert.equal(tracker.deliveredRecently('12', now + 10 * TURN_CHAT_STALE_MS + 1000), true, 'the turn that just ended')
+  assert.equal(tracker.deliveredRecently('', now), false)
+})

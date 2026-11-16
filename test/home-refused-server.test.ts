@@ -155,7 +155,7 @@ test('serveHomeRefused says it is refusing, serves until the host goes, and ends
 })
 
 test('server.ts serves the notice on a home refusal instead of exiting before the handshake', () => {
-  const branch = /if \(HOME_BINDING\.action === 'refuse'\) \{[\s\S]*?\n\}/.exec(serverSource)
+  const branch = /if \(HOME_BINDING\.action === 'refuse' && !MARKETPLACE_ATTACH\) \{[\s\S]*?\n\}/.exec(serverSource)
   assert.ok(branch, 'the refusal branch was not found')
   const body = branch![0]
   assert.match(body, /await serveHomeRefused\(\{/)

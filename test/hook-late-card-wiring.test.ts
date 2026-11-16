@@ -242,7 +242,7 @@ test('the card state carries the key of the card it belongs to', () => {
 })
 
 test('standing down forgets the cards, the way it forgets the pending state', () => {
-  const body = functionBody('function stopHookIntake(): void {')
+  const body = functionBody('function stopHookIntake(')
   assert.match(body, /hookCardIds\.clear\(\)/)
   assert.match(body, /hookCardPending\.clear\(\)/)
 })

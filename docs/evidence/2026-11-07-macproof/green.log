@@ -1,0 +1,33 @@
+Mac process proof: focused green evidence
+
+Command (checkout-local TMPDIR):
+node --import tsx --test --test-concurrency=1 test/browser-profile-process-darwin.test.ts test/browser-profile-runtime.test.ts test/browser-profile-runtime-bootstrap.test.ts
+
+PASS Darwin proof distinguishes a live identity, a reused pid and an exited process (3.438125ms)
+PASS Darwin proof fails closed when the helper is missing or its output is unproved (1.141792ms)
+PASS Darwin proof validates calendar dates and does not normalize malformed timestamps (0.506416ms)
+PASS Darwin proof rejects untrusted pids before invoking the reader (0.0815ms)
+PASS Darwin proof uses an absolute helper, fixed locale and timezone, bounded argv execution (0.323375ms)
+PASS Darwin group inventory carries start identities and refuses partial or empty tables (0.508375ms)
+PASS real Darwin reader proves a child is alive and then proves its exit (48.907708ms)
+PASS real Darwin runtime normal close proves its owned child exited (16.754958ms)
+PASS real Darwin runtime emergency group stop proves its owned child exited (121.592917ms)
+PASS Windows keeps the unavailable process exit proof code and closes the new browser (8.458458ms)
+INFO tests 107
+INFO suites 0
+INFO pass 107
+INFO fail 0
+INFO cancelled 0
+INFO skipped 0
+INFO todo 0
+INFO duration_ms 2177.364709
+
+Typecheck:
+
+> claude-channel-bgos@0.86.3 build
+> tsc --noEmit
+
+
+Exit status: 0
+
+Independent read-only review: no remaining Critical, Important or Minor findings.

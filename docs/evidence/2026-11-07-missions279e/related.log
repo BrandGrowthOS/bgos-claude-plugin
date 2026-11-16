@@ -1,0 +1,778 @@
+Every TAP case result and the final runner totals; passing diagnostics omitted.
+ok 1 - uses the served canon when the response carries both markers
+ok 2 - defaults version to "unknown" when the backend omits it
+ok 3 - falls back to the bundled copy on null (fetch failed)
+ok 4 - the offline copy tells the hook sentence only to a daemon that declares hard_floor AND permission_card (the stage 6 backend review)
+ok 5 - falls back when the served canon exceeds the size cap (DoS/injection guard)
+ok 6 - falls back when the response is missing the markers
+ok 7 - falls back when text is not a string
+ok 8 - the bundled fallback itself carries the markers (so injection guards match)
+ok 9 - the bundled fallback carries the served goal lane sentence, word for word
+ok 10 - the bundled fallback carries the served turn summary sentence, word for word
+ok 11 - the bundled fallback carries the served helper rows sentence, word for word
+ok 12 - the bundled fallback carries the hard floor sentences, word for word (spec 4.5)
+ok 13 - the fallback stays free of dashes, because it is injected into a prompt
+ok 14 - the fetch path carries the channel, the version and the declared list
+ok 15 - the daemon's own base declaration reaches the fetch, boards_playbook included
+ok 16 - the version is encoded, and a missing one reads as 0.0.0 as it always has
+ok 17 - an empty declaration sends no capabilities key, exactly the path before the key existed
+ok 18 - a malformed token is dropped rather than costing the whole canon, and the list is capped at 32
+ok 19 - the canon fetch carries boards_playbook
+ok 20 - neither the bundled fallback nor the MCP instructions mention a run id
+ok 21 - TRUST_ENTRY_DEFAULTS is exactly the bootstrap entry shape, in the bootstrap key order
+ok 22 - seedProjectEntry: defaults under existing under the forced trust flag (pure)
+ok 23 - alternateSlashSpelling mirrors the ps1 (flip every separator)
+ok 24 - preseedClaudeTrust: fresh config dir writes exactly the bootstrap output (posix cwd, one spelling)
+ok 25 - preseedClaudeTrust: merges over an existing config, never clobbers other projects or settings, keeps user theme
+ok 26 - preseedClaudeTrust: a win32 cwd seeds BOTH slash spellings (the ps1 rule), byte-exact keys
+ok 27 - preseedClaudeTrust: idempotent (a second run produces identical bytes)
+ok 28 - preseedClaudeTrust: an owner config it cannot read is LEFT EXACTLY AS IT IS, and the seed says so
+ok 29 - preseedClaudeTrust: a file that EXISTS but could not be read at all is refused too, not taken for a new machine
+ok 30 - preseedClaudeTrust: no file yet is still a brand new machine, and gets its config created
+ok 31 - preseedClaudeTrust: the rename keeps the mode the owner file HAD, and a created file gets 0600
+ok 32 - preseedClaudeTrust: an unreadable settings.json is left alone too, it is the owner file just as much
+ok 33 - preseedClaudeTrust on a REAL filesystem: garbage stays byte identical at its mode, a good config keeps its keys and its mode
+ok 34 - claudeConfigFilePath: UNSET CLAUDE_CONFIG_DIR resolves the HOME-level file, not one inside the config dir
+ok 35 - claudeConfigFilePath: a SET CLAUDE_CONFIG_DIR puts the file inside that dir, and outranks home
+ok 36 - claudeConfigFilePath: a win32 home keeps win32 separators, and blank whitespace is not an override
+ok 37 - preseedClaudeTrust with CLAUDE_CONFIG_DIR UNSET seeds $HOME/.claude.json and NEVER $HOME/.claude/.claude.json
+ok 38 - preseedClaudeTrust with CLAUDE_CONFIG_DIR SET seeds inside that dir, beside settings.json
+ok 39 - preseedClaudeTrust: an existing home-level config is MERGED, never replaced (the 143 KB file)
+ok 40 - ensureMarketplaceAutoUpdate sets the key on an existing entry, and is idempotent
+ok 41 - ensureMarketplaceAutoUpdate never fabricates a marketplace declaration
+ok 42 - ensureMarketplaceAutoUpdate does nothing when settings has no marketplaces at all
+ok 43 - ensureMarketplaceAutoUpdate preserves every other setting and the entry source
+ok 44 - ensureMarketplaceAutoUpdate can turn enrolment off again
+ok 45 - ensureMarketplaceAutoUpdate treats a corrupt settings file as empty rather than throwing
+ok 46 - ensureMarketplaceAutoUpdate requires a config dir rather than guessing one
+ok 47 - an explicit autoUpdate:false is a decision, and a daemon boot must not overturn it
+ok 48 - a false the idle update rollback wrote is taken back only when its caller says so (reclaim)
+ok 49 - a marketplace named __proto__ cannot reach Object.prototype
+ok 50 - a marketplace named constructor is likewise not an entry
+ok 51 - an inherited autoUpdate does not count as an existing entry
+ok 52 - a failed rename leaves no temp file behind in the user home
+ok 53 - a write that does not stick is reported as not_persisted, never as success
+ok 54 - a write clobbered once is retried and then succeeds
+ok 55 - a retry never recreates an entry a competing writer deleted
+ok 56 - an enrolled marketplace reads back as enrolled
+ok 57 - a present entry with no autoUpdate key reads as NOT enrolled, because that is what it means
+ok 58 - an unreadable or corrupt settings file reads as UNKNOWN, never as an answer
+ok 59 - the reader uses the same own-property rule as the writer
+ok 60 - a truthy non-boolean autoUpdate is not read as enrolment
+ok 61 - ensureHookEntries registers every event, in the exec form, pointed at the checkout
+ok 62 - a second run is a no-op that rewrites identical bytes
+ok 63 - a moved checkout replaces our old entry instead of stacking a dead one beside it
+ok 64 - the clone rail registers the floor hook exactly as hooks/hooks.json does, beside the forwarder
+ok 65 - a hook the user wrote themselves survives untouched
+ok 66 - a corrupt settings file is replaced rather than failing the install
+ok 67 - no forwarder path means no entries, never a half written hooks block
+ok 68 - a write that a concurrent claude overwrites is reported, not claimed
+ok 69 - the clone entry list and hooks/hooks.json register the same events
+ok 70 - a clone folder written before the helper guard is not already done
+ok 71 - every launcher that creates an agent folder registers the hook entries
+ok 72 - every launcher skips a marketplace install, so no hook ever fires twice
+ok 73 - every launch line the launchers write turns the task tools on
+ok 74 - resolvedPathOrNull: a symlinked path answers its resolved spelling
+ok 75 - resolvedPathOrNull: a path that resolves to ITSELF answers null, so nothing is seeded twice
+ok 76 - resolvedPathOrNull: an unresolvable path answers null rather than throwing
+ok 77 - preseedClaudeTrust: a symlinked cwd seeds BOTH spellings, literal first
+ok 78 - preseedClaudeTrust: a cwd with no symlink in it still seeds exactly one key
+ok 79 - preseedClaudeTrust: a realpath that THROWS still seeds the literal cwd
+ok 80 - every declared token matches the grammar the backend accepts
+ok 81 - the list stays inside the backend ArrayMaxSize of 64 (raised from 32 on 2026-10-30: heartbeat.dto.ts, pair-exchange.dto.ts)
+ok 82 - the base is frozen, so no call site can push a token onto it at runtime
+ok 83 - mission_events is declared on every host: this daemon hears the owner decision
+ok 84 - mission_goal_checks is declared on every host, because the checker is the runtime own
+ok 85 - the goal loop and the pause are declared ONLY where the daemon can type
+ok 86 - mission_set_goals is declared on every host: set_mission_goals is a plain tool call
+ok 87 - a host that cannot type declares the READ half only
+ok 88 - boards_playbook is declared on every host, because the tool is typed and has no platform limit
+ok 89 - boards_playbook_does is declared on every host, because the does part is a typed argument of the same tool
+ok 90 - boards_runs is declared on every host, because the run id rides the hand over message and needs no tool
+ok 91 - permission_card is declared on every host, because the relay has no platform limit
+ok 92 - plan_card is declared on every host, because propose_plan is a typed tool with no platform limit
+ok 93 - memory_rpc is declared on every host: the memory folder is plain files
+ok 94 - changes_rpc is declared on every host: every host can read its own folder with Git
+ok 95 - skills_list is declared on every host: every host can read its own skills folders
+ok 96 - skills_receive is declared on every host, once, beside skills_list
+ok 97 - ui_card is declared on every host, Mac, Linux and Windows, once, on either connection
+ok 98 - ui_card leaves an unrelated, host shaped token where it was: mission_goal_loop follows the injector alone
+ok 99 - hard_floor is declared on every host of a pairing connection, because the hook and the hold have no platform limit
+ok 100 - no token is declared twice, on either host or either connection
+ok 101 - an API key connection does not declare hard_floor, on either host, and keeps both cards
+ok 102 - hard_floor is declared exactly where the relay can really hold a listed action
+ok 103 - server.ts passes the live AUTH.mode and the boot time floor hook lookup at every declaration, never a literal
+ok 104 - a pairing whose session has no floor hook does not declare hard_floor, and keeps everything else
+ok 105 - the floor hook is found in the plugin's own hooks file on a marketplace install
+ok 106 - a clone counts only the settings entry the launchers write, and only while its script exists
+ok 107 - an async floor entry cannot stop anything and does not count; a user or project settings file does
+ok 108 - stop_pauses_mission is declared ONLY where the daemon can type, spelled by the contract file
+ok 109 - the stop pause token rides with mission_pause and nothing else, the gate the stop pause runs behind
+ok 110 - a late tmux upgrade changes the answer, because it is computed per beat
+ok 111 - sessions_library is declared on every host, spelled by the contract file
+ok 112 - the floor boot line says declared exactly when the declaration carries hard_floor, in every auth mode and hook state
+ok 113 - on an API key the boot line says plainly that the floor is not declared, and why
+ok 114 - server.ts logs the floor boot line from the live AUTH.mode and the boot time lookup
+ok 115 - hard_floor_rules_2 rides with hard_floor, and only with it
+ok 116 - the three thread tokens are declared together where threads can run, after every other token
+ok 117 - no thread token on Windows in phase 1, nor where threads cannot run
+ok 118 - the fullest declaration, every token in its place, is exactly this list
+ok 119 - server.ts declares threads from the live claude lookup, its threads CLI probe and the platform, at every declaration
+ok 120 - mission_server_checks is declared on every host, beside and distinct from mission_goal_checks
+ok 121 - the manifest parses and carries a one line description
+ok 122 - the declared event set is exactly the set the mapper handles
+ok 123 - the registered set is deliberate: no event fires that nothing reads
+ok 124 - every FORWARDER entry is the exec form, async, with the plugin root placeholder
+ok 125 - the floor hook remains a separate blocking entry
+ok 126 - only the floor and private turn boundaries add a matcher
+ok 127 - the floor matcher covers the shell, edit and MCP tools and nothing else
+ok 128 - plugin.json declares no hooks key: the standard file is loaded automatically
+ok 129 - the mission turn check is a blocking entry on a prompt and at Stop, and nowhere else
+ok 130 - a named chat rides the create body as a number
+ok 131 - no chat means NO chatId key at all, never null
+ok 132 - a chat that is not a positive integer is refused with an actionable message
+ok 133 - an empty or absent chat reads as "the main chat", not as a mistake to shout about
+ok 134 - the active path is byte identical to today when no chat is named
+ok 135 - a named chat is appended as a query, so each chat gets its own ETag cache key
+ok 136 - a junk chat on the read is ignored rather than fatal: the agent still gets its main chat mission
+ok 137 - the turn chat is used when it is one of the owner own chats
+ok 138 - a room is never chosen implicitly, and the search moves on to a chat that works
+ok 139 - a chat whose last inbound came from somebody else is never chosen implicitly
+ok 140 - when nothing is acceptable the answer is null, which means the agent main chat
+ok 141 - a single chat agent is unchanged: its one chat is the answer
+ok 142 - a chat with no inbound seen is not refused for that: silence is not somebody else
+ok 143 - a blank turn chat falls through to the monitored list rather than becoming a chat id
+ok 144 - parseMissionEvent never throws, whatever the socket hands it
+ok 145 - all eight mission frames parse from the real gateway envelope
+ok 146 - an event for another assistant is dropped, whatever it says
+ok 147 - a backend that sends no chat and no cleared_by still parses
+ok 148 - the goal lane fields ride a mission_created frame through the parser
+ok 149 - a backend older than the goal lane reads as off, and junk never becomes a cap
+ok 150 - the owner authored set is told: paused, resumed, set aside, marked done, started
+ok 151 - mission_ticked is never narrated, not even when the owner authored it
+ok 152 - an agent created mission is not narrated back to the agent
+ok 153 - the agent own writes are not narrated: the self write stamp and cleared_by agent
+ok 154 - a frame already seen is never told twice
+ok 155 - a mission the owner REPLACED is not narrated as a set aside
+ok 156 - mission_failed and mission_updated are not narrated in this stage
+ok 157 - a closing notice carries the id, the title, and the refusal to tick or cite
+ok 158 - the paused notice carries the reason when there is one and reads right when there is not
+ok 159 - the resumed notice names the next open mini goal, and says nothing about one when all are ticked
+ok 160 - the started notice carries the goal count and the checkbox ledger the model ticks from
+ok 161 - every meta value is a string, and an empty value is an omitted key, never an empty string
+ok 162 - no em dash and no en dash reaches the model, in any frame, in content or meta
+ok 163 - an owner authored title cannot forge a second [mission_ line
+ok 164 - a paused and a failed mission both format without a type error
+ok 165 - the frame dedupe key separates two writes and joins two copies of one
+ok 166 - only a frame that could be narrated may spend a pending self write stamp
+ok 167 - a backend that says who wrote the mission needs no stamp, and must not spend one
+ok 168 - the self write stamp is keyed on the WRITE, not on the frame
+ok 169 - a write stamped only AFTER the response loses the race the socket wins
+ok 170 - one pending stamp answers for one frame, so the owner is still heard afterwards
+ok 171 - a tick riding the same call does not spend the stamp the completion needs
+ok 172 - the after the fact stamp still covers a frame that arrives late
+ok 173 - a frame that names its author is the backend answer, and spends nothing
+ok 174 - the ledger is bounded, because this is a daemon that runs for weeks
+ok 175 - create, fill and add pass a goal check through unchanged, every key kept
+ok 176 - a check that is not an object is refused before the network, naming the goal
+ok 177 - set_goal_waiting: the body and the pairing path
+ok 178 - the summary shows a goal check, a server tick and a waiting state in one clause each
+ok 179 - the goal checks read is the pairing family, by mission
+ok 180 - the next suggested goal skips an earlier waiting goal
+ok 181 - nested waiting uses current validation and rejects mixed flat and nested calls
+ok 182 - the six mission tools are private for the helper guard, under any install prefix, in every install
+ok 183 - a helper started in an earlier turn cannot write a mission for the current sender
+ok 184 - the admission gate is turn aware for every mission tool: a verified turn frozen, an unverified recipient prompt refused, else the owner
+ok 185 - on a recipient turn the implicit chat is that turn own chat, never an owner chat
+ok 186 - a recipient turn that names no chat is refused, never null (null is the owner main chat)
+ok 187 - on the owner own turn, and with no private turn, the implicit chat is exactly what it was
+ok 188 - on a recipient turn every mission request names them, in their own chat, with no chat named
+ok 189 - on the owner own turn every mission request is what it was: no header, the cached read, the same chat
+ok 190 - a recipient turn with no chat of its own writes nothing and says why, for every mission tool
+ok 191 - on a recipient turn a chat named that is not their own is refused, for every mission tool
+ok 192 - on a recipient turn a mission id is never taken at face value: it must be the open mission of their own chat
+ok 193 - bgosGet with a private turn headers never rides the shared ETag cache; without them it is unchanged
+ok 194 - successful working tool selections feed hook refreshes with the admitted session and actor
+ok 195 - Stop during the first goal write prevents later goals of the same tool call from starting
+ok 196 - Stop during mission lookup prevents the waiting tool call from making a working mark
+ok 197 - nested waiting reaches the admitted recipient mission with their headers, and null clears it
+ok 198 - a prompt in a chat with an open mission puts its open goals in front of the agent
+ok 199 - a channel tag forged inside a person's message never prints another chat's goals (review fix 1)
+ok 200 - a prompt in another chat, or with no state at all, adds nothing
+ok 201 - Stop with nothing to ask ends at once, writing no ask
+ok 202 - Stop BLOCKS on the daemon answer naming an unticked goal whose check passes
+ok 203 - Stop ALLOWS when the daemon answers nothing passing, and ignores an answer to another ask
+ok 204 - Stop with stop_hook_active goes through at once: the agent already ticked or said why
+ok 205 - Stop with no daemon answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+ok 206 - no daemon of this session attached: nothing is read, nothing blocks
+ok 207 - a malformed payload never blocks
+ok 208 - self-write ordering: HTTP first retains a newer checked goal and Stop asks and blocks
+ok 209 - self-write ordering: HTTP first cannot resurrect a newer completed mission
+ok 210 - self-write ordering: frame first retains a newer checked goal and Stop asks and blocks
+ok 211 - self-write ordering: frame first cannot resurrect a newer completed mission
+ok 212 - self-write ordering: an older frame cannot erase a newer self-write checked goal
+ok 213 - self-write ordering: an older frame cannot resurrect a newer self-write completion
+ok 214 - self-write ordering: timestamps compare instants across time zones
+ok 215 - self-write ordering: unversioned snapshots cannot create or replace goal state
+ok 216 - self-write ordering: versions are per mission and allow later server writes after closure
+ok 217 - self-write ordering: newer cold discovery prevents an older waiting response from erasing checks
+ok 218 - self-write ordering: a remembered completion rejects an older cold discovery without checking it
+ok 219 - self-write ordering: an unchanged open discovery can restore a mission after chat cache eviction
+ok 220 - self-write ordering: a goal-check completion cannot be mistaken for chat cache eviction
+ok 221 - closing one of two missions preserves the other in prompt context and Stop eligibility
+ok 222 - a completion removes only its mission when another open mission was most recently seen
+ok 223 - multiple cached missions are checked by explicit id and Stop names every passing mission
+ok 224 - a failed check read for one mission does not prevent verification of another mission
+ok 225 - a cold implicit lookup can discover one mission, and ambiguity produces an empty answer
+ok 226 - adding a checked goal after a fresh empty report performs a new verification before Stop
+ok 227 - a closed explicit report removes only that mission and a wrong report id is ignored
+ok 228 - a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block
+ok 229 - a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block
+ok 230 - a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block
+ok 231 - a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block
+ok 232 - a cold discovery cannot resurrect a mission created and completed while the read was pending
+ok 233 - HTTP work completing after the daemon answer budget cannot resurrect a completed mission
+    ok 1 - snapshot then older snapshot: checked goal
+    ok 2 - snapshot then older snapshot: completion
+    ok 3 - snapshot then older HTTP self-write: checked goal
+    ok 4 - snapshot then older HTTP self-write: completion
+    ok 5 - snapshot then older HTTP discovery: checked goal
+    ok 6 - snapshot then older HTTP discovery: completion
+    ok 7 - snapshot then older versioned goal-check report: checked goal
+    ok 8 - snapshot then older versioned goal-check report: completion
+    ok 9 - snapshot then older mission_created: checked goal
+    ok 10 - snapshot then older mission_created: completion
+    ok 11 - snapshot then older mission_ticked: checked goal
+    ok 12 - snapshot then older mission_ticked: completion
+    ok 13 - snapshot then older mission_paused: checked goal
+    ok 14 - snapshot then older mission_paused: completion
+    ok 15 - snapshot then older mission_resumed: checked goal
+    ok 16 - snapshot then older mission_resumed: completion
+    ok 17 - snapshot then older mission_completed: checked goal
+    ok 18 - snapshot then older mission_completed: completion
+    ok 19 - snapshot then older mission_abandoned: checked goal
+    ok 20 - snapshot then older mission_abandoned: completion
+    ok 21 - snapshot then older mission_failed: checked goal
+    ok 22 - snapshot then older mission_failed: completion
+    ok 23 - snapshot then older mission_updated: checked goal
+    ok 24 - snapshot then older mission_updated: completion
+    ok 25 - HTTP self-write then older snapshot: checked goal
+    ok 26 - HTTP self-write then older snapshot: completion
+    ok 27 - HTTP self-write then older HTTP self-write: checked goal
+    ok 28 - HTTP self-write then older HTTP self-write: completion
+    ok 29 - HTTP self-write then older HTTP discovery: checked goal
+    ok 30 - HTTP self-write then older HTTP discovery: completion
+    ok 31 - HTTP self-write then older versioned goal-check report: checked goal
+    ok 32 - HTTP self-write then older versioned goal-check report: completion
+    ok 33 - HTTP self-write then older mission_created: checked goal
+    ok 34 - HTTP self-write then older mission_created: completion
+    ok 35 - HTTP self-write then older mission_ticked: checked goal
+    ok 36 - HTTP self-write then older mission_ticked: completion
+    ok 37 - HTTP self-write then older mission_paused: checked goal
+    ok 38 - HTTP self-write then older mission_paused: completion
+    ok 39 - HTTP self-write then older mission_resumed: checked goal
+    ok 40 - HTTP self-write then older mission_resumed: completion
+    ok 41 - HTTP self-write then older mission_completed: checked goal
+    ok 42 - HTTP self-write then older mission_completed: completion
+    ok 43 - HTTP self-write then older mission_abandoned: checked goal
+    ok 44 - HTTP self-write then older mission_abandoned: completion
+    ok 45 - HTTP self-write then older mission_failed: checked goal
+    ok 46 - HTTP self-write then older mission_failed: completion
+    ok 47 - HTTP self-write then older mission_updated: checked goal
+    ok 48 - HTTP self-write then older mission_updated: completion
+    ok 49 - HTTP discovery then older snapshot: checked goal
+    ok 50 - HTTP discovery then older snapshot: completion
+    ok 51 - HTTP discovery then older HTTP self-write: checked goal
+    ok 52 - HTTP discovery then older HTTP self-write: completion
+    ok 53 - HTTP discovery then older HTTP discovery: checked goal
+    ok 54 - HTTP discovery then older HTTP discovery: completion
+    ok 55 - HTTP discovery then older versioned goal-check report: checked goal
+    ok 56 - HTTP discovery then older versioned goal-check report: completion
+    ok 57 - HTTP discovery then older mission_created: checked goal
+    ok 58 - HTTP discovery then older mission_created: completion
+    ok 59 - HTTP discovery then older mission_ticked: checked goal
+    ok 60 - HTTP discovery then older mission_ticked: completion
+    ok 61 - HTTP discovery then older mission_paused: checked goal
+    ok 62 - HTTP discovery then older mission_paused: completion
+    ok 63 - HTTP discovery then older mission_resumed: checked goal
+    ok 64 - HTTP discovery then older mission_resumed: completion
+    ok 65 - HTTP discovery then older mission_completed: checked goal
+    ok 66 - HTTP discovery then older mission_completed: completion
+    ok 67 - HTTP discovery then older mission_abandoned: checked goal
+    ok 68 - HTTP discovery then older mission_abandoned: completion
+    ok 69 - HTTP discovery then older mission_failed: checked goal
+    ok 70 - HTTP discovery then older mission_failed: completion
+    ok 71 - HTTP discovery then older mission_updated: checked goal
+    ok 72 - HTTP discovery then older mission_updated: completion
+    ok 73 - versioned goal-check report then older snapshot: checked goal
+    ok 74 - versioned goal-check report then older snapshot: completion
+    ok 75 - versioned goal-check report then older HTTP self-write: checked goal
+    ok 76 - versioned goal-check report then older HTTP self-write: completion
+    ok 77 - versioned goal-check report then older HTTP discovery: checked goal
+    ok 78 - versioned goal-check report then older HTTP discovery: completion
+    ok 79 - versioned goal-check report then older versioned goal-check report: checked goal
+    ok 80 - versioned goal-check report then older versioned goal-check report: completion
+    ok 81 - versioned goal-check report then older mission_created: checked goal
+    ok 82 - versioned goal-check report then older mission_created: completion
+    ok 83 - versioned goal-check report then older mission_ticked: checked goal
+    ok 84 - versioned goal-check report then older mission_ticked: completion
+    ok 85 - versioned goal-check report then older mission_paused: checked goal
+    ok 86 - versioned goal-check report then older mission_paused: completion
+    ok 87 - versioned goal-check report then older mission_resumed: checked goal
+    ok 88 - versioned goal-check report then older mission_resumed: completion
+    ok 89 - versioned goal-check report then older mission_completed: checked goal
+    ok 90 - versioned goal-check report then older mission_completed: completion
+    ok 91 - versioned goal-check report then older mission_abandoned: checked goal
+    ok 92 - versioned goal-check report then older mission_abandoned: completion
+    ok 93 - versioned goal-check report then older mission_failed: checked goal
+    ok 94 - versioned goal-check report then older mission_failed: completion
+    ok 95 - versioned goal-check report then older mission_updated: checked goal
+    ok 96 - versioned goal-check report then older mission_updated: completion
+    ok 97 - mission_created then older snapshot: checked goal
+    ok 98 - mission_created then older snapshot: completion
+    ok 99 - mission_created then older HTTP self-write: checked goal
+    ok 100 - mission_created then older HTTP self-write: completion
+    ok 101 - mission_created then older HTTP discovery: checked goal
+    ok 102 - mission_created then older HTTP discovery: completion
+    ok 103 - mission_created then older versioned goal-check report: checked goal
+    ok 104 - mission_created then older versioned goal-check report: completion
+    ok 105 - mission_created then older mission_created: checked goal
+    ok 106 - mission_created then older mission_created: completion
+    ok 107 - mission_created then older mission_ticked: checked goal
+    ok 108 - mission_created then older mission_ticked: completion
+    ok 109 - mission_created then older mission_paused: checked goal
+    ok 110 - mission_created then older mission_paused: completion
+    ok 111 - mission_created then older mission_resumed: checked goal
+    ok 112 - mission_created then older mission_resumed: completion
+    ok 113 - mission_created then older mission_completed: checked goal
+    ok 114 - mission_created then older mission_completed: completion
+    ok 115 - mission_created then older mission_abandoned: checked goal
+    ok 116 - mission_created then older mission_abandoned: completion
+    ok 117 - mission_created then older mission_failed: checked goal
+    ok 118 - mission_created then older mission_failed: completion
+    ok 119 - mission_created then older mission_updated: checked goal
+    ok 120 - mission_created then older mission_updated: completion
+    ok 121 - mission_ticked then older snapshot: checked goal
+    ok 122 - mission_ticked then older snapshot: completion
+    ok 123 - mission_ticked then older HTTP self-write: checked goal
+    ok 124 - mission_ticked then older HTTP self-write: completion
+    ok 125 - mission_ticked then older HTTP discovery: checked goal
+    ok 126 - mission_ticked then older HTTP discovery: completion
+    ok 127 - mission_ticked then older versioned goal-check report: checked goal
+    ok 128 - mission_ticked then older versioned goal-check report: completion
+    ok 129 - mission_ticked then older mission_created: checked goal
+    ok 130 - mission_ticked then older mission_created: completion
+    ok 131 - mission_ticked then older mission_ticked: checked goal
+    ok 132 - mission_ticked then older mission_ticked: completion
+    ok 133 - mission_ticked then older mission_paused: checked goal
+    ok 134 - mission_ticked then older mission_paused: completion
+    ok 135 - mission_ticked then older mission_resumed: checked goal
+    ok 136 - mission_ticked then older mission_resumed: completion
+    ok 137 - mission_ticked then older mission_completed: checked goal
+    ok 138 - mission_ticked then older mission_completed: completion
+    ok 139 - mission_ticked then older mission_abandoned: checked goal
+    ok 140 - mission_ticked then older mission_abandoned: completion
+    ok 141 - mission_ticked then older mission_failed: checked goal
+    ok 142 - mission_ticked then older mission_failed: completion
+    ok 143 - mission_ticked then older mission_updated: checked goal
+    ok 144 - mission_ticked then older mission_updated: completion
+    ok 145 - mission_paused then older snapshot: checked goal
+    ok 146 - mission_paused then older snapshot: completion
+    ok 147 - mission_paused then older HTTP self-write: checked goal
+    ok 148 - mission_paused then older HTTP self-write: completion
+    ok 149 - mission_paused then older HTTP discovery: checked goal
+    ok 150 - mission_paused then older HTTP discovery: completion
+    ok 151 - mission_paused then older versioned goal-check report: checked goal
+    ok 152 - mission_paused then older versioned goal-check report: completion
+    ok 153 - mission_paused then older mission_created: checked goal
+    ok 154 - mission_paused then older mission_created: completion
+    ok 155 - mission_paused then older mission_ticked: checked goal
+    ok 156 - mission_paused then older mission_ticked: completion
+    ok 157 - mission_paused then older mission_paused: checked goal
+    ok 158 - mission_paused then older mission_paused: completion
+    ok 159 - mission_paused then older mission_resumed: checked goal
+    ok 160 - mission_paused then older mission_resumed: completion
+    ok 161 - mission_paused then older mission_completed: checked goal
+    ok 162 - mission_paused then older mission_completed: completion
+    ok 163 - mission_paused then older mission_abandoned: checked goal
+    ok 164 - mission_paused then older mission_abandoned: completion
+    ok 165 - mission_paused then older mission_failed: checked goal
+    ok 166 - mission_paused then older mission_failed: completion
+    ok 167 - mission_paused then older mission_updated: checked goal
+    ok 168 - mission_paused then older mission_updated: completion
+    ok 169 - mission_resumed then older snapshot: checked goal
+    ok 170 - mission_resumed then older snapshot: completion
+    ok 171 - mission_resumed then older HTTP self-write: checked goal
+    ok 172 - mission_resumed then older HTTP self-write: completion
+    ok 173 - mission_resumed then older HTTP discovery: checked goal
+    ok 174 - mission_resumed then older HTTP discovery: completion
+    ok 175 - mission_resumed then older versioned goal-check report: checked goal
+    ok 176 - mission_resumed then older versioned goal-check report: completion
+    ok 177 - mission_resumed then older mission_created: checked goal
+    ok 178 - mission_resumed then older mission_created: completion
+    ok 179 - mission_resumed then older mission_ticked: checked goal
+    ok 180 - mission_resumed then older mission_ticked: completion
+    ok 181 - mission_resumed then older mission_paused: checked goal
+    ok 182 - mission_resumed then older mission_paused: completion
+    ok 183 - mission_resumed then older mission_resumed: checked goal
+    ok 184 - mission_resumed then older mission_resumed: completion
+    ok 185 - mission_resumed then older mission_completed: checked goal
+    ok 186 - mission_resumed then older mission_completed: completion
+    ok 187 - mission_resumed then older mission_abandoned: checked goal
+    ok 188 - mission_resumed then older mission_abandoned: completion
+    ok 189 - mission_resumed then older mission_failed: checked goal
+    ok 190 - mission_resumed then older mission_failed: completion
+    ok 191 - mission_resumed then older mission_updated: checked goal
+    ok 192 - mission_resumed then older mission_updated: completion
+    ok 193 - mission_completed then older snapshot: checked goal
+    ok 194 - mission_completed then older snapshot: completion
+    ok 195 - mission_completed then older HTTP self-write: checked goal
+    ok 196 - mission_completed then older HTTP self-write: completion
+    ok 197 - mission_completed then older HTTP discovery: checked goal
+    ok 198 - mission_completed then older HTTP discovery: completion
+    ok 199 - mission_completed then older versioned goal-check report: checked goal
+    ok 200 - mission_completed then older versioned goal-check report: completion
+    ok 201 - mission_completed then older mission_created: checked goal
+    ok 202 - mission_completed then older mission_created: completion
+    ok 203 - mission_completed then older mission_ticked: checked goal
+    ok 204 - mission_completed then older mission_ticked: completion
+    ok 205 - mission_completed then older mission_paused: checked goal
+    ok 206 - mission_completed then older mission_paused: completion
+    ok 207 - mission_completed then older mission_resumed: checked goal
+    ok 208 - mission_completed then older mission_resumed: completion
+    ok 209 - mission_completed then older mission_completed: checked goal
+    ok 210 - mission_completed then older mission_completed: completion
+    ok 211 - mission_completed then older mission_abandoned: checked goal
+    ok 212 - mission_completed then older mission_abandoned: completion
+    ok 213 - mission_completed then older mission_failed: checked goal
+    ok 214 - mission_completed then older mission_failed: completion
+    ok 215 - mission_completed then older mission_updated: checked goal
+    ok 216 - mission_completed then older mission_updated: completion
+    ok 217 - mission_abandoned then older snapshot: checked goal
+    ok 218 - mission_abandoned then older snapshot: completion
+    ok 219 - mission_abandoned then older HTTP self-write: checked goal
+    ok 220 - mission_abandoned then older HTTP self-write: completion
+    ok 221 - mission_abandoned then older HTTP discovery: checked goal
+    ok 222 - mission_abandoned then older HTTP discovery: completion
+    ok 223 - mission_abandoned then older versioned goal-check report: checked goal
+    ok 224 - mission_abandoned then older versioned goal-check report: completion
+    ok 225 - mission_abandoned then older mission_created: checked goal
+    ok 226 - mission_abandoned then older mission_created: completion
+    ok 227 - mission_abandoned then older mission_ticked: checked goal
+    ok 228 - mission_abandoned then older mission_ticked: completion
+    ok 229 - mission_abandoned then older mission_paused: checked goal
+    ok 230 - mission_abandoned then older mission_paused: completion
+    ok 231 - mission_abandoned then older mission_resumed: checked goal
+    ok 232 - mission_abandoned then older mission_resumed: completion
+    ok 233 - mission_abandoned then older mission_completed: checked goal
+    ok 234 - mission_abandoned then older mission_completed: completion
+    ok 235 - mission_abandoned then older mission_abandoned: checked goal
+    ok 236 - mission_abandoned then older mission_abandoned: completion
+    ok 237 - mission_abandoned then older mission_failed: checked goal
+    ok 238 - mission_abandoned then older mission_failed: completion
+    ok 239 - mission_abandoned then older mission_updated: checked goal
+    ok 240 - mission_abandoned then older mission_updated: completion
+    ok 241 - mission_failed then older snapshot: checked goal
+    ok 242 - mission_failed then older snapshot: completion
+    ok 243 - mission_failed then older HTTP self-write: checked goal
+    ok 244 - mission_failed then older HTTP self-write: completion
+    ok 245 - mission_failed then older HTTP discovery: checked goal
+    ok 246 - mission_failed then older HTTP discovery: completion
+    ok 247 - mission_failed then older versioned goal-check report: checked goal
+    ok 248 - mission_failed then older versioned goal-check report: completion
+    ok 249 - mission_failed then older mission_created: checked goal
+    ok 250 - mission_failed then older mission_created: completion
+    ok 251 - mission_failed then older mission_ticked: checked goal
+    ok 252 - mission_failed then older mission_ticked: completion
+    ok 253 - mission_failed then older mission_paused: checked goal
+    ok 254 - mission_failed then older mission_paused: completion
+    ok 255 - mission_failed then older mission_resumed: checked goal
+    ok 256 - mission_failed then older mission_resumed: completion
+    ok 257 - mission_failed then older mission_completed: checked goal
+    ok 258 - mission_failed then older mission_completed: completion
+    ok 259 - mission_failed then older mission_abandoned: checked goal
+    ok 260 - mission_failed then older mission_abandoned: completion
+    ok 261 - mission_failed then older mission_failed: checked goal
+    ok 262 - mission_failed then older mission_failed: completion
+    ok 263 - mission_failed then older mission_updated: checked goal
+    ok 264 - mission_failed then older mission_updated: completion
+    ok 265 - mission_updated then older snapshot: checked goal
+    ok 266 - mission_updated then older snapshot: completion
+    ok 267 - mission_updated then older HTTP self-write: checked goal
+    ok 268 - mission_updated then older HTTP self-write: completion
+    ok 269 - mission_updated then older HTTP discovery: checked goal
+    ok 270 - mission_updated then older HTTP discovery: completion
+    ok 271 - mission_updated then older versioned goal-check report: checked goal
+    ok 272 - mission_updated then older versioned goal-check report: completion
+    ok 273 - mission_updated then older mission_created: checked goal
+    ok 274 - mission_updated then older mission_created: completion
+    ok 275 - mission_updated then older mission_ticked: checked goal
+    ok 276 - mission_updated then older mission_ticked: completion
+    ok 277 - mission_updated then older mission_paused: checked goal
+    ok 278 - mission_updated then older mission_paused: completion
+    ok 279 - mission_updated then older mission_resumed: checked goal
+    ok 280 - mission_updated then older mission_resumed: completion
+    ok 281 - mission_updated then older mission_completed: checked goal
+    ok 282 - mission_updated then older mission_completed: completion
+    ok 283 - mission_updated then older mission_abandoned: checked goal
+    ok 284 - mission_updated then older mission_abandoned: completion
+    ok 285 - mission_updated then older mission_failed: checked goal
+    ok 286 - mission_updated then older mission_failed: completion
+    ok 287 - mission_updated then older mission_updated: checked goal
+    ok 288 - mission_updated then older mission_updated: completion
+ok 234 - all goal-state sources obey one server revision rule
+ok 235 - T0 snapshot, T2 unversioned report, T1 HTTP preserves Stop verification
+ok 236 - T0 snapshot, T2 unversioned report, T1 HTTP preserves closure
+ok 237 - T0 snapshot, T2 unversioned report, T1 WebSocket preserves Stop verification
+ok 238 - T0 snapshot, T2 unversioned report, T1 WebSocket preserves closure
+ok 239 - T0 snapshot, T2 versioned report, T1 HTTP preserves Stop verification
+ok 240 - T0 snapshot, T2 versioned report, T1 HTTP preserves closure
+ok 241 - T0 snapshot, T2 versioned report, T1 WebSocket preserves Stop verification
+ok 242 - T0 snapshot, T2 versioned report, T1 WebSocket preserves closure
+ok 243 - legacy report reconciliation: stable
+ok 244 - legacy report reconciliation: write during check
+ok 245 - legacy report reconciliation: different goals
+ok 246 - legacy report reconciliation: wrong mission
+ok 247 - legacy report reconciliation: wrong chat
+ok 248 - legacy report reconciliation: missing revision
+ok 249 - legacy report reconciliation: ambiguous
+ok 250 - equal report revisions refresh check evidence only for identical held goals
+ok 251 - a wrong-chat write cannot steal a held mission even with a newer timestamp
+ok 252 - matching legacy reports verify every cached mission without an ambiguous implicit lookup
+ok 253 - confirmed equal revision repairs tick after check reuse expires
+ok 254 - confirmed equal revision repairs add check after check reuse expires
+ok 255 - unversioned terminal completed clears missed frames and cannot be resurrected
+ok 256 - unversioned terminal abandoned clears missed frames and cannot be resurrected
+ok 257 - unversioned terminal failed clears missed frames and cannot be resurrected
+ok 258 - unversioned terminal confirmation rejects wrong id
+ok 259 - unversioned terminal confirmation rejects different status
+ok 260 - unversioned terminal confirmation rejects paused status
+ok 261 - unversioned terminal confirmation rejects unknown second status
+ok 262 - unversioned terminal confirmation rejects different goals
+ok 263 - unversioned terminal confirmation rejects read failure
+ok 264 - unversioned terminal confirmation rejects unknown status
+ok 265 - unversioned terminal read 1 with frame cannot cross a newer chat revision
+ok 266 - unversioned terminal read 2 with frame cannot cross a newer chat revision
+ok 267 - unversioned terminal read 1 with self-write cannot cross a newer chat revision
+ok 268 - unversioned terminal read 2 with self-write cannot cross a newer chat revision
+ok 269 - unversioned completion preserves other missions without an implicit lookup
+ok 270 - unversioned terminal tombstone survives eviction and newer cold discovery
+ok 271 - unversioned terminal confirmation requires a known mission in its original chat and invents no revision
+ok 272 - a parsed mission update retains server checks, waiting and server ticks for the turn hook
+ok 273 - malformed optional goal state is ignored without losing a valid mission frame
+ok 274 - new optional state stays display safe in an owner-created mission notice
+ok 275 - an ambiguous snapshot is never cached under an unrelated active recipient chat
+ok 276 - a snapshot uses its explicit chat or the event envelope chat, never a live-turn fallback
+ok 277 - the turn start binds the turn chat into the mission turn state and refreshes it
+ok 278 - every mission frame and every own mission write updates the state, with no network call
+ok 279 - the ask is answered only by the pairing lock holder, within its budget, through the pure writer
+ok 280 - the watcher never keeps the process alive and has a polling fallback
+ok 281 - the state is written only by the lock holder
+ok 282 - the answer is for the ASK's chat, only one this daemon delivered to recently, from a fresh entry when it has one (review fixes 4 and 6)
+ok 283 - describeGoalCheck names each kind in one line, and nothing for no check
+ok 284 - promptChatId reads ONLY the channel tag that opens the prompt (review fix 1)
+ok 285 - the daemon keeps only goals that passed and are still open
+ok 286 - a mission frame refreshes the goals and drops a passing goal the agent has since ticked
+ok 287 - adding checked goals invalidates a fresh report, including a previously empty mission
+ok 288 - changing or removing a check invalidates its old passing evidence
+ok 289 - unchanged checks reuse a report across goal reordering, waiting updates and ticks
+ok 290 - BLOCKS while a goal whose check passes is unticked, naming it and its evidence
+ok 291 - ALLOWS the second stop of the same turn (stop_hook_active): the agent already answered
+ok 292 - ALLOWS when nothing passes, and when the answer says the daemon could not ask
+ok 293 - a missing or late answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+ok 294 - ALLOWS on a missing or malformed state and answer
+ok 295 - the turn start block lists the open goals with their check and waiting state
+ok 296 - no block without an open mission or without an open goal
+ok 297 - mergeMissionTurnEntry keeps other chats, drops a closed one, and bounds the file
+ok 298 - answerMissionTurnAsk answers a new ask once, with what compute found
+ok 299 - the daemon file answer preserves mission identities when goal ids overlap
+ok 300 - answerMissionTurnAsk answers an empty list when compute fails, so the hook allows at once
+ok 301 - answerMissionTurnAsk ignores an ask older than the hook can wait for, and removes it (review fix 5)
+ok 302 - answerMissionTurnAsk removes an ask once it is answered, and hands compute the ask
+ok 303 - answerMissionTurnAsk ignores a missing or malformed ask
+ok 304 - the Stop hook asks the daemon only when THIS turn's chat has an open goal with a check (review fix 4)
+ok 305 - freshMissionTurnEntry answers from a chat entry checked under 30 s ago, and only then (review fix 6)
+ok 306 - the turn record: written for a session at its prompt, read back only by that session (review fix 4)
+ok 307 - answerMissionTurnAsk never removes a NEWER ask written while it answered the old one (review confirmation A)
+ok 308 - a cancelled goal loses its cached passing result when a newer snapshot removes it
+ok 309 - twenty-goal chats stay readable when their combined state exceeds the file budget
+ok 310 - busy session refreshes every selected goal with the original actor and exact working route
+ok 311 - idle sweep clears without another hook and activity resumes only the selected goals
+ok 312 - Stop clears and forgets this session without clearing another session
+ok 313 - SessionEnd clears and forgets this session without clearing another session
+ok 314 - UserPromptSubmit clears and forgets this session without clearing another session
+ok 315 - 409 drops a ticked goal so later activity and stop do not retry it
+ok 316 - 400 refusal during Stop retires the goal without later writes
+ok 317 - 400 refusal during idle retires the goal without later writes
+ok 318 - 400 refusal during explicit retires the goal without later writes
+ok 319 - 400 refusal during refresh retires the goal without later writes
+ok 320 - 400 refusal during reselect retires the goal without later writes
+ok 321 - 403 refusal during Stop retires the goal without later writes
+ok 322 - 403 refusal during idle retires the goal without later writes
+ok 323 - 403 refusal during explicit retires the goal without later writes
+ok 324 - 403 refusal during refresh retires the goal without later writes
+ok 325 - 403 refusal during reselect retires the goal without later writes
+ok 326 - 404 refusal during Stop retires the goal without later writes
+ok 327 - 404 refusal during idle retires the goal without later writes
+ok 328 - 404 refusal during explicit retires the goal without later writes
+ok 329 - 404 refusal during refresh retires the goal without later writes
+ok 330 - 404 refusal during reselect retires the goal without later writes
+ok 331 - 409 refusal during Stop retires the goal without later writes
+ok 332 - 409 refusal during idle retires the goal without later writes
+ok 333 - 409 refusal during explicit retires the goal without later writes
+ok 334 - 409 refusal during refresh retires the goal without later writes
+ok 335 - 409 refusal during reselect retires the goal without later writes
+ok 336 - 429 clear failures back off across sweeps and tool events, then recover
+ok 337 - 500 clear failures back off across sweeps and tool events, then recover
+ok 338 - 503 clear failures back off across sweeps and tool events, then recover
+ok 339 - network clear failures back off across sweeps and tool events, then recover
+ok 340 - an explicit selection bypasses and resets a failed clear backoff
+ok 341 - clear retry backoff caps at ten minutes instead of abandoning the clear
+ok 342 - refresh failures resolve normally, preserve other goals, and reserve the rate limit
+ok 343 - parallel hook bursts cannot refresh any goal more than once in ten minutes
+ok 344 - stop queued behind an in-flight refresh wins and a failed clear is retried
+ok 345 - a stop while the initial selection is in flight clears the landed mark
+ok 346 - unarmed daemon and stale spool activity cannot refresh a working mark
+ok 347 - real forwarder and admitted spool drive refresh and stop; hook failure never blocks a tool
+ok 348 - a late boundary from an older turn cannot clear a newer explicit selection
+ok 349 - a failed explicit selection does not become a hook-owned goal
+ok 350 - a response with no mission is never adopted as a successful goal selection
+ok 351 - sweep cannot forget a new selection queued while its previous clear finishes
+ok 352 - one captured tool call cannot select its later goals after a Stop or session rebind
+ok 353 - a newer session owns the shared goal even if the old session clear failed
+ok 354 - a true write with a lost response remains eligible for Stop cleanup
+ok 355 - hook refresh errors produce no stdout or stderr and exit normally
+ok 356 - failed reselection preserves the previously confirmed selection
+ok 357 - an older 409 cannot invalidate a newer successful queued selection
+ok 358 - failed handover preserves the confirmed owner and original actor
+ok 359 - the pairing write lock holds through async completion and releases after rejection
+ok 360 - two real processes cannot deliver a successor write before an older delayed clear, different timezones=false
+ok 361 - two real processes cannot deliver a successor write before an older delayed clear, different timezones=true
+ok 362 - a dead process queue record is removed, including an interrupted ticket choice
+ok 363 - a live holder is never evicted by timeout and a waiting operation sends nothing
+ok 364 - a reused live PID cannot block working=true with an orphan ticket=null
+ok 365 - a reused live PID cannot block working=false with an orphan ticket=null
+ok 366 - a reused live PID cannot block working=true with an orphan ticket=1
+ok 367 - a reused live PID cannot block working=false with an orphan ticket=1
+ok 368 - reclaiming a reused PID queue ticket retains its independent uncertain HTTP receipt
+ok 369 - ticket selection waits for a live choosing record before comparing order
+ok 370 - one goal can proceed while another goal holds its write gate
+ok 371 - an acknowledged 400 clear refusal releases its receipt
+ok 372 - an acknowledged 403 clear refusal releases its receipt
+ok 373 - an acknowledged 404 clear refusal releases its receipt
+ok 374 - an acknowledged 409 clear refusal releases its receipt
+ok 375 - an acknowledged 503 clear refusal releases its receipt
+ok 376 - an unsent clear does not leave a false uncertainty fence
+ok 377 - death during a clear preserves its fence after dead queue records are removed
+ok 378 - death during a true write preserves its fence after dead queue records are removed
+ok 379 - an inherited receipt stays unconfirmed even when its PID has been reused
+ok 380 - two trackers: a daemon losing the pairing cannot clear its successor mark
+ok 381 - two trackers: a delayed predecessor clear finishes before the successor mark
+ok 382 - unbound replacement cancels old retries and replayed frames, later binding=false
+ok 383 - unbound replacement cancels old retries and replayed frames, later binding=true
+ok 384 - unbound replacement waits for an in-flight old clear before catching up
+ok 385 - a committed true write with a lost response remains clearable, idle restoration=false
+ok 386 - a committed true write with a lost response remains clearable, idle restoration=true
+ok 387 - a deleted uncertain goal is retired after one 404 cleanup refusal
+ok 388 - shutdown invalidates an unbound selection waiting behind another daemon write
+ok 389 - a queued request checks pairing ownership after acquiring the write gate
+ok 390 - an uncertain predecessor write cannot clear a new daemon successful selection
+ok 391 - a failed stand-down gate cannot revive old cleanup after the pairing is reclaimed
+ok 392 - a locally timed-out clear fences later selections while its remote commit can still arrive
+ok 393 - a delayed true after local timeout is cleared again without admitting a successor mark
+ok 394 - an uncertain first write survives a failed cleanup and its retry window
+ok 395 - a passive manual clear preserves cleanup of an older unresolved true
+ok 396 - the real passive daemon accepts an unbound explicit working=true call
+ok 397 - the real passive daemon accepts an unbound explicit working=false call
+ok 398 - a passive manual write survives the active daemon's failed clear retry
+ok 399 - a passive manual write survives the active daemon's normal Stop
+ok 400 - a passive manual write survives the active daemon's automatic refresh
+ok 401 - a passive manual write survives the active daemon's Stop queued behind manual write
+ok 402 - a passive manual write survives the active daemon's failed reselection
+ok 403 - the real daemon transport protects a successor across handover, delayed clear=false
+ok 404 - the real daemon transport protects a successor across handover, delayed clear=true
+ok 405 - the actual admitted hook handler refreshes selected goals and clears them on Stop
+ok 406 - the actual PATCH transport preserves HTTP 409 for the hook tracker
+ok 407 - the daemon starts an unrefed idle sweep and stops it on stand-down
+    ok 1 - stand-down path 1
+    ok 2 - stand-down path 2
+    ok 3 - stand-down path 3
+    ok 4 - stand-down path 4
+ok 408 - each real stand-down path clears marks after changing the actual armed flags
+ok 409 - stand-down makes a final clear attempt during an earlier failure backoff
+ok 410 - graceful shutdown keeps authority until clears finish, with a bounded fallback
+ok 411 - the derived tool-case scan can actually see the cases (control for every derived test below)
+ok 412 - all eight mission frames are registered as literals, through the stand-down gate
+ok 413 - no socket registration anywhere takes a variable frame name
+ok 414 - every mission handler opens with the update drain guard
+ok 415 - every mission handler hands the frame to the one function that cannot throw
+ok 416 - each mission tool case stamps its own write, so the echo can never start
+ok 417 - the writing tools stamp the mission BEFORE the request, not after the answer
+ok 418 - the goal mark tools take NO pending stamp, only the landed one (lib/missions.ts MISSION_MARK_TOOLS)
+ok 419 - the mission listener asks the ledger, so both stamps are consulted on one line
+ok 420 - missionChatId reads the mission first and falls back to the first monitored chat LAST
+ok 421 - the implicit mission chat goes through the pure rule, never straight to the first chat
+ok 422 - the mission tools accept an optional chat, and it stays optional
+ok 423 - the create_mission description says one open mission per CHAT, because that is now true
+ok 424 - the active-mission read is scoped to a chat, or a tick lands on another chat card
+ok 425 - the goal lane stamps the mission BEFORE its complete and its fail leave
+ok 426 - the goal lane reads nothing from SubagentStop, which is not the checker
+ok 427 - a slow sweep runs beside the resting one, so a missed hook strands nothing
+ok 428 - the goal lane hears every mission frame, even one the model is never told about
+ok 429 - the owner Pause reaches the mission this lane REPORTS on, not only one it armed
+ok 430 - the arm is recorded as pending BEFORE the keystrokes, and released at the sentinel and at the timeout
+ok 431 - the sentinel consults the owner's stop BEFORE it hands the mission back
+ok 432 - the goal set is the ONLY chat derived text this daemon ever types
+ok 433 - the stall stop hears whether the owner armed the goal, from every place a goal is taken on
+ok 434 - create: builds a camelCase body from snake_case tool args
+ok 435 - create: accepts doneWhen alias key on goals
+ok 436 - create: rejects a missing or empty title
+ok 437 - create: rejects an over-long title with the cap in the message
+ok 438 - create: rejects too few and too many goals, teaching the 4..10 target
+ok 439 - create: boundary counts pass (2 and 12)
+ok 440 - create: rejects a goal without a done_when check
+ok 441 - create: rejects over-long goal fields with caps in the message
+ok 442 - create: rejects a non-array mini_goals
+ok 443 - tick: builds { goalId } and trims evidence
+ok 444 - tick: omits empty evidence
+ok 445 - tick: rejects a missing or non-positive-integer goal_id
+ok 446 - tick: rejects over-long evidence
+ok 447 - complete: includes a summary when given
+ok 448 - complete: trims the summary
+ok 449 - complete: truncates the summary at 500 chars
+ok 450 - complete: drops a lone high surrogate at the 500 unit boundary
+ok 451 - complete: rejects a non-string summary
+ok 452 - complete: preserves an empty body when summary is absent, null, or whitespace
+ok 453 - progress: carries the verdict and the run report only when they are supplied
+ok 454 - progress: refuses an unknown verdict word and drops one with no reason
+ok 455 - progress: a run report field the wire cannot carry is DROPPED, never clamped
+ok 456 - progress: clips the feed line and the reason to their own wire limits
+ok 457 - progress: refuses a body that would change nothing
+ok 458 - pause and resume: the stop pause and its resume ride the user scoped routes (P6 stage 3)
+ok 459 - fail: builds the body and the path this repository did not have
+ok 460 - complete: carries a met verdict and the run report the runtime counted
+ok 461 - snapshot: keepWorking and the turn cap are read off the mission
+ok 462 - paths: build the user-scoped mission routes
+ok 463 - paths: reject a bad mission id
+ok 464 - summary: reports progress, the goal ledger with ids, and the next goal
+ok 465 - summary: completed mission says so and has no next goal
+ok 466 - set goals body: same goals shape and bounds as create, and nothing else on the wire
+ok 467 - set goals body: refuses too few, too many, and a goal with no check
+ok 468 - set goals path: the pairing family, PUT .../goals
+ok 469 - add goals body: ONE goal is enough, unlike the fill door
+ok 470 - add goals body: trims, accepts the doneWhen alias, and keeps the ceiling
+ok 471 - add goals body: the refusal tells the agent to send only the NEW goals
+ok 472 - add goals path: the same path as the fill, which is what the POST means
+ok 473 - cancel goal path: the goal id is in the path and validated before the network
+ok 474 - the mini goal cap is 20 on create, set and add, the same as the backend
+ok 475 - every mission tool description that counts goals says 20, and none says 12
+ok 476 - set_goal_working input: the 1 to 20 cap counts distinct ids, after repeats are removed
+1..476
+# tests 768
+# suites 0
+# pass 768
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 8081.36575

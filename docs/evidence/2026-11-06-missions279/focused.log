@@ -1,0 +1,30 @@
+Command: node --import tsx --test --test-concurrency=4 test/mission-turn-snapshots.test.ts test/mission-turn.test.ts test/mission-turn-hook.test.ts test/mission-turn-wiring.test.ts test/mission-goal-checks-tools.test.ts test/mission-private.test.ts test/mission-events.test.ts test/missions.test.ts test/turn-chat.test.ts test/declared-capabilities.test.ts test/capabilities.test.ts test/claude-preseed.test.ts test/clone-hooks.test.ts test/hooks-manifest.test.ts test/version-bump.test.ts
+Exit status: 0
+ℹ tests 317
+ℹ suites 0
+ℹ pass 317
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5360.79125
+
+Baseline: 187 focused tests passed before test or production edits.
+ℹ tests 187
+ℹ suites 0
+ℹ pass 187
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2328.105792
+
+Installation-test environment check: temp root outside node_modules.
+ℹ tests 111
+ℹ suites 0
+ℹ pass 111
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 187.635167

@@ -21,10 +21,7 @@
 //   3. realpath.native, then steps 1 and 2 again on the real path: a link in
 //      a plain folder that leads into ~/.aws is caught here;
 //   4. a regular file, read through one open handle checked against the
-//      stat (mailharden: opened without blocking where the platform can,
-//      so a FIFO swapped in cannot hang it, and with one name only, on the
-//      stat and on the handle: a hard link passes every path rule above),
-//      at most 25 MB each and 25 MB in all, at most 10, and its bytes
+//      stat, at most 25 MB each and 25 MB in all, at most 10, and its bytes
 //      the type its name says, on the same safe list as an inbound file
 //      (lib/email-files.ts isType); a text file whose header has a password
 //      column is a renamed password export, and one that holds a private key
@@ -44,7 +41,9 @@
 //      lives in lib/email-outbound-content.ts and runs in a worker thread
 //      that is terminated at OUTBOUND_CONTENT_DEADLINE_MS (5 seconds); late,
 //      broken or unreadable, the file is refused. Steps 1 to 3 and the size
-//      and type checks of step 4 stay on the main thread. Round 8: one long
+//      and type checks of step 4 stay on the main thread, all but a text
+//      file's type check, which the Worker runs first (it decodes the whole
+//      file, so it is never run on the main thread). Round 8: one long
 //      lived Worker, reused for every file and replaced only after a deadline,
 //      an error, an exit or a bad reply; the deadline is 5 seconds plus 1 per
 //      MB (at most 40); a path over 4096 characters is refused before any
@@ -60,10 +59,9 @@
 //
 // No em or en dashes in this file.
 
-import { constants as fsConstants, realpath as realpathCallback, realpathSync } from 'node:fs'
+import { realpath as realpathCallback, realpathSync } from 'node:fs'
 import { lstat as lstatPromise, open as openPromise, realpath as realpathPromise } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { isAbsolute } from 'node:path'
 import { Worker } from 'node:worker_threads'
 
 import {
@@ -88,7 +86,7 @@ const MB = 1024 * 1024
 
 /**
  * THE SECRET LIST (rule 4), read on the lower case, forward slash, resolved
- * form of a path (`c:/users/kc/.ssh/id_rsa`, `/home/kc/.aws/config`). Any
+ * form of a path (`c:/users/you/.ssh/id_rsa`, `/home/you/.aws/config`). Any
  * match refuses the file. lanePathIsSecret runs beside it and adds
  * .config/gcloud, .bgos-plugin-state, another person's lane and any `..` that
  * climbs out. One list, so a test can empty it and see the refusals go.
@@ -271,16 +269,38 @@ const SAFE_LIST_WORDS = 'only PDF, pictures (PNG, JPG, GIF, WebP), text (TXT, CS
 /** What the read needs of a stat: the fields the swap check compares. */
 export interface OutboundStat {
   isFile(): boolean
-  size: number
+  size: number | bigint
   dev?: number | bigint
   ino?: number | bigint
-  /** How many names the file has (mailharden 2: more than one is refused); a stat with none (a test's) counts as one. */
-  nlink?: number | bigint
+  /** The modified, change and birth times in ns, which a stat asked for bigints gives. */
+  mtimeNs?: bigint
+  ctimeNs?: bigint
+  birthtimeNs?: bigint
+}
+
+/** A stat as the read keeps it: the numbers and times the swap check compares as they came, the size as a number. */
+interface ReadStat extends OutboundStat {
+  size: number
+}
+
+/** Every stat here asks for this, so sameFileAs compares device and file numbers and the times in ns as bigint. */
+const FILE_NUMBERS_AS_BIGINT = { bigint: true } as const
+
+function readStat(stat: OutboundStat): ReadStat {
+  return {
+    isFile: () => stat.isFile(),
+    size: Number(stat.size),
+    dev: stat.dev,
+    ino: stat.ino,
+    mtimeNs: stat.mtimeNs,
+    ctimeNs: stat.ctimeNs,
+    birthtimeNs: stat.birthtimeNs,
+  }
 }
 
 /** What the read needs of an open file. */
 export interface OutboundHandle {
-  stat(): Promise<OutboundStat>
+  stat(options: typeof FILE_NUMBERS_AS_BIGINT): Promise<OutboundStat>
   read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ bytesRead: number }>
   close(): Promise<void>
 }
@@ -288,9 +308,8 @@ export interface OutboundHandle {
 /** The file system this file uses; a test passes its own to count the calls. */
 export interface OutboundFs {
   realpath(path: string): Promise<string>
-  lstat(path: string): Promise<OutboundStat>
-  /** Opens with outboundOpenFlags(): read only, and never blocking where the platform can say so. */
-  open(path: string, flags: number): Promise<OutboundHandle>
+  lstat(path: string, options: typeof FILE_NUMBERS_AS_BIGINT): Promise<OutboundStat>
+  open(path: string, flags: 'r'): Promise<OutboundHandle>
 }
 
 export interface OutboundFileCtx {
@@ -345,37 +364,24 @@ function nativeRealpath(path: string): Promise<string> {
   return new Promise((resolve, reject) => native(path, (err, real) => (err ? reject(err) : resolve(String(real)))))
 }
 
-const REAL_FS: OutboundFs = {
+const REAL_FS: OutboundFs = Object.freeze<OutboundFs>({
   realpath: nativeRealpath,
-  lstat: (path) => lstatPromise(path),
+  lstat: (path, options) => lstatPromise(path, options),
   open: async (path, flags) => {
     const handle = await openPromise(path, flags)
     return {
-      stat: () => handle.stat(),
+      stat: (options) => handle.stat(options),
       read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position),
       close: () => handle.close(),
     }
   },
-}
+})
+
+/** The real file system, for the test that it answers with bigints when asked. */
+export const OUTBOUND_REAL_FS_FOR_TESTS = REAL_FS
 
 function fsOf(ctx: OutboundFileCtx): OutboundFs {
   return { ...REAL_FS, ...(ctx.fs ?? {}) } as OutboundFs
-}
-
-/**
- * mailharden 3: the flags of the one open. O_NONBLOCK, where the platform has it, so a FIFO swapped in for the file after
- * the lstat cannot hold the open (and the read) forever: it opens at once and the handle check refuses it as no regular
- * file. Windows has no O_NONBLOCK (fs.constants leaves it undefined there) and no FIFO to swap in, so it opens read only,
- * exactly as the 'r' flag did; undefined never reaches the flags.
- */
-function outboundOpenFlags(): number {
-  const nonBlock = fsConstants.O_NONBLOCK
-  return fsConstants.O_RDONLY | (process.platform !== 'win32' && typeof nonBlock === 'number' ? nonBlock : 0)
-}
-
-/** mailharden 2: a file with more than one name (a hard link); a stat that gives no count (a test's) counts as one name. */
-function moreThanOneName(stat: OutboundStat): boolean {
-  return stat.nlink !== undefined && Number(stat.nlink) > 1
 }
 
 /** The path as the agent wrote it, kept to one line of a sentence. */
@@ -451,28 +457,9 @@ function secretWordsForm(form: string, ctx: OutboundFileCtx): string {
   return below ?? form
 }
 
-/**
- * The owner's home folders: the home passed in, else this daemon's os.homedir() and, on Windows, USERPROFILE. mailharden 1:
- * each beside its real path when that is another spelling, so a home reached through a link (macOS's /var is a link to
- * /private/var; a junction or an 8.3 name on Windows) is the home by either spelling: a file named by the real path is
- * read below the home, and a runtime folder that holds the real home is not taken as one. Only the home itself is
- * resolved, never the path being checked, and only a home that is a full local path of this computer (homeForm, and
- * absolute here), so a network, relative or drive top home reaches no file system call. A home that does not resolve
- * stays alone.
- */
+/** The owner's home folders: the home passed in, else this daemon's os.homedir() and, on Windows, USERPROFILE. */
 function homesOf(ctx: OutboundFileCtx): unknown[] {
-  const homes: unknown[] = ctx.home !== undefined ? [ctx.home] : [homedir(), process.platform === 'win32' ? process.env.USERPROFILE : undefined]
-  for (const home of [...homes]) {
-    if (typeof home !== 'string' || homeForm(home) === null || !isAbsolute(home)) continue
-    let real: string
-    try {
-      real = plainLocal(nativeRealpathSync(home))
-    } catch {
-      continue
-    }
-    if (!homes.includes(real)) homes.push(real)
-  }
-  return homes
+  return ctx.home !== undefined ? [ctx.home] : [homedir(), process.platform === 'win32' ? process.env.USERPROFILE : undefined]
 }
 
 /**
@@ -529,9 +516,8 @@ type Lexical = { kind: LexicalKind } | { kind: 'ok'; form: string }
 const NETWORK_OR_DEVICE = /^[\\/]{2}/
 
 /**
- * Steps 1 and 2 on one spelling: no file system call on the path (only the
- * owner's home is resolved, homesOf). `form` is the lower case, forward
- * slash, resolved path that both secret checks read.
+ * Steps 1 and 2 on one spelling: no file system call. `form` is the lower
+ * case, forward slash, resolved path that both secret checks read.
  */
 function lexical(path: string, ctx: OutboundFileCtx): Lexical {
   // Round 8: before any regular expression reads it.
@@ -548,7 +534,7 @@ function lexical(path: string, ctx: OutboundFileCtx): Lexical {
   if (!drive && !slashed.startsWith('/')) return { kind: 'not_full' }
   const rest = drive ? slashed.slice(2) : slashed
   // Final fix 4: Windows' own rules, read on a path with a drive letter or on Windows; on Linux and macOS a ?, * or : and
-  // a device word are ordinary parts of a name (/home/kc/Meeting 10:30.pdf, /home/kc/con.pdf).
+  // a device word are ordinary parts of a name (/home/you/Meeting 10:30.pdf, /home/you/con.pdf).
   const windows = drive !== '' || process.platform === 'win32'
   // A wildcard or a colon after the drive (an NTFS stream such as a.pdf:hidden) names no plain file.
   if (windows && /[?*:]/.test(rest)) return { kind: 'device' }
@@ -618,8 +604,7 @@ function lexicalSentence(kind: Exclude<LexicalKind, 'ok'>, path: string, followe
 }
 
 /**
- * Steps 1 and 2 alone, with no file system call on the path (only the owner's
- * home is resolved, homesOf): why this path is refused
+ * Steps 1 and 2 alone, with no file system call: why this path is refused
  * before anything is read, or null. The permission relay runs it on the CLI's
  * preview so a key path never reaches a card or the floor check.
  */
@@ -640,7 +625,7 @@ const SHARE_ANSWER = /^(?:\\\\\?\\UNC\\|[\\/]{2}(?![?.][\\/]))[^\\/]+[\\/][^\\/]
 /**
  * Final fix 3: a share path as the checks of steps 1 and 2 read it, for those checks only (nothing is opened by it): the
  * given drive plus the share and the folders below it. The server's name is dropped, so a NAS named keys refuses
- * nothing. An admin share is the disk it stands for (\\localhost\C$\Users\kc is C:\Users\kc), so a moved runtime folder
+ * nothing. An admin share is the disk it stands for (\\localhost\C$\Users\you is C:\Users\you), so a moved runtime folder
  * and the owner's home are found there. The word rules read the rest of any share as a place outside the home. Final
  * fix 4: a hidden share is read without its one trailing $ (\\nas\Keys$ as Keys), as the name rules end a word at a
  * slash, a dot or the end of the name; the admin share is told first, as its $ is what makes it one.
@@ -691,7 +676,7 @@ async function localReal(fs: OutboundFs, given: string, answer: string, ctx: Out
 
 /**
  * Round 7: the hard deadline of the content stage. The content Worker is terminated this long after it is started,
- * whatever it is doing, and the file is refused as "could not be read safely" (fail closed). Round 8: the base of the
+ * whatever it is doing, and the file is refused with the try again words (fail closed). Round 8: the base of the
  * deadline, which grows with the file (outboundContentDeadlineMs).
  */
 export const OUTBOUND_CONTENT_DEADLINE_MS = 5000
@@ -737,6 +722,8 @@ export const OUTBOUND_CONTENT_WORKERS_MAX = 8
 
 /** Round 9: the run of a file past OUTBOUND_CONTENT_WORKERS_MAX. */
 const WORKERS_SPENT = 'workers spent'
+/** The run of a file still being read at its hard deadline: out of time, which says nothing about the file. */
+const OUT_OF_TIME = 'out of time'
 
 /** Round 7: the content Worker's module, beside this file (bun and node with tsx both load a .ts worker by its URL). */
 const CONTENT_WORKER = new URL('./email-outbound-content-worker.ts', import.meta.url)
@@ -770,7 +757,7 @@ interface ContentJob {
   length: number
   message: Record<string, unknown>
   deadlineMs: number
-  resolve: (value: ContentResult | null | typeof WORKERS_SPENT) => void
+  resolve: (value: ContentResult | null | typeof WORKERS_SPENT | typeof OUT_OF_TIME) => void
 }
 
 /**
@@ -796,7 +783,7 @@ class ContentWorkerHost {
   /** Round 8: how many Workers this host has started (a test reads it: one for many files). */
   started = 0
 
-  run(owned: ArrayBuffer, length: number, message: Record<string, unknown>, deadlineMs: number): Promise<ContentResult | null | typeof WORKERS_SPENT> {
+  run(owned: ArrayBuffer, length: number, message: Record<string, unknown>, deadlineMs: number): Promise<ContentResult | null | typeof WORKERS_SPENT | typeof OUT_OF_TIME> {
     return new Promise((resolve) => {
       const id = this.nextId++
       this.queue.push({ id, owned, length, message: { ...message, id, buffer: owned, length }, deadlineMs, resolve })
@@ -845,7 +832,7 @@ class ContentWorkerHost {
         job.resolve(worker)
         continue
       }
-      const timer = setTimeout(() => this.fail(), job.deadlineMs)
+      const timer = setTimeout(() => this.fail(OUT_OF_TIME), job.deadlineMs)
       this.current = { job, timer }
       try {
         worker.postMessage(job.message, [job.owned])
@@ -875,13 +862,13 @@ class ContentWorkerHost {
   }
 
   /** Past the deadline, an error, an exit or a bad reply: the running job is refused and the Worker replaced. */
-  private fail(): void {
+  private fail(outcome: null | typeof OUT_OF_TIME = null): void {
     this.retire()
     const current = this.current
     if (current !== null) {
       clearTimeout(current.timer)
       this.current = null
-      current.job.resolve(null)
+      current.job.resolve(outcome)
     }
     this.pump()
   }
@@ -915,17 +902,21 @@ export function outboundContentWorkersStarted(url: URL = CONTENT_WORKER): number
 /**
  * Round 7: the content stage of one file, in a worker thread the main thread never waits on: the bytes are transferred
  * to it (`owned` is the file's own buffer, read by this file, so nothing else holds it), and its verdict comes back with
- * the bytes. Null (refused) when it cannot start, errs, exits, or replies with anything that does not parse, and when it
- * is still running at the deadline: then it is terminated. Round 8: on the one long lived Worker
+ * the bytes. Null (refused) when it cannot start, errs, exits, or replies with anything that does not parse. OUT_OF_TIME
+ * (refused) when it is still running at the deadline: then it is terminated. Round 8: on the one long lived Worker
  * (ContentWorkerHost), under a deadline that grows with the file (outboundContentDeadlineMs).
  */
-function contentInWorker(owned: ArrayBuffer, length: number, type: ContentType, name: string, ctx: OutboundFileCtx): Promise<ContentResult | null | typeof WORKERS_SPENT> {
+function contentInWorker(owned: ArrayBuffer, length: number, type: ContentType, name: string, ctx: OutboundFileCtx): Promise<ContentResult | null | typeof WORKERS_SPENT | typeof OUT_OF_TIME> {
   const secrets = (ctx.secrets ?? []).filter((secret): secret is string => typeof secret === 'string')
   // Round 9: the backstop, after the Worker's own budget (which the Worker sizes from the file and its words, or a
   // test fixes with ctx.officeReadMs).
-  const deadlineMs = outboundContentHardDeadlineMs(type, length)
   const message: Record<string, unknown> = { type, name, secrets }
-  if (typeof ctx.officeReadMs === 'number') message.budgetMs = ctx.officeReadMs
+  let deadlineMs = outboundContentHardDeadlineMs(type, length)
+  if (typeof ctx.officeReadMs === 'number') {
+    message.budgetMs = ctx.officeReadMs
+    // A fixed budget keeps the rule that the hard deadline ends 3 s after the Worker's own budget.
+    deadlineMs = Math.max(deadlineMs, ctx.officeReadMs + 3000)
+  }
   return contentHost(ctx.contentWorker ?? CONTENT_WORKER).run(owned, length, message, deadlineMs)
 }
 
@@ -936,14 +927,29 @@ function contentInWorker(owned: ArrayBuffer, length: number, type: ContentType, 
 const outboundSafetyStop = (path: string): string =>
   `${shown(path)} is not attached for now: too many files could not be checked since this agent started, so no text, Word or Excel file is attached until the agent is restarted (a safety stop; nothing was found in this file).`
 
+/**
+ * The file's check ran out of time, by the Worker's budget or the hard deadline. Still refused, with no "never": it may
+ * go on another try, when it is checked to the end. It says nothing about what the check looks for.
+ */
+const outboundOutOfTime = (path: string): string =>
+  `${shown(path)} took too long to check, so it is not attached this time. Try again in a few minutes.`
+
+/** The sentence for a file whose bytes are not the type its name says. */
+const notThatType = (path: string, type: EmailFileType): string =>
+  `${shown(path)} is not really a ${TYPE_LABEL[type]} file (its contents say otherwise), so it is not attached.`
+
 /** Round 7: the sentence for what the content stage found, or null when the file may go. */
-function contentSentence(verdict: ContentVerdict, path: string): string | null {
+function contentSentence(verdict: ContentVerdict, path: string, type: EmailFileType): string | null {
   const name = shown(path)
   switch (verdict.kind) {
     case 'ok':
       return null
+    case 'not_type':
+      return notThatType(path, type)
     case 'unsafe':
       return `${name} could not be read safely, so it is never attached.`
+    case 'over_budget':
+      return outboundOutOfTime(path)
     case 'unread':
       return `${name} could not be read to check it for a password or key, so it is not attached.`
     case 'table':
@@ -970,10 +976,30 @@ function baseName(path: string): string {
   return parts[parts.length - 1] ?? ''
 }
 
-/** The same file, by device and file number where the system gives them (a zero is none), else by size. */
-function sameFileAs(a: OutboundStat, b: OutboundStat): boolean {
-  const known = (v: unknown) => v !== undefined && String(v) !== '0'
-  return known(a.ino) && known(b.ino) ? String(a.ino) === String(b.ino) && String(a.dev) === String(b.dev) : a.size === b.size
+/** A number the system gave (a device or file number, a birth time): one left out, or a zero, is unknown. */
+const known = (v: unknown): boolean => v !== undefined && v !== null && String(v) !== '0'
+
+/** A time the system gave: one left out is unknown (a zero is a time, the start of 1970). */
+const givenTime = (v: unknown): boolean => v !== undefined && v !== null
+
+/** Both sides gave the value and it is the same; an unknown value is never a match. */
+const bothSame = (given: (v: unknown) => boolean, x: unknown, y: unknown): boolean => given(x) && given(y) && String(x) === String(y)
+
+/**
+ * The same file. A device or file number that both sides gave and that differs means another file. With both numbers
+ * known on both sides and equal, it is the same file. Otherwise at least one number is unknown, and the size, the
+ * modified time and the change time in ns must all be given and equal, and the birth time too where both sides give
+ * one (Linux gives a zero when it has none). Reading a file changes none of these, so an unchanged file on a drive
+ * that reports no file number still goes; the access time is not compared, as reading changes it.
+ */
+function sameFileAs(a: ReadStat, b: ReadStat): boolean {
+  for (const key of ['dev', 'ino'] as const) {
+    if (known(a[key]) && known(b[key]) && String(a[key]) !== String(b[key])) return false
+  }
+  if (bothSame(known, a.dev, b.dev) && bothSame(known, a.ino, b.ino)) return true
+  if (a.size !== b.size) return false
+  if (!bothSame(givenTime, a.mtimeNs, b.mtimeNs) || !bothSame(givenTime, a.ctimeNs, b.ctimeNs)) return false
+  return !(known(a.birthtimeNs) && known(b.birthtimeNs)) || String(a.birthtimeNs) === String(b.birthtimeNs)
 }
 
 /**
@@ -981,7 +1007,7 @@ function sameFileAs(a: OutboundStat, b: OutboundStat): boolean {
  * name the very file the handle holds. A parent folder swapped for a junction after the first realpath leads both the
  * lstat and the open into the new place, so the handle check agrees with itself; this second look does not.
  */
-async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, opened: OutboundStat, realCtx: OutboundFileCtx): Promise<boolean> {
+async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, opened: ReadStat, realCtx: OutboundFileCtx): Promise<boolean> {
   let again: string
   try {
     const given = expandHome(path, ctx.home ?? homedir())
@@ -990,9 +1016,9 @@ async function stillLeadsTo(fs: OutboundFs, path: string, ctx: OutboundFileCtx, 
     return false
   }
   if (lexical(again, realCtx).kind !== 'ok') return false
-  let seen: OutboundStat
+  let seen: ReadStat
   try {
-    seen = await fs.lstat(again)
+    seen = readStat(await fs.lstat(again, FILE_NUMBERS_AS_BIGINT))
   } catch {
     return false
   }
@@ -1046,17 +1072,13 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   // named invoice.pdf to passport.pdf shows passport.pdf; a short 8.3 or other cased spelling shows the real name).
   const name = baseName(real)
   // Step 4: a regular file, its size, its type by name and then by its bytes.
-  let stat: OutboundStat
+  let stat: ReadStat
   try {
-    stat = await fs.lstat(real)
+    stat = readStat(await fs.lstat(real, FILE_NUMBERS_AS_BIGINT))
   } catch {
     return { ok: false, error: notFound }
   }
   if (!stat.isFile()) return { ok: false, error: `${shown(path)} is not a regular file, so it is not attached.` }
-  // mailharden 2: a second name of a file (a hard link, which an ordinary user can make) passes every path rule, since
-  // realpath answers each name as its own; the file may also live in a key folder. Read here and again on the handle.
-  const hardLinked = `${shown(path)} has more than one name (a hard link), so it is not attached.`
-  if (moreThanOneName(stat)) return { ok: false, error: hardLinked }
   const tooBig = (size: number) =>
     `${shown(path)} is ${megabytes(size)} MB; one email can carry at most ${AGENT_EMAIL_OUTBOUND_MAX_BYTES / MB} MB of files, so it is not attached.`
   if (stat.size > AGENT_EMAIL_OUTBOUND_MAX_BYTES) return { ok: false, error: tooBig(stat.size) }
@@ -1073,23 +1095,19 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   let bytes: Uint8Array
   let handle: OutboundHandle
   try {
-    // mailharden 3: never blocking where the platform can say so, so a FIFO swapped in after the lstat cannot hang it.
-    handle = await fs.open(real, outboundOpenFlags())
+    handle = await fs.open(real, 'r')
   } catch {
     return { ok: false, error: notFound }
   }
   try {
-    // The handle must be the file just checked: a swap between the stat and the open is refused, and so is anything
-    // but a regular file (a FIFO), before a byte is read.
-    const opened = await handle.stat()
+    // The handle must be the file just checked: a swap between the stat and the open is refused.
+    const opened = readStat(await handle.stat(FILE_NUMBERS_AS_BIGINT))
     const changed = `${shown(path)} changed while HOAI read it, so it is not attached.`
-    // Compared by device and file number where the system gives them (a zero is none), else by size.
+    // Compared by device and file number where the system gives both (a zero is none), else by size and times (sameFileAs).
     const sameFile = sameFileAs(stat, opened)
     if (!opened.isFile() || !sameFile) {
       return { ok: false, error: changed }
     }
-    // mailharden 2: the count of the open file itself (fstat), so a second name made after the lstat is caught too.
-    if (moreThanOneName(opened)) return { ok: false, error: hardLinked }
     // Final pre push fix: and the path, resolved again, still leads to this very file through no refused place.
     if (!(await stillLeadsTo(fs, path, ctx, opened, realCtx))) return { ok: false, error: changed }
     if (opened.size > AGENT_EMAIL_OUTBOUND_MAX_BYTES) return { ok: false, error: tooBig(opened.size) }
@@ -1109,19 +1127,22 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   } finally {
     await handle.close().catch(() => {})
   }
-  if (!isType(bytes, type)) {
-    return { ok: false, error: `${shown(path)} is not really a ${TYPE_LABEL[type]} file (its contents say otherwise), so it is not attached.` }
-  }
-  // Round 7: the content stage (a text file's header and whole text, a Word or Excel file's rows and words, and every
-  // check on them) runs in the content Worker under a hard deadline; the steps above stay on this thread. A picture
-  // or a PDF has no words read here.
+  // A text file's type check (clean UTF-8 text, lib/email-clean-text.ts) reads and decodes the whole file, tens of ms
+  // for a large one, so it is not run on this thread: the content Worker runs it first, before any other check and
+  // whatever the budget, and answers not_type, which gets this same sentence. Every other type is read off its first
+  // bytes or its zip directory, under small caps, here.
+  if (type !== 'text' && !isType(bytes, type)) return { ok: false, error: notThatType(path, type) }
+  // Round 7: the content stage (a text file's type check, header and whole text, a Word or Excel file's rows and words,
+  // and every check on them) runs in the content Worker under a hard deadline; the steps above stay on this thread. A
+  // picture or a PDF has no words read here.
   if (type === 'text' || type === 'docx' || type === 'xlsx') {
     // `bytes` is a view, at offset 0, of the buffer allocated above for this read alone: it is transferred, not copied.
     const checked = await contentInWorker(bytes.buffer as ArrayBuffer, bytes.length, type, name, ctx)
     if (checked === WORKERS_SPENT) return { ok: false, error: outboundSafetyStop(path) }
+    if (checked === OUT_OF_TIME) return { ok: false, error: outboundOutOfTime(path) }
     if (checked === null) return { ok: false, error: `${shown(path)} could not be read safely, so it is never attached.` }
     bytes = checked.bytes
-    const why = contentSentence(checked.verdict, path)
+    const why = contentSentence(checked.verdict, path, type)
     if (why !== null) return { ok: false, error: why }
   }
   return { ok: true, file: { path, realPath: real, name, type, mime: TYPE_MIME[type], size: bytes.length, bytes } }

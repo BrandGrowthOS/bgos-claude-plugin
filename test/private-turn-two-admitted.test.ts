@@ -401,7 +401,7 @@ test('control: another person\'s wake admitted in the same turn never lets the o
   assert.deepEqual(host.begins, [ADMITTED(host.session), ADMITTED(host.session)])
   assert.equal(host.privateCall(), null, 'the owner\'s marker refuses once another person was admitted after it')
   b.mark()
-  assert.deepEqual(host.privateCall()?.headers, { 'X-BGOS-Acting-User': 'user_stranger42' }, 'only the later sender, never the owner')
+  assert.equal(host.privateCall(), null, 'the later sender cannot authorize a mixed turn either')
 })
 
 // Two wakes of the owner in two chats are one turn since 0.71.3 (c09e214e, test/private-turn-owner-authority.test.ts);
@@ -466,7 +466,7 @@ function bareTracker(t: any) {
   const deliver = (fireKey: string | null, chatId = '5001') => tracker.deliver({ content: `card ${randomUUID()}`, actingUserId: OWNER, chatId, fireKey })
   const begin = (prompt: string, sessionId = 'session-a') => tracker.begin({ prompt, sessionId, promptId: randomUUID() })
   const mark = (prompt: string, sessionId = 'session-a') =>
-    writePrivateJson(markerPaths[0]!, { schemaVersion: 1, turnId: randomUUID(), sessionId, promptHash: privatePromptHash(prompt), live: true })
+    writePrivateJson(markerPaths[0]!, { schemaVersion: 1, turnId: randomUUID(), sessionId, promptHash: privatePromptHash(prompt), live: true, rawCard: false })
   const current = () => tracker.current({ markerPaths })
   return { tracker, ledger, revokes, deliver, begin, mark, current }
 }

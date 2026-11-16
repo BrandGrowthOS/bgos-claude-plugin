@@ -1,0 +1,1919 @@
+TAP version 13
+# Subtest: hole 1: the reconnect skip
+    # Subtest: rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first
+    ok 1 - rows missed around a deploy, then a live message beats the catch up read: every row once, oldest first
+      ---
+      duration_ms: 8346.551375
+      type: 'test'
+      ...
+    # Subtest: the catch up read fails, then a live message: the rows under it are still read, every row once
+    ok 2 - the catch up read fails, then a live message: the rows under it are still read, every row once
+      ---
+      duration_ms: 11480.78425
+      type: 'test'
+      ...
+    # Subtest: the read a live message waits for fails: the message goes through, and the rows under it still arrive, each once
+    ok 3 - the read a live message waits for fails: the message goes through, and the rows under it still arrive, each once
+      ---
+      duration_ms: 12074.769459
+      type: 'test'
+      ...
+    # Subtest: a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message
+    ok 4 - a read that started before the socket came back is not the catch up: rows it could not see still arrive before a live message
+      ---
+      duration_ms: 17874.904208
+      type: 'test'
+      ...
+    # Subtest: a live message does not overtake one that still waits for a read
+    ok 5 - a live message does not overtake one that still waits for a read
+      ---
+      duration_ms: 11381.106875
+      type: 'test'
+      ...
+    # Subtest: a daemon that stood down and took the lock back: a row of the passive spell goes before the next live message
+    ok 6 - a daemon that stood down and took the lock back: a row of the passive spell goes before the next live message
+      ---
+      duration_ms: 14436.87725
+      type: 'test'
+      ...
+    # Subtest: a live message behind a failed boot read is framed live, and the rows under it as backlog
+    ok 7 - a live message behind a failed boot read is framed live, and the rows under it as backlog
+      ---
+      duration_ms: 3919.32375
+      type: 'test'
+      ...
+    1..7
+ok 1 - hole 1: the reconnect skip
+  ---
+  duration_ms: 26798.107834
+  type: 'suite'
+  ...
+# Subtest: the healthy path stays as it was
+    # Subtest: a chat caught up on this connection: a live message goes straight over the socket, and costs no read
+    ok 1 - a chat caught up on this connection: a live message goes straight over the socket, and costs no read
+      ---
+      duration_ms: 6112.339042
+      type: 'test'
+      ...
+    1..1
+ok 2 - the healthy path stays as it was
+  ---
+  duration_ms: 6136.774375
+  type: 'suite'
+  ...
+# Subtest: hole 2: the newest 50
+    # Subtest: a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat
+    ok 1 - a deploy with more than 50 missed rows in each of several chats: every row once, oldest first, in every chat
+      ---
+      duration_ms: 16026.981333
+      type: 'test'
+      ...
+    # Subtest: the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog
+    ok 2 - the boot read: 120 rows above a persisted cursor all arrive once, oldest first, framed as backlog
+      ---
+      duration_ms: 5283.944667
+      type: 'test'
+      ...
+    # Subtest: the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row
+    ok 3 - the limit is 50 rows of any sender: 60 rows of owner and agent turns lose no owner row
+      ---
+      duration_ms: 10544.885875
+      type: 'test'
+      ...
+    # Subtest: a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once
+    ok 4 - a chat with open buttons, which every poll reads in full: 120 missed rows all arrive once
+      ---
+      duration_ms: 11371.458083
+      type: 'test'
+      ...
+    # Subtest: an idle chat with a long history costs one conditional read: no page below the cursor, ever
+    ok 5 - an idle chat with a long history costs one conditional read: no page below the cursor, ever
+      ---
+      duration_ms: 13822.881792
+      type: 'test'
+      ...
+    1..5
+ok 3 - hole 2: the newest 50
+  ---
+  duration_ms: 24594.381834
+  type: 'suite'
+  ...
+# Subtest: hole 3: a chat that started empty
+    # Subtest: empty at its first read, then 120 rows: every row once, oldest first
+    ok 1 - empty at its first read, then 120 rows: every row once, oldest first
+      ---
+      duration_ms: 7393.654833
+      type: 'test'
+      ...
+    # Subtest: empty at its first read: an agent row among the rows does not hide the rows under it
+    ok 2 - empty at its first read: an agent row among the rows does not hide the rows under it
+      ---
+      duration_ms: 13726.443167
+      type: 'test'
+      ...
+    # Subtest: a group empty at its first read, more than 10 rows land while the daemon is down: not capped at the newest 10
+    ok 3 - a group empty at its first read, more than 10 rows land while the daemon is down: not capped at the newest 10
+      ---
+      duration_ms: 8288.353584
+      type: 'test'
+      ...
+    # Subtest: a chat this daemon has never read: 120 unanswered rows above a long answered history, and the walk stops at the reply
+    ok 4 - a chat this daemon has never read: 120 unanswered rows above a long answered history, and the walk stops at the reply
+      ---
+      duration_ms: 3734.045834
+      type: 'test'
+      ...
+    # Subtest: a genuine first install: 60 recent rows above 300 dormant ones, only the recent arrive, and the walk stops at the window
+    ok 5 - a genuine first install: 60 recent rows above 300 dormant ones, only the recent arrive, and the walk stops at the window
+      ---
+      duration_ms: 3866.404625
+      type: 'test'
+      ...
+    # Subtest: a group this agent is added to mid run, with 300 rows of history: the newest 10, and no walk through the rest
+    ok 6 - a group this agent is added to mid run, with 300 rows of history: the newest 10, and no walk through the rest
+      ---
+      duration_ms: 15282.990208
+      type: 'test'
+      ...
+    1..6
+ok 4 - hole 3: a chat that started empty
+  ---
+  duration_ms: 26410.966542
+  type: 'suite'
+  ...
+# Subtest: hole 4: a row the server never pushes
+    # Subtest: a live message right after it, no outage: it still reaches the agent, once, on the next read
+    ok 1 - a live message right after it, no outage: it still reaches the agent, once, on the next read
+      ---
+      duration_ms: 21740.771125
+      type: 'test'
+      ...
+    # Subtest: a typed permission answer does not move the place over rows under it: they still arrive, once, and the answer itself never does
+    ok 2 - a typed permission answer does not move the place over rows under it: they still arrive, once, and the answer itself never does
+      ---
+      duration_ms: 16545.745292
+      type: 'test'
+      ...
+    1..2
+ok 5 - hole 4: a row the server never pushes
+  ---
+  duration_ms: 21741.012334
+  type: 'suite'
+  ...
+# Subtest: a reconnect or a failure in the middle of a page
+    # Subtest: the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first
+    ok 1 - the socket drops and comes back while an older page is in flight, a live message lands: every row once, oldest first
+      ---
+      duration_ms: 10995.957
+      type: 'test'
+      ...
+    # Subtest: an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page
+    ok 2 - an older page fails: nothing is lost or repeated, and the next read starts over without a validator on any page
+      ---
+      duration_ms: 19689.492083
+      type: 'test'
+      ...
+    # Subtest: the daemon restarts while an older page is in flight: every row once, oldest first, across both lives
+    ok 3 - the daemon restarts while an older page is in flight: every row once, oldest first, across both lives
+      ---
+      duration_ms: 19321.54075
+      type: 'test'
+      ...
+    # Subtest: a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk
+    ok 4 - a read that starts during a walk is not answered 304 by the walk's first page: a live message after it does not overtake the walk
+      ---
+      duration_ms: 13460.124167
+      type: 'test'
+      ...
+    1..4
+ok 6 - a reconnect or a failure in the middle of a page
+  ---
+  duration_ms: 24456.597208
+  type: 'suite'
+  ...
+# Subtest: what a long read must not break
+    # Subtest: a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh
+    ok 1 - a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh
+      ---
+      duration_ms: 36248.526959
+      type: 'test'
+      ...
+    # Subtest: a daemon that stands down during a walk reads no further page and delivers nothing
+    ok 2 - a daemon that stands down during a walk reads no further page and delivers nothing
+      ---
+      duration_ms: 20130.067334
+      type: 'test'
+      ...
+    # Subtest: a daemon that stands down during the last older page delivers nothing
+    ok 3 - a daemon that stands down during the last older page delivers nothing
+      ---
+      duration_ms: 19107.971458
+      type: 'test'
+      ...
+    # Subtest: a wake card that never fills does not pin the delivery cursor: the rows above it arrive once
+    ok 4 - a wake card that never fills does not pin the delivery cursor: the rows above it arrive once
+      ---
+      duration_ms: 14925.529
+      type: 'test'
+      ...
+    # Subtest: a wake card inside the newest page still waits for its body, and arrives once with it
+    ok 5 - a wake card inside the newest page still waits for its body, and arrives once with it
+      ---
+      duration_ms: 23414.931875
+      type: 'test'
+      ...
+    # Subtest: a drain of 600 rows in one chat does not make the daemon forget what it handed over in another
+    ok 6 - a drain of 600 rows in one chat does not make the daemon forget what it handed over in another
+      ---
+      duration_ms: 33592.255625
+      type: 'test'
+      ...
+    1..6
+ok 7 - what a long read must not break
+  ---
+  duration_ms: 67626.553083
+  type: 'suite'
+  ...
+# Subtest: every chat read asks the server whether older rows exist
+ok 8 - every chat read asks the server whether older rows exist
+  ---
+  duration_ms: 0.796
+  type: 'test'
+  ...
+# Subtest: an older page goes down from the page above and stays above the cursor
+ok 9 - an older page goes down from the page above and stays above the cursor
+  ---
+  duration_ms: 0.087375
+  type: 'test'
+  ...
+# Subtest: an older page of a first read has no lower bound: afterId 0 is no bound on the server
+ok 10 - an older page of a first read has no lower bound: afterId 0 is no bound on the server
+  ---
+  duration_ms: 0.05275
+  type: 'test'
+  ...
+# Subtest: the walk asks for the most the server will give in one page
+ok 11 - the walk asks for the most the server will give in one page
+  ---
+  duration_ms: 0.042791
+  type: 'test'
+  ...
+# Subtest: the server's hasMore is believed in both directions
+ok 12 - the server's hasMore is believed in both directions
+  ---
+  duration_ms: 0.058208
+  type: 'test'
+  ...
+# Subtest: with no hasMore (a backend from before \#700) a full page may have more and a short one does not
+ok 13 - with no hasMore (a backend from before \#700) a full page may have more and a short one does not
+  ---
+  duration_ms: 0.046459
+  type: 'test'
+  ...
+# Subtest: with a cursor the walk goes on until the rows touch it
+ok 14 - with a cursor the walk goes on until the rows touch it
+  ---
+  duration_ms: 0.071417
+  type: 'test'
+  ...
+# Subtest: hasMore alone never walks past the cursor: a long chat with an idle cursor costs one read
+ok 15 - hasMore alone never walks past the cursor: a long chat with an idle cursor costs one read
+  ---
+  duration_ms: 0.044584
+  type: 'test'
+  ...
+# Subtest: nothing older means no walk, whatever the cursor
+ok 16 - nothing older means no walk, whatever the cursor
+  ---
+  duration_ms: 0.053125
+  type: 'test'
+  ...
+# Subtest: a first read with no reply in hand keeps walking: older rows are owed
+ok 17 - a first read with no reply in hand keeps walking: older rows are owed
+  ---
+  duration_ms: 0.14325
+  type: 'test'
+  ...
+# Subtest: a first read stops at a real reply: everything older was handled
+ok 18 - a first read stops at a real reply: everything older was handled
+  ---
+  duration_ms: 0.099583
+  type: 'test'
+  ...
+# Subtest: an agent row with nothing known under it is not a reply yet: the next page says
+ok 19 - an agent row with nothing known under it is not a reply yet: the next page says
+  ---
+  duration_ms: 0.037541
+  type: 'test'
+  ...
+# Subtest: a proactive agent row does not stop the walk
+ok 20 - a proactive agent row does not stop the walk
+  ---
+  duration_ms: 0.04075
+  type: 'test'
+  ...
+# Subtest: a first read reaching rows below the first run gate stops: dormant history is not walked
+ok 21 - a first read reaching rows below the first run gate stops: dormant history is not walked
+  ---
+  duration_ms: 0.057083
+  type: 'test'
+  ...
+# Subtest: a group's first read stops once its history cap is full, and only then
+ok 22 - a group's first read stops once its history cap is full, and only then
+  ---
+  duration_ms: 0.065458
+  type: 'test'
+  ...
+# Subtest: rows from the group's listing on are not history and never fill its cap
+ok 23 - rows from the group's listing on are not history and never fill its cap
+  ---
+  duration_ms: 0.047416
+  type: 'test'
+  ...
+# Subtest: an empty wake card neither stops the walk nor counts
+ok 24 - an empty wake card neither stops the walk nor counts
+  ---
+  duration_ms: 0.039333
+  type: 'test'
+  ...
+# Subtest: no rows below what is owed means keep walking: the owed rows may start below this page
+ok 25 - no rows below what is owed means keep walking: the owed rows may start below this page
+  ---
+  duration_ms: 0.029458
+  type: 'test'
+  ...
+# Subtest: the walk's stop agrees with the selection: it stops exactly where more rows change nothing
+ok 26 - the walk's stop agrees with the selection: it stops exactly where more rows change nothing
+  ---
+  duration_ms: 0.929167
+  type: 'test'
+  ...
+# Subtest: a first read defers to the rule above through readNeedsOlderPage
+ok 27 - a first read defers to the rule above through readNeedsOlderPage
+  ---
+  duration_ms: 0.040875
+  type: 'test'
+  ...
+# Subtest: what a first read owes starts at the live floor, or just above a cursor another read moved
+ok 28 - what a first read owes starts at the live floor, or just above a cursor another read moved
+  ---
+  duration_ms: 0.05075
+  type: 'test'
+  ...
+# Subtest: a read the first page finishes costs nothing more and never starts the keepalive
+ok 29 - a read the first page finishes costs nothing more and never starts the keepalive
+  ---
+  duration_ms: 0.178375
+  type: 'test'
+  ...
+# Subtest: the walk returns every row once, oldest first, however many pages
+ok 30 - the walk returns every row once, oldest first, however many pages
+  ---
+  duration_ms: 0.682584
+  type: 'test'
+  ...
+# Subtest: a row the server repeats on an older page is taken once
+ok 31 - a row the server repeats on an older page is taken once
+  ---
+  duration_ms: 0.091125
+  type: 'test'
+  ...
+# Subtest: rows out of order on the first page do not fool the walk
+ok 32 - rows out of order on the first page do not fool the walk
+  ---
+  duration_ms: 0.067333
+  type: 'test'
+  ...
+# Subtest: the stop rule decides over every row held so far
+ok 33 - the stop rule decides over every row held so far
+  ---
+  duration_ms: 0.079416
+  type: 'test'
+  ...
+# Subtest: a server that ignores beforeId cannot spin the walk: it stops, says so, and keeps what it has
+ok 34 - a server that ignores beforeId cannot spin the walk: it stops, says so, and keeps what it has
+  ---
+  duration_ms: 49.236084
+  type: 'test'
+  ...
+# Subtest: an empty page that still claims more cannot spin the walk either
+ok 35 - an empty page that still claims more cannot spin the walk either
+  ---
+  duration_ms: 0.139416
+  type: 'test'
+  ...
+# Subtest: an empty last page is the normal end, not a failure to progress
+ok 36 - an empty last page is the normal end, not a failure to progress
+  ---
+  duration_ms: 0.067584
+  type: 'test'
+  ...
+# Subtest: a failed older page fails the walk: nothing is handed on and the keepalive ends
+ok 37 - a failed older page fails the walk: nothing is handed on and the keepalive ends
+  ---
+  duration_ms: 0.339042
+  type: 'test'
+  ...
+# Subtest: the cursor advance survives a read larger than a spread can carry
+ok 38 - the cursor advance survives a read larger than a spread can carry
+  ---
+  duration_ms: 631.15525
+  type: 'test'
+  ...
+# Subtest: peer origin rendering is byte-identical for WS and poll delivery
+ok 39 - peer origin rendering is byte-identical for WS and poll delivery
+  ---
+  duration_ms: 0.9025
+  type: 'test'
+  ...
+# Subtest: poll system rendering keeps the system marker and channel attributes
+ok 40 - poll system rendering keeps the system marker and channel attributes
+  ---
+  duration_ms: 0.276875
+  type: 'test'
+  ...
+# Subtest: a backend-framed group system message keeps exactly one marker
+ok 41 - a backend-framed group system message keeps exactly one marker
+  ---
+  duration_ms: 0.287917
+  type: 'test'
+  ...
+# Subtest: a quoted system marker inside raw text does not suppress the prefix
+ok 42 - a quoted system marker inside raw text does not suppress the prefix
+  ---
+  duration_ms: 0.186666
+  type: 'test'
+  ...
+# Subtest: plain user rendering adds no origin marker or sender type
+ok 43 - plain user rendering adds no origin marker or sender type
+  ---
+  duration_ms: 0.403583
+  type: 'test'
+  ...
+# Subtest: agent classification and self-authorship use structured origin
+ok 44 - agent classification and self-authorship use structured origin
+  ---
+  duration_ms: 0.328709
+  type: 'test'
+  ...
+# Subtest: poll, WS, and stream delivery all use the shared channel builder
+ok 45 - poll, WS, and stream delivery all use the shared channel builder
+  ---
+  duration_ms: 1.10375
+  type: 'test'
+  ...
+# Subtest: socket: a delivered human message gets one labelled replacement
+ok 46 - socket: a delivered human message gets one labelled replacement
+  ---
+  duration_ms: 1673.644958
+  type: 'test'
+  ...
+# Subtest: poll: a changed delivered row below the cursor gets one replacement
+ok 47 - poll: a changed delivered row below the cursor gets one replacement
+  ---
+  duration_ms: 1317.780375
+  type: 'test'
+  ...
+# Subtest: stream: finalized and edited updates share replacement dedup with socket and poll
+ok 48 - stream: finalized and edited updates share replacement dedup with socket and poll
+  ---
+  duration_ms: 672.161292
+  type: 'test'
+  ...
+# Subtest: a socket edit before delivery replaces the original words without an edit card
+ok 49 - a socket edit before delivery replaces the original words without an edit card
+  ---
+  duration_ms: 659.578334
+  type: 'test'
+  ...
+# Subtest: a pending edit also replaces an original first delivered by poll or stream
+ok 50 - a pending edit also replaces an original first delivered by poll or stream
+  ---
+  duration_ms: 1688.175667
+  type: 'test'
+  ...
+# Subtest: a sparse edit event uses the delivered human author
+ok 51 - a sparse edit event uses the delivered human author
+  ---
+  duration_ms: 750.719166
+  type: 'test'
+  ...
+# Subtest: edits share one claim while a notification is in flight and failures remain retryable
+ok 52 - edits share one claim while a notification is in flight and failures remain retryable
+  ---
+  duration_ms: 296.424875
+  type: 'test'
+  ...
+# Subtest: an older poll snapshot cannot undo a socket edit delivered during the read
+ok 53 - an older poll snapshot cannot undo a socket edit delivered during the read
+  ---
+  duration_ms: 435.859459
+  type: 'test'
+  ...
+# Subtest: timestamped edits can revert text and reject a stale replay
+ok 54 - timestamped edits can revert text and reject a stale replay
+  ---
+  duration_ms: 1085.079292
+  type: 'test'
+  ...
+# Subtest: review R4: socket rejects replayed B after C with identical timestamps
+ok 55 - review R4: socket rejects replayed B after C with identical timestamps
+  ---
+  duration_ms: 713.833375
+  type: 'test'
+  ...
+# Subtest: review R4: socket delivers a later edit and genuine revert with identical timestamps
+ok 56 - review R4: socket delivers a later edit and genuine revert with identical timestamps
+  ---
+  duration_ms: 706.3215
+  type: 'test'
+  ...
+# Subtest: review R4: socket rejects replayed B after C with microsecond timestamps
+ok 57 - review R4: socket rejects replayed B after C with microsecond timestamps
+  ---
+  duration_ms: 862.466208
+  type: 'test'
+  ...
+# Subtest: review R4: socket delivers a later edit and genuine revert with microsecond timestamps
+ok 58 - review R4: socket delivers a later edit and genuine revert with microsecond timestamps
+  ---
+  duration_ms: 422.4905
+  type: 'test'
+  ...
+# Subtest: review R4: poll rejects replayed B after C with identical timestamps
+ok 59 - review R4: poll rejects replayed B after C with identical timestamps
+  ---
+  duration_ms: 880.549792
+  type: 'test'
+  ...
+# Subtest: review R4: poll delivers a later edit and genuine revert with identical timestamps
+ok 60 - review R4: poll delivers a later edit and genuine revert with identical timestamps
+  ---
+  duration_ms: 755.921708
+  type: 'test'
+  ...
+# Subtest: review R4: poll rejects replayed B after C with microsecond timestamps
+ok 61 - review R4: poll rejects replayed B after C with microsecond timestamps
+  ---
+  duration_ms: 1111.810208
+  type: 'test'
+  ...
+# Subtest: review R4: poll delivers a later edit and genuine revert with microsecond timestamps
+ok 62 - review R4: poll delivers a later edit and genuine revert with microsecond timestamps
+  ---
+  duration_ms: 591.173875
+  type: 'test'
+  ...
+# Subtest: review R4: stream rejects replayed B after C with identical timestamps
+ok 63 - review R4: stream rejects replayed B after C with identical timestamps
+  ---
+  duration_ms: 1023.728458
+  type: 'test'
+  ...
+# Subtest: review R4: stream delivers a later edit and genuine revert with identical timestamps
+ok 64 - review R4: stream delivers a later edit and genuine revert with identical timestamps
+  ---
+  duration_ms: 401.602541
+  type: 'test'
+  ...
+# Subtest: review R4: stream rejects replayed B after C with microsecond timestamps
+ok 65 - review R4: stream rejects replayed B after C with microsecond timestamps
+  ---
+  duration_ms: 1330.04225
+  type: 'test'
+  ...
+# Subtest: review R4: stream delivers a later edit and genuine revert with microsecond timestamps
+ok 66 - review R4: stream delivers a later edit and genuine revert with microsecond timestamps
+  ---
+  duration_ms: 598.209
+  type: 'test'
+  ...
+# Subtest: edits of slash-looking text are quoted and never execute a daemon command
+ok 67 - edits of slash-looking text are quoted and never execute a daemon command
+  ---
+  duration_ms: 825.019417
+  type: 'test'
+  ...
+# Subtest: edits respect lane, assistant, stand-down and drain gates
+ok 68 - edits respect lane, assistant, stand-down and drain gates
+  ---
+  duration_ms: 753.101667
+  type: 'test'
+  ...
+# Subtest: an unknown old row stays behind the persisted cursor
+ok 69 - an unknown old row stays behind the persisted cursor
+  ---
+  duration_ms: 937.026917
+  type: 'test'
+  ...
+# Subtest: peer, email, system and consumed command rows never become human edits
+ok 70 - peer, email, system and consumed command rows never become human edits
+  ---
+  duration_ms: 4903.401291
+  type: 'test'
+  ...
+# Subtest: poll walks below the newest page to inspect a delivered human row
+ok 71 - poll walks below the newest page to inspect a delivered human row
+  ---
+  duration_ms: 894.260542
+  type: 'test'
+  ...
+# Subtest: a failed older page delivers no edits or new rows and does not move the cursor
+ok 72 - a failed older page delivers no edits or new rows and does not move the cursor
+  ---
+  duration_ms: 1184.410959
+  type: 'test'
+  ...
+# Subtest: a read started on an older socket epoch cannot mark the new connection caught up
+ok 73 - a read started on an older socket epoch cannot mark the new connection caught up
+  ---
+  duration_ms: 688.642625
+  type: 'test'
+  ...
+# Subtest: a person can revert to earlier words even when the backend omits edit timestamps
+ok 74 - a person can revert to earlier words even when the backend omits edit timestamps
+  ---
+  duration_ms: 934.420208
+  type: 'test'
+  ...
+# Subtest: an unchanged newer revision still prevents an older revision from undoing it
+ok 75 - an unchanged newer revision still prevents an older revision from undoing it
+  ---
+  duration_ms: 889.548542
+  type: 'test'
+  ...
+# Subtest: an edit during original poll or stream preparation is not lost
+ok 76 - an edit during original poll or stream preparation is not lost
+  ---
+  duration_ms: 2570.565209
+  type: 'test'
+  ...
+# Subtest: a queued edit is held after stand-down and can be retried after rearming
+ok 77 - a queued edit is held after stand-down and can be retried after rearming
+  ---
+  duration_ms: 417.77225
+  type: 'test'
+  ...
+# Subtest: human meeting messages retain their room and edits grant no new meeting turn
+ok 78 - human meeting messages retain their room and edits grant no new meeting turn
+  ---
+  duration_ms: 2316.37
+  type: 'test'
+  ...
+# Subtest: an edit can clear the text without being mistaken for an undelivered empty message
+ok 79 - an edit can clear the text without being mistaken for an undelivered empty message
+  ---
+  duration_ms: 719.912375
+  type: 'test'
+  ...
+# Subtest: a pending edit is used by the dedicated human meeting delivery
+ok 80 - a pending edit is used by the dedicated human meeting delivery
+  ---
+  duration_ms: 957.997541
+  type: 'test'
+  ...
+# Subtest: a pending poll edit retains its revision when it becomes the original delivery
+ok 81 - a pending poll edit retains its revision when it becomes the original delivery
+  ---
+  duration_ms: 1464.470667
+  type: 'test'
+  ...
+# Subtest: an edit uses the authoritative original actor and does not reuse its consumed fire identity
+ok 82 - an edit uses the authoritative original actor and does not reuse its consumed fire identity
+  ---
+  duration_ms: 1609.252959
+  type: 'test'
+  ...
+# Subtest: meeting edits retain the untracked private-tool boundary of their originals
+ok 83 - meeting edits retain the untracked private-tool boundary of their originals
+  ---
+  duration_ms: 731.3615
+  type: 'test'
+  ...
+# Subtest: review R1: a replayed unversioned B cannot roll C back or cause a restoring poll card
+ok 84 - review R1: a replayed unversioned B cannot roll C back or cause a restoring poll card
+  ---
+  duration_ms: 815.508167
+  type: 'test'
+  ...
+# Subtest: review R1: two trackers distinguish the same old text replay from an authoritative revert
+ok 85 - review R1: two trackers distinguish the same old text replay from an authoritative revert
+  ---
+  duration_ms: 0.401625
+  type: 'test'
+  ...
+# Subtest: review R1: a stale unversioned poll snapshot fetched after C is authoritatively reconciled
+ok 86 - review R1: a stale unversioned poll snapshot fetched after C is authoritatively reconciled
+  ---
+  duration_ms: 1067.4685
+  type: 'test'
+  ...
+# Subtest: review R1: stable message revisions reject replay even when edit timestamps are absent
+ok 87 - review R1: stable message revisions reject replay even when edit timestamps are absent
+  ---
+  duration_ms: 1439.70875
+  type: 'test'
+  ...
+# Subtest: review R2: a socket correction waits for this chat on the new epoch, independently of another tracker
+ok 88 - review R2: a socket correction waits for this chat on the new epoch, independently of another tracker
+  ---
+  duration_ms: 1628.395375
+  type: 'test'
+  ...
+# Subtest: review R2: poll catch-up delivers B before the later correction to A
+ok 89 - review R2: poll catch-up delivers B before the later correction to A
+  ---
+  duration_ms: 726.6515
+  type: 'test'
+  ...
+# Subtest: review R3: a confirmed message deletion rejects a delayed edit without affecting another tracker
+ok 90 - review R3: a confirmed message deletion rejects a delayed edit without affecting another tracker
+  ---
+  duration_ms: 1858.307875
+  type: 'test'
+  ...
+# Subtest: review R3: a deleted chat rejects late socket and stream edits
+ok 91 - review R3: a deleted chat rejects late socket and stream edits
+  ---
+  duration_ms: 1001.265583
+  type: 'test'
+  ...
+# Subtest: review R3: deletion clears a pending edit before original delivery by socket or poll
+ok 92 - review R3: deletion clears a pending edit before original delivery by socket or poll
+  ---
+  duration_ms: 1351.474
+  type: 'test'
+  ...
+# Subtest: review R3: deletion during an authoritative read cancels the queued correction
+ok 93 - review R3: deletion during an authoritative read cancels the queued correction
+  ---
+  duration_ms: 645.388792
+  type: 'test'
+  ...
+# Subtest: review R3: deletion during a transport handoff cannot rearm tracking or later edits
+ok 94 - review R3: deletion during a transport handoff cannot rearm tracking or later edits
+  ---
+  duration_ms: 1204.263625
+  type: 'test'
+  ...
+# Subtest: review R3: a legacy socket deletion creates the same tombstone
+ok 95 - review R3: a legacy socket deletion creates the same tombstone
+  ---
+  duration_ms: 543.473667
+  type: 'test'
+  ...
+# Subtest: review R3: deleting during the original poll handoff leaves no inbound tracking
+ok 96 - review R3: deleting during the original poll handoff leaves no inbound tracking
+  ---
+  duration_ms: 1091.576
+  type: 'test'
+  ...
+# Subtest: review R3: deleting during the original stream handoff leaves no inbound tracking
+ok 97 - review R3: deleting during the original stream handoff leaves no inbound tracking
+  ---
+  duration_ms: 1002.662417
+  type: 'test'
+  ...
+# Subtest: review R2: an already-running periodic read in the current epoch also holds a correction
+ok 98 - review R2: an already-running periodic read in the current epoch also holds a correction
+  ---
+  duration_ms: 946.399792
+  type: 'test'
+  ...
+# Subtest: review R1: pending revisions cannot overwrite a newer original and survive original delivery
+ok 99 - review R1: pending revisions cannot overwrite a newer original and survive original delivery
+  ---
+  duration_ms: 1199.24175
+  type: 'test'
+  ...
+# Subtest: review R1: a pending unversioned replay cannot overwrite a later authoritative poll row
+ok 100 - review R1: a pending unversioned replay cannot overwrite a later authoritative poll row
+  ---
+  duration_ms: 756.643334
+  type: 'test'
+  ...
+# Subtest: review privacy: an edited sign-in code is withheld from the model
+ok 101 - review privacy: an edited sign-in code is withheld from the model
+  ---
+  duration_ms: 1014.014334
+  type: 'test'
+  ...
+# Subtest: review R3: a deferred poll callback checks deletion before creating a notification
+ok 102 - review R3: a deferred poll callback checks deletion before creating a notification
+  ---
+  duration_ms: 671.188708
+  type: 'test'
+  ...
+# Subtest: review R3: a deferred stream callback checks deletion before creating a notification
+ok 103 - review R3: a deferred stream callback checks deletion before creating a notification
+  ---
+  duration_ms: 1103.168291
+  type: 'test'
+  ...
+# Subtest: review R3: a deferred socket callback checks deletion before creating a notification
+ok 104 - review R3: a deferred socket callback checks deletion before creating a notification
+  ---
+  duration_ms: 115.477291
+  type: 'test'
+  ...
+# Subtest: review R1: an unversioned replay received during original preparation is reconciled
+ok 105 - review R1: an unversioned replay received during original preparation is reconciled
+  ---
+  duration_ms: 584.268292
+  type: 'test'
+  ...
+# Subtest: review privacy: a pending sign-in code during poll preparation stays private
+ok 106 - review privacy: a pending sign-in code during poll preparation stays private
+  ---
+  duration_ms: 639.238833
+  type: 'test'
+  ...
+# Subtest: review privacy: a pending sign-in code during stream preparation stays private
+ok 107 - review privacy: a pending sign-in code during stream preparation stays private
+  ---
+  duration_ms: 968.082292
+  type: 'test'
+  ...
+# Subtest: review R1: pending unversioned replay is reconciled before a delayed socket original
+ok 108 - review R1: pending unversioned replay is reconciled before a delayed socket original
+  ---
+  duration_ms: 925.638583
+  type: 'test'
+  ...
+# Subtest: review privacy: a pending meeting sign-in code stays private
+ok 109 - review privacy: a pending meeting sign-in code stays private
+  ---
+  duration_ms: 922.212833
+  type: 'test'
+  ...
+# Subtest: review R1: stream originals preserve the raw row until pending replay reconciliation
+ok 110 - review R1: stream originals preserve the raw row until pending replay reconciliation
+  ---
+  duration_ms: 1185.37
+  type: 'test'
+  ...
+# Subtest: review R1: a replay arriving during the poll fetch cannot mask the authoritative row
+ok 111 - review R1: a replay arriving during the poll fetch cannot mask the authoritative row
+  ---
+  duration_ms: 1058.124917
+  type: 'test'
+  ...
+# Subtest: review R1: an empty stale stream original cannot hide a pending edited body
+ok 112 - review R1: an empty stale stream original cannot hide a pending edited body
+  ---
+  duration_ms: 957.328208
+  type: 'test'
+  ...
+# Subtest: losing the pairing lock stands the daemon down, it does not merely warn
+ok 113 - losing the pairing lock stands the daemon down, it does not merely warn
+  ---
+  duration_ms: 1.757708
+  type: 'test'
+  ...
+# Subtest: the poll tick refuses to forward while not armed
+ok 114 - the poll tick refuses to forward while not armed
+  ---
+  duration_ms: 0.347709
+  type: 'test'
+  ...
+# Subtest: the stand-down gate wraps every socket handler that acts for the pairing
+ok 115 - the stand-down gate wraps every socket handler that acts for the pairing
+  ---
+  duration_ms: 5.548458
+  type: 'test'
+  ...
+# Subtest: the wrapped set is exactly the handlers minus the transport ones
+ok 116 - the wrapped set is exactly the handlers minus the transport ones
+  ---
+  duration_ms: 1.915208
+  type: 'test'
+  ...
+# Subtest: the deleted agent notice is gated on arming by its own router, which reads channelArmed
+ok 117 - the deleted agent notice is gated on arming by its own router, which reads channelArmed
+  ---
+  duration_ms: 2.315208
+  type: 'test'
+  ...
+# Subtest: the poll tick reschedules itself from a finally, so standing down cannot kill the loop
+ok 118 - the poll tick reschedules itself from a finally, so standing down cannot kill the loop
+  ---
+  duration_ms: 0.739084
+  type: 'test'
+  ...
+# Subtest: the stand-down early return sits INSIDE the tick try, ahead of the finally
+ok 119 - the stand-down early return sits INSIDE the tick try, ahead of the finally
+  ---
+  duration_ms: 0.3045
+  type: 'test'
+  ...
+# Subtest: standing down does not disconnect the socket, so re-arming stays cheap
+ok 120 - standing down does not disconnect the socket, so re-arming stays cheap
+  ---
+  duration_ms: 0.301708
+  type: 'test'
+  ...
+# Subtest: the heartbeat is gated on lock OWNERSHIP, not on being armed
+ok 121 - the heartbeat is gated on lock OWNERSHIP, not on being armed
+  ---
+  duration_ms: 1.980125
+  type: 'test'
+  ...
+# Subtest: a failed re-arm gives the lock back instead of holding it deaf
+ok 122 - a failed re-arm gives the lock back instead of holding it deaf
+  ---
+  duration_ms: 0.306417
+  type: 'test'
+  ...
+# Subtest: the re-arm catches the shared cursor file up before it polls again
+ok 123 - the re-arm catches the shared cursor file up before it polls again
+  ---
+  duration_ms: 0.380458
+  type: 'test'
+  ...
+# Subtest: the four lock lifecycle lines name this daemon pid
+ok 124 - the four lock lifecycle lines name this daemon pid
+  ---
+  duration_ms: 0.637541
+  type: 'test'
+  ...
+# Subtest: an arm that lost the lock while it ran does not arm anyway
+ok 125 - an arm that lost the lock while it ran does not arm anyway
+  ---
+  duration_ms: 0.267625
+  type: 'test'
+  ...
+# Subtest: the delivery-loops latch is only undone when the loops were never built
+ok 126 - the delivery-loops latch is only undone when the loops were never built
+  ---
+  duration_ms: 1.013709
+  type: 'test'
+  ...
+# Subtest: a stand-down clears the heartbeat-write warning latch
+ok 127 - a stand-down clears the heartbeat-write warning latch
+  ---
+  duration_ms: 0.4395
+  type: 'test'
+  ...
+# Subtest: the once-per-spell ignore log is cleared on both edges of a passive spell
+ok 128 - the once-per-spell ignore log is cleared on both edges of a passive spell
+  ---
+  duration_ms: 0.396083
+  type: 'test'
+  ...
+# Subtest: the hook intake is started only inside the lock holder branch
+ok 129 - the hook intake is started only inside the lock holder branch
+  ---
+  duration_ms: 0.836792
+  type: 'test'
+  ...
+# Subtest: every stand-down stops the hook intake, and so does every exit
+ok 130 - every stand-down stops the hook intake, and so does every exit
+  ---
+  duration_ms: 16.272542
+  type: 'test'
+  ...
+# Subtest: every actingUser.noteInbound site notes the turn chat beside it
+ok 131 - every actingUser.noteInbound site notes the turn chat beside it
+  ---
+  duration_ms: 6.382
+  type: 'test'
+  ...
+# Subtest: the daemon never reads the owner’s Show technical details switch
+ok 132 - the daemon never reads the owner’s Show technical details switch
+  ---
+  duration_ms: 2.929125
+  type: 'test'
+  ...
+# Subtest: the Steps snapshot goes to the route BOTH auth modes accept
+ok 133 - the Steps snapshot goes to the route BOTH auth modes accept
+  ---
+  duration_ms: 0.344125
+  type: 'test'
+  ...
+# Subtest: the intake binds on PROOF: a delivered prompt, or the proven transcript
+ok 134 - the intake binds on PROOF: a delivered prompt, or the proven transcript
+  ---
+  duration_ms: 0.261916
+  type: 'test'
+  ...
+# Subtest: the turn’s chat is fixed at its prompt, not at whatever arrived last
+ok 135 - the turn’s chat is fixed at its prompt, not at whatever arrived last
+  ---
+  duration_ms: 0.144833
+  type: 'test'
+  ...
+# Subtest: a turn end AWAITS the card already on the wire before its final one
+ok 136 - a turn end AWAITS the card already on the wire before its final one
+  ---
+  duration_ms: 0.579083
+  type: 'test'
+  ...
+# Subtest: a 403 is read from the STATUS, never from the text of the error
+ok 137 - a 403 is read from the STATUS, never from the text of the error
+  ---
+  duration_ms: 0.188166
+  type: 'test'
+  ...
+# Subtest: the hook rail never sends assistantId to POST /messages
+ok 138 - the hook rail never sends assistantId to POST /messages
+  ---
+  duration_ms: 0.425125
+  type: 'test'
+  ...
+# Subtest: show_component refuses the host posted (activity) kinds
+ok 139 - show_component refuses the host posted (activity) kinds
+  ---
+  duration_ms: 0.082792
+  type: 'test'
+  ...
+# Subtest: NOT_MODIFIED is a distinct sentinel no real payload can equal
+ok 140 - NOT_MODIFIED is a distinct sentinel no real payload can equal
+  ---
+  duration_ms: 1.260375
+  type: 'test'
+  ...
+# Subtest: EtagCache: no validator before the first 200
+ok 141 - EtagCache: no validator before the first 200
+  ---
+  duration_ms: 0.128167
+  type: 'test'
+  ...
+# Subtest: EtagCache: records a validator and returns it for the next request
+ok 142 - EtagCache: records a validator and returns it for the next request
+  ---
+  duration_ms: 0.083084
+  type: 'test'
+  ...
+# Subtest: EtagCache: a 200 without an ETag header clears the stored validator
+ok 143 - EtagCache: a 200 without an ETag header clears the stored validator
+  ---
+  duration_ms: 0.043
+  type: 'test'
+  ...
+# Subtest: EtagCache: invalidate drops the validator so the next poll refetches
+ok 144 - EtagCache: invalidate drops the validator so the next poll refetches
+  ---
+  duration_ms: 0.051375
+  type: 'test'
+  ...
+# Subtest: EtagCache: bounded, evicts the oldest key beyond maxEntries
+ok 145 - EtagCache: bounded, evicts the oldest key beyond maxEntries
+  ---
+  duration_ms: 0.05025
+  type: 'test'
+  ...
+# Subtest: EtagCache: re-recording a key refreshes its recency
+ok 146 - EtagCache: re-recording a key refreshes its recency
+  ---
+  duration_ms: 0.054
+  type: 'test'
+  ...
+# Subtest: first poll (no cursor) is a FULL fetch without afterId
+ok 147 - first poll (no cursor) is a FULL fetch without afterId
+  ---
+  duration_ms: 0.100292
+  type: 'test'
+  ...
+# Subtest: subsequent polls pass afterId=<last seen id>
+ok 148 - subsequent polls pass afterId=<last seen id>
+  ---
+  duration_ms: 0.059542
+  type: 'test'
+  ...
+# Subtest: a chat with tracked unanswered inline buttons keeps FULL fetching
+ok 149 - a chat with tracked unanswered inline buttons keeps FULL fetching
+  ---
+  duration_ms: 0.079458
+  type: 'test'
+  ...
+# Subtest: the ETag cache key is per chat and stable across full and delta modes
+ok 150 - the ETag cache key is per chat and stable across full and delta modes
+  ---
+  duration_ms: 0.068125
+  type: 'test'
+  ...
+# Subtest: cursor advances to maxId when nothing is deferred
+ok 151 - cursor advances to maxId when nothing is deferred
+  ---
+  duration_ms: 0.073334
+  type: 'test'
+  ...
+# Subtest: cursor parks just below the lowest pending empty-system id
+ok 152 - cursor parks just below the lowest pending empty-system id
+  ---
+  duration_ms: 0.030166
+  type: 'test'
+  ...
+# Subtest: cursor never moves backward
+ok 153 - cursor never moves backward
+  ---
+  duration_ms: 0.027042
+  type: 'test'
+  ...
+# Subtest: poll window does not forward an own-authored user row
+ok 154 - poll window does not forward an own-authored user row
+  ---
+  duration_ms: 0.916125
+  type: 'test'
+  ...
+# Subtest: poll author filter fails open for null and missing provenance
+ok 155 - poll author filter fails open for null and missing provenance
+  ---
+  duration_ms: 0.044125
+  type: 'test'
+  ...
+# Subtest: poll author filter accepts snake case and only suppresses user rows
+ok 156 - poll author filter accepts snake case and only suppresses user rows
+  ---
+  duration_ms: 0.034584
+  type: 'test'
+  ...
+# Subtest: returned peer message id is registered in the forwarded set
+ok 157 - returned peer message id is registered in the forwarded set
+  ---
+  duration_ms: 0.052084
+  type: 'test'
+  ...
+# Subtest: returned message id claim ignores null and non-finite ids
+ok 158 - returned message id claim ignores null and non-finite ids
+  ---
+  duration_ms: 0.037625
+  type: 'test'
+  ...
+# Subtest: poll sequence: first full fetch, then deltas that only carry new rows
+ok 159 - poll sequence: first full fetch, then deltas that only carry new rows
+  ---
+  duration_ms: 0.161417
+  type: 'test'
+  ...
+# Subtest: scheduler wake-card body-fill still reaches the plugin under delta polling
+ok 160 - scheduler wake-card body-fill still reaches the plugin under delta polling
+  ---
+  duration_ms: 0.106167
+  type: 'test'
+  ...
+# Subtest: a fetch or processing error never advances the cursor (redelivery beats loss)
+ok 161 - a fetch or processing error never advances the cursor (redelivery beats loss)
+  ---
+  duration_ms: 0.107875
+  type: 'test'
+  ...
+# Subtest: cached-body callers reuse the last 200 body on a 304 (bgosGetCachedOn304 mirror)
+ok 162 - cached-body callers reuse the last 200 body on a 304 (bgosGetCachedOn304 mirror)
+  ---
+  duration_ms: 0.084708
+  type: 'test'
+  ...
+# Subtest: fast scope is the union of open-meeting chats and pending-permission chats
+ok 163 - fast scope is the union of open-meeting chats and pending-permission chats
+  ---
+  duration_ms: 0.065292
+  type: 'test'
+  ...
+# Subtest: fast scope is empty when nothing needs 2s reactivity
+ok 164 - fast scope is empty when nothing needs 2s reactivity
+  ---
+  duration_ms: 0.028875
+  type: 'test'
+  ...
+# Subtest: WS healthy + nothing fast: the cycle idles between full sweeps
+ok 165 - WS healthy + nothing fast: the cycle idles between full sweeps
+  ---
+  duration_ms: 0.052208
+  type: 'test'
+  ...
+# Subtest: the WS-healthy full sweep is 5 minutes (egress audit; was 60s)
+ok 166 - the WS-healthy full sweep is 5 minutes (egress audit; was 60s)
+  ---
+  duration_ms: 0.03575
+  type: 'test'
+  ...
+# Subtest: the sweep cadence is absolute, not a multiple of the base tick
+ok 167 - the sweep cadence is absolute, not a multiple of the base tick
+  ---
+  duration_ms: 0.039292
+  type: 'test'
+  ...
+# Subtest: an open meeting fast-polls THAT chat, not the whole list
+ok 168 - an open meeting fast-polls THAT chat, not the whole list
+  ---
+  duration_ms: 0.039458
+  type: 'test'
+  ...
+# Subtest: a pending permission fast-polls its chat between full sweeps
+ok 169 - a pending permission fast-polls its chat between full sweeps
+  ---
+  duration_ms: 0.027417
+  type: 'test'
+  ...
+# Subtest: WS down: full sweeps at 10s (base x5), NEVER the whole list at 2s
+ok 170 - WS down: full sweeps at 10s (base x5), NEVER the whole list at 2s
+  ---
+  duration_ms: 0.0355
+  type: 'test'
+  ...
+# Subtest: WS down + open meeting: the meeting chat still gets 2s ticks between sweeps
+ok 171 - WS down + open meeting: the meeting chat still gets 2s ticks between sweeps
+  ---
+  duration_ms: 0.032958
+  type: 'test'
+  ...
+# Subtest: boot state (lastFullCycleAt=0) always runs a full sweep first
+ok 172 - boot state (lastFullCycleAt=0) always runs a full sweep first
+  ---
+  duration_ms: 0.027459
+  type: 'test'
+  ...
+# Subtest: a tap is announced on the null -> answered transition
+ok 173 - a tap is announced on the null -> answered transition
+  ---
+  duration_ms: 0.081875
+  type: 'test'
+  ...
+# Subtest: polling the same answered message again NEVER re-announces it
+ok 174 - polling the same answered message again NEVER re-announces it
+  ---
+  duration_ms: 0.094584
+  type: 'test'
+  ...
+# Subtest: a first poll baselines but never replays a historic click
+ok 175 - a first poll baselines but never replays a historic click
+  ---
+  duration_ms: 0.043708
+  type: 'test'
+  ...
+# Subtest: an answered row we never saw unanswered is not announced
+ok 176 - an answered row we never saw unanswered is not announced
+  ---
+  duration_ms: 0.031625
+  type: 'test'
+  ...
+# Subtest: ask_user_input rows are never announced as clicks
+ok 177 - ask_user_input rows are never announced as clicks
+  ---
+  duration_ms: 0.035417
+  type: 'test'
+  ...
+# Subtest: a late answer to a tracked ask question is handed to the tracker
+ok 178 - a late answer to a tracked ask question is handed to the tracker
+  ---
+  duration_ms: 0.040167
+  type: 'test'
+  ...
+# Subtest: a tracked ask answered while the daemon was down is handed over on the first poll
+ok 179 - a tracked ask answered while the daemon was down is handed over on the first poll
+  ---
+  duration_ms: 0.029083
+  type: 'test'
+  ...
+# Subtest: user rows and option-less rows are ignored
+ok 180 - user rows and option-less rows are ignored
+  ---
+  duration_ms: 0.029916
+  type: 'test'
+  ...
+# Subtest: reconcileAlwaysOn cadence is 15 minutes (was 2)
+ok 181 - reconcileAlwaysOn cadence is 15 minutes (was 2)
+  ---
+  duration_ms: 0.032666
+  type: 'test'
+  ...
+# Subtest: server.ts polls chats through buildChatPollRequest (afterId delta path)
+ok 182 - server.ts polls chats through buildChatPollRequest (afterId delta path)
+  ---
+  duration_ms: 0.902792
+  type: 'test'
+  ...
+# Subtest: server.ts scopes the caller assistant header to opted-in GETs
+ok 183 - server.ts scopes the caller assistant header to opted-in GETs
+  ---
+  duration_ms: 0.421125
+  type: 'test'
+  ...
+# Subtest: server.ts filters self-authored poll rows through the tested predicate
+ok 184 - server.ts filters self-authored poll rows through the tested predicate
+  ---
+  duration_ms: 0.410375
+  type: 'test'
+  ...
+# Subtest: server.ts claims the message id returned by send_to_peer
+ok 185 - server.ts claims the message id returned by send_to_peer
+  ---
+  duration_ms: 0.487
+  type: 'test'
+  ...
+# Subtest: server.ts claims ids from both meeting send paths
+ok 186 - server.ts claims ids from both meeting send paths
+  ---
+  duration_ms: 0.708333
+  type: 'test'
+  ...
+# Subtest: server.ts advances the poll cursor through advanceCursor
+ok 187 - server.ts advances the poll cursor through advanceCursor
+  ---
+  duration_ms: 0.327917
+  type: 'test'
+  ...
+# Subtest: server.ts handles the NOT_MODIFIED sentinel at bgosGet call sites
+ok 188 - server.ts handles the NOT_MODIFIED sentinel at bgosGet call sites
+  ---
+  duration_ms: 0.332041
+  type: 'test'
+  ...
+# Subtest: server.ts schedules polls through planPollCycle and fastScopeChatIds
+ok 189 - server.ts schedules polls through planPollCycle and fastScopeChatIds
+  ---
+  duration_ms: 0.781709
+  type: 'test'
+  ...
+# Subtest: server.ts detects clicks through selectClickTransitions
+ok 190 - server.ts detects clicks through selectClickTransitions
+  ---
+  duration_ms: 0.1935
+  type: 'test'
+  ...
+# Subtest: server.ts registers NO inbound_click WS listener (single click path)
+ok 191 - server.ts registers NO inbound_click WS listener (single click path)
+  ---
+  duration_ms: 0.771875
+  type: 'test'
+  ...
+# Subtest: a WS reconnect catches up immediately, not on the next sweep
+ok 192 - a WS reconnect catches up immediately, not on the next sweep
+  ---
+  duration_ms: 0.292375
+  type: 'test'
+  ...
+# Subtest: server.ts reconciles always-on every RECONCILE_ALWAYS_ON_INTERVAL_MS
+ok 193 - server.ts reconciles always-on every RECONCILE_ALWAYS_ON_INTERVAL_MS
+  ---
+  duration_ms: 0.784333
+  type: 'test'
+  ...
+# Subtest: server.ts wires add_to_meeting: defined, handled, agent-attributed
+ok 194 - server.ts wires add_to_meeting: defined, handled, agent-attributed
+  ---
+  duration_ms: 0.4425
+  type: 'test'
+  ...
+# Subtest: activeButtonPromptChatIds: fresh prompts earn fast polling, newest first, stale ones and a backwards clock do not, and the set is capped
+ok 195 - activeButtonPromptChatIds: fresh prompts earn fast polling, newest first, stale ones and a backwards clock do not, and the set is capped
+  ---
+  duration_ms: 0.268541
+  type: 'test'
+  ...
+# Subtest: fastScopeChatIds unions button-prompt chats with meeting and permission chats, deduplicated
+ok 196 - fastScopeChatIds unions button-prompt chats with meeting and permission chats, deduplicated
+  ---
+  duration_ms: 0.067
+  type: 'test'
+  ...
+# Subtest: server.ts fast-polls a chat with a fresh inline-button prompt and stops when the tap lands in either lane or the daemon moves on
+ok 197 - server.ts fast-polls a chat with a fresh inline-button prompt and stops when the tap lands in either lane or the daemon moves on
+  ---
+  duration_ms: 105.97425
+  type: 'test'
+  ...
+# Subtest: actual tool admission refuses unresolved sender and passive daemon before private work
+ok 198 - actual tool admission refuses unresolved sender and passive daemon before private work
+  ---
+  duration_ms: 220.224084
+  type: 'test'
+  ...
+# Subtest: actual schedule create/list/cancel carry frozen recipient header; omitted chat is recipient chat
+ok 199 - actual schedule create/list/cancel carry frozen recipient header; omitted chat is recipient chat
+  ---
+  duration_ms: 371.313625
+  type: 'test'
+  ...
+# Subtest: all admitted message lanes use opaque private delivery identity and authoritative actor fields
+ok 200 - all admitted message lanes use opaque private delivery identity and authoritative actor fields
+  ---
+  duration_ms: 3.537208
+  type: 'test'
+  ...
+# Subtest: actual delivery actor expressions refuse legacy owner userId and user_id in every lane
+ok 201 - actual delivery actor expressions refuse legacy owner userId and user_id in every lane
+  ---
+  duration_ms: 25.770916
+  type: 'test'
+  ...
+# Subtest: every lane names the scheduled fire it delivers, with the same fields its actor comes from (0.68.4)
+ok 202 - every lane names the scheduled fire it delivers, with the same fields its actor comes from (0.68.4)
+  ---
+  duration_ms: 15.5255
+  type: 'test'
+  ...
+# Subtest: with no private turn hook registered the call is still refused, and says why
+ok 203 - with no private turn hook registered the call is still refused, and says why
+  ---
+  duration_ms: 2.036958
+  type: 'test'
+  ...
+# Subtest: a refused private call on a peer turn is counted with the tool name and the peer id, and is still refused
+ok 204 - a refused private call on a peer turn is counted with the tool name and the peer id, and is still refused
+  ---
+  duration_ms: 248.757167
+  type: 'test'
+  ...
+# Subtest: Data's review (M1): the reminder for the owner's own unanswered message is marked owner_inbound
+ok 205 - Data's review (M1): the reminder for the owner's own unanswered message is marked owner_inbound
+  ---
+  duration_ms: 233.477041
+  type: 'test'
+  ...
+# Subtest: Data's review control (M1): the reminder for a share recipient's, a peer agent's or an unknown sender's message carries no owner_inbound
+ok 206 - Data's review control (M1): the reminder for a share recipient's, a peer agent's or an unknown sender's message carries no owner_inbound
+  ---
+  duration_ms: 120.303709
+  type: 'test'
+  ...
+# Subtest: Data's review control (M1): a later message of someone else in the same chat replaces the owner's, so its reminder carries no owner_inbound
+ok 207 - Data's review control (M1): a later message of someone else in the same chat replaces the owner's, so its reminder carries no owner_inbound
+  ---
+  duration_ms: 5.303084
+  type: 'test'
+  ...
+# Subtest: Data's review (M1): every lane hands recordInbound the same actor it hands privateTurns.deliver
+ok 208 - Data's review (M1): every lane hands recordInbound the same actor it hands privateTurns.deliver
+  ---
+  duration_ms: 3.491541
+  type: 'test'
+  ...
+# Subtest: the steer contract hash matches the pin BGOS carries
+ok 209 - the steer contract hash matches the pin BGOS carries
+  ---
+  duration_ms: 0.930291
+  type: 'test'
+  ...
+# Subtest: the floor the app reads is not above this release
+ok 210 - the floor the app reads is not above this release
+  ---
+  duration_ms: 0.245875
+  type: 'test'
+  ...
+# Subtest: a running turn: the text first, marked, then a queue beat, then ONE Escape
+ok 211 - a running turn: the text first, marked, then a queue beat, then ONE Escape
+  ---
+  duration_ms: 1.00325
+  type: 'test'
+  ...
+# Subtest: the queue beat defaults to STEER_QUEUE_MS, under a second
+ok 212 - the queue beat defaults to STEER_QUEUE_MS, under a second
+  ---
+  duration_ms: 0.166333
+  type: 'test'
+  ...
+# Subtest: a held message delivered just before the steer is followed by the steer, and only then the Escape
+ok 213 - a held message delivered just before the steer is followed by the steer, and only then the Escape
+  ---
+  duration_ms: 0.130666
+  type: 'test'
+  ...
+# Subtest: an idle session: the text is delivered as a plain message, no key pressed, no marker
+ok 214 - an idle session: the text is delivered as a plain message, no key pressed, no marker
+  ---
+  duration_ms: 0.077375
+  type: 'test'
+  ...
+# Subtest: a failed interrupt after the text is delivered is reported, and the text is not delivered twice
+ok 215 - a failed interrupt after the text is delivered is reported, and the text is not delivered twice
+  ---
+  duration_ms: 0.220625
+  type: 'test'
+  ...
+# Subtest: a failed delivery presses nothing (an Escape with no steer queued is the bug)
+ok 216 - a failed delivery presses nothing (an Escape with no steer queued is the bug)
+  ---
+  duration_ms: 0.206292
+  type: 'test'
+  ...
+# Subtest: two steers at once press ONE Escape: they run in order and the second is inside the cooldown
+ok 217 - two steers at once press ONE Escape: they run in order and the second is inside the cooldown
+  ---
+  duration_ms: 0.119709
+  type: 'test'
+  ...
+# Subtest: after the cooldown a new steer presses again
+ok 218 - after the cooldown a new steer presses again
+  ---
+  duration_ms: 0.22025
+  type: 'test'
+  ...
+# Subtest: no Escape while the daemon is typing /compact or /goal itself, and no marker
+ok 219 - no Escape while the daemon is typing /compact or /goal itself, and no marker
+  ---
+  duration_ms: 0.091208
+  type: 'test'
+  ...
+# Subtest: the daemon's own typing waits for a decided press: pressDone resolves only after the Escape
+ok 220 - the daemon's own typing waits for a decided press: pressDone resolves only after the Escape
+  ---
+  duration_ms: 0.145709
+  type: 'test'
+  ...
+# Subtest: a pane that is gone: the text plainly, no marker, no press
+ok 221 - a pane that is gone: the text plainly, no marker, no press
+  ---
+  duration_ms: 0.08575
+  type: 'test'
+  ...
+# Subtest: a retry after a failed delivery delivers marked and presses once; a second retry never presses
+ok 222 - a retry after a failed delivery delivers marked and presses once; a second retry never presses
+  ---
+  duration_ms: 0.127291
+  type: 'test'
+  ...
+# Subtest: a message arriving during the queue beat is delivered before the Escape, so it joins the next turn
+ok 223 - a message arriving during the queue beat is delivered before the Escape, so it joins the next turn
+  ---
+  duration_ms: 0.095292
+  type: 'test'
+  ...
+# Subtest: a retried delivery of the same steer never presses a second time
+ok 224 - a retried delivery of the same steer never presses a second time
+  ---
+  duration_ms: 0.076583
+  type: 'test'
+  ...
+# Subtest: a message arriving behind an in-flight steer is delivered after its Escape, never before
+ok 225 - a message arriving behind an in-flight steer is delivered after its Escape, never before
+  ---
+  duration_ms: 0.070083
+  type: 'test'
+  ...
+# Subtest: with no steer in flight an ordinary message is delivered at once
+ok 226 - with no steer in flight an ordinary message is delivered at once
+  ---
+  duration_ms: 0.041167
+  type: 'test'
+  ...
+# Subtest: planSteer interrupts a fresh owner steer while a turn runs
+ok 227 - planSteer interrupts a fresh owner steer while a turn runs
+  ---
+  duration_ms: 0.065292
+  type: 'test'
+  ...
+# Subtest: planSteer interrupts when the hook rail cannot say (unknown)
+ok 228 - planSteer interrupts when the hook rail cannot say (unknown)
+  ---
+  duration_ms: 0.035916
+  type: 'test'
+  ...
+# Subtest: planSteer never interrupts an idle session
+ok 229 - planSteer never interrupts an idle session
+  ---
+  duration_ms: 0.025541
+  type: 'test'
+  ...
+# Subtest: planSteer never interrupts without a terminal
+ok 230 - planSteer never interrupts without a terminal
+  ---
+  duration_ms: 0.035375
+  type: 'test'
+  ...
+# Subtest: planSteer never lets a non owner interrupt the owner session
+ok 231 - planSteer never lets a non owner interrupt the owner session
+  ---
+  duration_ms: 0.029417
+  type: 'test'
+  ...
+# Subtest: planSteer never interrupts for a stale steer
+ok 232 - planSteer never interrupts for a stale steer
+  ---
+  duration_ms: 0.031125
+  type: 'test'
+  ...
+# Subtest: planSteer never interrupts another chat's running turn
+ok 233 - planSteer never interrupts another chat's running turn
+  ---
+  duration_ms: 0.027791
+  type: 'test'
+  ...
+# Subtest: planSteer never presses into a relayed permission prompt
+ok 234 - planSteer never presses into a relayed permission prompt
+  ---
+  duration_ms: 0.024417
+  type: 'test'
+  ...
+# Subtest: planSteer never interrupts with nothing to say
+ok 235 - planSteer never interrupts with nothing to say
+  ---
+  duration_ms: 0.025291
+  type: 'test'
+  ...
+# Subtest: isFreshSteer: inside the window, outside it, and unreadable
+ok 236 - isFreshSteer: inside the window, outside it, and unreadable
+  ---
+  duration_ms: 87.96125
+  type: 'test'
+  ...
+# Subtest: steerTurnState: hooks report live or idle, no hooks is unknown
+ok 237 - steerTurnState: hooks report live or idle, no hooks is unknown
+  ---
+  duration_ms: 0.120083
+  type: 'test'
+  ...
+# Subtest: the interrupt is ONE Escape key name, no literal text, no Enter
+ok 238 - the interrupt is ONE Escape key name, no literal text, no Enter
+  ---
+  duration_ms: 0.104375
+  type: 'test'
+  ...
+# Subtest: /steer routes to a steer whose delivery is the TEXT, from slash text
+ok 239 - /steer routes to a steer whose delivery is the TEXT, from slash text
+  ---
+  duration_ms: 0.553584
+  type: 'test'
+  ...
+# Subtest: a steer keeps what the channel put around its words (attachments, prefixes)
+ok 240 - a steer keeps what the channel put around its words (attachments, prefixes)
+  ---
+  duration_ms: 0.094291
+  type: 'test'
+  ...
+# Subtest: /steer routes from structured fields too
+ok 241 - /steer routes from structured fields too
+  ---
+  duration_ms: 0.072791
+  type: 'test'
+  ...
+# Subtest: a user command called /steer cannot shadow the daemon steer
+ok 242 - a user command called /steer cannot shadow the daemon steer
+  ---
+  duration_ms: 0.286333
+  type: 'test'
+  ...
+# Subtest: steer is advertised only when the daemon can interrupt
+ok 243 - steer is advertised only when the daemon can interrupt
+  ---
+  duration_ms: 0.124125
+  type: 'test'
+  ...
+# Subtest: a discovered /steer never enters the catalog (an install without tmux shows no steer)
+ok 244 - a discovered /steer never enters the catalog (an install without tmux shows no steer)
+  ---
+  duration_ms: 0.242625
+  type: 'test'
+  ...
+# Subtest: the steer card meta is all string, sparse and merged, marked and unmarked
+ok 245 - the steer card meta is all string, sparse and merged, marked and unmarked
+  ---
+  duration_ms: 0.212083
+  type: 'test'
+  ...
+# Subtest: server.ts routes poll, stream and ws delivery through the steer gate
+ok 246 - server.ts routes poll, stream and ws delivery through the steer gate
+  ---
+  duration_ms: 3.276125
+  type: 'test'
+  ...
+# Subtest: server.ts makes /compact and /goal typing wait for a decided steer press
+ok 247 - server.ts makes /compact and /goal typing wait for a decided steer press
+  ---
+  duration_ms: 3.155125
+  type: 'test'
+  ...
+# Subtest: a WS-shaped payload normalizes: text, files, senderType, session handle
+ok 248 - a WS-shaped payload normalizes: text, files, senderType, session handle
+  ---
+  duration_ms: 1.436792
+  type: 'test'
+  ...
+# Subtest: a poll-row-shaped payload (message envelope) normalizes identically
+ok 249 - a poll-row-shaped payload (message envelope) normalizes identically
+  ---
+  duration_ms: 0.130084
+  type: 'test'
+  ...
+# Subtest: a hydrated peer target keeps origin while the source stays assistant-authored
+ok 250 - a hydrated peer target keeps origin while the source stays assistant-authored
+  ---
+  duration_ms: 0.864583
+  type: 'test'
+  ...
+# Subtest: an explicit assistant sender wins over agent origin on a caller-side row
+ok 251 - an explicit assistant sender wins over agent origin on a caller-side row
+  ---
+  duration_ms: 0.06625
+  type: 'test'
+  ...
+# Subtest: chat and message ids fall back to the update row fields
+ok 252 - chat and message ids fall back to the update row fields
+  ---
+  duration_ms: 0.072667
+  type: 'test'
+  ...
+# Subtest: a payload with no resolvable message id returns null
+ok 253 - a payload with no resolvable message id returns null
+  ---
+  duration_ms: 0.043667
+  type: 'test'
+  ...
+# Subtest: answerPayload is surfaced for buttons_answered rows, both casings
+ok 254 - answerPayload is surfaced for buttons_answered rows, both casings
+  ---
+  duration_ms: 0.130292
+  type: 'test'
+  ...
+# Subtest: answerPayload CARRIES the tapper id off the raw answer, null aware, every key the reader knows
+ok 255 - answerPayload CARRIES the tapper id off the raw answer, null aware, every key the reader knows
+  ---
+  duration_ms: 0.182208
+  type: 'test'
+  ...
+# Subtest: a fresh user message forwards
+ok 256 - a fresh user message forwards
+  ---
+  duration_ms: 0.104291
+  type: 'test'
+  ...
+# Subtest: an assistant-authored row only advances cursors (reply boundary, 5.7)
+ok 257 - an assistant-authored row only advances cursors (reply boundary, 5.7)
+  ---
+  duration_ms: 0.086416
+  type: 'test'
+  ...
+# Subtest: a row at or under the per-chat cursor was handled in a previous run
+ok 258 - a row at or under the per-chat cursor was handled in a previous run
+  ---
+  duration_ms: 0.054666
+  type: 'test'
+  ...
+# Subtest: an empty system row is HELD, the wake-card two-phase park
+ok 259 - an empty system row is HELD, the wake-card two-phase park
+  ---
+  duration_ms: 0.046625
+  type: 'test'
+  ...
+# Subtest: an empty system row with files is a real message, not a hold
+ok 260 - an empty system row with files is a real message, not a hold
+  ---
+  duration_ms: 0.0595
+  type: 'test'
+  ...
+# Subtest: an id both transports already delivered only advances (dedup substrate)
+ok 261 - an id both transports already delivered only advances (dedup substrate)
+  ---
+  duration_ms: 0.041667
+  type: 'test'
+  ...
+# Subtest: an empty non-system row has nothing to forward
+ok 262 - an empty non-system row has nothing to forward
+  ---
+  duration_ms: 0.0365
+  type: 'test'
+  ...
+# Subtest: a finalized held row delivers AS the wake
+ok 263 - a finalized held row delivers AS the wake
+  ---
+  duration_ms: 0.064792
+  type: 'test'
+  ...
+# Subtest: a finalized held row that is STILL empty stays held
+ok 264 - a finalized held row that is STILL empty stays held
+  ---
+  duration_ms: 0.059
+  type: 'test'
+  ...
+# Subtest: a finalize for an undelivered row above the cursor delivers (parked wake)
+ok 265 - a finalize for an undelivered row above the cursor delivers (parked wake)
+  ---
+  duration_ms: 0.046666
+  type: 'test'
+  ...
+# Subtest: a finalized peer turn forwards without system framing
+ok 266 - a finalized peer turn forwards without system framing
+  ---
+  duration_ms: 0.0405
+  type: 'test'
+  ...
+# Subtest: a finalized unknown sender keeps the prior system fallback
+ok 267 - a finalized unknown sender keeps the prior system fallback
+  ---
+  duration_ms: 0.0555
+  type: 'test'
+  ...
+# Subtest: a finalize for an already-delivered row is an edit: advance only
+ok 268 - a finalize for an already-delivered row is an edit: advance only
+  ---
+  duration_ms: 0.036209
+  type: 'test'
+  ...
+# Subtest: an assistant stream-end finalize only advances
+ok 269 - an assistant stream-end finalize only advances
+  ---
+  duration_ms: 0.037291
+  type: 'test'
+  ...
+# Subtest: an unannounced answer forwards, tracked or not (the black hole is closed)
+ok 270 - an unannounced answer forwards, tracked or not (the black hole is closed)
+  ---
+  duration_ms: 0.077958
+  type: 'test'
+  ...
+# Subtest: an already-announced answer is skipped (single announce, both orders)
+ok 271 - an already-announced answer is skipped (single announce, both orders)
+  ---
+  duration_ms: 0.026917
+  type: 'test'
+  ...
+# Subtest: an ask_user_input row this daemon does not track is skipped
+ok 272 - an ask_user_input row this daemon does not track is skipped
+  ---
+  duration_ms: 0.028375
+  type: 'test'
+  ...
+# Subtest: a late answer to a tracked ask question goes to the ask tracker, not the floor
+ok 273 - a late answer to a tracked ask question goes to the ask tracker, not the floor
+  ---
+  duration_ms: 0.025875
+  type: 'test'
+  ...
+# Subtest: an ask answer the other transport already announced stays silent
+ok 274 - an ask answer the other transport already announced stays silent
+  ---
+  duration_ms: 0.026875
+  type: 'test'
+  ...
+# Subtest: the hydrated stream entry of a late ask answer resolves its message and chat
+ok 275 - the hydrated stream entry of a late ask answer resolves its message and chat
+  ---
+  duration_ms: 0.062541
+  type: 'test'
+  ...
+# Subtest: a permission callback resolves the pending verdict instead of forwarding
+ok 276 - a permission callback resolves the pending verdict instead of forwarding
+  ---
+  duration_ms: 0.0675
+  type: 'test'
+  ...
+# Subtest: an already-resolved permission callback is skipped
+ok 277 - an already-resolved permission callback is skipped
+  ---
+  duration_ms: 0.0225
+  type: 'test'
+  ...
+# Subtest: stream-first: the consumed baseline blocks the later poll announce
+ok 278 - stream-first: the consumed baseline blocks the later poll announce
+  ---
+  duration_ms: 0.148375
+  type: 'test'
+  ...
+# Subtest: poll-first: the announced set blocks the later stream replay
+ok 279 - poll-first: the announced set blocks the later stream replay
+  ---
+  duration_ms: 0.041042
+  type: 'test'
+  ...
+# Subtest: a never-baselined id announces exactly once through the stream
+ok 280 - a never-baselined id announces exactly once through the stream
+  ---
+  duration_ms: 0.036667
+  type: 'test'
+  ...
+# Subtest: every announced update kind maps to a handling class
+ok 281 - every announced update kind maps to a handling class
+  ---
+  duration_ms: 0.072708
+  type: 'test'
+  ...
+# Subtest: an unknown future kind is a logged no-op, never a throw
+ok 282 - an unknown future kind is a logged no-op, never a throw
+  ---
+  duration_ms: 0.022167
+  type: 'test'
+  ...
+# Subtest: stream inbound meta is all-string with absent optionals OMITTED
+ok 283 - stream inbound meta is all-string with absent optionals OMITTED
+  ---
+  duration_ms: 63.040666
+  type: 'test'
+  ...
+# Subtest: stream inbound meta carries the system and backlog markers as strings
+ok 284 - stream inbound meta carries the system and backlog markers as strings
+  ---
+  duration_ms: 0.179625
+  type: 'test'
+  ...
+# Subtest: stream inbound meta carries peer origin fields as strings
+ok 285 - stream inbound meta carries peer origin fields as strings
+  ---
+  duration_ms: 0.108458
+  type: 'test'
+  ...
+# Subtest: stream click meta is all-string and omits an absent custom_text
+ok 286 - stream click meta is all-string and omits an absent custom_text
+  ---
+  duration_ms: 0.112542
+  type: 'test'
+  ...
+1..286
+# tests 310
+# suites 7
+# pass 310
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 200668.027208

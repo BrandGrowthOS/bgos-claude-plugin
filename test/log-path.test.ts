@@ -20,11 +20,11 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { ensureLogDir, resolveLogPath } from '../lib/log-path.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const HOME = join('home', 'kc')
 
@@ -92,7 +92,7 @@ test('ensureLogDir asks mkdir for a recursive create of the log directory', () =
 })
 
 test('ensureLogDir with the default mkdir really creates the directory', () => {
-  const root = mkdtempSync(join(tmpdir(), 'log-path-'))
+  const root = scratchDir('log-path-')
   const logPath = join(root, '.bgos-agent', 'logs', 'bgos-plugin-x.log')
   ensureLogDir(logPath)
   assert.equal(existsSync(dirname(logPath)), true)

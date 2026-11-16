@@ -27,8 +27,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import {
@@ -44,6 +44,7 @@ import {
   shimPath,
 } from '../bin/hoai-browser-launch.mjs'
 import { resolveBunPath } from '../bin/bgos-launch.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const BIN = join(process.cwd(), 'bin')
 
@@ -485,7 +486,7 @@ test(
   'hoai-browser-creds prints exactly one JSON line for a pairing credentials file',
   { skip: bun ? false : 'bun is not installed on this machine, so the bun-only resolver script cannot be run here' },
   () => {
-    const dir = mkdtempSync(join(tmpdir(), 'hoai-creds-'))
+    const dir = scratchDir('hoai-creds-')
     const agentDir = join(dir, '.bgos-agent')
     mkdirSync(agentDir, { recursive: true })
     const credentialsPath = join(agentDir, 'credentials.json')

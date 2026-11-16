@@ -369,5 +369,5 @@ test('the daemon wires it: the root under home, the sweep at start and every 6 h
   // Every builder call on those lanes takes the saves: the poll's channel and
   // meeting card, the stream's channel, the socket's channel and meeting twin, the broadcast.
   assert.equal((SRC.match(/^\s+emailFileSaves(?:: (?:pollEmailSaves|streamEmailSaves|emailSaves))?,$/gm) ?? []).length, 6)
-  assert.equal((SRC.match(/buildInboundChannel\(\{/g) ?? []).length, 3, 'no new build site went without the saves')
+  assert.equal((SRC.match(/buildInboundChannel\(\{/g) ?? []).length, 4, 'original lanes save files; the fourth builder only revises delivered human text')
 })

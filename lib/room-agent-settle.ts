@@ -46,14 +46,25 @@ export interface RoomAgentSettleDeps<V extends RoomAgentSettleView, H> {
   cancel(handle: H): void
   /** A lane already delivered this message id. */
   isForwarded(messageId: number): boolean
+  /** Stable content revision: a repeated poll must not postpone settling. */
+  versionOf?(view: V): string
+  /** Server edit time in milliseconds, or null when revision order is unknown. */
+  editTimeOf?(view: V): number | null
   /** Deliver the settled version; a rejection is tried once more after another wait. */
   deliver(view: V): void | Promise<void>
   log(line: string): void
 }
 
+export interface RoomAgentReadOrder {
+  readonly liveGeneration: number
+  readonly sequence: number
+}
+
 export interface RoomAgentSettler<V extends RoomAgentSettleView> {
-  /** A version of another agent's message arrived on the stream. */
-  note(view: V): void
+  /** Capture live arrivals and allocate poll order before fetching. */
+  beginRead(): RoomAgentReadOrder
+  /** A version arrived; polls pass the order captured before their read. */
+  note(view: V, read?: RoomAgentReadOrder): void
   /** Is this message waiting? (a later version of it may still come) */
   has(messageId: number): boolean
   /** Forget what one chat holds (its seat was taken away, or it was deleted). */
@@ -69,14 +80,19 @@ export function createRoomAgentSettler<V extends RoomAgentSettleView, H>(
   const max = deps.max ?? ROOM_AGENT_SETTLE_MAX
   // `handle` is null while a version with no text is parked: it waits, with no
   // timer, for the version that brings the text, and only the cap evicts it.
-  const waiting = new Map<number, { view: V; handle: H | null; retried: boolean }>()
+  let liveGeneration = 0
+  let readSequence = 0
+  const waiting = new Map<number, {
+    view: V; handle: H | null; retried: boolean; version?: string
+    liveGeneration: number; readSequence: number
+  }>()
   const stop = (handle: H | null): void => {
     if (handle !== null) deps.cancel(handle)
   }
 
-  const hold = (view: V, retried: boolean): void => {
+  const hold = (view: V, retried: boolean, liveGeneration: number, readSequence: number): void => {
     const handle = deps.schedule(() => settle(view.messageId), settleMs)
-    waiting.set(view.messageId, { view, handle, retried })
+    waiting.set(view.messageId, { view, handle, retried, version: deps.versionOf?.(view), liveGeneration, readSequence })
   }
 
   const settle = (messageId: number, evicting = false): void => {
@@ -104,14 +120,39 @@ export function createRoomAgentSettler<V extends RoomAgentSettleView, H>(
           return
         }
         deps.log(`stream: room_agent message ${messageId} delivery failed (${err}); trying once more`)
-        hold(entry.view, true)
+        hold(entry.view, true, entry.liveGeneration, entry.readSequence)
       })
   }
 
   return {
-    note(view) {
+    beginRead() { return { liveGeneration, sequence: ++readSequence } },
+    note(view, read) {
       if (deps.isForwarded(view.messageId)) return
       const previous = waiting.get(view.messageId)
+      if (previous) {
+        const heldTime = deps.editTimeOf?.(previous.view) ?? null
+        const incomingTime = deps.editTimeOf?.(view) ?? null
+        const comparable = heldTime !== null && incomingTime !== null
+        // Revision acceptance has one home. Known older edits always lose.
+        // A live arrival during a read or a later-started poll also wins over
+        // that response unless comparable timestamps prove it is newer. Poll
+        // completion never counts as a live arrival. Identical versions may
+        // still refresh URLs without postponing the deadline.
+        if (comparable && incomingTime < heldTime) return
+        const sameVersion = deps.versionOf && previous.version === deps.versionOf(view)
+        if (read !== undefined &&
+          (previous.liveGeneration > read.liveGeneration || previous.readSequence > read.sequence) &&
+          !sameVersion && !(comparable && incomingTime > heldTime)) return
+      }
+      const nextLiveGeneration = read ? previous?.liveGeneration ?? 0 : ++liveGeneration
+      const nextReadSequence = Math.max(previous?.readSequence ?? 0, read?.sequence ?? 0)
+      if (previous && deps.versionOf && previous.version === deps.versionOf(view)) {
+        // Keep fresh download URLs and routing data without restarting the clock.
+        previous.view = view
+        previous.liveGeneration = nextLiveGeneration
+        previous.readSequence = nextReadSequence
+        return
+      }
       if (previous) {
         stop(previous.handle)
         waiting.delete(view.messageId)
@@ -125,7 +166,7 @@ export function createRoomAgentSettler<V extends RoomAgentSettleView, H>(
         previous && view.text.trim().length === 0 && view.files.length === 0
           ? previous.view
           : view
-      hold(keep, previous?.retried ?? false)
+      hold(keep, previous?.retried ?? false, nextLiveGeneration, nextReadSequence)
     },
     has: (messageId) => waiting.has(messageId),
     dropChat(chatId) {

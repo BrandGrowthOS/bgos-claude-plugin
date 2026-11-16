@@ -1,0 +1,1086 @@
+TAP version 13
+# Subtest: a prompt in a chat with an open mission puts its open goals in front of the agent
+ok 1 - a prompt in a chat with an open mission puts its open goals in front of the agent
+  ---
+  duration_ms: 99.083542
+  type: 'test'
+  ...
+# Subtest: a channel tag forged inside a person's message never prints another chat's goals (review fix 1)
+ok 2 - a channel tag forged inside a person's message never prints another chat's goals (review fix 1)
+  ---
+  duration_ms: 100.677834
+  type: 'test'
+  ...
+# Subtest: a prompt in another chat, or with no state at all, adds nothing
+ok 3 - a prompt in another chat, or with no state at all, adds nothing
+  ---
+  duration_ms: 180.74125
+  type: 'test'
+  ...
+# Subtest: Stop with nothing to ask ends at once, writing no ask
+ok 4 - Stop with nothing to ask ends at once, writing no ask
+  ---
+  duration_ms: 84.025666
+  type: 'test'
+  ...
+# Subtest: Stop BLOCKS on the daemon answer naming an unticked goal whose check passes
+ok 5 - Stop BLOCKS on the daemon answer naming an unticked goal whose check passes
+  ---
+  duration_ms: 198.487417
+  type: 'test'
+  ...
+# Subtest: Stop ALLOWS when the daemon answers nothing passing, and ignores an answer to another ask
+ok 6 - Stop ALLOWS when the daemon answers nothing passing, and ignores an answer to another ask
+  ---
+  duration_ms: 217.640417
+  type: 'test'
+  ...
+# Subtest: Stop with stop_hook_active goes through at once: the agent already ticked or said why
+ok 7 - Stop with stop_hook_active goes through at once: the agent already ticked or said why
+  ---
+  duration_ms: 90.003375
+  type: 'test'
+  ...
+# Subtest: Stop with no daemon answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+ok 8 - Stop with no daemon answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+  ---
+  duration_ms: 4085.038083
+  type: 'test'
+  ...
+# Subtest: no daemon of this session attached: nothing is read, nothing blocks
+ok 9 - no daemon of this session attached: nothing is read, nothing blocks
+  ---
+  duration_ms: 95.719375
+  type: 'test'
+  ...
+# Subtest: a malformed payload never blocks
+ok 10 - a malformed payload never blocks
+  ---
+  duration_ms: 94.164667
+  type: 'test'
+  ...
+# Subtest: closing one of two missions preserves the other in prompt context and Stop eligibility
+not ok 11 - closing one of two missions preserves the other in prompt context and Stop eligibility
+  ---
+  duration_ms: 3.511666
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:5:54'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /Mission #101/. Input:
+
+    'HOAI: Mission #102 "Demo 102" is active in this chat. Its open mini goals:\n' +
+      '- 1. Merge 102 (done when: merged; server check: PR example/project#42 merged)\n' +
+      "Tick a goal with tick_mini_goal the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    HOAI: Mission #102 "Demo 102" is active in this chat. Its open mini goals:
+    - 1. Merge 102 (done when: merged; server check: PR example/project#42 merged)
+    Tick a goal with tick_mini_goal the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:55:10)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1201:25)
+    Test.start (node:internal/test_runner/test:1096:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17)
+  ...
+# Subtest: multiple cached missions are checked by explicit id and Stop names every passing mission
+not ok 12 - multiple cached missions are checked by explicit id and Stop names every passing mission
+  ---
+  duration_ms: 0.466584
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:5:742'
+  failureType: 'testCodeFailure'
+  error: '409: ambiguous implicit mission lookup'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    <anonymous> ([checkout]/test/mission-turn-refresh.test.ts:70:11)
+    refreshMissionTurnChat (eval at daemon (file://[checkout]/test/mission-turn-refresh.test.ts:1:1619), <anonymous>:55:27)
+    Object.missionTurnAnswerFor [as answer] (eval at daemon (file://[checkout]/test/mission-turn-refresh.test.ts:1:1619), <anonymous>:86:89)
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:74:26)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1201:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+    Test.postRun (node:internal/test_runner/test:1330:19)
+    Test.run (node:internal/test_runner/test:1258:12)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3)
+  ...
+# Subtest: a cold implicit lookup can discover one mission, and ambiguity produces an empty answer
+not ok 13 - a cold implicit lookup can discover one mission, and ambiguity produces an empty answer
+  ---
+  duration_ms: 1.198875
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:5:1700'
+  failureType: 'testCodeFailure'
+  error: '409: ambiguous; name a mission id'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    <anonymous> ([checkout]/test/mission-turn-refresh.test.ts:96:48)
+    refreshMissionTurnChat (eval at daemon (file://[checkout]/test/mission-turn-refresh.test.ts:1:1619), <anonymous>:55:27)
+    Object.missionTurnAnswerFor [as answer] (eval at daemon (file://[checkout]/test/mission-turn-refresh.test.ts:1:1619), <anonymous>:86:89)
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:97:37)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: adding a checked goal after a fresh empty report performs a new verification before Stop
+not ok 14 - adding a checked goal after a fresh empty report performs a new verification before Stop
+  ---
+  duration_ms: 0.514334
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:5:2365'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    1 !== 2
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 2
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:114:10)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block
+not ok 15 - a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block
+  ---
+  duration_ms: 1.072708
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:5:3009'
+  failureType: 'testCodeFailure'
+  error: |-
+    the older HTTP work must not change the newer snapshot
+    + actual - expected
+
+      {
+        assistantId: '7',
+        chats: {
+          '12': {
+    +       checkedAt: 1793990638366,
+    -       checkedAt: null,
+            goals: [
+              {
+                check: {
+                  kind: 'pr_merged',
+                  number: 42,
+                  repo: 'example/project'
+                },
+    +           done: false,
+    -           done: true,
+                doneWhen: 'merged',
+                id: 1,
+                name: 'Merge 101'
+              }
+            ],
+            missionId: 101,
+    +       passing: [
+    +         {
+    +           evidence: 'merged for 101',
+    +           id: 1,
+    +           name: 'Merge 101'
+    +         }
+    +       ],
+    -       passing: [],
+            seenAt: 1793990638366,
+            status: 'active',
+            title: 'Demo 101'
+          }
+        },
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638366
+    turnChatId: ~
+    chats:
+      12:
+        missionId: 101
+        title: 'Demo 101'
+        status: 'active'
+        goals:
+          0:
+            id: 1
+            name: 'Merge 101'
+            doneWhen: 'merged'
+            done: true
+            check:
+              kind: 'pr_merged'
+              repo: 'example/project'
+              number: 42
+        passing:
+        checkedAt: ~
+        seenAt: 1793990638366
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638366
+    turnChatId: ~
+    chats:
+      12:
+        missionId: 101
+        title: 'Demo 101'
+        status: 'active'
+        goals:
+          0:
+            id: 1
+            name: 'Merge 101'
+            doneWhen: 'merged'
+            done: false
+            check:
+              kind: 'pr_merged'
+              repo: 'example/project'
+              number: 42
+        passing:
+          0:
+            id: 1
+            name: 'Merge 101'
+            evidence: 'merged for 101'
+        checkedAt: 1793990638366
+        seenAt: 1793990638366
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:138:12)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block
+not ok 16 - a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.363333
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:5:3009'
+  failureType: 'testCodeFailure'
+  error: |-
+    the older HTTP work must not change the newer snapshot
+    + actual - expected
+
+      {
+        assistantId: '7',
+    +   chats: {
+    +     '12': {
+    +       checkedAt: 1793990638367,
+    +       goals: [
+    +         {
+    +           check: {
+    +             kind: 'pr_merged',
+    +             number: 42,
+    +             repo: 'example/project'
+    +           },
+    +           done: false,
+    +           doneWhen: 'merged',
+    +           id: 1,
+    +           name: 'Merge 101'
+    +         }
+    +       ],
+    +       missionId: 101,
+    +       passing: [
+    +         {
+    +           evidence: 'merged for 101',
+    +           id: 1,
+    +           name: 'Merge 101'
+    +         }
+    +       ],
+    +       seenAt: 1793990638367,
+    +       status: 'active',
+    +       title: 'Demo 101'
+    +     }
+    +   },
+    -   chats: {},
+        schemaVersion: 1,
+        turnChatId: null,
+        updatedAt: 1793990638367
+      }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638367
+    turnChatId: ~
+    chats:
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638367
+    turnChatId: ~
+    chats:
+      12:
+        missionId: 101
+        title: 'Demo 101'
+        status: 'active'
+        goals:
+          0:
+            id: 1
+            name: 'Merge 101'
+            doneWhen: 'merged'
+            done: false
+            check:
+              kind: 'pr_merged'
+              repo: 'example/project'
+              number: 42
+        passing:
+          0:
+            id: 1
+            name: 'Merge 101'
+            evidence: 'merged for 101'
+        checkedAt: 1793990638367
+        seenAt: 1793990638367
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:138:12)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block
+not ok 17 - a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.365458
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:5:3009'
+  failureType: 'testCodeFailure'
+  error: |-
+    the older HTTP work must not change the newer snapshot
+    + actual - expected
+    ... Skipped lines
+
+      {
+        assistantId: '7',
+        chats: {
+          '12': {
+    +       checkedAt: 1793990638368,
+    -       checkedAt: null,
+            goals: [
+              {
+                check: {
+                  kind: 'pr_merged',
+                  number: 42,
+    ...
+                id: 1,
+    +           name: 'Merge 101'
+    -           name: 'Merge 102'
+              }
+            ],
+    +       missionId: 101,
+    +       passing: [
+    +         {
+    +           evidence: 'merged for 101',
+    +           id: 1,
+    +           name: 'Merge 101'
+    +         }
+    +       ],
+    -       missionId: 102,
+    -       passing: [],
+            seenAt: 1793990638368,
+            status: 'active',
+    +       title: 'Demo 101'
+    -       title: 'Demo 102'
+          }
+        },
+        schemaVersion: 1,
+        turnChatId: null,
+        updatedAt: 1793990638368
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638368
+    turnChatId: ~
+    chats:
+      12:
+        missionId: 102
+        title: 'Demo 102'
+        status: 'active'
+        goals:
+          0:
+            id: 1
+            name: 'Merge 102'
+            doneWhen: 'merged'
+            done: false
+            check:
+              kind: 'pr_merged'
+              repo: 'example/project'
+              number: 42
+        passing:
+        checkedAt: ~
+        seenAt: 1793990638368
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638368
+    turnChatId: ~
+    chats:
+      12:
+        missionId: 101
+        title: 'Demo 101'
+        status: 'active'
+        goals:
+          0:
+            id: 1
+            name: 'Merge 101'
+            doneWhen: 'merged'
+            done: false
+            check:
+              kind: 'pr_merged'
+              repo: 'example/project'
+              number: 42
+        passing:
+          0:
+            id: 1
+            name: 'Merge 101'
+            evidence: 'merged for 101'
+        checkedAt: 1793990638368
+        seenAt: 1793990638368
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:138:12)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block
+not ok 18 - a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.3325
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:5:3009'
+  failureType: 'testCodeFailure'
+  error: |-
+    the older HTTP work must not change the newer snapshot
+    + actual - expected
+    ... Skipped lines
+
+      {
+        assistantId: '7',
+        chats: {
+          '12': {
+    +       checkedAt: 1793990638368,
+    -       checkedAt: null,
+            goals: [
+              {
+                check: {
+                  kind: 'pr_merged',
+    +             number: 42,
+    -             number: 43,
+                  repo: 'example/project'
+                },
+                done: false,
+                doneWhen: 'merged',
+                id: 1,
+    ...
+            missionId: 101,
+    +       passing: [
+    +         {
+    +           evidence: 'merged for 101',
+    +           id: 1,
+    +           name: 'Merge 101'
+    +         }
+    +       ],
+    -       passing: [],
+            seenAt: 1793990638368,
+            status: 'active',
+            title: 'Demo 101'
+          }
+        },
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638368
+    turnChatId: ~
+    chats:
+      12:
+        missionId: 101
+        title: 'Demo 101'
+        status: 'active'
+        goals:
+          0:
+            id: 1
+            name: 'Merge 101'
+            doneWhen: 'merged'
+            done: false
+            check:
+              kind: 'pr_merged'
+              repo: 'example/project'
+              number: 43
+        passing:
+        checkedAt: ~
+        seenAt: 1793990638368
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638368
+    turnChatId: ~
+    chats:
+      12:
+        missionId: 101
+        title: 'Demo 101'
+        status: 'active'
+        goals:
+          0:
+            id: 1
+            name: 'Merge 101'
+            doneWhen: 'merged'
+            done: false
+            check:
+              kind: 'pr_merged'
+              repo: 'example/project'
+              number: 42
+        passing:
+          0:
+            id: 1
+            name: 'Merge 101'
+            evidence: 'merged for 101'
+        checkedAt: 1793990638368
+        seenAt: 1793990638368
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:138:12)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: a cold discovery cannot resurrect a mission created and completed while the read was pending
+not ok 19 - a cold discovery cannot resurrect a mission created and completed while the read was pending
+  ---
+  duration_ms: 0.459041
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:5:3995'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+
+      {
+        assistantId: '7',
+    +   chats: {
+    +     '12': {
+    +       checkedAt: 1793990638369,
+    +       goals: [
+    +         {
+    +           check: {
+    +             kind: 'pr_merged',
+    +             number: 42,
+    +             repo: 'example/project'
+    +           },
+    +           done: false,
+    +           doneWhen: 'merged',
+    +           id: 1,
+    +           name: 'Merge 101'
+    +         }
+    +       ],
+    +       missionId: 101,
+    +       passing: [
+    +         {
+    +           evidence: 'merged for 101',
+    +           id: 1,
+    +           name: 'Merge 101'
+    +         }
+    +       ],
+    +       seenAt: 1793990638369,
+    +       status: 'active',
+    +       title: 'Demo 101'
+    +     }
+    +   },
+    -   chats: {},
+        schemaVersion: 1,
+        turnChatId: null,
+    +   updatedAt: 1793990638369
+    -   updatedAt: 1793990638368
+      }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638368
+    turnChatId: ~
+    chats:
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638369
+    turnChatId: ~
+    chats:
+      12:
+        missionId: 101
+        title: 'Demo 101'
+        status: 'active'
+        goals:
+          0:
+            id: 1
+            name: 'Merge 101'
+            doneWhen: 'merged'
+            done: false
+            check:
+              kind: 'pr_merged'
+              repo: 'example/project'
+              number: 42
+        passing:
+          0:
+            id: 1
+            name: 'Merge 101'
+            evidence: 'merged for 101'
+        checkedAt: 1793990638369
+        seenAt: 1793990638369
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:157:10)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: HTTP work completing after the daemon answer budget cannot resurrect a completed mission
+not ok 20 - HTTP work completing after the daemon answer budget cannot resurrect a completed mission
+  ---
+  duration_ms: 25.175875
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:5:4646'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+
+      {
+        assistantId: '7',
+    +   chats: {
+    +     '12': {
+    +       checkedAt: 1793990638393,
+    +       goals: [
+    +         {
+    +           check: {
+    +             kind: 'pr_merged',
+    +             number: 42,
+    +             repo: 'example/project'
+    +           },
+    +           done: false,
+    +           doneWhen: 'merged',
+    +           id: 1,
+    +           name: 'Merge 101'
+    +         }
+    +       ],
+    +       missionId: 101,
+    +       passing: [
+    +         {
+    +           evidence: 'merged for 101',
+    +           id: 1,
+    +           name: 'Merge 101'
+    +         }
+    +       ],
+    +       seenAt: 1793990638393,
+    +       status: 'active',
+    +       title: 'Demo 101'
+    +     }
+    +   },
+    -   chats: {},
+        schemaVersion: 1,
+        turnChatId: null,
+    +   updatedAt: 1793990638393
+    -   updatedAt: 1793990638392
+      }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638392
+    turnChatId: ~
+    chats:
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793990638393
+    turnChatId: ~
+    chats:
+      12:
+        missionId: 101
+        title: 'Demo 101'
+        status: 'active'
+        goals:
+          0:
+            id: 1
+            name: 'Merge 101'
+            doneWhen: 'merged'
+            done: false
+            check:
+              kind: 'pr_merged'
+              repo: 'example/project'
+              number: 42
+        passing:
+          0:
+            id: 1
+            name: 'Merge 101'
+            evidence: 'merged for 101'
+        checkedAt: 1793990638393
+        seenAt: 1793990638393
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:190:12)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: a parsed mission update retains server checks, waiting and server ticks for the turn hook
+ok 21 - a parsed mission update retains server checks, waiting and server ticks for the turn hook
+  ---
+  duration_ms: 1.970167
+  type: 'test'
+  ...
+# Subtest: malformed optional goal state is ignored without losing a valid mission frame
+ok 22 - malformed optional goal state is ignored without losing a valid mission frame
+  ---
+  duration_ms: 0.128583
+  type: 'test'
+  ...
+# Subtest: new optional state stays display safe in an owner-created mission notice
+ok 23 - new optional state stays display safe in an owner-created mission notice
+  ---
+  duration_ms: 0.406417
+  type: 'test'
+  ...
+# Subtest: an ambiguous snapshot is never cached under an unrelated active recipient chat
+ok 24 - an ambiguous snapshot is never cached under an unrelated active recipient chat
+  ---
+  duration_ms: 0.300667
+  type: 'test'
+  ...
+# Subtest: a snapshot uses its explicit chat or the event envelope chat, never a live-turn fallback
+ok 25 - a snapshot uses its explicit chat or the event envelope chat, never a live-turn fallback
+  ---
+  duration_ms: 0.166917
+  type: 'test'
+  ...
+# Subtest: the turn start binds the turn chat into the mission turn state and refreshes it
+ok 26 - the turn start binds the turn chat into the mission turn state and refreshes it
+  ---
+  duration_ms: 0.632959
+  type: 'test'
+  ...
+# Subtest: every mission frame and every own mission write updates the state, with no network call
+ok 27 - every mission frame and every own mission write updates the state, with no network call
+  ---
+  duration_ms: 0.569834
+  type: 'test'
+  ...
+# Subtest: the ask is answered only by the pairing lock holder, within its budget, through the pure writer
+ok 28 - the ask is answered only by the pairing lock holder, within its budget, through the pure writer
+  ---
+  duration_ms: 0.169417
+  type: 'test'
+  ...
+# Subtest: the watcher never keeps the process alive and has a polling fallback
+ok 29 - the watcher never keeps the process alive and has a polling fallback
+  ---
+  duration_ms: 148.522208
+  type: 'test'
+  ...
+# Subtest: the state is written only by the lock holder
+ok 30 - the state is written only by the lock holder
+  ---
+  duration_ms: 0.245875
+  type: 'test'
+  ...
+# Subtest: the answer is for the ASK's chat, only one this daemon delivered to recently, from a fresh entry when it has one (review fixes 4 and 6)
+ok 31 - the answer is for the ASK's chat, only one this daemon delivered to recently, from a fresh entry when it has one (review fixes 4 and 6)
+  ---
+  duration_ms: 0.343709
+  type: 'test'
+  ...
+# Subtest: describeGoalCheck names each kind in one line, and nothing for no check
+ok 32 - describeGoalCheck names each kind in one line, and nothing for no check
+  ---
+  duration_ms: 1.856333
+  type: 'test'
+  ...
+# Subtest: promptChatId reads ONLY the channel tag that opens the prompt (review fix 1)
+ok 33 - promptChatId reads ONLY the channel tag that opens the prompt (review fix 1)
+  ---
+  duration_ms: 0.241292
+  type: 'test'
+  ...
+# Subtest: the daemon keeps only goals that passed and are still open
+ok 34 - the daemon keeps only goals that passed and are still open
+  ---
+  duration_ms: 2.423458
+  type: 'test'
+  ...
+# Subtest: a mission frame refreshes the goals and drops a passing goal the agent has since ticked
+ok 35 - a mission frame refreshes the goals and drops a passing goal the agent has since ticked
+  ---
+  duration_ms: 0.546542
+  type: 'test'
+  ...
+# Subtest: adding checked goals invalidates a fresh report, including a previously empty mission
+not ok 36 - adding checked goals invalidates a fresh report, including a previously empty mission
+  ---
+  duration_ms: 3.278083
+  type: 'test'
+  location: '[checkout]/test/mission-turn.test.ts:1:3441'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + {
+    +   checkedAt: 1793990638588,
+    +   goals: [
+    +     {
+    +       check: {
+    +         kind: 'pr_merged',
+    +         number: 42,
+    +         repo: 'example/project'
+    +       },
+    +       done: false,
+    +       doneWhen: 'PR 42 is merged',
+    +       id: 3,
+    +       name: 'Merge'
+    +     }
+    +   ],
+    +   missionId: 12,
+    +   passing: [],
+    +   status: 'active',
+    +   title: ''
+    + }
+    - null
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: ~
+  actual:
+    missionId: 12
+    title: ''
+    status: 'active'
+    goals:
+      0:
+        id: 3
+        name: 'Merge'
+        doneWhen: 'PR 42 is merged'
+        done: false
+        check:
+          kind: 'pr_merged'
+          repo: 'example/project'
+          number: 42
+    passing:
+    checkedAt: 1793990638588
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn.test.ts:106:12)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1201:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+    Test.postRun (node:internal/test_runner/test:1330:19)
+    Test.run (node:internal/test_runner/test:1258:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: changing or removing a check invalidates its old passing evidence
+not ok 37 - changing or removing a check invalidates its old passing evidence
+  ---
+  duration_ms: 0.36775
+  type: 'test'
+  location: '[checkout]/test/mission-turn.test.ts:1:3908'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + {
+    +   checkedAt: 1793990638588,
+    +   goals: [
+    +     {
+    +       check: {
+    +         kind: 'pr_merged',
+    +         number: 43,
+    +         repo: 'example/project'
+    +       },
+    +       done: false,
+    +       doneWhen: 'PR 42 is merged',
+    +       id: 2,
+    +       name: 'Merge'
+    +     }
+    +   ],
+    +   missionId: 12,
+    +   passing: [
+    +     {
+    +       evidence: 'Checked by the server: PR example/project#42 merged',
+    +       id: 2,
+    +       name: 'Merge'
+    +     }
+    +   ],
+    +   status: 'active',
+    +   title: ''
+    + }
+    - null
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: ~
+  actual:
+    missionId: 12
+    title: ''
+    status: 'active'
+    goals:
+      0:
+        id: 2
+        name: 'Merge'
+        doneWhen: 'PR 42 is merged'
+        done: false
+        check:
+          kind: 'pr_merged'
+          repo: 'example/project'
+          number: 43
+    passing:
+      0:
+        id: 2
+        name: 'Merge'
+        evidence: 'Checked by the server: PR example/project#42 merged'
+    checkedAt: 1793990638588
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn.test.ts:119:12)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1201:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+    Test.postRun (node:internal/test_runner/test:1330:19)
+    Test.run (node:internal/test_runner/test:1258:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: unchanged checks reuse a report across goal reordering, waiting updates and ticks
+ok 38 - unchanged checks reuse a report across goal reordering, waiting updates and ticks
+  ---
+  duration_ms: 0.12925
+  type: 'test'
+  ...
+# Subtest: BLOCKS while a goal whose check passes is unticked, naming it and its evidence
+ok 39 - BLOCKS while a goal whose check passes is unticked, naming it and its evidence
+  ---
+  duration_ms: 0.228584
+  type: 'test'
+  ...
+# Subtest: ALLOWS the second stop of the same turn (stop_hook_active): the agent already answered
+ok 40 - ALLOWS the second stop of the same turn (stop_hook_active): the agent already answered
+  ---
+  duration_ms: 0.080125
+  type: 'test'
+  ...
+# Subtest: ALLOWS when nothing passes, and when the answer says the daemon could not ask
+ok 41 - ALLOWS when nothing passes, and when the answer says the daemon could not ask
+  ---
+  duration_ms: 0.097
+  type: 'test'
+  ...
+# Subtest: a missing or late answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+ok 42 - a missing or late answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+  ---
+  duration_ms: 0.302916
+  type: 'test'
+  ...
+# Subtest: ALLOWS on a missing or malformed state and answer
+ok 43 - ALLOWS on a missing or malformed state and answer
+  ---
+  duration_ms: 0.074917
+  type: 'test'
+  ...
+# Subtest: the turn start block lists the open goals with their check and waiting state
+ok 44 - the turn start block lists the open goals with their check and waiting state
+  ---
+  duration_ms: 0.194583
+  type: 'test'
+  ...
+# Subtest: no block without an open mission or without an open goal
+ok 45 - no block without an open mission or without an open goal
+  ---
+  duration_ms: 0.077125
+  type: 'test'
+  ...
+# Subtest: mergeMissionTurnEntry keeps other chats, drops a closed one, and bounds the file
+ok 46 - mergeMissionTurnEntry keeps other chats, drops a closed one, and bounds the file
+  ---
+  duration_ms: 0.572792
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk answers a new ask once, with what compute found
+ok 47 - answerMissionTurnAsk answers a new ask once, with what compute found
+  ---
+  duration_ms: 2.724334
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk answers an empty list when compute fails, so the hook allows at once
+ok 48 - answerMissionTurnAsk answers an empty list when compute fails, so the hook allows at once
+  ---
+  duration_ms: 1.711416
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk ignores an ask older than the hook can wait for, and removes it (review fix 5)
+ok 49 - answerMissionTurnAsk ignores an ask older than the hook can wait for, and removes it (review fix 5)
+  ---
+  duration_ms: 1.066875
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk removes an ask once it is answered, and hands compute the ask
+ok 50 - answerMissionTurnAsk removes an ask once it is answered, and hands compute the ask
+  ---
+  duration_ms: 1.504542
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk ignores a missing or malformed ask
+ok 51 - answerMissionTurnAsk ignores a missing or malformed ask
+  ---
+  duration_ms: 0.957083
+  type: 'test'
+  ...
+# Subtest: the Stop hook asks the daemon only when THIS turn's chat has an open goal with a check (review fix 4)
+ok 52 - the Stop hook asks the daemon only when THIS turn's chat has an open goal with a check (review fix 4)
+  ---
+  duration_ms: 0.132334
+  type: 'test'
+  ...
+# Subtest: freshMissionTurnEntry answers from a chat entry checked under 30 s ago, and only then (review fix 6)
+ok 53 - freshMissionTurnEntry answers from a chat entry checked under 30 s ago, and only then (review fix 6)
+  ---
+  duration_ms: 0.075167
+  type: 'test'
+  ...
+# Subtest: the turn record: written for a session at its prompt, read back only by that session (review fix 4)
+ok 54 - the turn record: written for a session at its prompt, read back only by that session (review fix 4)
+  ---
+  duration_ms: 1.549042
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk never removes a NEWER ask written while it answered the old one (review confirmation A)
+ok 55 - answerMissionTurnAsk never removes a NEWER ask written while it answered the old one (review confirmation A)
+  ---
+  duration_ms: 4.804042
+  type: 'test'
+  ...
+# Subtest: a cancelled goal loses its cached passing result when a newer snapshot removes it
+ok 56 - a cancelled goal loses its cached passing result when a newer snapshot removes it
+  ---
+  duration_ms: 0.096458
+  type: 'test'
+  ...
+# Subtest: twenty-goal chats stay readable when their combined state exceeds the file budget
+ok 57 - twenty-goal chats stay readable when their combined state exceeds the file budget
+  ---
+  duration_ms: 14.420834
+  type: 'test'
+  ...
+1..57
+# tests 57
+# suites 0
+# pass 45
+# fail 12
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 5465.215792

@@ -90,7 +90,7 @@ test('the notices P5 and P7 add are fixed sentences, parsed only by name, no das
     const sentence = laneNoticeSentence(name)
     assert.ok(typeof sentence === 'string' && sentence.length > 20, `${name} has its sentence`)
     assert.doesNotMatch(sentence!, /[\u2013\u2014]/)
-    assert.deepEqual(parseLaneEventLine(JSON.stringify({ event: 'notice', notice: name, chatIds: [5, '6', -1, 'x'], text: 'chosen by a lane' })), { event: 'notice', notice: name, chatIds: [5, 6] })
+    assert.deepEqual(parseLaneEventLine(JSON.stringify({ event: 'notice', notice: name, chatIds: [5, '6', 7, -1, 'x'], text: 'chosen by a lane' })), { event: 'notice', notice: name, chatIds: [5, 7] })
   }
   assert.equal(parseLaneEventLine(JSON.stringify({ event: 'notice', notice: 'model_set_to', chatIds: [5] })), null)
   assert.ok(!Object.values(LANE_NOTICES).some((s) => /\{|\$/.test(String(s))), 'nothing in them is filled in')

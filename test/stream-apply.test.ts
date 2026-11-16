@@ -584,7 +584,7 @@ test('every announced update kind maps to a handling class', () => {
   const expectations: Record<string, string> = {
     message_new: 'message_new',
     message_finalized: 'message_finalized',
-    message_deleted: 'noop',
+    message_deleted: 'message_deleted',
     buttons_answered: 'buttons_answered',
     chat_created: 'chat_created',
     chat_renamed: 'noop',

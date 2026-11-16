@@ -1,0 +1,16 @@
+$ nice -n 15 npm test
+Environment: TSX_DISABLE_CACHE=1 NODE_DISABLE_COMPILE_CACHE=1 RUN_TESTS_WORKERS=2
+TMPDIR and PLAYWRIGHT_BROWSERS_PATH use a short system temporary folder outside the checkout.
+An initial run was stopped after tmux rejected overlong temporary socket paths.
+The affected nine tmux tests passed with the shorter path; the full run below restarted from the beginning.
+Retained: family worker settings and final totals. Per-file output and fixture diagnostics omitted.
+
+[run-tests] node:test family: 467 files, 2 workers
+[run-tests] runner regression tests: 1 files, 1 workers
+[run-tests] real Chromium files, one at a time: 21 files, 1 workers
+[run-tests] real daemon files, one at a time: 1 files, 1 workers
+[run-tests] bun:test family: 15 files, 2 workers
+[run-tests] 11415 passed, 0 failed, 62 skipped, 505 files, 2009.9 s
+[run-tests] both families green
+
+exit status: 0

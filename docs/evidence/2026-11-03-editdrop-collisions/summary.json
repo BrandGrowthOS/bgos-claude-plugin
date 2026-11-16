@@ -1,0 +1,39 @@
+{
+  "base_commit": "a2f28a6a88d4422180e632ac84bdd4af8faf3179",
+  "max_workers": 4,
+  "tsc_exit": 0,
+  "red_first_replay_cases": 6,
+  "legitimate_edit_controls": 6,
+  "mutation_checks": 12,
+  "mutation_survivors": 0,
+  "node": {
+    "tests": 8231,
+    "pass": 8179,
+    "fail": 0,
+    "skipped": 52
+  },
+  "chromium": {
+    "tests": 15,
+    "pass": 11,
+    "fail": 0,
+    "skipped": 4
+  },
+  "bun": {
+    "tests": 378,
+    "pass": 377,
+    "fail": 0,
+    "skipped": 1
+  },
+  "total": {
+    "tests": 8624,
+    "pass": 8567,
+    "fail": 0,
+    "skipped": 57
+  },
+  "related": {
+    "node_pass": 545,
+    "initial_bun_under_node_import_error": true,
+    "corrected_bun_pass": 19,
+    "corrected_bun_fail": 0
+  }
+}

@@ -3,13 +3,11 @@ import assert from 'node:assert/strict'
 import {
   chmod,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   stat,
   writeFile,
 } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { readFileSync } from 'node:fs'
 
@@ -33,6 +31,7 @@ import {
   wrapperFlagMode,
 } from '../bin/bgos-daemon-wrapper.mjs'
 import { WIN32_JSC_THREAD_OPTIONS as LAUNCHER_JSC_THREAD_OPTIONS } from '../bin/bgos-launch.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const COMMIT_A = 'a'.repeat(40)
 const COMMIT_B = 'b'.repeat(40)
@@ -235,7 +234,7 @@ test('daemonEnv: macOS and Linux get env itself, and nothing is probed', () => {
 })
 
 test('unset flag is transparent and performs no update state or git work', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bgos-wrapper-off-'))
+  const home = scratchDir('bgos-wrapper-off-')
   const stateDir = join(home, '.bgos-plugin-state', '42')
   const wrapperStatePath = join(stateDir, 'auto-update-wrapper.json')
   await mkdir(stateDir, { recursive: true })
@@ -260,7 +259,7 @@ test('unset flag is transparent and performs no update state or git work', async
 })
 
 test('wrapper writes the boot marker before spawning mutable code', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bgos-wrapper-boot-'))
+  const home = scratchDir('bgos-wrapper-boot-')
   const stateDir = join(home, '.bgos-plugin-state', '42')
   const coreStatePath = join(stateDir, 'auto-update.json')
   const wrapperStatePath = join(stateDir, 'auto-update-wrapper.json')
@@ -289,7 +288,7 @@ test('wrapper writes the boot marker before spawning mutable code', async () => 
 })
 
 test('update child exits zero without replacing the stable wrapper before health', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'bgos-wrapper-update-exit-'))
+  const root = scratchDir('bgos-wrapper-update-exit-')
   const home = join(root, 'home')
   const pluginDir = join(root, 'plugin')
   const installedWrapperPath = stableWrapperPath(home)
@@ -329,7 +328,7 @@ test('update child exits zero without replacing the stable wrapper before health
 })
 
 test('candidate wrapper is validated before atomic stable replacement', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'bgos-wrapper-validate-'))
+  const root = scratchDir('bgos-wrapper-validate-')
   const source = join(root, 'candidate.mjs')
   const target = join(root, 'stable.mjs')
   await writeFile(source, 'candidate\n')
@@ -354,7 +353,7 @@ test('candidate wrapper is validated before atomic stable replacement', async ()
 })
 
 test('failed candidate validation keeps the previous stable wrapper', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'bgos-wrapper-invalid-candidate-'))
+  const root = scratchDir('bgos-wrapper-invalid-candidate-')
   const source = join(root, 'candidate.mjs')
   const target = join(root, 'stable.mjs')
   await writeFile(source, 'broken candidate\n')
@@ -407,7 +406,7 @@ test('strict core parser rejects impossible pending transitions', () => {
 })
 
 test('pending update refuses to spawn when checkout identity cannot be read', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bgos-wrapper-head-fail-'))
+  const home = scratchDir('bgos-wrapper-head-fail-')
   const stateDir = join(home, '.bgos-plugin-state', '42')
   await mkdir(stateDir, { recursive: true })
   await writeFile(
@@ -435,7 +434,7 @@ test('pending update refuses to spawn when checkout identity cannot be read', as
 })
 
 test('pending update refuses to spawn when boot marker cannot be saved', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bgos-wrapper-marker-fail-'))
+  const home = scratchDir('bgos-wrapper-marker-fail-')
   const stateDir = join(home, '.bgos-plugin-state', '42')
   await mkdir(stateDir, { recursive: true })
   await writeFile(
@@ -462,7 +461,7 @@ test('pending update refuses to spawn when boot marker cannot be saved', async (
 })
 
 test('pending update refuses to spawn with a malformed wrapper marker', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bgos-wrapper-marker-corrupt-'))
+  const home = scratchDir('bgos-wrapper-marker-corrupt-')
   const stateDir = join(home, '.bgos-plugin-state', '42')
   await mkdir(stateDir, { recursive: true })
   await writeFile(
@@ -489,7 +488,7 @@ test('pending update refuses to spawn with a malformed wrapper marker', async ()
 })
 
 test('auto-update on refuses to spawn with malformed core state', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bgos-wrapper-core-corrupt-'))
+  const home = scratchDir('bgos-wrapper-core-corrupt-')
   const stateDir = join(home, '.bgos-plugin-state', '42')
   await mkdir(stateDir, { recursive: true })
   await writeFile(join(stateDir, 'auto-update.json'), '{bad json')
@@ -517,7 +516,7 @@ test('auto-update on refuses to spawn with malformed core state', async () => {
 })
 
 test('stable wrapper installation is atomic and executable outside checkout', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'bgos-wrapper-install-'))
+  const root = scratchDir('bgos-wrapper-install-')
   const source = join(root, 'checkout', 'bin', 'bgos-daemon-wrapper.mjs')
   const target = stableWrapperPath(join(root, 'home'))
   await mkdir(join(root, 'checkout', 'bin'), { recursive: true })
@@ -552,7 +551,7 @@ test('stable wrapper installation is atomic and executable outside checkout', as
 })
 
 test('rollback uses fixed argv, restores dependencies, and disables updates', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'bgos-wrapper-rollback-'))
+  const root = scratchDir('bgos-wrapper-rollback-')
   const stateDir = join(root, 'state')
   const coreStatePath = join(stateDir, 'auto-update.json')
   await mkdir(join(root, '.git'), { recursive: true })
@@ -605,7 +604,7 @@ test('rollback uses fixed argv, restores dependencies, and disables updates', as
 })
 
 test('rollback never changes a dirty checkout', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'bgos-wrapper-dirty-'))
+  const root = scratchDir('bgos-wrapper-dirty-')
   const stateDir = join(root, 'state')
   const coreStatePath = join(stateDir, 'auto-update.json')
   await mkdir(join(root, '.git'), { recursive: true })
@@ -628,7 +627,7 @@ test('rollback never changes a dirty checkout', async () => {
 test('rollback proceeds when only untracked files are present', async () => {
   // KC incident 2026-08-24: a stray untracked file must not block a legitimate
   // rollback (nor disable auto-updates); checkout --detach is untracked-safe.
-  const root = await mkdtemp(join(tmpdir(), 'bgos-wrapper-untracked-'))
+  const root = scratchDir('bgos-wrapper-untracked-')
   const stateDir = join(root, 'state')
   const coreStatePath = join(stateDir, 'auto-update.json')
   await mkdir(join(root, '.git'), { recursive: true })
@@ -659,7 +658,7 @@ test('rollback proceeds when only untracked files are present', async () => {
 })
 
 test('rollback restores dependencies when another daemon already moved HEAD', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'bgos-wrapper-shared-rollback-'))
+  const root = scratchDir('bgos-wrapper-shared-rollback-')
   const stateDir = join(root, 'state')
   const coreStatePath = join(stateDir, 'auto-update.json')
   await mkdir(join(root, '.git'), { recursive: true })

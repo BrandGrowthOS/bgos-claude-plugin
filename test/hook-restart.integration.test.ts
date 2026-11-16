@@ -17,8 +17,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -26,6 +25,7 @@ import { sessionTranscriptPath, superviseClaude } from '../bin/hoai-core.mjs'
 import { registerCloneHooks } from '../lib/clone-hooks.mjs'
 import { privateHookPresence } from '../lib/private-hook-presence'
 import { UpdateRpcHandler } from '../lib/update-rpc'
+import { scratchDir } from './helpers/scratch-dirs'
 
 // Only a missing module reads as missing; a module that does not load is a failure of its own.
 const hookRestart: any = await import('../lib/hook-restart.mjs').catch((err) => {
@@ -67,9 +67,9 @@ async function until(check: () => boolean, what: string, ms = 3000) {
 
 /** A clone workspace of THIS checkout with no hooks yet, and an empty CLI config folder. */
 function workspace() {
-  const ws = realpathSync(mkdtempSync(join(tmpdir(), 'hook-restart-ws-')))
+  const ws = realpathSync(scratchDir('hook-restart-ws-'))
   writeFileSync(join(ws, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')] } } }))
-  const configDir = realpathSync(mkdtempSync(join(tmpdir(), 'hook-restart-cfg-')))
+  const configDir = realpathSync(scratchDir('hook-restart-cfg-'))
   return { ws, configDir }
 }
 

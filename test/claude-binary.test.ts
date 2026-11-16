@@ -13,8 +13,7 @@
  * Run: npm test, or npx tsx --test test/claude-binary.test.ts
  */
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -30,6 +29,7 @@ import {
   probeClaude,
 } from '../lib/claude-binary.mjs'
 import { main as selectMain } from '../bin/hoai-select-claude.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const isWin = process.platform === 'win32'
@@ -69,7 +69,7 @@ test('parseClaudeVersion reads the number out of the CLI banner', () => {
 })
 
 test('probeClaude spawns the real binary and reads its version and capability', { skip: isWin }, () => {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-claude-'))
+  const root = scratchDir('hoai-claude-')
   const good = standIn(join(root, 'good'), '2.1.296', 'good')
   const stale = standIn(join(root, 'stale'), '2.1.22', 'stale')
   assert.deepEqual(
@@ -83,7 +83,7 @@ test('probeClaude spawns the real binary and reads its version and capability', 
 })
 
 test('claudeCandidates: ~/.local/bin first, then PATH in order, one entry per real file', { skip: isWin }, () => {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-claude-'))
+  const root = scratchDir('hoai-claude-')
   const home = join(root, 'home')
   const native = standIn(join(home, '.local', 'bin'), '2.1.296', 'good')
   const sys = standIn(join(root, 'usr-local-bin'), '2.1.22', 'stale')
@@ -95,7 +95,7 @@ test('claudeCandidates: ~/.local/bin first, then PATH in order, one entry per re
 })
 
 test('chooseClaude: the stale one FIRST on PATH is stepped over and named, the native one is chosen', { skip: isWin }, () => {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-claude-'))
+  const root = scratchDir('hoai-claude-')
   const home = join(root, 'home')
   const native = standIn(join(home, '.local', 'bin'), '2.1.296', 'good')
   const stale = standIn(join(root, 'usr-local-bin'), '2.1.22', 'stale')
@@ -112,7 +112,7 @@ test('chooseClaude: the stale one FIRST on PATH is stepped over and named, the n
 })
 
 test('chooseClaude: when ONLY a stale claude exists it is refused by name, never baked', { skip: isWin }, () => {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-claude-'))
+  const root = scratchDir('hoai-claude-')
   const stale = standIn(join(root, 'usr-local-bin'), '2.1.22', 'stale')
   const chosen = chooseClaude({ pathVar: dirname(stale), home: join(root, 'nohome') })
   assert.equal(chosen.ok, false)
@@ -123,7 +123,7 @@ test('chooseClaude: when ONLY a stale claude exists it is refused by name, never
 })
 
 test('chooseClaude: an unreadable wording is accepted, so a changed CLI can never lock an install out', { skip: isWin }, () => {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-claude-'))
+  const root = scratchDir('hoai-claude-')
   const odd = standIn(join(root, 'bin'), '9.9.9', 'odd')
   const chosen = chooseClaude({ pathVar: dirname(odd), home: join(root, 'nohome') })
   assert.equal(chosen.ok, true)
@@ -170,7 +170,7 @@ test('hoai-select-claude refuses with exit 1 and a named reason when every claud
 })
 
 test('the CLI runs for real and answers with one of the two protocol lines', { skip: isWin }, () => {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-claude-'))
+  const root = scratchDir('hoai-claude-')
   const stale = standIn(join(root, 'bin'), '2.1.22', 'stale')
   const res = spawnSync(process.execPath, [join(repoRoot, 'bin', 'hoai-select-claude.mjs')], {
     encoding: 'utf8',

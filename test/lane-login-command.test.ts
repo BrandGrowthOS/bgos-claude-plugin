@@ -113,8 +113,8 @@ test('LANE_NOTICES carries every /login sentence exactly, in the agent\'s voice,
     assert.doesNotMatch(sentence, /[\u2013\u2014]/, `${name}: no em or en dash`)
     assert.doesNotMatch(sentence, /\{|\$/, `${name}: nothing in it is filled in`)
     assert.deepEqual(
-      parseLaneEventLine(JSON.stringify({ event: 'notice', notice: name, chatIds: [CHAT_ID, '78', -1, 'x'], text: 'chosen by a lane' })),
-      { event: 'notice', notice: name, chatIds: [CHAT_ID, 78] },
+      parseLaneEventLine(JSON.stringify({ event: 'notice', notice: name, chatIds: [CHAT_ID, '78', 79, -1, 'x'], text: 'chosen by a lane' })),
+      { event: 'notice', notice: name, chatIds: [CHAT_ID, 79] },
       `${name}: parsed by name only, never with a lane's words`,
     )
     assert.ok(LANE_NOTICE_SENTENCES.includes(sentence), `${name}: a notice, never taken as an answer to her message`)

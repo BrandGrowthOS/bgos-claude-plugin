@@ -1,0 +1,460 @@
+TAP version 13
+# Subtest: ORDERING GUARD: the attach budget sits under the relay cap and OVER the default wait
+ok 1 - ORDERING GUARD: the attach budget sits under the relay cap and OVER the default wait
+  ---
+  duration_ms: 0.878834
+  type: 'test'
+  ...
+# Subtest: a DEFAULT gate answers inside its own call rather than parking
+ok 2 - a DEFAULT gate answers inside its own call rather than parking
+  ---
+  duration_ms: 6.008375
+  type: 'test'
+  ...
+# Subtest: the gate id is the shape the backend accepts, or the card post 400s
+ok 3 - the gate id is the shape the backend accepts, or the card post 400s
+  ---
+  duration_ms: 0.186959
+  type: 'test'
+  ...
+# Subtest: a gate posts ONE card carrying what the owner needs to decide
+ok 4 - a gate posts ONE card carrying what the owner needs to decide
+  ---
+  duration_ms: 6.77075
+  type: 'test'
+  ...
+# Subtest: an allowed gate runs the held action, and a denied one never does
+ok 5 - an allowed gate runs the held action, and a denied one never does
+  ---
+  duration_ms: 31.216917
+  type: 'test'
+  ...
+# Subtest: an answered card with a choice the host cannot read is a DENIAL, not a retry
+ok 6 - an answered card with a choice the host cannot read is a DENIAL, not a retry
+  ---
+  duration_ms: 5.475
+  type: 'test'
+  ...
+# Subtest: a card the server reports EXPIRED refuses, and the action does not run
+ok 7 - a card the server reports EXPIRED refuses, and the action does not run
+  ---
+  duration_ms: 5.691292
+  type: 'test'
+  ...
+# Subtest: an owner who never answers runs out of park, and the action does not run
+ok 8 - an owner who never answers runs out of park, and the action does not run
+  ---
+  duration_ms: 1005.491208
+  type: 'test'
+  ...
+# Subtest: a card that could not be posted ends the gate at once rather than parking on nobody
+ok 9 - a card that could not be posted ends the gate at once rather than parking on nobody
+  ---
+  duration_ms: 0.250583
+  type: 'test'
+  ...
+# Subtest: a gate the server forgets twice ends, instead of waiting out a park nobody can answer
+ok 10 - a gate the server forgets twice ends, instead of waiting out a park nobody can answer
+  ---
+  duration_ms: 11.481541
+  type: 'test'
+  ...
+# Subtest: a transient read failure is retried inside the park, so a blip cannot deny an allow
+ok 11 - a transient read failure is retried inside the park, so a blip cannot deny an allow
+  ---
+  duration_ms: 24.030541
+  type: 'test'
+  ...
+# Subtest: a gate with no choices fails CLOSED, because a card with no buttons cannot be answered
+ok 12 - a gate with no choices fails CLOSED, because a card with no buttons cannot be answered
+  ---
+  duration_ms: 0.182917
+  type: 'test'
+  ...
+# Subtest: a kind the card route cannot carry fails CLOSED and posts nothing
+ok 13 - a kind the card route cannot carry fails CLOSED and posts nothing
+  ---
+  duration_ms: 0.06825
+  type: 'test'
+  ...
+# Subtest: a call that runs out of budget PARKS with the gate id, and the action has not run
+ok 14 - a call that runs out of budget PARKS with the gate id, and the action has not run
+  ---
+  duration_ms: 20.189125
+  type: 'test'
+  ...
+# Subtest: THE ONE THAT MATTERS: a parked gate re-attached by two callers runs the action exactly once
+ok 15 - THE ONE THAT MATTERS: a parked gate re-attached by two callers runs the action exactly once
+  ---
+  duration_ms: 25.6285
+  type: 'test'
+  ...
+# Subtest: a second ask while one is open is refused with the OPEN gate id, not queued behind it
+ok 16 - a second ask while one is open is refused with the OPEN gate id, not queued behind it
+  ---
+  duration_ms: 20.292625
+  type: 'test'
+  ...
+# Subtest: a gate id nobody raised here is unknown, rather than a silent allow
+ok 17 - a gate id nobody raised here is unknown, rather than a silent allow
+  ---
+  duration_ms: 0.171708
+  type: 'test'
+  ...
+# Subtest: closeAll denies every open gate, so a stopping host leaves nothing hanging
+ok 18 - closeAll denies every open gate, so a stopping host leaves nothing hanging
+  ---
+  duration_ms: 20.584833
+  type: 'test'
+  ...
+# Subtest: pending() names the open gate on that browser and nothing on another
+ok 19 - pending() names the open gate on that browser and nothing on another
+  ---
+  duration_ms: 21.367625
+  type: 'test'
+  ...
+# Subtest: wait_seconds is clamped to what the schema and the DTO allow
+ok 20 - wait_seconds is clamped to what the schema and the DTO allow
+  ---
+  duration_ms: 0.116292
+  type: 'test'
+  ...
+# Subtest: the card carries the REMAINING park, never a zero or an over-cap the DTO would reject
+ok 21 - the card carries the REMAINING park, never a zero or an over-cap the DTO would reject
+  ---
+  duration_ms: 0.046
+  type: 'test'
+  ...
+# Subtest: every refusal reason has its own sentence, so an agent is never told "denied" for a timeout
+ok 22 - every refusal reason has its own sentence, so an agent is never told "denied" for a timeout
+  ---
+  duration_ms: 0.16925
+  type: 'test'
+  ...
+# Subtest: two asks raised AT ONCE on one browser post ONE card; the other is told busy with its id
+ok 23 - two asks raised AT ONCE on one browser post ONE card; the other is told busy with its id
+  ---
+  duration_ms: 51.151667
+  type: 'test'
+  ...
+# Subtest: a card that could not be posted frees the browser at once for the next ask
+ok 24 - a card that could not be posted frees the browser at once for the next ask
+  ---
+  duration_ms: 19.440167
+  type: 'test'
+  ...
+# Subtest: whenIdle waits for the open ask to end and never runs the action it holds
+ok 25 - whenIdle waits for the open ask to end and never runs the action it holds
+  ---
+  duration_ms: 43.662375
+  type: 'test'
+  ...
+# Subtest: end() settles one gate locally; the owner answering later changes nothing
+ok 26 - end() settles one gate locally; the owner answering later changes nothing
+  ---
+  duration_ms: 23.952791
+  type: 'test'
+  ...
+# Subtest: after closeAll the keeper posts nothing more: a stopping host asks nobody
+ok 27 - after closeAll the keeper posts nothing more: a stopping host asks nobody
+  ---
+  duration_ms: 0.109584
+  type: 'test'
+  ...
+# Subtest: the park is counted from the moment the card exists, so an Allow inside the backend's own deadline is not read as a timeout
+ok 28 - the park is counted from the moment the card exists, so an Allow inside the backend's own deadline is not read as a timeout
+  ---
+  duration_ms: 0.136917
+  type: 'test'
+  ...
+# Subtest: the daemon spawns the host once, detached from its stdio, scoped to its pairing, and stops it on exit
+ok 29 - the daemon spawns the host once, detached from its stdio, scoped to its pairing, and stops it on exit
+  ---
+  duration_ms: 205.670292
+  type: 'test'
+  ...
+# Subtest: on Windows the host is started detached and stopped through its stdin, never cut off with TerminateProcess
+ok 30 - on Windows the host is started detached and stopped through its stdin, never cut off with TerminateProcess
+  ---
+  duration_ms: 504.927291
+  type: 'test'
+  ...
+# Subtest: with the real log opener, the host writes to its own log file, never the daemon stdio
+ok 31 - with the real log opener, the host writes to its own log file, never the daemon stdio
+  ---
+  duration_ms: 1.011708
+  type: 'test'
+  ...
+# Subtest: a second daemon of the same pairing does not spawn a second host, and takes over when the first is gone
+ok 32 - a second daemon of the same pairing does not spawn a second host, and takes over when the first is gone
+  ---
+  duration_ms: 231.268083
+  type: 'test'
+  ...
+# Subtest: a daemon whose pairing lock was taken stands its host down, then takes the host back when it can
+ok 33 - a daemon whose pairing lock was taken stands its host down, then takes the host back when it can
+  ---
+  duration_ms: 108.973334
+  type: 'test'
+  ...
+# Subtest: a live holder that is only late (a machine waking from sleep) keeps its lock; one that stays silent loses it
+ok 34 - a live holder that is only late (a machine waking from sleep) keeps its lock; one that stays silent loses it
+  ---
+  duration_ms: 1508.001041
+  type: 'test'
+  ...
+# Subtest: the daemon starts the host with the allow-listed environment plus its own pairing token (the list itself: test/browser-env.test.ts)
+ok 35 - the daemon starts the host with the allow-listed environment plus its own pairing token (the list itself: test/browser-env.test.ts)
+  ---
+  duration_ms: 0.739334
+  type: 'test'
+  ...
+# Subtest: the daemon survives its host crashing, logs it, releases the pairing, and does not restart it
+ok 36 - the daemon survives its host crashing, logs it, releases the pairing, and does not restart it
+  ---
+  duration_ms: 202.565958
+  type: 'test'
+  ...
+# Subtest: the daemon survives a spawn error event, a spawn that throws, and a missing node
+ok 37 - the daemon survives a spawn error event, a spawn that throws, and a missing node
+  ---
+  duration_ms: 1.077583
+  type: 'test'
+  ...
+# Subtest: a real spawn of a binary that does not exist is logged, not thrown into the daemon
+ok 38 - a real spawn of a binary that does not exist is logged, not thrown into the daemon
+  ---
+  duration_ms: 27.422208
+  type: 'test'
+  ...
+# Subtest: HOAI_BROWSER_HOST=off skips the spawn entirely
+ok 39 - HOAI_BROWSER_HOST=off skips the spawn entirely
+  ---
+  duration_ms: 1.433042
+  type: 'test'
+  ...
+# Subtest: a daemon with no pairing token starts nothing: the host handshake needs a pairing
+ok 40 - a daemon with no pairing token starts nothing: the host handshake needs a pairing
+  ---
+  duration_ms: 0.255584
+  type: 'test'
+  ...
+# Subtest: END TO END: two daemons of one pairing start exactly one real host, a crash of it hands the pairing to the other, and the kill switch starts none
+ok 41 - END TO END: two daemons of one pairing start exactly one real host, a crash of it hands the pairing to the other, and the kill switch starts none
+  ---
+  duration_ms: 6008.43825
+  type: 'test'
+  ...
+# Subtest: END TO END: a host whose daemon is killed outright stops itself
+ok 42 - END TO END: a host whose daemon is killed outright stops itself
+  ---
+  duration_ms: 5158.139959
+  type: 'test'
+  ...
+# Subtest: END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped
+ok 43 - END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped
+  ---
+  duration_ms: 3464.527334
+  type: 'test'
+  ...
+# Subtest: END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped (the Windows stop, stdin alone, on this host)
+ok 44 - END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped (the Windows stop, stdin alone, on this host)
+  ---
+  duration_ms: 3493.709166
+  type: 'test'
+  ...
+# Subtest: END TO END: a daemon that stops its host and exits AT ONCE, as server.ts shutdown() does, still gets a clean close
+ok 45 - END TO END: a daemon that stops its host and exits AT ONCE, as server.ts shutdown() does, still gets a clean close
+  ---
+  duration_ms: 3396.366958
+  type: 'test'
+  ...
+# Subtest: END TO END: a bun daemon that stays up stops its host through stdin ALONE, and the host stays up until then
+ok 46 - END TO END: a bun daemon that stays up stops its host through stdin ALONE, and the host stays up until then
+  ---
+  duration_ms: 6501.413833
+  type: 'test'
+  ...
+# Subtest: server.ts starts the supervisor in main, unconditionally, and stops it on every exit path
+ok 47 - server.ts starts the supervisor in main, unconditionally, and stops it on every exit path
+  ---
+  duration_ms: 10.153375
+  type: 'test'
+  ...
+# Subtest: CONTROL: an unpinned SDK server echoes the revision the client asked for
+ok 48 - CONTROL: an unpinned SDK server echoes the revision the client asked for
+  ---
+  duration_ms: 7.75925
+  type: 'test'
+  ...
+# Subtest: the pinned server answers the legacy revision whatever the client asked for
+ok 49 - the pinned server answers the legacy revision whatever the client asked for
+  ---
+  duration_ms: 2.707584
+  type: 'test'
+  ...
+# Subtest: the pin changes the revision and NOTHING else about the handshake
+ok 50 - the pin changes the revision and NOTHING else about the handshake
+  ---
+  duration_ms: 5.955791
+  type: 'test'
+  ...
+# Subtest: the pin FAILS OPEN when the SDK has no initialize handler to wrap
+ok 51 - the pin FAILS OPEN when the SDK has no initialize handler to wrap
+  ---
+  duration_ms: 0.089334
+  type: 'test'
+  ...
+# Subtest: server.ts declares the claude/channel capability, or every inbound message vanishes
+ok 52 - server.ts declares the claude/channel capability, or every inbound message vanishes
+  ---
+  duration_ms: 0.094583
+  type: 'test'
+  ...
+# Subtest: server.ts pins the legacy protocol revision instead of echoing the client
+ok 53 - server.ts pins the legacy protocol revision instead of echoing the client
+  ---
+  duration_ms: 0.14
+  type: 'test'
+  ...
+# Subtest: gate block: every send lives inside hoai_answer, so no key is sent to a screen that was not read
+ok 54 - gate block: every send lives inside hoai_answer, so no key is sent to a screen that was not read
+  ---
+  duration_ms: 0.870417
+  type: 'test'
+  ...
+# Subtest: gate block: the timeout and the unrecognised-screen branches never send
+ok 55 - gate block: the timeout and the unrecognised-screen branches never send
+  ---
+  duration_ms: 0.201334
+  type: 'test'
+  ...
+# Subtest: gate block: a gate is its FOOTER phrase, not the bare word, and the match buffer is big enough to hold one
+ok 56 - gate block: a gate is its FOOTER phrase, not the bare word, and the match buffer is big enough to hold one
+  ---
+  duration_ms: 0.139334
+  type: 'test'
+  ...
+# Subtest: gate block: the Down arrow is sent only while the selection marker is NOT on the wanted option
+ok 57 - gate block: the Down arrow is sent only while the selection marker is NOT on the wanted option
+  ---
+  duration_ms: 0.181875
+  type: 'test'
+  ...
+# Subtest: gate block: no key goes out until the screen has been quiet, and the supervisor can ask for longer
+ok 58 - gate block: no key goes out until the screen has been quiet, and the supervisor can ask for longer
+  ---
+  duration_ms: 0.124
+  type: 'test'
+  ...
+# Subtest: gate block: each gate is answered at most once, so a word in the live banner cannot type into the REPL
+ok 59 - gate block: each gate is answered at most once, so a word in the live banner cannot type into the REPL
+  ---
+  duration_ms: 0.048125
+  type: 'test'
+  ...
+# Subtest: gate block: the option words are unique to the options, never words the prose above them uses
+ok 60 - gate block: the option words are unique to the options, never words the prose above them uses
+  ---
+  duration_ms: 0.208084
+  type: 'test'
+  ...
+# Subtest: gate block: the live footer is matched as words with escapes allowed between them
+ok 61 - gate block: the live footer is matched as words with escapes allowed between them
+  ---
+  duration_ms: 0.044375
+  type: 'test'
+  ...
+# Subtest: gate block: no em or en dashes
+ok 62 - gate block: no em or en dashes
+  ---
+  duration_ms: 0.063792
+  type: 'test'
+  ...
+# Subtest: behaviour: a gate whose DECLINING option is first gets Down then Enter
+ok 63 - behaviour: a gate whose DECLINING option is first gets Down then Enter
+  ---
+  duration_ms: 8342.19825
+  type: 'test'
+  ...
+# Subtest: behaviour: the same gate with the WANTED option first gets Enter alone
+ok 64 - behaviour: the same gate with the WANTED option first gets Enter alone
+  ---
+  duration_ms: 8326.585458
+  type: 'test'
+  ...
+# Subtest: behaviour: the dev-channels gate gets Enter as painted today, and Down then Enter if the order ever flips
+ok 65 - behaviour: the dev-channels gate gets Enter as painted today, and Down then Enter if the order ever flips
+  ---
+  duration_ms: 8495.391541
+  type: 'test'
+  ...
+# Subtest: behaviour: a selection that visibly goes BACK to the declining option is moved again, never confirmed there
+ok 66 - behaviour: a selection that visibly goes BACK to the declining option is moved again, never confirmed there
+  ---
+  duration_ms: 9739.304083
+  type: 'test'
+  ...
+# Subtest: behaviour: a Down that draws no readable repaint is taken at its word, once, as a timed answer always was
+ok 67 - behaviour: a Down that draws no readable repaint is taken at its word, once, as a timed answer always was
+  ---
+  duration_ms: 8517.959625
+  type: 'test'
+  ...
+# Subtest: behaviour: a gate painted AGAIN after it was answered is not answered twice
+ok 68 - behaviour: a gate painted AGAIN after it was answered is not answered twice
+  ---
+  duration_ms: 5793.944917
+  type: 'test'
+  ...
+# Subtest: behaviour: with only the WANTED option readable nothing is pressed, because "it is painted first" would be a guess
+ok 69 - behaviour: with only the WANTED option readable nothing is pressed, because "it is painted first" would be a guess
+  ---
+  duration_ms: 3223.557708
+  type: 'test'
+  ...
+# Subtest: behaviour: the session-age gate gets "Resume from summary" in either option order
+ok 70 - behaviour: the session-age gate gets "Resume from summary" in either option order
+  ---
+  duration_ms: 8397.165834
+  type: 'test'
+  ...
+# Subtest: behaviour: a resumed transcript that SAYS "confirm", and a tip that mentions /login, do not get a healthy session killed
+ok 71 - behaviour: a resumed transcript that SAYS "confirm", and a tip that mentions /login, do not get a healthy session killed
+  ---
+  duration_ms: 6543.355333
+  type: 'test'
+  ...
+# Subtest: behaviour: a gate no rule recognises is named with its words, and NOT ONE byte is sent
+ok 72 - behaviour: a gate no rule recognises is named with its words, and NOT ONE byte is sent
+  ---
+  duration_ms: 8213.331583
+  type: 'test'
+  ...
+# Subtest: behaviour: a recognised gate whose options cannot be read is not answered either
+ok 73 - behaviour: a recognised gate whose options cannot be read is not answered either
+  ---
+  duration_ms: 3564.717625
+  type: 'test'
+  ...
+# Subtest: behaviour: a claude that exits during startup is named, and a signed-out TUI is told apart from a working one
+ok 74 - behaviour: a claude that exits during startup is named, and a signed-out TUI is told apart from a working one
+  ---
+  duration_ms: 4165.342584
+  type: 'test'
+  ...
+# Subtest: behaviour: a claude that rejects the launch flag leaves its own words in the status, not a silent exit (board row 84296679)
+ok 75 - behaviour: a claude that rejects the launch flag leaves its own words in the status, not a silent exit (board row 84296679)
+  ---
+  duration_ms: 3509.65875
+  type: 'test'
+  ...
+1..75
+# tests 75
+# suites 0
+# pass 75
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1004611.223167

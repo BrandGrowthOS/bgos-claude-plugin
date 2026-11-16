@@ -1,0 +1,47 @@
+✔ the steer contract hash matches the pin BGOS carries (0.633292ms)
+✔ the floor the app reads is not above this release (0.085625ms)
+✔ a running turn: the text first, marked, then a queue beat, then ONE Escape (0.698208ms)
+✔ the queue beat defaults to STEER_QUEUE_MS, under a second (0.116209ms)
+✔ a held message delivered just before the steer is followed by the steer, and only then the Escape (0.083292ms)
+✔ an idle session: the text is delivered as a plain message, no key pressed, no marker (0.050958ms)
+✔ a failed interrupt after the text is delivered is reported, and the text is not delivered twice (0.154958ms)
+✔ a failed delivery presses nothing (an Escape with no steer queued is the bug) (0.148334ms)
+✔ two steers at once press ONE Escape: they run in order and the second is inside the cooldown (0.074709ms)
+✔ after the cooldown a new steer presses again (0.100459ms)
+✔ no Escape while the daemon is typing /compact or /goal itself, and no marker (0.059292ms)
+✔ the daemon's own typing waits for a decided press: pressDone resolves only after the Escape (0.085ms)
+✔ a pane that is gone: the text plainly, no marker, no press (0.060542ms)
+✔ a retry after a failed delivery delivers marked and presses once; a second retry never presses (0.139416ms)
+✔ a message arriving during the queue beat is delivered before the Escape, so it joins the next turn (0.079542ms)
+✔ a retried delivery of the same steer never presses a second time (0.055917ms)
+✔ a message arriving behind an in-flight steer is delivered after its Escape, never before (0.057375ms)
+✔ with no steer in flight an ordinary message is delivered at once (0.028ms)
+✔ planSteer interrupts a fresh owner steer while a turn runs (0.047542ms)
+✔ planSteer interrupts when the hook rail cannot say (unknown) (0.027875ms)
+✔ planSteer never interrupts an idle session (0.021167ms)
+✔ planSteer never interrupts without a terminal (0.034125ms)
+✔ planSteer never lets a non owner interrupt the owner session (0.031458ms)
+✔ planSteer never interrupts for a stale steer (0.024042ms)
+✔ planSteer never interrupts another chat's running turn (0.021583ms)
+✔ planSteer never presses into a relayed permission prompt (0.019541ms)
+✔ planSteer never interrupts with nothing to say (0.030083ms)
+✔ isFreshSteer: inside the window, outside it, and unreadable (0.651125ms)
+✔ steerTurnState: hooks report live or idle, no hooks is unknown (0.057542ms)
+✔ the interrupt is ONE Escape key name, no literal text, no Enter (0.052667ms)
+✔ /steer routes to a steer whose delivery is the TEXT, from slash text (0.20075ms)
+✔ a steer keeps what the channel put around its words (attachments, prefixes) (0.045292ms)
+✔ /steer routes from structured fields too (0.03725ms)
+✔ a user command called /steer cannot shadow the daemon steer (0.160542ms)
+✔ steer is advertised only when the daemon can interrupt (0.0525ms)
+✔ a discovered /steer never enters the catalog (an install without tmux shows no steer) (0.1075ms)
+✔ the steer card meta is all string, sparse and merged, marked and unmarked (0.080709ms)
+✔ server.ts routes poll, stream and ws delivery through the steer gate (2.077ms)
+✔ server.ts makes /compact and /goal typing wait for a decided steer press (1.124333ms)
+ℹ tests 39
+ℹ suites 0
+ℹ pass 39
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 165.094208

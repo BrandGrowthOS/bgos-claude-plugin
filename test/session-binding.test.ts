@@ -12,7 +12,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, utimesSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,6 +28,7 @@ import {
 import { mungeCwd, UsageTracker } from '../lib/usage-report.ts'
 import { decideSessionAdmission } from '../lib/hook-intake.ts'
 import { claudeConfigDir } from '../bin/bgos-install-method.mjs'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 // Real-shape fixture lines.
 const markerLine = (messageId: number): string =>
@@ -264,7 +265,7 @@ test('a sole candidate binds even when stale', () => {
 // ── SessionTranscriptBinder (fs-backed) ──────────────────────────────────────
 
 function makeProjectDir(cwd: string): { home: string; dir: string } {
-  const home = mkdtempSync(join(tmpdir(), 'binder-test-'))
+  const home = scratchDir('binder-test-')
   const dir = join(home, 'projects', mungeCwd(cwd))
   mkdirSync(dir, { recursive: true })
   return { home, dir }
@@ -418,7 +419,7 @@ test('a hook naming a transcript that does not exist is ignored, not trusted', (
 })
 
 test('noteHookSession takes the transcript path, and falls back to the session id', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-hook-binding-'))
+  const dir = scratchDir('hoai-hook-binding-')
   const projectDir = join(dir, '.claude', 'projects', '-work')
   mkdirSync(projectDir, { recursive: true })
   // Two plausible transcripts and no positive signal: the old chain refuses.
@@ -484,7 +485,7 @@ test('POSITIVE_BINDING_SOURCES is the proof set, and excludes the last resort', 
 // finding 9) and the session pin was never written (finding 7).
 
 test('binder: a custom claudeHome (CLAUDE_CONFIG_DIR) and the agent folder find the agent transcript, and its hooks are not foreign', () => {
-  const root = mkdtempSync(join(tmpdir(), 'binder-config-dir-'))
+  const root = scratchDir('binder-config-dir-')
   const home = join(root, 'home')
   const configDir = join(root, 'claude-config')
   const agentFolder = '/home/kc/agents/vexa'
@@ -588,7 +589,7 @@ test('server.ts builds the usage tracker and the resting watcher from the agent 
 })
 
 test('the usage tracker finds the agent transcript under a custom config dir, and not from the plugin cache', () => {
-  const root = mkdtempSync(join(tmpdir(), 'readers-config-dir-'))
+  const root = scratchDir('readers-config-dir-')
   const configDir = join(root, 'claude-config')
   const agentFolder = '/home/kc/agents/vexa'
   const projectDir = join(configDir, 'projects', mungeCwd(agentFolder))

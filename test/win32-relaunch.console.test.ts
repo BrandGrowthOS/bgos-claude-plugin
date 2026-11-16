@@ -21,14 +21,14 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import * as core from '../bin/hoai-core.mjs'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const { spawnClaude, win32GateHelperArgs } = core
 const fixed = core as unknown as {
@@ -140,7 +140,7 @@ interface Launch {
 /** Start the fake claude the way hoai does (spawnClaude, the npm shim candidate), and wait for it, its
  *  MCP server and the process that server detached. */
 async function launchThroughShim(): Promise<Launch> {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-shim-'))
+  const dir = scratchDir('hoai-shim-')
   npmInstall(dir)
   const env = shimEnv(dir)
   let cmd: import('node:child_process').ChildProcess | null = null
@@ -248,7 +248,7 @@ const psQuote = (value: string) => `'${value.replace(/'/g, "''")}'`
 
 /** The host in a hidden console of its own (Start-Process, as the agent task's wscript gives hoai one). */
 async function startHost(mode: 'clear' | 'none', screen: 'alt' | 'main'): Promise<{ pid: number; dir: string }> {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-stale-gate-'))
+  const dir = scratchDir('hoai-stale-gate-')
   const script = join(dir, 'host.mjs')
   const ready = join(dir, 'ready')
   writeFileSync(script, HOST)

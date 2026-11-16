@@ -42,7 +42,7 @@ const HOUR_MS = 60 * 60_000
 /** A Chrome that never reports its endpoint, exits `exitAfterKillMs` after a kill, and holds its folder `holdAfterExitMs` after that (null: never). */
 function fakeChrome({ exitAfterKillMs = 150 as number | null, holdAfterExitMs = 150 as number | null } = {}) {
   const events: string[] = []
-  const child: any = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), pid: 4242, exitCode: null, signalCode: null, held: true, events })
+  const child: any = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), pid: 2 ** 30, exitCode: null, signalCode: null, held: true, events })
   child.kill = (signal: string) => {
     events.push(`kill ${signal}`)
     if (exitAfterKillMs !== null && !child.exiting) {
@@ -57,6 +57,15 @@ function fakeChrome({ exitAfterKillMs = 150 as number | null, holdAfterExitMs = 
     return true
   }
   return child
+}
+
+/** A Playwright launch that never gets an answer: it reports the pid it started when its timeout ends, and leaves that Chrome running, as the real one does. */
+function launchOf(child: any) {
+  return {
+    launchImpl: ({ timeout }: any) => new Promise((_resolve, reject) => setTimeout(() => reject(new Error(`browserType.launch: Timeout ${timeout}ms exceeded.\nCall log:\n  - <launched> pid=${child.pid}\n`)), timeout)),
+    killImpl: (_pid: number, signal: string) => child.kill(signal),
+    aliveImpl: () => child.signalCode === null && child.exitCode === null,
+  }
 }
 
 /** rmSync, refused with EPERM while the fake Chrome still holds the folder, as Windows refuses it. */
@@ -84,7 +93,7 @@ function engineFor(t: any, child: any, { platform = 'win32', removeDir, log, lau
     outputDir: join(root, 'output'),
     launch: (opts: any) => {
       launched.push(opts.profileDir)
-      return launchChromium({ ...opts, timeoutMs: 100, spawnImpl: (() => child) as any, env: {} })
+      return launchChromium({ ...opts, timeoutMs: 100, ...launchOf(child), env: {} })
     },
     platform,
     removeDir: removeDir ?? removeDirHeldBy(child),
@@ -94,7 +103,7 @@ function engineFor(t: any, child: any, { platform = 'win32', removeDir, log, lau
 
 test('win32: a start that timed out rejects only once the Chrome it killed has exited', async () => {
   const child = fakeChrome({ exitAfterKillMs: 200 })
-  await launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 50, spawnImpl: (() => child) as any, platform: 'win32', env: {} })
+  await launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 50, ...launchOf(child), platform: 'win32', env: {} })
     .then(() => assert.fail('a Chrome that never reported its endpoint cannot start'), (err: any) => {
       child.events.push(`rejected ${err.code}`)
     })
@@ -105,7 +114,7 @@ test('win32: a killed Chrome that never exits still lets the start fail, after a
   const child = fakeChrome({ exitAfterKillMs: null })
   const began = Date.now()
   await assert.rejects(
-    launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 50, spawnImpl: (() => child) as any, platform: 'win32', env: {} }),
+    launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 50, ...launchOf(child), platform: 'win32', env: {} }),
     { code: 'browser_start_failed' },
   )
   const waited = Date.now() - began - 50
@@ -117,7 +126,7 @@ test('linux and macOS too: a start that timed out rejects only once the Chrome i
   // Until then Chrome's SingletonLock names a live pid, and the start's own cleanup leaves a folder that is in use.
   for (const platform of ['linux', 'darwin'] as const) {
     const child = fakeChrome({ exitAfterKillMs: 200 })
-    await launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 50, spawnImpl: (() => child) as any, platform, env: {} })
+    await launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 50, ...launchOf(child), platform, env: {} })
       .catch((err: any) => { child.events.push(`rejected ${err.code}`) })
     assert.deepEqual(child.events, ['kill SIGKILL', 'exit', 'rejected browser_start_failed'], platform)
   }
@@ -342,9 +351,9 @@ function sweep(tmp: string, opts: Record<string, unknown> = {}): Promise<{ swept
 }
 
 test('the runtime folder is named after its host: pid and start time, read back from the name alone', () => {
-  const prefix = H.runtimeDirPrefix({ pid: 4242, startedAtMs: 1_760_000_000_123 })
+  const prefix = H.runtimeDirPrefix({ pid: 2 ** 30, startedAtMs: 1_760_000_000_123 })
   assert.match(prefix, /^hoai-browser-runtime-/)
-  assert.deepEqual(H.runtimeDirOwner(`${prefix}Ab12Cd`), { pid: 4242, startedAtMs: 1_760_000_000_123 })
+  assert.deepEqual(H.runtimeDirOwner(`${prefix}Ab12Cd`), { pid: 2 ** 30, startedAtMs: 1_760_000_000_123 })
   assert.equal(H.runtimeDirOwner('hoai-browser-runtime-Ab12Cd'), null, 'a folder of a host before this one names no owner')
   assert.equal(H.runtimeDirOwner(`${prefix}Ab12Cd-x`), null)
   assert.deepEqual(H.runtimeDirOwner(`${H.runtimeDirPrefix()}Ab12Cd`), { pid: process.pid, startedAtMs: H.HOST_STARTED_AT_MS }, 'by default: this process')

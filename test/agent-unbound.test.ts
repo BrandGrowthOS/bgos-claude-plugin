@@ -25,8 +25,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test, type TestContext } from 'node:test'
@@ -49,6 +48,7 @@ import { watcherHomeId } from '../lib/watcher-service.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 import { fakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 import { resolvePosixBash } from './helpers/posix-bash.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const agentBin = join(repoRoot, 'bin', 'bgos-agent')
@@ -462,7 +462,7 @@ type ServiceState = {
 
 /** One HOME with two always-on agents (42 and 43) installed by the real bin/bgos-agent. */
 function posixRig(os: Os) {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-unbound-'))
+  const root = scratchDir('hoai-unbound-')
   const home = join(root, 'home', 'kc')
   const shims = join(root, 'shims')
   const statePath = join(root, 'services.json')

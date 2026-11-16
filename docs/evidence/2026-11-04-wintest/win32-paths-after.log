@@ -1,0 +1,520 @@
+TAP version 13
+# Subtest: a first turn makes the worktree, copies the main transcript beside it, and forks the main session there
+ok 1 - a first turn makes the worktree, copies the main transcript beside it, and forks the main session there
+  ---
+  duration_ms: 4.295916
+  type: 'test'
+  ...
+# Subtest: .hoai/ is excluded through .git/info/exclude, once, and the tracked .gitignore is never written
+ok 2 - .hoai/ is excluded through .git/info/exclude, once, and the tracked .gitignore is never written
+  ---
+  duration_ms: 0.582542
+  type: 'test'
+  ...
+# Subtest: the init frame records the fork id in the lane state file and deletes the copied main transcript, once
+ok 3 - the init frame records the fork id in the lane state file and deletes the copied main transcript, once
+  ---
+  duration_ms: 3.782125
+  type: 'test'
+  ...
+# Subtest: each result is posted as one thread reply, final unless it ends asking a question
+ok 4 - each result is posted as one thread reply, final unless it ends asking a question
+  ---
+  duration_ms: 5.379875
+  type: 'test'
+  ...
+# Subtest: a summary turn posts the draft to the summary route, never as a reply
+ok 5 - a summary turn posts the draft to the summary route, never as a reply
+  ---
+  duration_ms: 1.090833
+  type: 'test'
+  ...
+# Subtest: a failed result puts the thread back to open and says so in one plain sentence
+ok 6 - a failed result puts the thread back to open and says so in one plain sentence
+  ---
+  duration_ms: 1.09425
+  type: 'test'
+  ...
+# Subtest: two lanes run at once per agent; a third waits FIFO and starts when a slot frees
+ok 7 - two lanes run at once per agent; a third waits FIFO and starts when a slot frees
+  ---
+  duration_ms: 1.677917
+  type: 'test'
+  ...
+# Subtest: turns for one thread are serialized: the second waits for the first result
+ok 8 - turns for one thread are serialized: the second waits for the first result
+  ---
+  duration_ms: 0.64225
+  type: 'test'
+  ...
+# Subtest: a re sent turn for the same reply is not run twice
+ok 9 - a re sent turn for the same reply is not run twice
+  ---
+  duration_ms: 0.375667
+  type: 'test'
+  ...
+# Subtest: a lane idle for 20 minutes is stopped (SIGTERM, then SIGKILL after 10 s) and resumes by its own id
+ok 10 - a lane idle for 20 minutes is stopped (SIGTERM, then SIGKILL after 10 s) and resumes by its own id
+  ---
+  duration_ms: 0.50425
+  type: 'test'
+  ...
+# Subtest: a turn before the idle stop cancels it
+ok 11 - a turn before the idle stop cancels it
+  ---
+  duration_ms: 0.298709
+  type: 'test'
+  ...
+# Subtest: a daemon restart resumes the lane by the fork id it saved
+ok 12 - a daemon restart resumes the lane by the fork id it saved
+  ---
+  duration_ms: 0.337291
+  type: 'test'
+  ...
+# Subtest: a folder that is not a git repository runs the lane read only in a plain folder
+ok 13 - a folder that is not a git repository runs the lane read only in a plain folder
+  ---
+  duration_ms: 0.226833
+  type: 'test'
+  ...
+# Subtest: with no main session to fork the thread goes back to open with a plain reason, and frees its slot
+ok 14 - with no main session to fork the thread goes back to open with a plain reason, and frees its slot
+  ---
+  duration_ms: 0.219458
+  type: 'test'
+  ...
+# Subtest: a lane that dies mid turn fails that turn and frees its slot
+ok 15 - a lane that dies mid turn fails that turn and frees its slot
+  ---
+  duration_ms: 0.338709
+  type: 'test'
+  ...
+# Subtest: close stops the lane, keeps the worktree, and the sweep removes it only after 7 days
+ok 16 - close stops the lane, keeps the worktree, and the sweep removes it only after 7 days
+  ---
+  duration_ms: 0.594583
+  type: 'test'
+  ...
+# Subtest: the sweep leaves open lanes alone, however old
+ok 17 - the sweep leaves open lanes alone, however old
+  ---
+  duration_ms: 0.174209
+  type: 'test'
+  ...
+# Subtest: a turn on a closed thread reopens it, so the sweep no longer removes it
+ok 18 - a turn on a closed thread reopens it, so the sweep no longer removes it
+  ---
+  duration_ms: 0.304959
+  type: 'test'
+  ...
+# Subtest: a reopen waits for an in-flight sweep and starts in a recreated worktree
+ok 19 - a reopen waits for an in-flight sweep and starts in a recreated worktree
+  ---
+  duration_ms: 9.017291
+  type: 'test'
+  ...
+# Subtest: a reopen queued behind busy slots forks afresh after sweep finishes
+ok 20 - a reopen queued behind busy slots forks afresh after sweep finishes
+  ---
+  duration_ms: 16.424958
+  type: 'test'
+  ...
+# Subtest: a reopen queued behind busy slots forks afresh after delete finishes
+ok 21 - a reopen queued behind busy slots forks afresh after delete finishes
+  ---
+  duration_ms: 7.962334
+  type: 'test'
+  ...
+# Subtest: a reopen queued behind busy slots forks afresh after sweep then close finishes
+ok 22 - a reopen queued behind busy slots forks afresh after sweep then close finishes
+  ---
+  duration_ms: 2.870458
+  type: 'test'
+  ...
+# Subtest: late delivery cannot restore a deleted fork while its reopen waits for capacity
+ok 23 - late delivery cannot restore a deleted fork while its reopen waits for capacity
+  ---
+  duration_ms: 22.799458
+  type: 'test'
+  ...
+# Subtest: overlapping sweeps reserve a closed root only once
+ok 24 - overlapping sweeps reserve a closed root only once
+  ---
+  duration_ms: 12.30325
+  type: 'test'
+  ...
+# Subtest: a close during a sweep cannot release its root for an early reopen
+ok 25 - a close during a sweep cannot release its root for an early reopen
+  ---
+  duration_ms: 8.348708
+  type: 'test'
+  ...
+# Subtest: close with removeWorktree removes the worktree, the fork session file and the lane state
+ok 26 - close with removeWorktree removes the worktree, the fork session file and the lane state
+  ---
+  duration_ms: 0.522167
+  type: 'test'
+  ...
+# Subtest: deleting a read only lane removes its plain folder
+ok 27 - deleting a read only lane removes its plain folder
+  ---
+  duration_ms: 0.428042
+  type: 'test'
+  ...
+# Subtest: closing a running lane frees its slot for a waiting thread and drops its late result
+ok 28 - closing a running lane frees its slot for a waiting thread and drops its late result
+  ---
+  duration_ms: 2.072792
+  type: 'test'
+  ...
+# Subtest: reconcile runs a reply turn for each pending thread and skips one already working
+ok 29 - reconcile runs a reply turn for each pending thread and skips one already working
+  ---
+  duration_ms: 0.480333
+  type: 'test'
+  ...
+# Subtest: stopAll stops every lane on daemon shutdown
+ok 30 - stopAll stops every lane on daemon shutdown
+  ---
+  duration_ms: 0.233875
+  type: 'test'
+  ...
+# Subtest: a root id that could leave the threads folder is refused
+ok 31 - a root id that could leave the threads folder is refused
+  ---
+  duration_ms: 0.250666
+  type: 'test'
+  ...
+# Subtest: the pending route names the agents this daemon serves, and any other answer shape starts nothing
+ok 32 - the pending route names the agents this daemon serves, and any other answer shape starts nothing
+  ---
+  duration_ms: 0.397209
+  type: 'test'
+  ...
+# Subtest: a turn that arrives while the idle stop is under way runs on a new process, never failed by the old one
+ok 33 - a turn that arrives while the idle stop is under way runs on a new process, never failed by the old one
+  ---
+  duration_ms: 1.645125
+  type: 'test'
+  ...
+# Subtest: a delete while the worktree is still being made removes it, its branch and the state, and starts nothing
+ok 34 - a delete while the worktree is still being made removes it, its branch and the state, and starts nothing
+  ---
+  duration_ms: 0.552333
+  type: 'test'
+  ...
+# Subtest: a plain close while the worktree is still being made records closedAt, so the 7 day sweep removes it
+ok 35 - a plain close while the worktree is still being made records closedAt, so the 7 day sweep removes it
+  ---
+  duration_ms: 0.572084
+  type: 'test'
+  ...
+# Subtest: delete removes the thread branch, only that one, once the worktree is gone
+ok 36 - delete removes the thread branch, only that one, once the worktree is gone
+  ---
+  duration_ms: 0.644
+  type: 'test'
+  ...
+# Subtest: a reply longer than the server holds is cut to 20,000 characters with a plain note
+ok 37 - a reply longer than the server holds is cut to 20,000 characters with a plain note
+  ---
+  duration_ms: 0.247333
+  type: 'test'
+  ...
+# Subtest: a failed reply post is retried with backoff and lands
+ok 38 - a failed reply post is retried with backoff and lands
+  ---
+  duration_ms: 0.936292
+  type: 'test'
+  ...
+# Subtest: a reply post that keeps failing puts the thread back to open with a short reply, never stuck at working
+ok 39 - a reply post that keeps failing puts the thread back to open with a short reply, never stuck at working
+  ---
+  duration_ms: 0.802916
+  type: 'test'
+  ...
+# Subtest: a turn with no result after 30 minutes is failed and its lane stopped, freeing the slot
+ok 40 - a turn with no result after 30 minutes is failed and its lane stopped, freeing the slot
+  ---
+  duration_ms: 0.548042
+  type: 'test'
+  ...
+# Subtest: a result ends its turn timer
+ok 41 - a result ends its turn timer
+  ---
+  duration_ms: 0.165792
+  type: 'test'
+  ...
+# Subtest: stopAll resolves once every lane has exited, and killAll sends SIGKILL to the rest
+ok 42 - stopAll resolves once every lane has exited, and killAll sends SIGKILL to the rest
+  ---
+  duration_ms: 0.771792
+  type: 'test'
+  ...
+# Subtest: on a host with no Bash sandbox the lane runs without Bash, and the repository state is not even read
+ok 43 - on a host with no Bash sandbox the lane runs without Bash, and the repository state is not even read
+  ---
+  duration_ms: 0.235417
+  type: 'test'
+  ...
+# Subtest: a lane whose repository state cannot be read runs without Bash, never with an unprotected sandbox
+ok 44 - a lane whose repository state cannot be read runs without Bash, never with an unprotected sandbox
+  ---
+  duration_ms: 0.168209
+  type: 'test'
+  ...
+# Subtest: a close while the lane confinement is being read starts nothing and copies nothing
+ok 45 - a close while the lane confinement is being read starts nothing and copies nothing # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.137916
+  type: 'test'
+  ...
+# Subtest: delete removes the fork session folder (its tool-results) with the session file
+ok 46 - delete removes the fork session folder (its tool-results) with the session file
+  ---
+  duration_ms: 0.450167
+  type: 'test'
+  ...
+# Subtest: a lane state file naming a folder outside <agent>/.hoai/threads/ never gets that folder removed
+ok 47 - a lane state file naming a folder outside <agent>/.hoai/threads/ never gets that folder removed
+  ---
+  duration_ms: 0.859625
+  type: 'test'
+  ...
+# Subtest: the 7 day sweep refuses a state folder outside the threads folder too
+ok 48 - the 7 day sweep refuses a state folder outside the threads folder too
+  ---
+  duration_ms: 0.186875
+  type: 'test'
+  ...
+# Subtest: a reconnect while the reply post is being retried never runs the finished turn again
+ok 49 - a reconnect while the reply post is being retried never runs the finished turn again
+  ---
+  duration_ms: 2.15575
+  type: 'test'
+  ...
+# Subtest: a new reply listed while the last answer is still being posted runs once that post has settled
+ok 50 - a new reply listed while the last answer is still being posted runs once that post has settled
+  ---
+  duration_ms: 1.476875
+  type: 'test'
+  ...
+# Subtest: after a daemon restart a listed turn that already finished is never run again: the thread goes back to open
+ok 51 - after a daemon restart a listed turn that already finished is never run again: the thread goes back to open
+  ---
+  duration_ms: 1.226416
+  type: 'test'
+  ...
+# Subtest: a reconnect after every post of a finished turn failed puts the thread back to open, never runs it again
+ok 52 - a reconnect after every post of a finished turn failed puts the thread back to open, never runs it again
+  ---
+  duration_ms: 3.508
+  type: 'test'
+  ...
+# Subtest: on a claude too old for a confined lane the turn fails with the real cause, and nothing is made or started
+ok 53 - on a claude too old for a confined lane the turn fails with the real cause, and nothing is made or started
+  ---
+  duration_ms: 0.201959
+  type: 'test'
+  ...
+# Subtest: a working lane refuses Bash reads of ~/.ssh, the CLI credentials and ~/.bgos-agent
+ok 54 - a working lane refuses Bash reads of ~/.ssh, the CLI credentials and ~/.bgos-agent # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.023875
+  type: 'test'
+  ...
+# Subtest: a repository on the reftable backend keeps every ref in one place the sandbox cannot split: the lane runs without Bash
+ok 55 - a repository on the reftable backend keeps every ref in one place the sandbox cannot split: the lane runs without Bash # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.018083
+  type: 'test'
+  ...
+# Subtest: on Linux a branch kept only in packed-refs is written out as a loose ref before the lane starts, so the sandbox can protect it
+ok 56 - on Linux a branch kept only in packed-refs is written out as a loose ref before the lane starts, so the sandbox can protect it # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.015916
+  type: 'test'
+  ...
+# Subtest: on Linux a packed-only branch that cannot be written out leaves the lane without Bash, never unprotected
+ok 57 - on Linux a packed-only branch that cannot be written out leaves the lane without Bash, never unprotected # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.020292
+  type: 'test'
+  ...
+# Subtest: on macOS nothing is written into the source repository (the sandbox denies a path that does not exist yet)
+ok 58 - on macOS nothing is written into the source repository (the sandbox denies a path that does not exist yet) # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.015167
+  type: 'test'
+  ...
+# Subtest: a lane process is written into the lane state with its start stamp, and taken out when it exits
+ok 59 - a lane process is written into the lane state with its start stamp, and taken out when it exits
+  ---
+  duration_ms: 0.198041
+  type: 'test'
+  ...
+# Subtest: after a daemon crash the old lane process is stopped (its whole group) before the thread runs again
+ok 60 - after a daemon crash the old lane process is stopped (its whole group) before the thread runs again
+  ---
+  duration_ms: 3.195083
+  type: 'test'
+  ...
+# Subtest: an old lane process that ignores SIGTERM gets SIGKILL after the grace, then the new one starts
+ok 61 - an old lane process that ignores SIGTERM gets SIGKILL after the grace, then the new one starts
+  ---
+  duration_ms: 41.526375
+  type: 'test'
+  ...
+# Subtest: an old lane process that cannot be stopped fails the turn in plain words, and starts nothing
+ok 62 - an old lane process that cannot be stopped fails the turn in plain words, and starts nothing
+  ---
+  duration_ms: 165.4875
+  type: 'test'
+  ...
+# Subtest: a pid now held by another process (its start stamp differs) is never signalled
+ok 63 - a pid now held by another process (its start stamp differs) is never signalled
+  ---
+  duration_ms: 1.732625
+  type: 'test'
+  ...
+# Subtest: closing or deleting a thread after a daemon crash stops its old lane process too
+ok 64 - closing or deleting a thread after a daemon crash stops its old lane process too
+  ---
+  duration_ms: 9.0245
+  type: 'test'
+  ...
+# Subtest: after a restart a listed row naming a summary that already landed leaves the thread alone
+ok 65 - after a restart a listed row naming a summary that already landed leaves the thread alone
+  ---
+  duration_ms: 0.636
+  type: 'test'
+  ...
+# Subtest: after a restart a listed row naming an answer that already landed posts nothing either
+ok 66 - after a restart a listed row naming an answer that already landed posts nothing either
+  ---
+  duration_ms: 0.465792
+  type: 'test'
+  ...
+# Subtest: a delayed summary from a closed lane cannot overwrite its reopened lane state
+ok 67 - a delayed summary from a closed lane cannot overwrite its reopened lane state
+  ---
+  duration_ms: 8.300208
+  type: 'test'
+  ...
+# Subtest: a lane state saved before lastDelivered existed still gets the notice (never a silent stuck thread)
+ok 68 - a lane state saved before lastDelivered existed still gets the notice (never a silent stuck thread)
+  ---
+  duration_ms: 0.30025
+  type: 'test'
+  ...
+# Subtest: on Linux with no stash yet, refs/stash is made an empty folder and logs/refs/stash an empty file, so both can be bound read only
+ok 69 - on Linux with no stash yet, refs/stash is made an empty folder and logs/refs/stash an empty file, so both can be bound read only # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.02775
+  type: 'test'
+  ...
+# Subtest: on Linux an existing stash is left exactly as it is
+ok 70 - on Linux an existing stash is left exactly as it is # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.018625
+  type: 'test'
+  ...
+# Subtest: on Linux a stash log that cannot be made leaves the lane without Bash
+ok 71 - on Linux a stash log that cannot be made leaves the lane without Bash # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.023375
+  type: 'test'
+  ...
+# Subtest: a working lane can read its own email files but not the rest of ~/.bgos-agent
+ok 72 - a working lane can read its own email files but not the rest of ~/.bgos-agent # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.017208
+  type: 'test'
+  ...
+# Subtest: pairing another agent after a lane starts cannot expose its new credentials through the attachment exception
+ok 73 - pairing another agent after a lane starts cannot expose its new credentials through the attachment exception # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.018333
+  type: 'test'
+  ...
+# Subtest: a workspace inside the credential tree and its attachments reopen only their own directories
+ok 74 - a workspace inside the credential tree and its attachments reopen only their own directories # SKIP POSIX Bash sandbox only; Windows has no lane Bash sandbox
+  ---
+  duration_ms: 0.01725
+  type: 'test'
+  ...
+# Subtest: a lane whose start stamp cannot be read at spawn still has its pid saved, and its stamp once it can be read
+ok 75 - a lane whose start stamp cannot be read at spawn still has its pid saved, and its stamp once it can be read
+  ---
+  duration_ms: 0.319708
+  type: 'test'
+  ...
+# Subtest: after a crash, an unstamped pid is never signalled and blocks a duplicate while still in the lane folder
+ok 76 - after a crash, an unstamped pid is never signalled and blocks a duplicate while still in the lane folder
+  ---
+  duration_ms: 3.76875
+  type: 'test'
+  ...
+# Subtest: delete and the closed-thread sweep retain a folder used by an unstamped process
+ok 77 - delete and the closed-thread sweep retain a folder used by an unstamped process
+  ---
+  duration_ms: 0.952708
+  type: 'test'
+  ...
+# Subtest: unknown cwd inspection preserves a live unstamped PID during replacement
+ok 78 - unknown cwd inspection preserves a live unstamped PID during replacement
+  ---
+  duration_ms: 1.71425
+  type: 'test'
+  ...
+# Subtest: unknown cwd inspection preserves a live unstamped PID during delete
+ok 79 - unknown cwd inspection preserves a live unstamped PID during delete
+  ---
+  duration_ms: 1.506375
+  type: 'test'
+  ...
+# Subtest: unknown cwd inspection preserves a live unstamped PID during sweep
+ok 80 - unknown cwd inspection preserves a live unstamped PID during sweep
+  ---
+  duration_ms: 0.975875
+  type: 'test'
+  ...
+# Subtest: unknown stamp inspection preserves a live stamped PID during replacement
+ok 81 - unknown stamp inspection preserves a live stamped PID during replacement
+  ---
+  duration_ms: 1.688583
+  type: 'test'
+  ...
+# Subtest: unknown stamp inspection preserves a live stamped PID during delete
+ok 82 - unknown stamp inspection preserves a live stamped PID during delete
+  ---
+  duration_ms: 2.276083
+  type: 'test'
+  ...
+# Subtest: unknown stamp inspection preserves a live stamped PID during sweep
+ok 83 - unknown stamp inspection preserves a live stamped PID during sweep
+  ---
+  duration_ms: 1.681916
+  type: 'test'
+  ...
+# Subtest: stamp inspection lost after SIGTERM preserves the PID and does not signal an unverified process again
+ok 84 - stamp inspection lost after SIGTERM preserves the PID and does not signal an unverified process again
+  ---
+  duration_ms: 73.794041
+  type: 'test'
+  ...
+# Subtest: a turn waits for the CLI answer without blocking, and fails with its cause when it comes
+ok 85 - a turn waits for the CLI answer without blocking, and fails with its cause when it comes
+  ---
+  duration_ms: 1.388042
+  type: 'test'
+  ...
+1..85
+# tests 85
+# suites 0
+# pass 73
+# fail 0
+# cancelled 0
+# skipped 12
+# todo 0
+# duration_ms 596.944083

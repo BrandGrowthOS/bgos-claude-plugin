@@ -8,7 +8,7 @@ async function fixture(){
   for(const page of [first,second])Object.assign(page,{consoleMessages:async()=>[],pageErrors:async()=>[],requests:async()=>[],bringToFront:async()=>{selected.push(page)}})
   native.pages=()=>[first,second];native.browser=()=>browser;native.newPage=()=>{throw Error('must not create a replacement page')}
   const {tools}=loadPlaywright(),config=await resolveConfig({caps:[],outputDir:process.cwd()}),backend=new tools.BrowserBackend(config,native,[]);await backend.initialize({cwd:process.cwd(),name:'fixture',version:'1'})
-  let current=true;const engine:any=new PlaywrightEngine({endpoint:null,caps:[],outputDir:process.cwd(),clientName:'fixture',clientVersion:'1',managedRuntime:{assertCurrent(){if(!current)throw Error('fixture_authority_revoked')}}})
+  let current=true;const engine:any=new PlaywrightEngine({caps:[],outputDir:process.cwd(),clientName:'fixture',clientVersion:'1',managedRuntime:{assertCurrent(){if(!current)throw Error('fixture_authority_revoked')}}})
   engine._backend=backend;engine._context=native
   return{engine,backend,first,second,selected,revoke:()=>{current=false},dispose:()=>backend.dispose()}
 }

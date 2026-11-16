@@ -30,6 +30,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import * as missions from '../lib/missions.ts'
+import { createMissionWorkingTracker } from '../lib/mission-working.ts'
 import { BGOS_CAPABILITIES_FALLBACK } from '../lib/capabilities.ts'
 import { DECLARED_CAPABILITIES_BASE, declaredCapabilities } from '../lib/declared-capabilities.ts'
 import { OWN_MCP_TOOLS } from '../lib/hook-events.ts'
@@ -93,10 +94,19 @@ function rig(privateCall: { actingUserId: string; chatId: string; headers: Recor
     bgosPut: async (path: string, body: unknown, headers?: Record<string, string>) => { sent.push({ method: 'PUT', path, body, headers: headersOf(headers) }); return answer },
     bgosDelete: async (path: string, headers?: Record<string, string>) => { sent.push({ method: 'DELETE', path, headers: headersOf(headers) }); return answer },
   }
+  bindings.hookIntake = { bound: () => 'session-a' }
+  bindings.missionWorking = createMissionWorkingTracker({
+    isArmed: () => true,
+    patch: (scope, working) => (bindings.bgosPatch as Patch)(`integrations/assistants/900/missions/${scope.missionId}/goals/${scope.goalId}/working`, { working }, scope.headers),
+  })
   const run = async (name: string, rawArgs: Record<string, unknown>) =>
     execute(`${missionHelpers}\nreturn (async () => { switch(name) { ${missionCases} } })();`, { ...bindings, name, rawArgs })
   const writes = () => sent.filter((c) => c.method === 'PATCH')
-  return { sent, writes, run, stamped, remembered }
+  return { sent, writes, run, stamped, remembered,
+    setBound: (sessionId: string | null) => { bindings.hookIntake = { bound: () => sessionId } },
+    disconnectHooks: () => { bindings.hookIntake = null },
+    tracker: bindings.missionWorking as ReturnType<typeof createMissionWorkingTracker>,
+  }
 }
 
 const ownerCall = { actingUserId: OWNER, chatId: OWNER_CHAT, headers: {} as Record<string, string> }
@@ -194,6 +204,32 @@ test('set_goal_working with working false clears each mark the same way', async 
   assert.notEqual(result?.isError, true, textOf(result))
   assert.deepEqual(r.writes().map((c) => [c.path, c.body]), [['integrations/assistants/900/missions/77/goals/3/working', { working: false }]])
   assert.match(textOf(result), /cleared/i)
+})
+
+for (const intake of ['unbound', 'absent']) {
+  test(`set_goal_working with ${intake} hook intake gives manual refresh guidance`, async () => {
+    const r = rig(ownerCall)
+    if (intake === 'unbound') r.setBound(null)
+    else r.disconnectHooks()
+    const result = await r.run('set_goal_working', { goal_ids: [3], working: true })
+    assert.notEqual(result?.isError, true, textOf(result))
+    assert.match(textOf(result), /Marked working: goal 3/)
+    assert.match(textOf(result), /no bound hook session/i)
+    assert.match(textOf(result), /refresh within 30 minutes/i)
+    assert.doesNotMatch(textOf(result), /Hook activity refreshes|Stop clears/)
+    r.setBound('session-a')
+    await r.tracker.onHook({ hook_event_name: 'Stop', session_id: 'session-a' })
+    assert.equal(r.writes().length, 1, 'binding later must not imply ownership of the manual write')
+  })
+}
+
+test('set_goal_working with a bound session describes its real hook lifecycle', async () => {
+  const r = rig(ownerCall)
+  const result = await r.run('set_goal_working', { goal_ids: [3], working: true })
+  assert.match(textOf(result), /Hook activity refreshes selected goals/)
+  assert.match(textOf(result), /Stop clears the selection/)
+  await r.tracker.onHook({ hook_event_name: 'Stop', session_id: 'session-a' })
+  assert.deepEqual(r.writes().map(call => call.body), [{ working: true }, { working: false }])
 })
 
 test('set_goal_working on a recipient turn carries their caller header on every write', async () => {
@@ -317,6 +353,8 @@ test("after a mark the owner's next Pause and Resume are still heard (found in r
     ;(real as any).run = async (name: string, rawArgs: Record<string, unknown>) =>
       execute(`${missionHelpers}\nreturn (async () => { switch(name) { ${missionCases} } })();`, {
         ...missions, privateCall: ownerCall, ASSISTANT_ID: '900', USER_ID: OWNER, log: () => {},
+        hookIntake: { bound: () => 'session-a' },
+        missionWorking: createMissionWorkingTracker({ isArmed: () => true, patch: async () => ({ mission: { ...MISSION, updatedAt: '2026-10-31T10:00:00.000Z' } }) }),
         monitoredChatIds: [OWNER_CHAT], meetingIdByChatId: new Map(), lastInboundUserByChat: new Map([[OWNER_CHAT, OWNER]]),
         turnChat: { current: () => ({ chatId: OWNER_CHAT }) }, resolveAuthorizedChat: (chatId: string) => ({ ok: true, chatId }),
         formatMissionSummary: () => 'summary',
@@ -372,7 +410,8 @@ test('both tools are declared with the brief schema, chat_id and mission_id opti
   // The DESCRIPTION, joined as the model reads it, not the schema below it:
   // the refresh rule must be the tool's own instruction, not a field hint.
   const description = working.slice(working.indexOf('description:'), working.indexOf('inputSchema:')).replace(/'\s*\+\s*'/g, '')
-  assert.match(description, /call this again with working: true within 30 minutes for every goal you are still working on/, 'the refresh rule is in the description')
+  assert.match(description, /tool activity refreshes selected goals at most once per 10 minutes/, 'automatic refresh is described')
+  assert.match(description, /If hooks are unavailable, call this again with working: true within 30 minutes/, 'manual fallback is described')
   assert.match(description, /working: false when you stop/)
   assert.match(working, /integrations\/assistants\/:id\/missions\/:missionId\/goals\/:goalId\/working/)
   const waiting = declaration('set_goal_waiting')

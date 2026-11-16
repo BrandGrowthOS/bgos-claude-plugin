@@ -16,13 +16,13 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { linkFolder } from './helpers/links.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -35,7 +35,7 @@ function runMarker(scriptPath: string, home: string) {
 }
 
 test('the marker is written when the script is run through its real path', () => {
-  const home = mkdtempSync(join(tmpdir(), 'kamark-real-'))
+  const home = scratchDir('kamark-real-')
   const res = runMarker(join(repoRoot, 'bin', 'hoai-keepalive-marker.mjs'), home)
   assert.equal(res.status, 0)
   const file = join(home, '.bgos-agent', '1050', 'keepalive.json')
@@ -44,10 +44,10 @@ test('the marker is written when the script is run through its real path', () =>
 })
 
 test('the marker is written when the script is run through a symlinked checkout', () => {
-  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'kamark-link-')))
+  const scratch = realpathSync(scratchDir('kamark-link-'))
   const alias = join(scratch, 'alias')
   linkFolder(repoRoot, alias)
-  const home = mkdtempSync(join(tmpdir(), 'kamark-home-'))
+  const home = scratchDir('kamark-home-')
   const res = runMarker(join(alias, 'bin', 'hoai-keepalive-marker.mjs'), home)
   assert.equal(res.status, 0)
   const file = join(home, '.bgos-agent', '1050', 'keepalive.json')

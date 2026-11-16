@@ -234,7 +234,7 @@ describe('server.ts wiring', () => {
   test('every inbound sender write also notes the acting user', () => {
     const writes = (src.match(/lastInboundUserByChat\.set\(/g) ?? []).length
     const notes = (src.match(/actingUser\.noteInbound\(/g) ?? []).length
-    expect(writes).toBe(3)
+    expect(writes).toBe(4)
     expect(notes).toBe(writes)
   })
 })

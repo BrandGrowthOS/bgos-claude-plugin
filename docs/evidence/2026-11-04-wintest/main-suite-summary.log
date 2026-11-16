@@ -1,0 +1,25 @@
+# Unchanged main, e6e7271, before this work. Totals only.
+[run-tests] 416 node:test files via tsx, then 7 real Chromium files one at a time, 15 bun:test files via bun
+[run-tests] node:test family: npx tsx --test --test-concurrency=4 ... (419 args)
+ℹ tests 8628
+ℹ pass 8575
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 53
+ℹ duration_ms 491119.544791
+[run-tests] real Chromium files, one at a time: npx tsx --test --test-concurrency=1 ... (10 args)
+ℹ tests 15
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 4
+ℹ duration_ms 110908.987
+[run-tests] bun:test family: bun test --max-concurrency=4 test/acting-user.test.ts ... (17 args)
+ 377 pass
+ 1 skip
+ 0 fail
+Ran 378 tests across 15 files. [15.71s]
+[run-tests] both families green
+real 619.67
+user 390.03
+sys 194.11

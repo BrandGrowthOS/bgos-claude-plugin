@@ -279,6 +279,22 @@ test('an oversized payload is reduced to the fields the mapper reads, and nothin
   }
 })
 
+test('an oversized Stop keeps what session_crons says, and no prompt: it is what a restart would lose', () => {
+  const clipped = clipPayload(
+    payloadOf({
+      hook_event_name: 'Stop',
+      last_assistant_message: 'x'.repeat(2 * PAYLOAD_MAX_BYTES),
+      session_crons: [
+        { id: 'a', schedule: '30 12 * * *', recurring: false, prompt: 'P'.repeat(PAYLOAD_MAX_BYTES) },
+        { id: 'b', schedule: '*/10 * * * *', recurring: true, prompt: 'keep watching' },
+        { id: 'c', schedule: '1 2 * * *' },
+      ],
+    }),
+  ) as Record<string, any>
+  assert.deepEqual(clipped.session_crons, [{ recurring: false }, { recurring: true }, { recurring: false }])
+  assert.ok(Buffer.byteLength(JSON.stringify(clipped), 'utf8') < PAYLOAD_MAX_BYTES)
+})
+
 test('an oversized CHILD tool event keeps the two fields that say whose work it is', () => {
   // Without these, a child's Bash result with a large stdout arrives with its
   // agent_id gone and reads as the parent's own work: the helper row loses its

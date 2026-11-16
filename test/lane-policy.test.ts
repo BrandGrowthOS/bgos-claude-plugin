@@ -35,9 +35,7 @@ import { LANE_BUILTIN_TOOLS } from '../lib/lane-core.mjs'
 import {
   agentFolderVerdict,
   laneAgentFolderSecretDenies,
-  laneShellReadDenies,
   laneShellSandboxAvailable,
-  LANE_SHELL_SANDBOX,
   compareToolPolicy,
   decideLaneRestart,
   effectiveLaneChoices,
@@ -106,12 +104,12 @@ test('DENY webFetch: off, WebFetch and WebSearch are absent; on, exactly they ar
   assert.deepEqual(laneAllowAdditions(only('webFetch'), { platform: 'darwin' }), ['WebFetch', 'WebSearch'])
 })
 
-test('DENY shell: off, Bash is absent; on, exactly Bash is added', () => {
+test('DENY shell: a grant never adds Bash', () => {
   const off = { ...ALL_ON, shell: false }
   assert.ok(!laneToolsFor(off, LANE_BUILTIN_TOOLS).includes('Bash'))
   assert.ok(!laneAllowAdditions(off, { platform: 'darwin' }).includes('Bash'))
-  assert.deepEqual(laneToolsFor(only('shell'), LANE_BUILTIN_TOOLS), [...LANE_BUILTIN_TOOLS, 'Bash'])
-  assert.deepEqual(laneAllowAdditions(only('shell'), { platform: 'darwin' }), ['Bash'])
+  assert.deepEqual(laneToolsFor(only('shell'), LANE_BUILTIN_TOOLS), [...LANE_BUILTIN_TOOLS])
+  assert.deepEqual(laneAllowAdditions(only('shell'), { platform: 'darwin' }), [])
 })
 
 test('DENY readAgentFolder: off, no rule names the agent folder; on, Read is allowed and Edit denied there', () => {
@@ -133,24 +131,6 @@ test('readAgentFolder never opens the agent folder\'s credentials: MCP config, g
   assert.deepEqual(laneAgentFolderSecretDenies(AGENT, 'darwin').every((r: string) => denies.includes(r)), true)
 })
 
-test('shell: the sandbox with unsandboxed commands OFF, and every secret, other lane and control file denied to it (review C1, H3)', () => {
-  assert.deepEqual({ ...LANE_SHELL_SANDBOX }, { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false })
-  const laneDir = '/Users/owner/.bgos-agent/1076/people/user_ana'
-  const denies = laneShellReadDenies({ home: '/Users/owner', laneDir, otherLaneDirs: ['/Users/owner/.bgos-agent/1076/people/user_ben', '/Users/owner/.bgos-agent/900/people/user_cy'], agentFolder: AGENT, platform: 'darwin' })
-  for (const rule of [
-    'Read(//Users/owner/.ssh/**)', 'Read(//Users/owner/.claude/**)', 'Read(//Users/owner/.claude.json)', 'Read(//Users/owner/Library/Keychains/**)',
-    'Read(//Users/owner/.bgos-plugin-state/**)', 'Read(//Users/owner/.bgos-agent/*.json)', 'Read(//Users/owner/.bgos-agent/**/credentials*.json)',
-    'Read(//Users/owner/.bgos-agent/*/browser/**)',
-    'Read(//Users/owner/.bgos-agent/1076/people/user_ben/**)', 'Read(//Users/owner/.bgos-agent/900/people/user_cy/**)',
-    `Read(/${laneDir}/mcp.json)`, `Read(/${laneDir}/launch-policy.json)`, `Read(/${laneDir}/restart-request.json)`, `Read(/${laneDir}/events.jsonl)`,
-    `Read(/${AGENT}/.mcp.json)`,
-  ]) assert.ok(denies.includes(rule), `${rule} is denied`)
-  assert.ok(!denies.some((r: string) => r.includes(`${laneDir}/work`)), 'never the lane\'s own working folder')
-  for (const rule of ['Read(//Users/owner/**/.env*)', 'Read(//Users/owner/**/.mcp.json)', 'Read(//Users/owner/**/credentials*.json)', 'Read(//Users/owner/.bgos-agent/logs/**)', 'Read(//Users/owner/.bgos-agent/**/*.log)']) {
-    assert.ok(denies.includes(rule), `${rule} is denied (round 2, N3 and N4)`)
-  }
-})
-
 test('the Bash sandbox exists only where the operating system provides it (round 2, N1)', () => {
   assert.equal(laneShellSandboxAvailable({ platform: 'darwin', exists: (p: string) => p === '/usr/bin/sandbox-exec', onPath: () => false }), true)
   assert.equal(laneShellSandboxAvailable({ platform: 'darwin', exists: () => false, onPath: () => true }), false)
@@ -159,10 +139,10 @@ test('the Bash sandbox exists only where the operating system provides it (round
   assert.equal(laneShellSandboxAvailable({ platform: 'win32', exists: () => true, onPath: () => true }), false)
 })
 
-test('DENY ownerMcpServers: off, no owner server is allowed; on, each loaded server by name and nothing else', () => {
+test('DENY ownerMcpServers: no grant allows an owner server', () => {
   const off = { ...ALL_ON, ownerMcpServers: false }
   assert.ok(!laneAllowAdditions(off, { ownerServerNames: ['mail', 'drive'], platform: 'darwin' }).some((r: string) => r.startsWith('mcp__')))
-  assert.deepEqual(laneAllowAdditions(only('ownerMcpServers'), { ownerServerNames: ['mail', 'drive'], platform: 'darwin' }), ['mcp__mail', 'mcp__drive'])
+  assert.deepEqual(laneAllowAdditions(only('ownerMcpServers'), { ownerServerNames: ['mail', 'drive'], platform: 'darwin' }), [])
 })
 
 test('DENY browser: never loaded and never allowed, whatever the policy says', () => {
@@ -174,10 +154,10 @@ test('DENY browser: never loaded and never allowed, whatever the policy says', (
 })
 
 test('a change: tighter when anything launched is now off (even if another came on), looser when only additions', () => {
-  assert.equal(compareToolPolicy(only('shell'), LOCKED_TOOL_POLICY), 'tighter')
-  assert.equal(compareToolPolicy(only('shell'), only('webFetch')), 'tighter')
+  assert.equal(compareToolPolicy(only('shell'), LOCKED_TOOL_POLICY), 'same')
+  assert.equal(compareToolPolicy(only('shell'), only('webFetch')), 'looser')
   assert.equal(compareToolPolicy(LOCKED_TOOL_POLICY, only('webFetch')), 'looser')
-  assert.equal(compareToolPolicy(only('webFetch'), { ...only('webFetch'), shell: true }), 'looser')
+  assert.equal(compareToolPolicy(only('webFetch'), { ...only('webFetch'), shell: true }), 'same')
   assert.equal(compareToolPolicy(ALL_ON, ALL_ON), 'same')
   assert.equal(compareToolPolicy(null, null), 'same')
   assert.equal(compareToolPolicy(ALL_ON, { v: 2 }), 'tighter', 'an unknown version reads locked: tighter')
@@ -285,4 +265,12 @@ test('restart timing: now at once; idle only with no turn in flight and a quiet 
   assert.equal(decideLaneRestart({ request: idle, inFlight: false, lastActivityAtMs: t - 60_000, startedAtMs: 0, nowMs: t }), 'now')
   assert.equal(decideLaneRestart({ request: idle, inFlight: false, lastActivityAtMs: null, startedAtMs: t - 10_000, nowMs: t }), 'wait')
   assert.equal(decideLaneRestart({ request: null, inFlight: false, lastActivityAtMs: null, startedAtMs: 0, nowMs: t }), 'wait')
+})
+
+
+test('refused shell and owner tool options never restart an effective launch', () => {
+  for (const option of ['shell', 'ownerMcpServers']) {
+    assert.equal(compareToolPolicy(only(option), LOCKED_TOOL_POLICY), 'same')
+    assert.equal(compareToolPolicy(LOCKED_TOOL_POLICY, only(option)), 'same')
+  }
 })

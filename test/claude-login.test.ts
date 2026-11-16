@@ -9,8 +9,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import {
@@ -29,6 +28,7 @@ import {
 } from '../lib/claude-login.ts'
 import { mungeCwd } from '../lib/usage-report.ts'
 import { heartbeatEnv } from '../lib/version-heartbeat.ts'
+import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const NOW = Date.parse('2026-10-09T12:00:00.000Z')
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString()
@@ -189,7 +189,7 @@ test('heartbeatEnv carries the account only in the shapes the backend accepts', 
 })
 
 test('ClaudeLoginWatcher reads only appended bytes, from a fresh startup tail', () => {
-  const home = mkdtempSync(join(tmpdir(), 'claude-login-'))
+  const home = scratchDir('claude-login-')
   const cwd = '/Users/kc/agents/athena'
   const dir = join(home, 'projects', mungeCwd(cwd))
   mkdirSync(dir, { recursive: true })

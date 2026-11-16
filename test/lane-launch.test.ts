@@ -39,6 +39,7 @@ import {
   LANE_CLAUDE_FIXED_ENV,
   LANE_FORBIDDEN_FLAGS,
   LANE_LOGIN_ENV,
+  LANE_LOGIN_CONFIG_ENV,
 } from '../lib/lane-core.mjs'
 
 const HOME = '/Users/owner'
@@ -185,7 +186,7 @@ test('K2 (a), inherit: every login variable the owner had passes through byte fo
   const env = envFor(owner, { mode: 'inherit' })
   assert.equal(env.CLAUDE_CONFIG_DIR, '/Users/owner/.claude-work ', 'not trimmed, not resolved: byte for byte')
   assert.equal(env.ANTHROPIC_BASE_URL, 'https://proxy.example/x')
-  assert.deepEqual([...LANE_LOGIN_ENV].sort(), ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'].sort())
+  assert.deepEqual([...LANE_LOGIN_ENV, ...LANE_LOGIN_CONFIG_ENV].sort(), ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'].sort())
 })
 
 test('K2 (b), own token: the lane\'s own config folder and token, never the owner\'s login', () => {
@@ -209,7 +210,18 @@ test('tool search is off in every lane, whatever the owner exported, under eithe
     assert.equal(envFor(OWNER_ENV, login).ENABLE_TOOL_SEARCH, 'false')
     assert.equal(envFor({ ...OWNER_ENV, ENABLE_TOOL_SEARCH: 'true' }, login).ENABLE_TOOL_SEARCH, 'false', 'the owner\'s own setting never reaches a lane')
   }
-  assert.deepEqual(LANE_CLAUDE_FIXED_ENV, { ENABLE_TOOL_SEARCH: 'false' }, 'the one fixed variable, and nothing that widens the lane')
+  assert.deepEqual(LANE_CLAUDE_FIXED_ENV, { ENABLE_TOOL_SEARCH: 'false', NODE_DISABLE_COMPILE_CACHE: '1' })
+})
+
+test('locked lane environments discard the owner subprocess scrub setting under both logins', () => {
+  const logins = [{ mode: 'inherit' as const }, { mode: 'own_token' as const, token: 'sk-ant-oat01-standin-person-token', configDir: PATHS.configDir }]
+  for (const login of logins) {
+    for (const owner of [OWNER_ENV, { ...OWNER_ENV, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '0' }, { ...OWNER_ENV, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1' }]) {
+      const env = envFor(owner, login)
+      assert.equal('CLAUDE_CODE_SUBPROCESS_ENV_SCRUB' in env, false, 'the owner\'s own setting never reaches a lane')
+      assert.equal('CLAUDE_CODE_SUBPROCESS_ENV_SCRUB' in env, false, 'the shared environment is not changed')
+    }
+  }
 })
 
 test('lane folders: the floor\'s own-lane key, secrets in the plugin state folder, unsafe ids refused', () => {
@@ -222,4 +234,9 @@ test('lane folders: the floor\'s own-lane key, secrets in the plugin state folde
     assert.throws(() => lanePaths({ home: HOME, assistantId: '1076', userId: bad }), /unsafe/)
   }
   assert.throws(() => lanePaths({ home: HOME, assistantId: '../1', userId: 'user_ana' }), /unsafe/)
+})
+
+test('locked settings have no PermissionRequest hook', () => {
+  const base = { workDir: PATHS.workDir, userId: 'user_ana', nodePath: '/n', floorHookPath: '/h', platform: 'darwin' }
+  assert.equal('PermissionRequest' in laneSettingsBody(base).hooks, false)
 })

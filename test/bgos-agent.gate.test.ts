@@ -24,8 +24,7 @@
  * Run: npm test, or npx tsx --test test/bgos-agent.gate.test.ts
  */
 import { spawn } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test, type TestContext } from 'node:test'
@@ -38,6 +37,7 @@ import {
   buildGateAutoAcceptExpect,
   readGateBlock,
 } from '../bin/hoai-core.mjs'
+import { scratchDir } from './helpers/scratch-dirs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const agentSource = readFileSync(join(repoRoot, 'bin', 'bgos-agent'), 'utf8')
@@ -95,7 +95,7 @@ setTimeout(() => process.exit(0), 14000)
 
 /** The supervised script hoai would spawn, with the simulator standing in for claude. */
 function generate(failcount?: number): { dir: string; script: string } {
-  const root = mkdtempSync(join(tmpdir(), 'hoai-agent-gate-'))
+  const root = scratchDir('hoai-agent-gate-')
   const dir = join(root, 'state')
   mkdirSync(dir)
   if (failcount !== undefined) writeFileSync(join(dir, 'failcount'), `${failcount}\n`)

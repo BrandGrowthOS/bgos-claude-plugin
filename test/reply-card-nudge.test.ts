@@ -20,6 +20,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
+import * as peerClosedReply from '../lib/peer-closed-reply.ts'
 
 // Absent on code without the nudge, which is exactly what the red run needs.
 const shapes: Record<string, unknown> = await import('../lib/reply-card-shape.ts').catch(() => ({}))
@@ -135,6 +136,7 @@ function harness(opts: {
   const sent: string[] = []
   const logs: string[] = []
   const closedPeerChats = new Set<string>(opts.closedChats ?? [])
+  const peerConvByChat = new Map((opts.peerChats ?? []).map((c) => [c, '76']))
   let peerSendResult: unknown = null
   const recorder: unknown = new Proxy(function () {}, {
     get: (_t, key) => (key === Symbol.toPrimitive ? () => '' : recorder),
@@ -143,6 +145,7 @@ function harness(opts: {
   const Nudges = shapes.ReplyCardNudges as (new (o: { now: () => number }) => unknown) | undefined
   const known: Record<string, unknown> = {
     ...shapes,
+    ...peerClosedReply,
     Date: FakeDate,
     log: (line: string) => logs.push(line),
     ASSISTANT_ID: '947',
@@ -150,7 +153,11 @@ function harness(opts: {
     peerReplyRefusedChats: new Set<string>(),
     pendingInbounds: new Map<string, unknown>(),
     meetingIdByChatId: new Map<string, number>(),
-    peerConvByChat: new Map((opts.peerChats ?? []).map((c) => [c, '76'])),
+    peerConvByChat,
+    peerSideThreadChats: new Set<string>(),
+    mainChatIds: ['33001'],
+    groupChatIds: new Set<string>(),
+    meetingChatIds: new Set<string>(),
     peerConvChats: new Map((opts.peerChats ?? []).map((c) => ['76', c])),
     closedPeerChats,
     bgosPeerPost: async () => peerSendResult,
@@ -162,7 +169,11 @@ function harness(opts: {
       assert.equal(path, 'send-message')
       sent.push(JSON.stringify(body))
       if (opts.failSend) throw new Error('HTTP 500: Internal server error')
-      return { message: { id: 9002 } }
+      const chatId = String((body as { chatId: unknown }).chatId)
+      return {
+        message: { id: 9002 },
+        ...(peerConvByChat.has(chatId) ? { peerDelivery: { state: 'forwarded' } } : {}),
+      }
     },
     // The gate's own inputs, as a Linux pairing with no tmux target reads them.
     compactTarget: null,
@@ -220,33 +231,33 @@ test('a card shaped reply returns the line once, a second within 30 minutes does
 
   const first = textOf(await h.reply('33001', EMAIL_DRAFT))
   const [sentLine, nudge, ...rest] = first.split('\n')
-  assert.equal(sentLine, 'Sent (message_id: 9002)')
+  assert.equal(sentLine, 'Sent (message_id: 9002) Delivered to the main chat 33001.')
   assert.equal(rest.length, 0, 'exactly ONE line appended')
   assert.ok(nudge.startsWith(LINE_START), nudge)
   assert.ok(nudge.includes('an email draft: a keyvalue block for To, Cc and Subject, then the body'), nudge)
   assert.ok(nudge.includes('show_component with kind ui_card (see Cards you compose in bgos_capabilities)'), nudge)
 
   h.advance(10 * MINUTE)
-  assert.equal(textOf(await h.reply('33001', TABLE)), 'Sent (message_id: 9002)', 'inside the window')
+  assert.equal(textOf(await h.reply('33001', TABLE)), 'Sent (message_id: 9002) Delivered to the main chat 33001.', 'inside the window')
   h.advance(19 * MINUTE)
-  assert.equal(textOf(await h.reply('33001', EMAIL_DRAFT)), 'Sent (message_id: 9002)', 'still inside the window')
+  assert.equal(textOf(await h.reply('33001', EMAIL_DRAFT)), 'Sent (message_id: 9002) Delivered to the main chat 33001.', 'still inside the window')
 
   h.advance(1 * MINUTE)
   const later = textOf(await h.reply('33001', TABLE))
-  assert.ok(later.startsWith('Sent (message_id: 9002)\n'), later)
+  assert.ok(later.startsWith('Sent (message_id: 9002) Delivered to the main chat 33001.\n'), later)
   assert.ok(later.includes('a table block'), 'past the window the table is named')
   assert.equal(h.sent.length, 4, 'every reply was sent')
 })
 
 test('a prose reply returns the plain result', async () => {
   const h = harness({ declared: DECLARED })
-  assert.equal(textOf(await h.reply('33001', PROSE)), 'Sent (message_id: 9002)')
+  assert.equal(textOf(await h.reply('33001', PROSE)), 'Sent (message_id: 9002) Delivered to the main chat 33001.')
 })
 
 test('an undeclared daemon never gets the line', async () => {
   const h = harness({ declared: UNDECLARED })
   for (const text of [EMAIL_DRAFT, TABLE, EMAIL_DRAFT]) {
-    assert.equal(textOf(await h.reply('33001', text)), 'Sent (message_id: 9002)')
+    assert.equal(textOf(await h.reply('33001', text)), 'Sent (message_id: 9002) Delivered to the main chat 33001.')
     h.advance(31 * MINUTE)
   }
   assert.equal(h.sent.length, 3)
@@ -281,7 +292,7 @@ test('a failed send is not nudged and reads as before', async () => {
 
 test('a reply into a peer side thread is never nudged (the reader is an agent)', async () => {
   const h = harness({ declared: DECLARED, peerChats: ['33017'] })
-  assert.equal(textOf(await h.reply('33017', TABLE)), 'Sent (message_id: 9002)')
+  assert.equal(textOf(await h.reply('33017', TABLE)), 'Sent (message_id: 9002) Delivered to the side thread 33017.')
   // And the side thread spent nothing: the owner's chat is still nudged.
   assert.ok(textOf(await h.reply('33001', TABLE)).includes(LINE_START))
 })
@@ -292,7 +303,7 @@ test('an error deciding the nudge is swallowed and logged, the send result stand
       throw new Error('declared list unreadable')
     },
   })
-  assert.equal(textOf(await h.reply('33001', TABLE)), 'Sent (message_id: 9002)')
+  assert.equal(textOf(await h.reply('33001', TABLE)), 'Sent (message_id: 9002) Delivered to the main chat 33001.')
   assert.equal(h.sent.length, 1)
   assert.ok(h.logs.some((line) => /declared list unreadable/.test(line)), h.logs.join('\n'))
 })
@@ -302,7 +313,7 @@ test('a side thread this agent opened with send_to_peer is not nudged before the
   const opened = await h.sendToPeer('33017', 77)
   assert.ok(!opened.isError, textOf(opened))
   // The peer has not answered yet: no inbound has named the conversation.
-  assert.equal(textOf(await h.reply('33017', TABLE)), 'Sent (message_id: 9002)')
+  assert.equal(textOf(await h.reply('33017', TABLE)), 'Sent (message_id: 9002) Delivered to the side thread 33017.')
   // And the side thread spent nothing: the owner's chat is still nudged.
   assert.ok(textOf(await h.reply('33001', TABLE)).includes(LINE_START))
 })

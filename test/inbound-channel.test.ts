@@ -198,6 +198,6 @@ test('poll, WS, and stream delivery all use the shared channel builder', () => {
   assert.match(stream, /const isStreamAgent = isAgentInbound\(\{/)
   assert.ok(
     stream.indexOf('rememberPeerConvChat(view.peerConversationId, chatId)') <
-      stream.indexOf('await trackMessageOperation'),
+      stream.indexOf('const humanHandoff = trackMessageOperation'),
   )
 })

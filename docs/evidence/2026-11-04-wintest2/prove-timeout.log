@@ -1,0 +1,8 @@
+{"TEST_TIMEOUT_MS":120000,"FILE_IDLE_TIMEOUT_MS":270000,"node":"v24.22.2"}
+{"file":"async-hang.test.cjs","code":1,"timedOut":false,"failures":["deliberate async hang"],"seconds":120}
+error: 'test timed out after 120000ms'
+{"file":"blocked-loop.test.cjs","code":1,"timedOut":true,"failures":[],"seconds":270}
+[run-tests] TIMEOUT blocked-loop.test.cjs: no test completed for 270000ms
+PROVED
+Removed the deliberate hang fixtures.
+prove exit 0

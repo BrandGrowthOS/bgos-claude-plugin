@@ -1,8 +1,9 @@
 // ── Agent email files, outbound: the content stage of rule 4 ──
 //
-// HOAI row 5b141728, step 2 (DESIGN-OUT.md D7, rule 4), review round 7. What lib/email-outbound-files.ts reads of a
+// Step 2 (DESIGN-OUT.md D7, rule 4), review round 7. What lib/email-outbound-files.ts reads of a
 // text, Word or Excel file's words, moved here whole so it runs in a worker thread
-// (lib/email-outbound-content-worker.ts) that the daemon's main thread ends at a hard deadline: a text file's header
+// (lib/email-outbound-content-worker.ts) that the daemon's main thread ends at a hard deadline: a text file's type
+// check (clean UTF-8 text, lib/email-clean-text.ts, first, before any budget is read), a text file's header
 // (a password column), a Word or Excel file's rows and words (officeWords), and on the decoded text a private key, a
 // cookie file's header, this daemon's own credential, a recovery key, a wallet recovery phrase, the shared secret
 // scanner (lib/secret-scan.ts) and a password written out. No file system call and no clock other than the Worker's
@@ -15,6 +16,7 @@
 import { createInflateRaw } from 'node:zlib'
 
 import { BIP39_ENGLISH_WORDS } from './bip39-english.ts'
+import { cleanTextOf } from './email-clean-text.ts'
 import { scanText } from './secret-scan.ts'
 
 const MB = 1024 * 1024
@@ -22,7 +24,7 @@ const MB = 1024 * 1024
 /**
  * Round 9: the content stage's own budget, on the Worker's own clock (Date.now). Every check reads it between its
  * steps (the walks every STEPS_PER_CHECK steps, the scanner between its pieces, the readers of a Word or Excel file at
- * every element), and a file over it is refused by the Worker itself ('unsafe', "could not be read safely"), which then
+ * every element), and a file over it is refused by the Worker itself ('over_budget', try again words), which then
  * takes the next file. The main thread's hard deadline (email-outbound-files.ts outboundContentHardDeadlineMs) ends
  * after it, so the Worker is replaced only when something no check reads runs long. Round 11: under bun a replaced
  * Worker is not stopped while its code runs (terminate lands at its next turn of the event loop) and keeps what it has
@@ -52,6 +54,11 @@ function checkBudget(clock: StageClock): void {
 interface StageBudget extends StageClock {
   start: number
   grows: boolean
+}
+
+/** A file's budget by its size, which grows with what is read from it (grow). */
+function sizedBudget(size: number, start: number): StageBudget {
+  return { start, deadline: start + officeReadBudgetMs(size), grows: true }
 }
 
 function grow(budget: StageBudget, size: number): void {
@@ -778,8 +785,10 @@ export const OFFICE_TEXT_MAX = 25 * MB
  */
 export const OFFICE_ELEMENTS_MAX = 3_000_000
 
-/** Round 6: a Word or Excel file that would cost too much to read (a zip bomb's shape, or past the clock). */
+/** Round 6: a Word or Excel file that would cost too much to read (a zip bomb's shape). Past the clock is OverBudget. */
 class OfficeUnsafe extends Error {}
+/** What inflating a part answers when the budget ends during it. */
+const OUT_OF_TIME = 'out of time'
 
 /** Round 6: one Word or Excel file being read: its bytes, the inflate budget left, and the clock. */
 interface OfficeRead {
@@ -885,7 +894,7 @@ function zipEntries(bytes: Uint8Array, clock: StageClock = NO_CLOCK): ZipEntry[]
  * Round 6: a deflate stream inflated until it ends or until `limit` bytes are out, whichever comes first: the bytes, and
  * whether there was more. A stream is used so the inflate stops at the limit, never inflating the rest.
  */
-function inflateUpTo(body: Uint8Array, limit: number, read: OfficeRead, declared: number): Promise<{ out: Uint8Array; more: boolean } | 'unreadable' | 'unsafe'> {
+function inflateUpTo(body: Uint8Array, limit: number, read: OfficeRead, declared: number): Promise<{ out: Uint8Array; more: boolean } | 'unreadable' | typeof OUT_OF_TIME> {
   return new Promise((resolve) => {
     const z = createInflateRaw({ chunkSize: 64 * 1024 })
     // Round 10: inflated into ONE buffer, sized by the size the zip declares (at most limit + 1, to see there is more)
@@ -894,7 +903,7 @@ function inflateUpTo(body: Uint8Array, limit: number, read: OfficeRead, declared
     let out = new Uint8Array(Math.min(limit + 1, Math.max(64 * 1024, declared + 1)))
     let size = 0
     let done = false
-    const finish = (value: { out: Uint8Array; more: boolean } | 'unreadable' | 'unsafe') => {
+    const finish = (value: { out: Uint8Array; more: boolean } | 'unreadable' | typeof OUT_OF_TIME) => {
       if (done) return
       done = true
       resolve(value)
@@ -910,7 +919,7 @@ function inflateUpTo(body: Uint8Array, limit: number, read: OfficeRead, declared
       }
       out.set(chunk.subarray(0, kept), size)
       size += kept
-      if (Date.now() > read.budget.deadline) finish('unsafe')
+      if (Date.now() > read.budget.deadline) finish(OUT_OF_TIME)
       else if (size > limit) finish({ out: out.subarray(0, limit), more: true })
     })
     z.on('end', () => finish({ out: out.subarray(0, size), more: false }))
@@ -936,11 +945,11 @@ async function zipInflate(read: OfficeRead, entry: ZipEntry, head?: number, max?
   // Round 8: `max`, a part's own cap that refuses the file past it (Word's main part: OFFICE_TEXT_MAX).
   const cap = head ?? max ?? OFFICE_PART_MAX
   const limit = Math.min(cap, read.left)
-  let got: { out: Uint8Array; more: boolean } | 'unreadable' | 'unsafe'
+  let got: { out: Uint8Array; more: boolean } | 'unreadable' | typeof OUT_OF_TIME
   if (method === 0) got = { out: body.subarray(0, limit), more: body.length > limit }
   else if (method === 8) got = await inflateUpTo(body, limit, read, entry.size)
   else return 'unreadable'
-  if (got === 'unsafe') throw new OfficeUnsafe()
+  if (got === OUT_OF_TIME) throw new OverBudget()
   if (got === 'unreadable') return got
   read.left -= got.out.length
   // Round 9: the budget grows to what has been inflated (the words are read from it).
@@ -1264,8 +1273,8 @@ function workbookTarget(target: string): string {
  * read as one row (the stricter reading). A PDF's words are not read.
  *
  * Round 6: bounded. One inflate budget for the whole file, only the head of each sheet, at most SHEETS_MAX sheets, no
- * two entries over the same bytes, linear scans, and a wall clock budget: past any of them the file is refused
- * ('unsafe'). The sheets read are those the workbook's relationships name (wherever they are) and those in
+ * two entries over the same bytes and linear scans: past any of them the file is refused ('unsafe'). Past the wall
+ * clock budget it is refused too ('over_budget', from outboundContentVerdict). The sheets read are those the workbook's relationships name (wherever they are) and those in
  * xl/worksheets/; a sheet the relationships name that is not in the file is refused. With no relationships part (not
  * a file Excel writes), the shared strings no judged row used are judged as one more row. Each Word table's first
  * column, and column A of each sheet's first rows, are judged as one row too.
@@ -1275,13 +1284,8 @@ async function officeWords(
   type: 'docx' | 'xlsx',
   budget: StageBudget,
 ): Promise<{ ok: true; text: string; table: boolean } | { ok: false; unsafe: boolean }> {
-  let entries: ReturnType<typeof zipEntries>
-  try {
-    entries = zipEntries(bytes, budget)
-  } catch (err) {
-    if (err instanceof OverBudget) return { ok: false, unsafe: true }
-    throw err
-  }
+  // Over the budget at any step here, OverBudget goes up to outboundContentVerdict: out of time is no finding on the file.
+  const entries = zipEntries(bytes, budget)
   if (entries === 'unreadable') return { ok: false, unsafe: false }
   if (entries === 'unsafe') return { ok: false, unsafe: true }
   const read: OfficeRead = { bytes, left: OFFICE_INFLATE_BUDGET, words: 0, elements: 0, budget }
@@ -1289,7 +1293,7 @@ async function officeWords(
     const got = await officeWordsOf(read, entries, type)
     return got === 'unreadable' ? { ok: false, unsafe: false } : { ok: true, ...got }
   } catch (err) {
-    if (err instanceof OfficeUnsafe || err instanceof OverBudget) return { ok: false, unsafe: true }
+    if (err instanceof OfficeUnsafe) return { ok: false, unsafe: true }
     throw err
   }
 }
@@ -1564,7 +1568,11 @@ function holdsOwnCredential(text: string, secrets: readonly string[]): boolean {
 /** Round 7: what the content stage found, first by the order the checks run in; email-outbound-files.ts says the sentence. */
 export type ContentVerdict =
   | { kind: 'ok' }
+  /** A .txt or .csv file whose bytes are not clean text (lib/email-clean-text.ts): refused as not that type. */
+  | { kind: 'not_type' }
   | { kind: 'unsafe' }
+  /** Out of time, which says nothing about the file: refused, and it may go on another try. */
+  | { kind: 'over_budget' }
   | { kind: 'unread' }
   | { kind: 'table' }
   | { kind: 'private_key' }
@@ -1577,7 +1585,7 @@ export type ContentVerdict =
 
 /** Round 7: every kind a verdict may have (the main thread refuses a reply with any other). */
 export const CONTENT_VERDICT_KINDS: readonly ContentVerdict['kind'][] = Object.freeze([
-  'ok', 'unsafe', 'unread', 'table', 'private_key', 'cookie', 'own_credential', 'recovery_key', 'recovery_phrase', 'secret', 'written',
+  'ok', 'not_type', 'unsafe', 'over_budget', 'unread', 'table', 'private_key', 'cookie', 'own_credential', 'recovery_key', 'recovery_phrase', 'secret', 'written',
 ])
 
 /**
@@ -1616,11 +1624,11 @@ async function firstSecretRule(name: string, text: string, clock: StageClock = N
 export type ContentType = 'text' | 'docx' | 'xlsx'
 
 /**
- * Round 7: the whole content stage of one file whose type its bytes have already proved: a text file's whole text,
- * decoded once (at most 25 MB, already read), or a Word or Excel file's own words (round 3), then every check in the
- * order readOutboundFile ran them. Run in the content Worker; `name` is what the scanner's findings are filed under.
+ * Round 7: the whole content stage of one file: a text file's type check first (clean UTF-8 text, 'not_type' when it is
+ * not) and its whole text, decoded once (at most 25 MB, already read), or the words of a Word or Excel file whose type
+ * its bytes have already proved on the main thread (round 3), then every check in the order readOutboundFile ran them. Run in the content Worker; `name` is what the scanner's findings are filed under.
  * Round 9: under one budget for the whole stage (StageBudget): officeReadBudgetMs of the larger of the file's size and
- * its words, or `budgetMs` when given (a test's, fixed). Over it, at any check, the file is 'unsafe'.
+ * its words, or `budgetMs` when given (a test's, fixed). Over it, at any check, the file is 'over_budget'.
  */
 export async function outboundContentVerdict(
   bytes: Uint8Array,
@@ -1630,15 +1638,12 @@ export async function outboundContentVerdict(
   budgetMs?: number,
 ): Promise<ContentVerdict> {
   const start = Date.now()
-  const budget: StageBudget =
-    budgetMs === undefined
-      ? { start, deadline: start + officeReadBudgetMs(bytes.length), grows: true }
-      : { start, deadline: start + budgetMs, grows: false }
+  const budget: StageBudget = budgetMs === undefined ? sizedBudget(bytes.length, start) : { start, deadline: start + budgetMs, grows: false }
   try {
     return await verdictWithin(bytes, type, name, secrets, budget)
   } catch (err) {
     // Round 9: over the budget, the Worker answers itself and takes the next file.
-    if (err instanceof OverBudget) return { kind: 'unsafe' }
+    if (err instanceof OverBudget) return { kind: 'over_budget' }
     throw err
   } finally {
     // Round 10: a heavy job's garbage is collected before the next file (see collectGarbage).
@@ -1650,11 +1655,17 @@ async function verdictWithin(bytes: Uint8Array, type: ContentType, name: string,
   let text = ''
   let table = false
   if (type === 'text') {
+    // The type check of a .txt or .csv file comes first, before any budget is read, so a file that is not clean text
+    // is refused as not text whatever the budget, as it was when the main thread ran it before the hand off. It runs
+    // here, off the main thread (a 23 MB file held that thread for tens of ms on a fast machine), and its decoded text
+    // is the text every check below reads, so the file is decoded once.
+    const clean = cleanTextOf(bytes)
+    if (clean === null) return { kind: 'not_type' }
     table = hasPasswordColumn(bytes)
-    text = new TextDecoder().decode(bytes)
+    text = clean
   } else {
     const words = await officeWords(bytes, type, budget)
-    // Round 6: a file that would cost too much to read (a zip bomb's shape, or past the clock) is never attached.
+    // Round 6: a file that would cost too much to read (a zip bomb's shape) is never attached.
     if (!words.ok) return { kind: words.unsafe ? 'unsafe' : 'unread' }
     text = words.text
     // Round 9: the checks below read the words, so the budget is that of the words when they are more than the file.
@@ -1707,6 +1718,13 @@ export const CONTENT_WALKS_FOR_TESTS = Object.freeze({
   hasRecoveryKey,
   firstSecretRule,
   OverBudget,
+  /** The stage with no catch, and the budget it ended on, for the test that pins the budget grows with the words. */
+  verdictWithBudget: async (bytes: Uint8Array, type: ContentType, name: string, secrets: readonly string[]) => {
+    const start = Date.now()
+    const budget = sizedBudget(bytes.length, start)
+    const verdict = await verdictWithin(bytes, type, name, secrets, budget)
+    return { verdict, budgetMs: budget.deadline - start }
+  },
 })
 
 /** Round 10: the text joined as it comes and the shared strings, for the test that pins they hold no string each. */

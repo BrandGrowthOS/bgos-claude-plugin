@@ -391,7 +391,7 @@ test('server.ts frames boot-poll delta backlog with the lockstep predicate', () 
 test('server.ts guards the WS cursor bump behind boot-poll completion', () => {
   assert.match(
     serverSource,
-    /const wsCursorSafe =\s*chatsPolledSinceBoot\.has\(chatId\) \|\|\s*streamCoveredChats\.has\(chatId\)\s*\n\s*if \(wsCursorSafe\)/,
+    /const wsCursorSafe =\s*\(chatsPolledSinceBoot\.has\(chatId\) && !chatBehindSocket\(chatId\)\) \|\|\s*streamCoveredChats\.has\(chatId\)\s*\n\s*if \(wsCursorSafe\)/,
   )
 })
 

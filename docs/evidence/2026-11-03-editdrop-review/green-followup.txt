@@ -1,0 +1,15 @@
+✔ review R2: an already-running periodic read in the current epoch also holds a correction (111.134833ms)
+✔ review R1: pending revisions cannot overwrite a newer original and survive original delivery (142.886542ms)
+✔ review R1: a pending unversioned replay cannot overwrite a later authoritative poll row (74.497208ms)
+✔ review privacy: an edited sign-in code is withheld from the model (78.119375ms)
+✔ review R3: a deferred poll callback checks deletion before creating a notification (78.578167ms)
+✔ review R3: a deferred stream callback checks deletion before creating a notification (74.477667ms)
+✔ review R3: a deferred socket callback checks deletion before creating a notification (62.745084ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1091.819792

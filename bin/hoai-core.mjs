@@ -81,13 +81,15 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname } from 'node:path'
+import { dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   channelFlagArgsForSpec,
   claudeConfigDir,
   detectInstallMethod,
+  installedPluginsPath,
+  marketplaceNameFromPluginPath,
 } from './bgos-install-method.mjs'
 import {
   BEACON_HEARTBEAT_FILE_NAME,
@@ -112,6 +114,7 @@ import {
   preseedClaudeTrust,
 } from '../lib/claude-preseed.mjs'
 import { declaredCheckout } from '../lib/clone-hooks.mjs'
+import { ATTACH_SCOPE_DIR_ENV, ATTACH_SCOPE_ENV } from '../lib/attach-scope.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
   parseMcpChannelServerName,
@@ -529,6 +532,7 @@ export function resolveHoaiAction(argv) {
   if (lowered === 'setup') return route('setup', rest)
   if (lowered === 'logs') return route('logs', rest)
   if (lowered === 'install-cli') return route('install-cli', rest)
+  if (lowered === 'vault-host') return route('vault-host', rest)
   if (lowered === 'help' || lowered === '-h' || lowered === '--help') {
     return route('help', rest)
   }
@@ -718,6 +722,32 @@ export function hookScriptDirFor({ cwd, scriptDir, serverName, readFile, exists 
 }
 
 /**
+ * Name the agent this launch is for in the env claude (and so the HOAI daemon
+ * claude starts) inherits: HOAI_ATTACH_SCOPE (lib/attach-scope.mjs, board row
+ * bab90cdb, design BGOS #1244). The daemon compares it with the agent it
+ * resolves, so a session launched for one agent never quietly attaches as
+ * another. Unlike the rest of the plan's env, an inherited value is
+ * OVERRIDDEN: a `hoai` run from an agent's Bash tool inherits that agent's
+ * scope, and passing it down would scope this launch to the wrong agent. With
+ * no agent to name, an inherited scope is removed for the same reason.
+ * HOAI_ATTACH_SCOPE_DIR names the folder launched, the same way.
+ * @param {Record<string, string | undefined>} env
+ * @param {string | undefined} scope
+ * @param {string} [dir]
+ */
+export function applyAttachScope(env, scope, dir) {
+  const id = String(scope ?? '').trim()
+  if (/^\d{1,12}$/.test(id)) env[ATTACH_SCOPE_ENV] = id
+  else delete env[ATTACH_SCOPE_ENV]
+  // The folder this launch is for, set even when no agent can be named: it is
+  // how the daemon tells "hoai launched me here" from a scope a child carried
+  // into another folder (inherited, so not this session's).
+  const folder = String(dir ?? '').trim()
+  if (folder) env[ATTACH_SCOPE_DIR_ENV] = folder
+  else delete env[ATTACH_SCOPE_DIR_ENV]
+}
+
+/**
  * Decide HOW a bare `hoai` launches the agent from this folder.
  *
  * The channel flag comes from install-method detection (the sibling
@@ -744,7 +774,7 @@ export function hookScriptDirFor({ cwd, scriptDir, serverName, readFile, exists 
  *   scriptDir?: string,
  * }} [opts]
  * @returns {{ ok: true, command: 'claude', args: string[], note: string,
- *             env: Record<string, string>,
+ *             env: Record<string, string>, attachScope: string, attachScopeDir: string,
  *             hooks: { settingsPath: string, forwarderPath: string } | null,
  *             detection: { method: string, channelSpec: string, pluginRoot: string } }
  *         | { ok: false, reason: string,
@@ -835,6 +865,8 @@ export function buildRunPlan({
       command: 'claude',
       args,
       env: launchEnv,
+      attachScope: declared.id,
+      attachScopeDir: cwd,
       hooks,
       detection,
       note:
@@ -851,6 +883,8 @@ export function buildRunPlan({
       command: 'claude',
       args,
       env: launchEnv,
+      attachScope: envId,
+      attachScopeDir: cwd,
       hooks,
       detection,
       note: `${methodLine}\n[hoai] launching as assistant ${envId} (BGOS_ASSISTANT_ID env pin).`,
@@ -874,6 +908,8 @@ export function buildRunPlan({
       command: 'claude',
       args,
       env: { ...launchEnv, BGOS_ASSISTANT_ID: serviceId },
+      attachScope: serviceId,
+      attachScopeDir: cwd,
       hooks,
       detection,
       note:
@@ -883,7 +919,8 @@ export function buildRunPlan({
     }
   }
 
-  const ids = listPairedAssistantIds(home, listDir)
+  const explicitPath = String(env.BGOS_CREDENTIALS_PATH ?? '').trim()
+  const ids = explicitPath ? [] : listPairedAssistantIds(home, listDir)
   if (ids.length > 1) {
     // Short mirror of lib/agent-credentials.ts formatCredentialsRefusal: the
     // daemon itself refuses to boot unpinned on a multi-agent host.
@@ -899,10 +936,19 @@ export function buildRunPlan({
         `or set BGOS_ASSISTANT_ID=${ids[0]} in this agent's environment.`,
     }
   }
-  const homeNote = ids.length === 1 ? soleAgentHomeNote({ home, assistantId: ids[0], cwd, readFile }) : ''
+  // Claude applies the marketplace configuration after this plan. Without an
+  // explicit identity, hand over the launch folder and let the daemon resolve
+  // its agent from that effective configuration. A credentials guess here can
+  // conflict with the configured agent and make a valid launch go dormant.
+  const legacyPath = joinDir(agentDir(home), 'credentials.json')
+  const legacy = explicitPath ? null : readFile(legacyPath)
+  const homeNote = ids.length === 1 && !explicitPath && legacy === null && !exists(legacyPath)
+    ? soleAgentHomeNote({ home, assistantId: ids[0], cwd, readFile }) : ''
   const identityLine =
-    ids.length === 1
-      ? `[hoai] launching as this host's sole paired agent (assistant ${ids[0]}); the daemon self-resolves.` +
+    explicitPath || legacy !== null || exists(legacyPath)
+      ? `[hoai] launching with ${explicitPath ? 'explicit' : 'legacy'} credentials available; the daemon self-resolves from its effective configuration.`
+      : ids.length === 1
+      ? `[hoai] this host has one paired agent (assistant ${ids[0]}); the daemon self-resolves from its effective configuration.` +
         (homeNote ? `\n${homeNote}` : '')
       : `[hoai] no pairing on this host yet; if the agent cannot connect, run: hoai pair <CODE> (code from the HOAI app).`
   return {
@@ -910,6 +956,8 @@ export function buildRunPlan({
     command: 'claude',
     args,
     env: launchEnv,
+    attachScope: '',
+    attachScopeDir: cwd,
     hooks,
     detection,
     note: `${methodLine}\n${identityLine}`,
@@ -1257,7 +1305,13 @@ export function decideSupervisorArming({
   if (!proc || typeof proc.command !== 'string' || !runsHoaiLauncher(proc.command) || record?.declaredLauncher) {
     return { arm: false, ownerPid: pid }
   }
-  const children = holderChildren(pid)
+  // On posix the launcher's child is the expect it runs claude under, so a
+  // live expect over a zombie claude read as 'supervising' (kc-server agent
+  // 867, 2 Nov 2026: 4,681 restarts of exit 3, the fourth wedge). An expect
+  // counts as alive only while it has a live child of its own; one whose
+  // children could not be read keeps the old answer.
+  const staleExpects = []
+  const children = expectsOverDeadClaude(holderChildren(pid), holderChildren, staleExpects)
   const activity = holderActivity({ relaunchBy: parsed.relaunchBy, holderStartedAtMs: proc.startedAtMs, children, now })
   if (activity !== 'idle') return { arm: false, ownerPid: pid }
   // Ended only when it is provably THIS agent's launcher, not merely a hoai:
@@ -1271,7 +1325,34 @@ export function decideSupervisorArming({
   if (inFolder === false || !startedByStamp(record, proc, inFolder === true ? HOLDER_START_TOLERANCE_MS : 0)) {
     return { arm: false, ownerPid: pid }
   }
-  return { arm: false, ownerPid: pid, takeover: true, reason: children.some((child) => child?.zombie === true) ? 'claude-zombie' : 'no-child' }
+  return {
+    arm: false,
+    ownerPid: pid,
+    takeover: true,
+    reason: children.some((child) => child?.zombie === true) ? 'claude-zombie' : 'no-child',
+    ...(staleExpects.length > 0 ? { staleExpects } : {}),
+  }
+}
+
+/**
+ * The holder's children with each expect that has no live child of its own
+ * marked as a zombie (its claude exited and nobody reaped it), and that
+ * expect's pid pushed to `staleExpects` so the takeover can end it too: left
+ * alone it outlives the launcher, holding the dead claude. Children that are
+ * not an array, and an expect whose own children cannot be read, pass through.
+ * @param {Array<{ pid?: number, zombie: boolean, name?: string }> | null} children
+ * @param {(pid: number) => Array<{ zombie: boolean }> | null} readChildren
+ * @param {number[]} staleExpects
+ */
+export function expectsOverDeadClaude(children, readChildren, staleExpects) {
+  if (!Array.isArray(children)) return children
+  return children.map((child) => {
+    if (!child || child.zombie === true || child.name !== 'expect' || typeof child.pid !== 'number') return child
+    const grand = readChildren(child.pid)
+    if (!Array.isArray(grand) || grand.some((g) => g && g.zombie !== true)) return child
+    staleExpects.push(child.pid)
+    return { ...child, zombie: true }
+  })
 }
 
 /** ps reads a start time in whole seconds (etime), so a writer read that way
@@ -1581,6 +1662,51 @@ export function channelHeartbeatSince({ beacon, startedAt, stalePid = null }) {
   return beacon.beaconAt - startedAt >= PREDECESSOR_BEACON_GRACE_MS
 }
 
+/**
+ * The idle update's way back for a staged build that never reported in (lib/idle-update.mjs rollBackNeverArrived;
+ * docs/idle-update/DESIGN.md, Rollback, "A build that dies at import"). Asked once a launch has sent no channel
+ * heartbeat: when this agent's record still says `requested` for a build the install names, the relaunch onto it
+ * never brought a daemon up, so the install goes back to the last good build and the build is held bad on this
+ * computer, before hoai's own relaunch (the one it makes for a launch with no heartbeat anyway) starts claude
+ * again. It restarts nothing itself. Its modules are imported only here, so the launcher's own start never depends
+ * on them; a failure anywhere is no rollback and leaves the launch as it was.
+ * @param {{ assistantId: string, stateDir: string, home: string, env: Record<string, string | undefined>, cwd: string, launchedAtMs: number, now: number }} input
+ * @returns {Promise<{ outcome: string, reason: string, record: any } | null>}
+ */
+export async function idleRollbackNeverArrived({ assistantId, stateDir, home, env, cwd, launchedAtMs, now }) {
+  const [idle, host] = await Promise.all([import('../lib/idle-update.mjs'), import('../lib/idle-update-host.mjs')])
+  const configDir = resolvePath(cwd, claudeConfigDir({ env, home }))
+  const pluginsPath = installedPluginsPath(configDir)
+  const machineDir = joinDir(agentDir(home), idle.IDLE_UPDATE_DIR_NAME)
+  const fs = idle.nodeIdleUpdateFs()
+  return idle.rollBackNeverArrived({
+    assistantId: String(assistantId),
+    recordPath: joinDir(stateDir, idle.IDLE_UPDATE_FILE_NAME),
+    machineDir,
+    fs,
+    installedVersion: idle.installedPluginsVersion(fs.readFile(pluginsPath)),
+    cameBack: 'none',
+    launchedAtMs,
+    now,
+    rollbackInstall: (record) => {
+      // As the daemon's own (server.ts idleRollbackInstall): the marketplace the build being gone back to came from.
+      const marketplace = marketplaceNameFromPluginPath(record.fromRoot, { env, home }) || undefined
+      return host.rollbackMarketplaceInstall({
+        record,
+        installedPluginsPath: pluginsPath,
+        holdPath: joinDir(machineDir, host.enrolmentHoldFileName(configDir)),
+        marketplace,
+        configDir,
+        fs,
+        heldBad: (version) => idle.isVersionHeldBad(version, { machineDir, fs }),
+        // Only ever a switch-off, as on the daemon's rollback.
+        setAutoUpdate: () => ensureMarketplaceAutoUpdate({ configDir, marketplace, enabled: false }),
+        now,
+      })
+    },
+  })
+}
+
 /** Login records older than this never count (lib/claude-login.ts LOGIN_STALE_MS, the daemon's rule). */
 export const LOGIN_STALE_MS = 10 * 60_000
 /** How much of each fresh transcript the shared-login check reads, from the end (the daemon's startup tail). */
@@ -1686,12 +1812,81 @@ export function fleetClaudeLoginAnswered({ configDir, since, listDir, mtimeMs, r
 
 /** Did the CLI sign in again after a failure at `since`? It rewrites `<configDir>/.credentials.json` on
  *  /login (and on each token refresh, which also proves the login works). Only the file's time is
- *  looked at, never what it holds; a login kept elsewhere (the macOS Keychain) has no such file, and
- *  only an answer clears its failure.
+ *  looked at, never what it holds. macOS uses the separate status probe below because its login is
+ *  in the Keychain, and a credential file there is not proof of that login.
  *  @param {{ configDir: string, since: number, mtimeMs: (path: string) => number | null }} input */
 export function claudeSignedInSince({ configDir, since, mtimeMs }) {
   const written = mtimeMs(joinDir(configDir, '.credentials.json'))
   return written != null && written > since
+}
+
+/** A non interactive status probe of this launch's credential store. No credential file or Keychain
+ *  item is opened here, and neither CLI output nor account details escape this boolean probe.
+ *  A failed command, unknown format or non subscription login cannot lift a held login failure.
+ *  Keep CLAUDE_CONFIG_DIR exactly as launched: setting it only for the probe could select another
+ *  account file or Keychain store, even when the supplied directory is the default one.
+ *  Only stable CLI releases >= 2.1.317 may run auth status: older releases can abandon an OAuth
+ *  refresh before saving its replacement and invalidate the shared login. Recheck on every probe
+ *  so an update or downgrade takes effect without restarting the supervisor.
+ *  @param {{ env?: Record<string, string | undefined>, run?: typeof spawnSync,
+ *    onUnsupportedVersion?: () => void }} input */
+export function probeClaudeSignedIn({ env = process.env, run = spawnSync, onUnsupportedVersion = () => {} }) {
+  try {
+    const options = {
+      env: { ...env },
+      encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'], shell: false, windowsHide: true,
+    }
+    let version
+    try {
+      version = run('claude', ['--version'], options)
+    } catch {
+      // Missing CLI and failed version reads leave the hold in place, with update guidance.
+    }
+    const match = !version?.error && version?.status === 0
+      ? /^(\d+)\.(\d+)\.(\d+)(?: \(Claude Code\))?$/.exec(String(version.stdout ?? '').trim())
+      : null
+    const parts = match ? match.slice(1).map(Number) : []
+    const [major, minor, patch] = parts
+    const safe = parts.length === 3 && parts.every(Number.isSafeInteger) &&
+      (major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 317))))
+    if (!safe) {
+      onUnsupportedVersion()
+      return false
+    }
+    const result = run('claude', ['auth', 'status', '--json'], options)
+    if (result?.error || result?.status !== 0) return false
+    const status = JSON.parse(String(result.stdout ?? ''))
+    return status?.loggedIn === true && status?.authMethod === 'claude.ai'
+  } catch {
+    return false
+  }
+}
+
+/** At most one macOS status command per three minutes, only while a login failure is held.
+ *  Never cache success: a later failure needs a new proof. Other platforms keep the stat-only path.
+ *  @param {{ platform: string, configDir: string, env?: Record<string, string | undefined>,
+ *    now?: () => number, mtimeMs?: (path: string) => number | null, run?: typeof spawnSync,
+ *    onUnsupportedVersion?: () => void, probe?: () => boolean }} input */
+export function createClaudeSignInCheck({ platform, configDir, env, now = Date.now, mtimeMs = fileMtimeMs, run, onUnsupportedVersion = () => {}, probe }) {
+  let nextProbeAt = 0
+  let versionNoticeSent = false
+  const statusProbe = probe ?? (() => probeClaudeSignedIn({ env, run, onUnsupportedVersion: () => {
+    if (versionNoticeSent) return
+    versionNoticeSent = true
+    onUnsupportedVersion()
+  } }))
+  return (since) => {
+    if (platform !== 'darwin') return claudeSignedInSince({ configDir, since, mtimeMs })
+    const at = now()
+    if (at <= since || at < nextProbeAt) return false
+    nextProbeAt = at + 180_000
+    try {
+      return statusProbe() === true
+    } catch {
+      return false
+    }
+  }
 }
 
 /** A file's modification time in ms, or null. Never throws. */
@@ -1781,7 +1976,7 @@ export function readGateBlock(read = (p) => readFileSync(p, 'utf8')) {
  * is none (no tmux, stdin is /dev/null): interact would read EOF there at once
  * and end the agent the moment it came up.
  * @param {{ claudePath: string, args: readonly string[], gateBlock?: string,
- *   supervised?: { stateDir: string, interactive: boolean, compact: string } | null }} params
+ *   supervised?: { stateDir: string, interactive: boolean, compact: string, denyPermissionPrompts?: boolean } | null }} params
  * @returns {string}
  */
 export function buildGateAutoAcceptExpect({ claudePath, args, gateBlock = readGateBlock(), supervised = null }) {
@@ -1826,12 +2021,30 @@ export function buildGateAutoAcceptExpect({ claudePath, args, gateBlock = readGa
       '  puts $hoai_f "[clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] $hoai_line"',
       '  close $hoai_f',
       '}',
-      'puts "\\n\\[hoai\\] launch: $hoai_line"',
+      // Not into a LIVE session: Claude Code has drawn its screen by then, the line
+      // lands on the message box's bottom rule and is never repainted, so the
+      // model picker can no longer find the box (seen on 2026-11-12). launch-status
+      // above records every outcome, live included.
+      'if {$hoai_outcome ne "live"} { puts "\\n\\[hoai\\] launch: $hoai_line" }',
       `if {[string match "gate-*" $hoai_outcome]} { catch {close}; exit ${EXIT_SUPERVISED_GATE} }`,
       `if {$hoai_outcome eq "exited-during-startup"} { exit ${EXIT_SUPERVISED_STARTUP_EXIT} }`,
       `if {$hoai_outcome eq "live-but-not-signed-in"} { catch {close}; exit ${EXIT_SUPERVISED_SIGNED_OUT} }`,
       'set timeout -1',
-      supervised.interactive ? 'interact' : 'expect eof',
+      ...(supervised.denyPermissionPrompts ? [
+        // Only a CLI hook event can stop the unattended tail.
+        'set timeout 1',
+        'expect {',
+        '  timeout {',
+        '    if {[file exists "$hoai_statedir/permission-pending"]} { catch {exec kill [exp_pid]}; catch {close}; exit 88 }',
+        '    exp_continue',
+        '  }',
+        '  eof {}',
+        '  -re {.+} {',
+        '    if {[file exists "$hoai_statedir/permission-pending"]} { catch {exec kill [exp_pid]}; catch {close}; exit 88 }',
+        '    exp_continue -continue_timer',
+        '  }',
+        '}',
+      ] : [supervised.interactive ? 'interact' : 'expect eof']),
     ].join('\n')
   }
   return [
@@ -2189,12 +2402,14 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  *   healthyMs?: number,
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
+ *   idleRollback?: ((input: { assistantId: string, stateDir: string, home: string, env: Record<string, string | undefined>, cwd: string, launchedAtMs: number, now: number }) => Promise<any>) | null,
  *   keepAlive?: boolean, signal?: AbortSignal | null,
  *   endProcessTree?: ((pid: number) => boolean) | null,
  *   spawnSyncImpl?: typeof spawnSync,
  *   clearConsole?: () => unknown,
  *   claudeLoginFailure?: () => { at: number, text: string } | null,
  *   claudeLoginBackSince?: (at: number) => boolean,
+ *   probeClaudeSignedIn?: () => boolean,
  * }} [opts]
  * @returns {Promise<number>}
  *
@@ -2572,6 +2787,21 @@ export async function superviseClaude(args, opts = {}) {
   const healthyMs = opts.healthyMs ?? RELAUNCH_HEALTHY_MS
   const setTimer = opts.setTimer ?? setTimeout
   const clearTimer = opts.clearTimer ?? clearTimeout
+  // The idle update's way back for a launch with no channel heartbeat (idleRollbackNeverArrived). Real only over the
+  // real files (main hands its reader on, which is the real one unless a test faked it): a test that fakes them passes
+  // its own, or has none.
+  const idleRollback = opts.idleRollback !== undefined ? opts.idleRollback : readFile === defaultReadText ? idleRollbackNeverArrived : null
+  const noteIdleWayBack = (back) => {
+    const rec = back?.record
+    if (!rec || back.outcome === 'none') return
+    if (back.outcome === 'rolled_back') {
+      print(`[hoai] the restart onto ${rec.target} never reported in (no daemon came up on it): the install is back on ${rec.from}, and ${rec.target} is held on this computer`)
+    } else if (back.outcome === 'rollback_failed') {
+      print(`[hoai] the restart onto ${rec.target} never reported in, and putting the install back on ${rec.from} did not take (${back.reason}); ${rec.target} is held on this computer`)
+    } else {
+      print(`[hoai] the restart onto ${rec.target} never reported in; this agent has used its one way back, so the install stays on ${rec.target}`)
+    }
+  }
   const listProcesses = opts.listProcesses ?? (() => defaultListProcesses(platform))
   const force = opts.force === true
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
@@ -2582,10 +2812,17 @@ export async function superviseClaude(args, opts = {}) {
   // with no channel heartbeat: the CLI's own records, in the store it signs in through.
   const loginStore = { configDir: claudeConfigDir({ env, home }), listDir, mtimeMs: fileMtimeMs, readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES) }
   const claudeLoginFailure = opts.claudeLoginFailure ?? (() => fleetClaudeLoginFailure({ ...loginStore, now: now() }))
+  const signedInSince = createClaudeSignInCheck({
+    platform, configDir: loginStore.configDir, env, now, run: opts.spawnSyncImpl, probe: opts.probeClaudeSignedIn,
+    onUnsupportedVersion: () => print(
+      '[hoai] Automatic login status checks require Claude Code 2.1.317 or newer. Update Claude Code to 2.1.317 or newer ' +
+      'to enable them. The login failure stays held until a safe status check succeeds or an agent answers after the failure.',
+    ),
+  })
   // Has the login come back since a failure: a sign-in after it, or an agent's answer after it.
   const claudeLoginBackSince =
     opts.claudeLoginBackSince ??
-    ((at) => claudeSignedInSince({ ...loginStore, since: at }) || fleetClaudeLoginAnswered({ ...loginStore, since: at }))
+    ((at) => signedInSince(at) || fleetClaudeLoginAnswered({ ...loginStore, since: at }))
   // The shared login failure an alert was made for: it stands, across relaunches too, until the
   // login comes back after it.
   let loginFailure = null
@@ -2904,17 +3141,37 @@ export async function superviseClaude(args, opts = {}) {
   }
   // End a holder proven to supervise nothing: SIGTERM, then SIGKILL when it
   // is still that idle launcher after the TERM wait (agent 867's ignored TERM).
-  const endIdleHolder = async (owner, reason) => {
+  // An expect still holding the dead claude (decideSupervisorArming staleExpects)
+  // outlives its launcher, so it is ended with SIGKILL once the launcher is gone.
+  // The pid was read up to the TERM and KILL waits earlier, so it is read again
+  // right before the SIGKILL: still alive, still an expect, and still with no
+  // live child. A reused pid, or an expect that has a live child again, or one
+  // that cannot be read, is left alone.
+  const endStaleExpects = (staleExpects) => {
+    for (const pid of staleExpects) {
+      if (!pidAlive(pid)) continue
+      const proc = pidProcess(pid)
+      const name = typeof proc?.command === 'string' ? (proc.command.trim().split(/\s+/)[0] ?? '').split('/').at(-1) : ''
+      if (name !== 'expect') continue
+      const kids = holderChildren(pid)
+      if (!Array.isArray(kids) || kids.some((child) => child && child.zombie !== true)) continue
+      print(`[hoai] ending expect pid ${pid}, which still held the dead claude of assistant ${id}`)
+      signalPid(pid, 'SIGKILL')
+    }
+  }
+  const endIdleHolder = async (owner, reason, staleExpects = []) => {
     const why = reason === 'claude-zombie' ? 'its claude has exited and was never reaped' : 'it has no claude'
     print(`[hoai] launcher pid ${owner} holds assistant ${id} but supervises nothing (${why}); ending it with SIGTERM`)
     signalPid(owner, 'SIGTERM')
     const afterTerm = await waitReleased(owner, takeoverTermWaitMs)
+    if (afterTerm === true) endStaleExpects(staleExpects)
     if (afterTerm !== false) return afterTerm ? 'SIGTERM' : 'stopped'
     const still = decideArmingNow()
     if (!(still.takeover && still.ownerPid === owner)) return still.arm ? 'SIGTERM' : 'refused'
     print(`[hoai] launcher pid ${owner} ignored SIGTERM; ending it with SIGKILL`)
     signalPid(owner, 'SIGKILL')
     const afterKill = await waitReleased(owner, takeoverKillWaitMs)
+    if (afterKill === true) endStaleExpects(staleExpects)
     if (afterKill !== false) return afterKill ? 'SIGKILL' : 'stopped'
     return 'unkillable'
   }
@@ -2949,7 +3206,7 @@ export async function superviseClaude(args, opts = {}) {
           again = decideArmingNow()
         }
         if (again.takeover && again.ownerPid === owner) {
-          const ended = await endIdleHolder(owner, again.reason)
+          const ended = await endIdleHolder(owner, again.reason, again.staleExpects ?? [])
           if (ended === 'stopped') return exitCodeForChild(null, 'SIGTERM')
           if (ended === 'unkillable') {
             noteStatus('stale-launcher-unkillable', { owner })
@@ -3311,17 +3568,27 @@ export async function superviseClaude(args, opts = {}) {
           armHeartbeatCheck()
           return
         }
-        if (!heartbeatRelaunchSpent) {
-          heartbeatRelaunchSpent = true
-          healthRelaunch('no-channel-heartbeat', `claude has run ${waited} and its channel has sent no heartbeat (${beaconPath})`)
-          return
+        const afterWayBack = () => {
+          if (!live || restartRequested) return
+          if (!heartbeatRelaunchSpent) {
+            heartbeatRelaunchSpent = true
+            healthRelaunch('no-channel-heartbeat', `claude has run ${waited} and its channel has sent no heartbeat (${beaconPath})`)
+            return
+          }
+          noteStatus('no-channel-heartbeat', { waited, beacon: beaconPath })
+          print(
+            `[hoai] ALERT (no-channel-heartbeat): claude has run ${waited} and its channel has sent no heartbeat ` +
+              `(${beaconPath}), after the one relaunch hoai makes for that. Not relaunching again: the agent stays ` +
+              'up for a person to look at. Run hoai doctor in this folder.',
+          )
         }
-        noteStatus('no-channel-heartbeat', { waited, beacon: beaconPath })
-        print(
-          `[hoai] ALERT (no-channel-heartbeat): claude has run ${waited} and its channel has sent no heartbeat ` +
-            `(${beaconPath}), after the one relaunch hoai makes for that. Not relaunching again: the agent stays ` +
-            'up for a person to look at. Run hoai doctor in this folder.',
-        )
+        // A launch onto a staged build that never reported in: the install goes back to the last good build first,
+        // so the relaunch below boots that one (idleRollbackNeverArrived). Nothing else changes.
+        if (!idleRollback) return afterWayBack()
+        Promise.resolve()
+          .then(() => idleRollback({ assistantId: id, stateDir, home, env, cwd, launchedAtMs: startedAt, now: now() }))
+          .then(noteIdleWayBack, () => null)
+          .then(afterWayBack)
       }
       if (unattended) armHeartbeatCheck()
       // A stop request ends the live claude; the exit below then returns
@@ -4164,6 +4431,9 @@ Usage:
   hoai <CODE>          shorthand for hoai pair <CODE> (BGOS-... / OC-... codes)
   hoai install-cli     put the hoai command on your PATH (or repair it)
   hoai logs            show the last 60 lines of this agent's daemon log
+  hoai vault-host      set this machine up as the agent's vault host: register
+                       its host key and show the fingerprint here, in this
+                       terminal only, for the owner to compare and pin in HOAI
   hoai help            show this help
 
 To restart the agent by hand: type /exit, then run hoai from the same folder.
@@ -4219,8 +4489,8 @@ function defaultScriptDir() {
 export async function main(argv = process.argv.slice(2), opts = {}) {
   const env = opts.env ?? process.env
   const home = opts.home ?? homedir()
-  const cwd = opts.cwd ?? process.cwd()
   const platform = opts.platform ?? process.platform
+  const cwd = opts.cwd ?? process.cwd()
   const scriptDir = opts.scriptDir ?? defaultScriptDir()
   const readFile = opts.readFile ?? defaultReadText
   const listDir = opts.listDir ?? defaultListDir
@@ -4244,6 +4514,11 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
 
   if (action === 'pair') {
     return runSiblingScript(joinDir(scriptDir, 'bgos-pair.mjs'), rest, spawnImpl)
+  }
+
+  if (action === 'vault-host') {
+    // Inherits this terminal: the host fingerprint is shown only on a TTY.
+    return runSiblingScript(joinDir(scriptDir, 'hoai-vault-host.mjs'), rest, spawnImpl)
   }
 
   if (action === 'setup') {
@@ -4309,6 +4584,9 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   for (const [key, value] of Object.entries(applyEnv)) {
     if (!env[key]) env[key] = value
   }
+  // The attach scope is the one entry an inherited value must NOT win: it says
+  // which agent THIS launch is for (lib/attach-scope.mjs).
+  applyAttachScope(env, plan.attachScope, plan.attachScopeDir)
   if (plan.hooks) {
     const register = opts.registerHooks ?? ensureHookEntries
     try {
@@ -4404,6 +4682,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       clearTimer: opts.clearTimer,
       hasExpect: opts.hasExpect,
       expectExists: opts.expectExists,
+      idleRollback: opts.idleRollback,
     })
   } finally {
     unwireStop()

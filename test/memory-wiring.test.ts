@@ -82,7 +82,7 @@ test('the memory folder is found from the launch folder and the config dir, neve
   )
   // And that check is the lib's, over this daemon's own binding (fc75c7c3:
   // an elimination start with no home to check against has not passed it).
-  assert.match(server, /\nconst HOME_CONFIRMED = homeCheckPassed\(HOME_BINDING\)\n/)
+  assert.match(server, /\nconst HOME_CONFIRMED = homeCheckPassed\(HOME_BINDING\) \|\| MARKETPLACE_ATTACH\?\.homeMatched === true\n/)
   assert.ok(built.includes('ASSISTANT_ID'))
 })
 

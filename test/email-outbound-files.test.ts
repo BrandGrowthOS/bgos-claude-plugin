@@ -19,9 +19,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { closeSync, constants as fsConstants, linkSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { lstat as lstatPromise } from 'node:fs/promises'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -1393,15 +1391,34 @@ function memFs(bytes: Buffer) {
 
 const MEM_HOME = 'C:\\Users\\kc'
 
-/** Round 6: the refusal of one file held in memory, and how long it took. */
-async function memRefusal(name: string, bytes: Buffer, extra: Record<string, unknown> = {}): Promise<{ path: string; why: string | null; ms: number }> {
+/**
+ * Round 6: the refusal of one file held in memory, how long it took, and the CPU it took, which a busy runner adds far
+ * less to. Under a budget no runner can spend, so the answer is what the file is. A test of the budget or the deadline
+ * passes its own officeReadMs (undefined for the real ones).
+ */
+async function memRefusal(name: string, bytes: Buffer, extra: Record<string, unknown> = {}): Promise<{ path: string; why: string | null; ms: number; cpuMs: number }> {
   const path = `${MEM_HOME}\\Documents\\${name}`
   const started = performance.now()
-  const why = await refusal(path, { home: MEM_HOME, fs: memFs(bytes), ...extra })
-  return { path, why, ms: performance.now() - started }
+  const cpu = process.cpuUsage()
+  const why = await refusal(path, { home: MEM_HOME, fs: memFs(bytes), officeReadMs: UNDER_BUDGET_MS, ...extra })
+  const used = process.cpuUsage(cpu)
+  return { path, why, ms: performance.now() - started, cpuMs: (used.user + used.system) / 1000 }
 }
 
 const unsafeSentence = (path: string) => `${path} could not be read safely, so it is never attached.`
+/** A file its check ran out of time on: still refused, and it may go on another try, so no "never". */
+const tryAgainSentence = (path: string) => `${path} took too long to check, so it is not attached this time. Try again in a few minutes.`
+/**
+ * A fixed budget no file in these tests can spend: how busy the runner is cannot decide a file under it. The hard deadline
+ * follows it, and stays under the runner's 270 s, so a wedged Worker on a red run does not outlive the file's own limit.
+ */
+const UNDER_BUDGET_MS = 200_000
+/** A budget already spent when the stage starts: over it on any runner. */
+const OVER_BUDGET_MS = -1
+/** A budget that ends before a large file is read: a busier runner only goes further past it. */
+const ALMOST_NO_BUDGET_MS = 1
+/** For a Worker a test scripts to fail: on a red run the job ends at this plus 3 s, inside the test's own timeout. */
+const FAULT_WAIT_MS = 30_000
 const tableSentence6 = (path: string) => `${path} has a password column, so it looks like a password export and is never attached. ${NO_WAY_AROUND}`
 const unreadSentence = (path: string) => `${path} could not be read to check it for a password or key, so it is not attached.`
 
@@ -1582,9 +1599,9 @@ test('review round 6: reading one Word or Excel file\'s words has a wall clock b
     ['gradebook.xlsx', xlsxSheetsOf([gradebook])],
   ] as const) {
     // A budget already spent when the read starts: the clock is checked inside the read, so the file is refused.
-    const slow = await memRefusal(name, bytes, { officeReadMs: -1 })
-    assert.equal(slow.why, unsafeSentence(slow.path), name)
-    // The control: the same file under the default budget goes.
+    const slow = await memRefusal(name, bytes, { officeReadMs: OVER_BUDGET_MS })
+    assert.equal(slow.why, tryAgainSentence(slow.path), name)
+    // The control: the same file under its budget goes.
     assert.equal((await memRefusal(name, bytes)).why, null, name)
   }
 })
@@ -1672,7 +1689,7 @@ const R7_DEADLINE_MS = 5000
  * Round 7: the refusal of one file held in memory, timed in real time, with a heartbeat on the main thread: the
  * longest gap between two ticks of a 10 ms interval while the check ran.
  */
-async function heartbeatRefusal(name: string, bytes: Buffer, extra: Record<string, unknown> = {}): Promise<{ path: string; why: string | null; ms: number; maxGap: number }> {
+async function heartbeatRefusal(name: string, bytes: Buffer, extra: Record<string, unknown> = {}): Promise<{ path: string; why: string | null; ms: number; cpuMs: number; maxGap: number }> {
   let maxGap = 0
   let last = performance.now()
   const beat = setInterval(() => {
@@ -1714,7 +1731,7 @@ function digitLines(size: number): Buffer {
 
 const R7_GRADEBOOK = [['Student', 'Email', 'Result'], ['Sam Lee', 'sam@example.com', 'Pass'], ['Ana Ruiz', 'ana@example.com', 'Fail']]
 
-test('review round 7: the four hostile inputs each settle within the Worker deadline plus 1 s, and the main thread never stops for more than 100 ms', { timeout: 120_000 }, async () => {
+test('review round 7: the four hostile inputs each settle on at most 6 s of CPU, and the main thread never stops for more than 100 ms', { timeout: 120_000 }, async () => {
   for (const [name, build] of [
     ['jwt run.txt', () => Buffer.from('-eyJ'.repeat(20000))],
     ['dots.txt', () => Buffer.from(`pwd: ${'.'.repeat(80000)}a`)],
@@ -1724,29 +1741,75 @@ test('review round 7: the four hostile inputs each settle within the Worker dead
     const bytes = build()
     const stop = await stopOf(async () => {
       const got = await heartbeatRefusal(name, bytes)
-      assert.ok(got.ms <= R7_DEADLINE_MS + 1000, `${name} took ${Math.round(got.ms)} ms`)
+      assert.ok(got.cpuMs <= R7_DEADLINE_MS + 1000, `${name} took ${Math.round(got.cpuMs)} ms of CPU`)
       return got.maxGap
     })
     assert.ok(stop <= 100, `${name} stopped the main thread for ${Math.round(stop)} ms`)
   }
 })
 
-test('review round 7 (round 8: the deadline grows with the file): text the checks take long on is given 5 s plus 1 s per MB, and the main thread keeps running', { timeout: 90_000 }, async (t) => {
+test('review round 7 (round 8: the deadline grows with the file): a file is given 5 s plus 1 s per MB, and the main thread keeps running', { timeout: 90_000 }, async (t) => {
   const lib = await m()
   const { pathToFileURL } = await import('node:url')
-  // A Worker that takes 7 s on every file: an 8 MB file (deadline 13 s) goes, a small one (5 s) is refused at 5 s.
+  // A Worker that answers only when this test tells it to, and a main thread clock this test moves: an 8 MB file
+  // (deadline 13 s) is still waiting 1 ms before its deadline and goes; a small one is refused at its own, and no sooner.
   const dir = join(scratchHome(t), 'workers')
   mkdirSync(dir, { recursive: true })
-  const slow = join(dir, 'slow.mjs')
-  writeFileSync(slow, `import { parentPort } from 'node:worker_threads'
-parentPort.on('message', (m) => setTimeout(() => parentPort.postMessage({ id: m.id, verdict: { kind: 'ok' }, buffer: m.buffer, length: m.length }, [m.buffer]), 7000))
+  const slow = join(dir, 'held.mjs')
+  writeFileSync(slow, `import { existsSync, writeFileSync } from 'node:fs'
+import { parentPort } from 'node:worker_threads'
+const dir = ${JSON.stringify(dir)}
+parentPort.on('message', (m) => {
+  if (m.name === 'exit.txt') process.exit(0)
+  writeFileSync(dir + '/seen ' + m.name, '')
+  const wait = setInterval(() => {
+    if (!existsSync(dir + '/go ' + m.name) && !existsSync(dir + '/go all')) return
+    clearInterval(wait)
+    parentPort.postMessage({ id: m.id, verdict: { kind: 'ok' }, buffer: m.buffer, length: m.length }, [m.buffer])
+  }, 5)
+})
 `)
-  const big = await heartbeatRefusal('big.txt', Buffer.alloc(8 * MB, 0x61), { contentWorker: pathToFileURL(slow) })
-  assert.equal(big.why, null, `big.txt after ${Math.round(big.ms)} ms`)
-  assert.ok(big.ms >= 6900 && big.ms < 9000, `big.txt took ${Math.round(big.ms)} ms`)
-  const small = await heartbeatRefusal('small.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: pathToFileURL(slow) })
-  assert.equal(small.why, unsafeSentence(small.path))
-  assert.ok(small.ms >= R7_DEADLINE_MS - 100 && small.ms < R7_DEADLINE_MS + 1000, `small.txt was refused after ${Math.round(small.ms)} ms`)
+  const contentWorker = pathToFileURL(slow)
+  const turn = () => new Promise((done) => setImmediate(done))
+  // Waits that end by themselves, in real time: on a red run the test fails by name and its finally closes the Worker.
+  const until = async (ready: () => boolean, what: string) => {
+    const end = performance.now() + 30_000
+    while (!ready() && performance.now() < end) await turn()
+    assert.ok(ready(), what)
+  }
+  const held = async (name: string, bytes: Buffer) => {
+    const job = { settled: false, got: memRefusal(name, bytes, { contentWorker, officeReadMs: undefined }).finally(() => { job.settled = true }) }
+    // The deadline's timer is set before the Worker is handed the file, so a file the Worker has seen is timed.
+    await until(() => existsSync(join(dir, `seen ${name}`)) || job.settled, `${name}: the Worker has it`)
+    assert.equal(job.settled, false, `${name}: not answered before the Worker had it`)
+    return job
+  }
+  const plan = Buffer.from('Plan for Monday.\n')
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const big = await held('big.txt', Buffer.alloc(8 * MB, 0x61))
+    t.mock.timers.tick(13_000 - 1)
+    await turn()
+    assert.equal(big.settled, false, 'big.txt 1 ms before its deadline of 13 s')
+    writeFileSync(join(dir, 'go big.txt'), '')
+    await until(() => big.settled, 'big.txt, answered')
+    assert.equal((await big.got).why, null, 'big.txt, answered before its deadline')
+    const small = await held('small.txt', plan)
+    t.mock.timers.tick(lib.outboundContentDeadlineMs(plan.length) - 1)
+    await turn()
+    assert.equal(small.settled, false, 'small.txt 1 ms before its deadline')
+    t.mock.timers.tick(1)
+    await until(() => small.settled, 'small.txt, at its deadline')
+    const late = await small.got
+    assert.equal(late.why, tryAgainSentence(late.path), 'small.txt, at its deadline')
+  } finally {
+    // This test closes its own Worker, passing or not: left idle it would keep this whole file from ending. A job still
+    // running gets its deadline now, as resetting the clock would drop it, and the last job ends the Worker.
+    t.mock.timers.tick(60_000)
+    t.mock.timers.reset()
+    writeFileSync(join(dir, 'go all'), '')
+    await memRefusal('exit.txt', plan, { contentWorker, officeReadMs: undefined })
+  }
   // Round 8: 5 s plus 1 s per MB, at most 40 s.
   assert.equal(typeof lib.outboundContentDeadlineMs, 'function', 'outboundContentDeadlineMs is exported')
   assert.deepEqual(
@@ -1756,15 +1819,17 @@ parentPort.on('message', (m) => setTimeout(() => parentPort.postMessage({ id: m.
   // Round 8: the budget for reading a Word or Excel file's words grows with it too, 3 s inside the deadline.
   const C = await import('../lib/email-outbound-content.ts')
   assert.deepEqual([0, MB, 6 * MB, 25 * MB, 100 * MB].map((size) => C.officeReadBudgetMs(size)), [2000, 3000, 8000, 27000, 37000])
-  // 8 MB of '=aws' and a closing dot: each position costs the aws_secret_access_key rule a bounded but long try that
-  // finds nothing (about 7 s under node with tsx; round 7 refused it at its 5 s deadline). Its deadline is now 13 s.
+  // A clean 8 MB file, read to the end by every check on the real Worker. Under a budget no runner can spend, so this
+  // says what the file is, and not how busy the runner was; over a spent one it is refused.
+  const longText = Buffer.from(`${'=aws'.repeat(2 * 1024 * 1024)}.`)
   const stop = await stopOf(async () => {
-    const got = await heartbeatRefusal('slow.txt', Buffer.from(`${'=aws'.repeat(2 * 1024 * 1024)}.`))
+    const got = await heartbeatRefusal('long.txt', longText, { officeReadMs: UNDER_BUDGET_MS })
     assert.equal(got.why, null)
-    assert.ok(got.ms <= 13_000 + 1000, `slow.txt took ${Math.round(got.ms)} ms`)
     return got.maxGap
   })
-  assert.ok(stop <= 100, `slow.txt stopped the main thread for ${Math.round(stop)} ms`)
+  const spent = await memRefusal('long.txt', longText, { officeReadMs: OVER_BUDGET_MS })
+  assert.equal(spent.why, tryAgainSentence(spent.path))
+  assert.ok(stop <= 100, `long.txt stopped the main thread for ${Math.round(stop)} ms`)
   // The next file: a gradebook goes.
   assert.equal((await memRefusal('gradebook.xlsx', xlsxSheetsOf([R7_GRADEBOOK]))).why, null)
 })
@@ -1797,18 +1862,17 @@ test('review round 7: the content Worker fails closed: one that cannot start, th
       ['plan.txt', Buffer.from('Plan for Monday: call the printer.\n')],
       ['gradebook.xlsx', xlsxSheetsOf([R7_GRADEBOOK])],
     ] as const) {
-      const got = await memRefusal(name, bytes, { contentWorker: url })
+      const got = await memRefusal(name, bytes, { contentWorker: url, officeReadMs: FAULT_WAIT_MS })
       assert.equal(got.why, unsafeSentence(got.path), `${label}: ${name}`)
-      // Refused when it happens, not at the deadline.
-      assert.ok(got.ms < R7_DEADLINE_MS / 2, `${label}: ${name} took ${Math.round(got.ms)} ms`)
+      // Those are the words of a fault, when it happens: at the deadline they would be the try again words.
     }
   }
   // One that never replies (a busy loop): terminated at the deadline, and the main thread keeps running.
   const looping = worker('busy', 'parentPort.once("message", () => { for (;;) {} })')
   const stop = await stopOf(async () => {
-    const busy = await heartbeatRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: looping })
-    assert.equal(busy.why, unsafeSentence(busy.path))
-    assert.ok(busy.ms <= R7_DEADLINE_MS + 1000, `busy took ${Math.round(busy.ms)} ms`)
+    // At its real deadline; exactly when is the round 8 test's, on a clock it moves.
+    const busy = await heartbeatRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: looping, officeReadMs: undefined })
+    assert.equal(busy.why, tryAgainSentence(busy.path))
     return busy.maxGap
   })
   assert.ok(stop <= 100, `busy stopped the main thread for ${Math.round(stop)} ms`)
@@ -1879,15 +1943,15 @@ test('review round 7: a written value ending in a long run of dots is read in li
     ['prose.txt', `The password is ready${'.'.repeat(80000)}`, null],
   ] as const) {
     const got = await memRefusal(name, Buffer.from(text))
-    assert.ok(got.ms < 1000, `${name} took ${Math.round(got.ms)} ms`)
+    assert.ok(got.cpuMs < 1000, `${name} took ${Math.round(got.cpuMs)} ms of CPU`)
     assert.equal(got.why, sentence === null ? null : sentence(got.path), name)
   }
 })
 
-test('review round 7: a 23 MB CSV of one digit per line is checked in under 3 s and goes', { timeout: 60_000 }, async () => {
+test('review round 7: a 23 MB CSV of one digit per line is checked on under 3 s of CPU and goes', { timeout: 60_000 }, async () => {
   const got = await memRefusal('digits.csv', digitLines(23 * MB))
   assert.equal(got.why, null)
-  assert.ok(got.ms < 3000, `digits.csv took ${Math.round(got.ms)} ms`)
+  assert.ok(got.cpuMs < 3000, `digits.csv took ${Math.round(got.cpuMs)} ms of CPU`)
 })
 
 test('review round 7: a tag ends at its first > outside a quoted attribute value; Word rows, cells and tables are read with any prefix', async () => {
@@ -2103,13 +2167,20 @@ test('review round 8: ONE long lived content Worker reads every file; only a dea
     ['hang.txt', false, 6],
     ['good h.txt', true, 7],
   ]
-  for (const [name, goes, workers] of steps) {
-    const got = await memRefusal(name, plan, { contentWorker: url })
-    assert.equal(got.why, goes ? null : unsafeSentence(got.path), name)
-    if (name !== 'hang.txt') assert.ok(got.ms < R7_DEADLINE_MS / 2, `${name} took ${Math.round(got.ms)} ms`)
-    assert.equal(lib.outboundContentWorkersStarted(url), workers, `${name}: Workers started`)
-    // A turn for any message the Worker sends after its reply, before the next file.
-    await new Promise((resolve) => setTimeout(resolve, 50))
+  try {
+    for (const [name, goes, workers] of steps) {
+      const got = await memRefusal(name, plan, { contentWorker: url, officeReadMs: undefined })
+      // Out of time is not a fault of the file: only the Worker's own faults keep the never words.
+      assert.equal(got.why, goes ? null : name === 'hang.txt' ? tryAgainSentence(got.path) : unsafeSentence(got.path), name)
+      if (name !== 'hang.txt') assert.ok(got.ms < R7_DEADLINE_MS / 2, `${name} took ${Math.round(got.ms)} ms`)
+      assert.equal(lib.outboundContentWorkersStarted(url), workers, `${name}: Workers started`)
+      // A turn for any message the Worker sends after its reply, before the next file.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  } finally {
+    // This test closes its own Worker, passing or not. It has a stdout of its own that nothing reads, and left idle
+    // with a byte on it (main's runner preload writes one there) it keeps this whole file from ending.
+    await memRefusal('exit.txt', plan, { contentWorker: url, officeReadMs: undefined })
   }
 })
 
@@ -2252,20 +2323,35 @@ function r8BigWorkbook(n: number): Buffer {
   ])
 }
 
-test('review round 8: ordinary large files go: 24.9 MB of prose, a 24 MB log, a 22.5 MB CSV and a workbook of 900000 shared strings', { timeout: 180_000 }, async () => {
+test('review round 8: ordinary large files go: 24.9 MB of prose, a 24 MB log, a 22.5 MB CSV and a workbook of 900000 shared strings', { timeout: 180_000 }, async (t) => {
+  const { outboundContentVerdict } = await import('../lib/email-outbound-content.ts')
   for (const [name, build] of [
     ['notes.txt', () => r8Lines(24.9 * MB, (_, words) => `${words}\n`)],
     ['server.log.txt', () => r8Lines(24 * MB, (i, words) => `2026-10-28T03:${String(i % 60).padStart(2, '0')}:00Z INFO worker=${i % 17} ${words}\n`)],
     ['sales.csv', () => r8Lines(22.5 * MB, (i) => `2026-10-28,Widget blue large,SKU-${1234567 + i},12.50,warehouse ${i % 9}\n`)],
     ['orders.xlsx', () => r8BigWorkbook(900_000)],
   ] as const) {
-    const bytes = build()
-    const stop = await stopOf(async () => {
-      const got = await heartbeatRefusal(name, bytes)
-      assert.equal(got.why, null, `${name} (${(bytes.length / MB).toFixed(1)} MB)`)
-      return got.maxGap
+    await t.test(name, async (t) => {
+      const bytes = build()
+      const ratios: number[] = []
+      // Calibrate with the real content checks inline in this process, on these same bytes and under the same
+      // unspendable budget. A busy runner slows the calibration too. The Worker must keep its longest main thread
+      // pause below a quarter of that inline cost, rather than below a fixed number of milliseconds.
+      // Always take three paired samples: their median tolerates a scheduling or GC outlier in either measurement,
+      // while moving the content checks back onto the main thread leaves their long pauses visible in every round.
+      for (let round = 0; round < 3; round++) {
+        const started = performance.now()
+        assert.deepEqual(await outboundContentVerdict(bytes, name.endsWith('.xlsx') ? 'xlsx' : 'text', name, [], UNDER_BUDGET_MS), { kind: 'ok' }, `${name}: inline calibration`)
+        const baselineMs = performance.now() - started
+        const got = await heartbeatRefusal(name, bytes)
+        assert.equal(got.why, null, `${name} (${(bytes.length / MB).toFixed(1)} MB)`)
+        const ratio = got.maxGap / baselineMs
+        ratios.push(ratio)
+        t.diagnostic(`round ${round + 1}: inline ${baselineMs.toFixed(1)} ms, main thread gap ${got.maxGap.toFixed(1)} ms, ratio ${ratio.toFixed(3)}`)
+      }
+      const ratio = ratios.sort((a, b) => a - b)[1]!
+      assert.ok(ratio < 0.25, `${name}: median main thread pause / inline content time was ${ratio.toFixed(3)}, expected < 0.25`)
     })
-    assert.ok(stop <= 100, `${name} stopped the main thread for ${Math.round(stop)} ms`)
   }
 })
 
@@ -2396,39 +2482,36 @@ const docxSlow = (mb: number, unit = 'pw ') => docxRaw(`<w:p><w:r><w:t>${unit.re
 /** Round 9: the real content Worker module under a URL of its own, so a test's Workers are counted on their own host. */
 const realWorkerAt = (tag: string) => new URL(`../lib/email-outbound-content-worker.ts?${tag}`, import.meta.url)
 
-test('review round 9: a file over its budget is refused by the Worker itself, inside the walks, and the Worker is not replaced', { timeout: 120_000 }, async () => {
+test('review round 9: a file over its budget is refused by the Worker itself, and the Worker is not replaced', { timeout: 120_000 }, async () => {
   const lib = await m()
   const url = realWorkerAt('r9-budget')
-  // 8 MB of 'pw ' in a text file, under a 100 ms budget (ctx.officeReadMs): before round 9 the budget covered only a
-  // Word or Excel file's read, and this text went after about a second of checks.
+  // A Worker already started, so how long it takes to start cannot replace it on a busy runner.
+  assert.equal((await memRefusal('first.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: url })).why, null)
+  // A large text file with a budget that ends before it is read (ctx.officeReadMs): the Worker itself answers, which the
+  // count below proves. That each check stops at its budget is the test 'every check stops at the first read past its budget'.
   const text = Buffer.from('pw '.repeat(Math.floor((8 * MB) / 3)))
   const stop = await stopOf(async () => {
-    const slow = await heartbeatRefusal('notes.txt', text, { contentWorker: url, officeReadMs: 100 })
-    assert.equal(slow.why, unsafeSentence(slow.path))
-    // Its hard deadline is 13 s: the Worker's own budget answered long before it.
-    assert.ok(slow.ms < 2500, `notes.txt took ${Math.round(slow.ms)} ms`)
+    const slow = await heartbeatRefusal('notes.txt', text, { contentWorker: url, officeReadMs: ALMOST_NO_BUDGET_MS })
+    assert.equal(slow.why, tryAgainSentence(slow.path))
     return slow.maxGap
   })
   assert.ok(stop <= 100, `notes.txt stopped the main thread for ${Math.round(stop)} ms`)
-  // The reviewer's docxslow (24 KB, 24 MB of 'pw '), 10 times under a 300 ms budget: each refused by the budget, and
-  // the one Worker reads them all (under bun each Worker replaced cost about 27 MB that is never given back).
+  // The reviewer's docxslow, a small Word file of many words, 10 times with the same budget: each refused, and the one Worker reads
+  // them all (under bun each Worker replaced cost about 27 MB that is never given back).
   const bytes = docxSlow(24)
   for (let i = 1; i <= 10; i++) {
-    const got = await memRefusal(`memo${i}.docx`, bytes, { contentWorker: url, officeReadMs: 300 })
-    assert.equal(got.why, unsafeSentence(got.path), `memo${i}.docx`)
-    assert.ok(got.ms < 3000, `memo${i}.docx took ${Math.round(got.ms)} ms`)
+    const got = await memRefusal(`memo${i}.docx`, bytes, { contentWorker: url, officeReadMs: ALMOST_NO_BUDGET_MS })
+    assert.equal(got.why, tryAgainSentence(got.path), `memo${i}.docx`)
   }
-  // Under the default budget (sized from its 24 MB of words, not its 24 KB) it goes, still on the same Worker.
-  assert.equal((await memRefusal('memo.docx', bytes, { contentWorker: url })).why, null)
-  // The budget grows with the words: 16 MB of '=aws' in a 16 KB docx takes about 4 s of checks under node, past the
-  // 2 s its size gives, and goes (its words give 18 s).
-  const aws = await memRefusal('aws.docx', docxSlow(16, '=aws'), { contentWorker: url })
-  assert.equal(aws.why, null, `aws.docx after ${Math.round(aws.ms)} ms`)
+  // Under its budget it goes, still on the same Worker, read to the end by every check; so does a second small Word
+  // file. What budget each is given is test 'the budget grows with the words', on a stopped clock.
+  assert.equal((await memRefusal('memo.docx', bytes, { contentWorker: url, officeReadMs: UNDER_BUDGET_MS })).why, null)
+  assert.equal((await memRefusal('long.docx', docxSlow(16, '=aws'), { contentWorker: url, officeReadMs: UNDER_BUDGET_MS })).why, null, 'long.docx')
   assert.equal((await memRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: url })).why, null)
   assert.equal(lib.outboundContentWorkersStarted(url), 1, 'the Worker was never replaced')
 })
 
-test('review round 9: each walk checks the budget as it goes; with none it reads to the end', { timeout: 60_000 }, async () => {
+test('review round 9: each walk checks the budget as it goes; with none it reads to the end', { timeout: 60_000 }, async (t) => {
   const C = await import('../lib/email-outbound-content.ts')
   const W = (C as Record<string, any>).CONTENT_WALKS_FOR_TESTS
   assert.equal(typeof W.OverBudget, 'function', 'the walks export the budget error')
@@ -2440,22 +2523,168 @@ test('review round 9: each walk checks the budget as it goes; with none it reads
     ['next line label', W.nextLineValues, 'pw '],
     ['recovery phrase', W.hasRecoveryPhrase, `${twelve}the `],
     ['recovery key labels', W.hasRecoveryKey, 'recovery key: no\n'],
+    ['private key armour', W.hasPrivateKeyArmour, '-----BEGIN x\n'],
+    ['blank lines after a label', W.nextLineValues, `pw:${'\n'.repeat(MB)}`],
   ] as const) {
     const text = unit.repeat(Math.floor((24 * MB) / unit.length))
-    // A budget already spent: the walk stops at its first check.
-    const t0 = performance.now()
-    assert.throws(() => walk(text, { deadline: Date.now() - 1 }), W.OverBudget, `${label}: spent`)
-    assert.ok(performance.now() - t0 < 100, `${label}: a spent budget took ${Math.round(performance.now() - t0)} ms`)
-    // A budget of 20 ms: the walk stops soon after it, not at the end of 24 MB.
-    const t1 = performance.now()
-    assert.throws(() => walk(text, { deadline: Date.now() + 20 }), W.OverBudget, `${label}: 20 ms`)
-    assert.ok(performance.now() - t1 < 250, `${label}: a 20 ms budget took ${Math.round(performance.now() - t1)} ms`)
+    // A clock this test moves, 1 ms each time it is read, so the walk's reads are counted and no runner's speed counts.
+    let now = 1_000_000
+    const clock = t.mock.method(Date, 'now', () => now++)
+    try {
+      // A budget already spent: the walk stops at its first check.
+      assert.throws(() => walk(text, { deadline: now - 1 }), W.OverBudget, `${label}: spent`)
+      assert.ok(now - 1_000_000 <= 2, `${label}: a spent budget took ${now - 1_000_000} reads`)
+      // A budget that ends after 20 reads: the walk reads it as it goes and stops there, not at the end of 24 MB.
+      const start = now
+      assert.throws(() => walk(text, { deadline: start + 20 }), W.OverBudget, `${label}: 20 reads`)
+      assert.ok(now - start >= 20 && now - start <= 22, `${label}: stopped after ${now - start} reads`)
+      // A budget that never ends here: the walk keeps reading it through 24 MB.
+      const first = now
+      walk(text, { deadline: Number.MAX_SAFE_INTEGER })
+      assert.ok(now - first >= 100, `${label}: read the clock ${now - first} times in 24 MB`)
+    } finally {
+      clock.mock.restore()
+    }
     // No budget: the walk reads to the end.
     assert.doesNotThrow(() => walk(text), label)
   }
   // The scanner's pieces: a spent budget stops it between pieces.
   await assert.rejects(W.firstSecretRule('notes.txt', 'plain line of notes\n'.repeat(200_000), { deadline: Date.now() - 1 }), W.OverBudget)
   assert.equal(await W.firstSecretRule('notes.txt', 'plain line of notes\n'.repeat(200_000)), null)
+})
+
+test('the budget grows with the words: on a stopped clock each file reads to the end, under the budget its size and words give', { timeout: 60_000 }, async (t) => {
+  const C = await import('../lib/email-outbound-content.ts')
+  const W = (C as Record<string, any>).CONTENT_WALKS_FOR_TESTS
+  const clock = t.mock.method(Date, 'now', () => 1_000_000)
+  try {
+    const word = await W.verdictWithBudget(new Uint8Array(docxSlow(16, '=aws')), 'docx', 'long.docx', [])
+    assert.equal(word.verdict.kind, 'ok', 'the Word file is clean')
+    // 2 s plus 1 s per MB of its words, and not the 2 s its 16 KB would give.
+    assert.ok(word.budgetMs >= 18_000 && word.budgetMs <= 18_001, `the Word file's budget is ${word.budgetMs} ms`)
+    const text = await W.verdictWithBudget(new Uint8Array(Buffer.from(`${'=aws'.repeat(2 * MB)}.`)), 'text', 'long.txt', [])
+    assert.equal(text.verdict.kind, 'ok', 'the text file is clean')
+    assert.equal(text.budgetMs, 10_001, "the text file's budget")
+  } finally {
+    clock.mock.restore()
+  }
+})
+
+test('a file is given the budget its size gives: at its end it goes, and 1 ms past it is over', { timeout: 60_000 }, async (t) => {
+  const C = await import('../lib/email-outbound-content.ts')
+  const bytes = new Uint8Array(8 * MB).fill(0x61)
+  for (const [elapsed, kind] of [[10_000, 'ok'], [10_001, 'over_budget']] as const) {
+    let first = true
+    const clock = t.mock.method(Date, 'now', () => {
+      if (!first) return 1_000_000 + elapsed
+      first = false
+      return 1_000_000
+    })
+    try {
+      assert.equal((await C.outboundContentVerdict(bytes, 'text', 'notes.txt', [])).kind, kind, `${elapsed} ms into 8 MB`)
+    } finally {
+      clock.mock.restore()
+    }
+  }
+})
+
+test('every check stops at the first read past its budget, at every read of the clock in the file', { timeout: 60_000 }, async (t) => {
+  const C = await import('../lib/email-outbound-content.ts')
+  // Each check reads the clock here, a few times each, and the last line's length makes three pieces for the scanner.
+  const twelve = 'abandon ability able about above absent absorb abstract absurd abuse access '
+  const text = ['pw pass pin '.repeat(3000), `${twelve}the `.repeat(30), 'recovery key: no\n'.repeat(3000), '-----BEGIN x\n'.repeat(3000), `${'x'.repeat(99)}\n`.repeat(26_000)].join('\n')
+  const bytes = new Uint8Array(Buffer.from(text))
+  // One run first: the loader's cache reads the clock once in a process, on the first turn after it starts.
+  assert.equal((await C.outboundContentVerdict(bytes, 'text', 'notes.txt', [])).kind, 'ok')
+  let tried = 0
+  // Read 1 is the start and read 2 the file's first 4 KB, which is bounded and takes no budget.
+  for (let after = 2; ; after++) {
+    // The clock stands still for `after` reads and then jumps an hour. A check wired to the budget ends the stage at
+    // that read, and the one read after it is the stage's own closing one. A check that is not wired reads on.
+    let reads = 0
+    const clock = t.mock.method(Date, 'now', () => (reads++ < after ? 1_000_000 : 4_600_000))
+    let kind: string
+    try {
+      kind = (await C.outboundContentVerdict(bytes, 'text', 'notes.txt', [])).kind
+    } finally {
+      clock.mock.restore()
+    }
+    // Only the closing read saw the jump: every read before it has been tried.
+    if (reads <= after + 1) {
+      assert.equal(kind, 'ok', `the stage read the clock ${reads} times and the jump came last`)
+      break
+    }
+    tried++
+    assert.equal(kind, 'over_budget', `the clock jumps after read ${after}`)
+    assert.equal(reads, after + 2, `the clock jumps after read ${after}`)
+  }
+  assert.ok(tried >= 100, `the budget ended at ${tried} places`)
+})
+
+test('past its budget at any read of the clock a file is over_budget, never a content refusal; a clock that stays inside it reads to the end', { timeout: 60_000 }, async (t) => {
+  const C = await import('../lib/email-outbound-content.ts')
+  const plan = Buffer.from('Plan for Monday.\n')
+  for (const [type, name, bytes] of [
+    ['text', 'plan.txt', plan],
+    ['docx', 'memo.docx', docxOf(['Plan for Monday'])],
+    ['xlsx', 'book.xlsx', xlsxSheetsOf([R7_GRADEBOOK])],
+  ] as const) {
+    let reads = 0
+    for (let after = 1; ; after++) {
+      // The clock stands still for `after` reads, then jumps an hour: every read of it in the stage gets its turn.
+      let seen = 0
+      const clock = t.mock.method(Date, 'now', () => (seen++ < after ? 1_000_000 : 4_600_000))
+      let kind: string
+      try {
+        kind = (await C.outboundContentVerdict(new Uint8Array(bytes), type, name, [])).kind
+      } finally {
+        clock.mock.restore()
+      }
+      reads = after
+      if (kind === 'ok') break
+      assert.equal(kind, 'over_budget', `${name}: the clock jumps after read ${after}`)
+      assert.ok(after < 5000, `${name}: still over at read ${after}`)
+    }
+    assert.ok(reads >= 2, `${name}: the stage read its clock ${reads} times`)
+  }
+})
+
+test('a file over its budget gets the try again words and is not attached, on any file and even when it holds a key; under its budget it goes', { timeout: 60_000 }, async () => {
+  const lib = await m()
+  const key = Buffer.from(`-----BEGIN RSA PRIVATE KEY-----\n${'QUJD'.repeat(40)}\n-----END RSA PRIVATE KEY-----\n`)
+  for (const [name, bytes, goes] of [
+    ['plan.txt', Buffer.from('Plan for Monday.\n'), true],
+    ['sales.csv', Buffer.from('date,item,qty\n2026-10-01,widget,4\n'), true],
+    ['memo.docx', docxOf(['Plan for Monday']), true],
+    ['book.xlsx', xlsxSheetsOf([R7_GRADEBOOK]), true],
+    ['server.txt', key, false],
+  ] as const) {
+    const path = `${MEM_HOME}\\Documents\\${name}`
+    const over = await lib.readOutboundFiles([path], { home: MEM_HOME, fs: memFs(bytes), officeReadMs: OVER_BUDGET_MS })
+    assert.equal(over.ok, false, `${name}: not attached`)
+    assert.equal(over.files, undefined, `${name}: no file comes back`)
+    assert.equal(over.error, tryAgainSentence(path), name)
+    assert.doesNotMatch(over.error, /never/, name)
+    // The words say it ran out of time, and nothing of what the check looks for.
+    assert.doesNotMatch(over.error.replace(path, ''), /password|secret|\bkey|virus|phrase|scan|label|credential/i, name)
+    const under = await lib.readOutboundFiles([path], { home: MEM_HOME, fs: memFs(bytes), officeReadMs: UNDER_BUDGET_MS })
+    assert.equal(under.ok, goes, `${name}: under its budget`)
+    // Trying again is no way past a check: the same key, once it is read, gets its own refusal.
+    if (!goes) assert.match(under.error, /holds a private key, so it is never attached/, name)
+  }
+})
+
+test('a content refusal keeps its never words and has no try again in it, however long it took', { timeout: 60_000 }, async () => {
+  for (const [name, bytes, words] of [
+    ['server.txt', Buffer.from(`-----BEGIN RSA PRIVATE KEY-----\n${'QUJD'.repeat(40)}\n-----END RSA PRIVATE KEY-----\n`), /holds a private key, so it is never attached/],
+    ['people.csv', Buffer.from('Site,Username,Password\nexample.com,sam,rig dummy\n'), /has a password column, so it looks like a password export and is never attached/],
+    // Past a cap and not past the clock: the shape of the file is the reason, so another try changes nothing.
+    ['runs.docx', docxRaw(`<w:p>${'<w:r/>'.repeat(Math.ceil((26 * MB) / 6))}</w:p>`), /could not be read safely, so it is never attached/],
+  ] as const) {
+    const got = await memRefusal(name, bytes, { officeReadMs: UNDER_BUDGET_MS })
+    assert.match(String(got.why), words, name)
+    assert.doesNotMatch(String(got.why), /try again|too long/i, name)
+  }
 })
 
 test('review round 9: the hard deadline always ends after the Worker\'s own budget', async () => {
@@ -2486,7 +2715,7 @@ test('review round 9: at most 8 content Workers start in a process; past them ev
   writeFileSync(file, "import { parentPort } from 'node:worker_threads'\nparentPort.on('message', () => parentPort.postMessage('garbage'))\n")
   const url = pathToFileURL(file)
   for (let i = 1; i <= 8; i++) {
-    const got = await memRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: url })
+    const got = await memRefusal('plan.txt', Buffer.from('Plan for Monday.\n'), { contentWorker: url, officeReadMs: FAULT_WAIT_MS })
     assert.equal(got.why, unsafeSentence(got.path), `file ${i}`)
     assert.equal(lib.outboundContentWorkersStarted(url), i, `file ${i}: Workers started`)
   }
@@ -2497,12 +2726,12 @@ test('review round 9: at most 8 content Workers start in a process; past them ev
     ['gradebook.docx', docxOf(['Grades'], R7_GRADEBOOK)],
     ['plan2.txt', Buffer.from('Plan for Tuesday.\n')],
   ] as const) {
-    const got = await memRefusal(name, bytes, { contentWorker: url })
+    const got = await memRefusal(name, bytes, { contentWorker: url, officeReadMs: FAULT_WAIT_MS })
     assert.equal(got.why, safetySentence(got.path), name)
     // Round 10: one sentence, with no 'never' (a later restart lets the file go).
     assert.equal(got.why!.split(/[.:;] /).length, 3, `${name}: one sentence, its clauses after a colon and a semicolon`)
     assert.equal(/\bnever\b|\. [A-Z]/.test(got.why!), false, name)
-    assert.ok(got.ms < 500, `${name} took ${Math.round(got.ms)} ms`)
+    assert.ok(got.cpuMs < 500, `${name} took ${Math.round(got.cpuMs)} ms of CPU`)
     assert.equal(lib.outboundContentWorkersStarted(url), 8, `${name}: no Worker started past the cap`)
   }
   // A picture or a PDF has no words read, so it still goes; the real Worker's host is its own.
@@ -2777,7 +3006,7 @@ test('review round 11: a cell longer than a header is judged on its last charact
   }, OverBudget)
 })
 
-test('review round 11: 900000 shared strings of 21 and of 25 characters go; siTiny is still refused', { timeout: 300_000 }, async () => {
+test('review round 11: 900000 shared strings of 21 and of 25 characters go; siTiny is still refused', { timeout: 240_000 }, async () => {
   const rels = '<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'
   const orders = (n: number, length: number) => {
     const si: string[] = []
@@ -3662,10 +3891,9 @@ test('final fix: a path that leads somewhere else when HOAI looks again after op
   }
   assert.equal((await readOne(clean, { home, fs: swapTo(secret) })).error, changedSentence(clean), 'into a key folder')
   assert.equal((await readOne(clean, { home, fs: swapTo(other) })).error, changedSentence(clean), 'onto another plain file')
-  // The very same file, reached through the key folder (a junction in it to the file's folder; a hard link, a second
-  // name of the file, is refused before the open since mailharden 2): the second look still runs steps 1 and 2.
-  symlinkSync(join(home, 'docs', 'sw'), join(home, '.ssh', 'same'), 'junction')
-  const sameInKeys = join(home, '.ssh', 'same', 'report.pdf')
+  // The very same file (a second name of it in the key folder): the second look still runs steps 1 and 2.
+  const sameInKeys = join(home, '.ssh', 'same.pdf')
+  linkSync(clean, sameInKeys)
   assert.equal((await readOne(clean, { home, fs: swapTo(sameInKeys) })).error, changedSentence(clean), 'the same file, now reached through a key folder')
   // A second look that cannot resolve at all is refused the same way.
   let n = 0
@@ -3679,6 +3907,219 @@ test('final fix: a path that leads somewhere else when HOAI looks again after op
   assert.equal(looks, 2, 'realpath again after the open')
   // The real file system, no injection: it goes.
   assert.equal((await readOne(clean, { home })).ok, true)
+})
+
+test('the swap check compares device and file numbers as bigint, on every look', async (t) => {
+  const home = scratchHome(t)
+  mkdirSync(join(home, 'docs'), { recursive: true })
+  const path = join(home, 'docs', 'report.pdf')
+  writeFileSync(path, PDF)
+  const low = 2n ** 53n
+  const high = low + 1n
+  assert.equal(Number(low), Number(high))
+  type Ids = { dev: bigint, ino: bigint }
+  // A stat as node gives one: bigints when asked for, numbers when not.
+  const stat = (ids: Ids, options?: { bigint?: boolean }) => (options?.bigint
+    ? { isFile: () => true, size: BigInt(PDF.length), dev: ids.dev, ino: ids.ino }
+    : { isFile: () => true, size: PDF.length, dev: Number(ids.dev), ino: Number(ids.ino) })
+  // The path's first look, the handle, and the path's second look.
+  const reading = (first: Ids, opened: Ids, second: Ids) => {
+    const looks = [first, second]
+    let n = 0
+    return {
+      realpath: async (given: string) => given,
+      lstat: async (_: string, options?: { bigint?: boolean }) => stat(looks[n++]!, options),
+      open: async () => ({
+        stat: async (options?: { bigint?: boolean }) => stat(opened, options),
+        read: async (buffer: Uint8Array, offset: number, length: number, position: number) => {
+          const read = Math.max(0, Math.min(length, PDF.length - position))
+          buffer.set(PDF.subarray(position, position + read), offset)
+          return { bytesRead: read }
+        },
+        close: async () => {},
+      }),
+    }
+  }
+  const a = { dev: 1n, ino: low }
+  const b = { dev: 1n, ino: high }
+  const c = { dev: low, ino: 5n }
+  const d = { dev: high, ino: 5n }
+  for (const [first, opened, second, label] of [
+    [b, a, a, 'file number, first look'],
+    [a, b, b, 'file number, first look'],
+    [a, b, a, 'file number, the handle'],
+    [b, a, b, 'file number, the handle'],
+    [a, a, b, 'file number, second look'],
+    [b, b, a, 'file number, second look'],
+    [c, d, d, 'device, first look'],
+    [d, c, c, 'device, first look'],
+    [c, d, c, 'device, the handle'],
+    [d, c, d, 'device, the handle'],
+    [c, c, d, 'device, second look'],
+    [d, d, c, 'device, second look'],
+  ] as const) {
+    assert.equal((await readOne(path, { home, fs: reading(first, opened, second) })).error, changedSentence(path), label)
+  }
+  for (const same of [a, b, c, d]) {
+    const read = await readOne(path, { home, fs: reading(same, same, same) })
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+    assert.equal(read.file.size, PDF.length)
+  }
+})
+
+// ── the same-file check: a number left out or zero is unknown, and then the times decide ───────────────────────
+
+/** What a bigint stat carries that the same-file check reads. A field left undefined is one the system did not give. */
+type Look = { dev?: bigint, ino?: bigint, size?: bigint, mtimeNs?: bigint, ctimeNs?: bigint, birthtimeNs?: bigint }
+
+/** An unchanged file as a bigint stat gives it: device, file number, size and the three times in ns. */
+const UNCHANGED: Look = {
+  dev: 3n, ino: 41n, size: BigInt(PDF.length),
+  mtimeNs: 1_762_300_000_123_456_789n, ctimeNs: 1_762_300_000_223_456_789n, birthtimeNs: 1_762_200_000_000_000_001n,
+}
+
+/** A file system held in memory: the path's first look, the handle's look and the path's second look, each injected. */
+function lookFs(first: Look, opened: Look, second: Look) {
+  const stat = (look: Look) => ({ isFile: () => true, ...look, size: look.size ?? BigInt(PDF.length) })
+  const looks = [first, second]
+  let n = 0
+  return {
+    realpath: async (given: string) => given,
+    lstat: async () => stat(looks[Math.min(n++, 1)]!),
+    open: async () => ({
+      stat: async () => stat(opened),
+      read: async (buffer: Uint8Array, offset: number, length: number, position: number) => {
+        const read = Math.max(0, Math.min(length, PDF.length - position))
+        buffer.set(PDF.subarray(position, position + read), offset)
+        return { bytesRead: read }
+      },
+      close: async () => {},
+    }),
+  }
+}
+
+/** Reads one file with each of its three looks injected. */
+async function readLooks(first: Look, opened: Look, second: Look): Promise<any> {
+  return readOne(`${MEM_HOME}\\Documents\\q3.pdf`, { home: MEM_HOME, fs: lookFs(first, opened, second) })
+}
+
+/** Each way one look can differ from the other two: the first look, the handle, the second look. */
+function oneLookDiffers(same: Look, other: Look): Array<[Look, Look, Look, string]> {
+  return [[other, same, same, 'first look'], [same, other, same, 'the handle'], [same, same, other, 'second look']]
+}
+
+const MEM_CHANGED = changedSentence(`${MEM_HOME}\\Documents\\q3.pdf`)
+
+test('the same-file check: a device number left out on both sides is not a match, so the times decide', async () => {
+  const noDev: Look = { ...UNCHANGED, dev: undefined }
+  for (const [label, other] of [
+    ['modified time', { ...noDev, mtimeNs: noDev.mtimeNs! + 1n }],
+    ['change time', { ...noDev, ctimeNs: noDev.ctimeNs! + 1n }],
+  ] as const) {
+    for (const [first, opened, second, where] of oneLookDiffers(noDev, other)) {
+      assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `${label}, ${where}`)
+    }
+  }
+  // A device number of zero is none, as a file number of zero is.
+  const zeroDev: Look = { ...UNCHANGED, dev: 0n }
+  for (const [first, opened, second, where] of oneLookDiffers(zeroDev, { ...zeroDev, mtimeNs: zeroDev.mtimeNs! + 1n })) {
+    assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `zero device, ${where}`)
+  }
+  // A different file number still says another file, device or not.
+  for (const [first, opened, second, where] of oneLookDiffers(noDev, { ...noDev, ino: 42n })) {
+    assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `file number, ${where}`)
+  }
+  // The controls: the same file, with no device number or a zero one, still goes.
+  for (const same of [noDev, zeroDev]) {
+    const read = await readLooks(same, same, same)
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+  }
+})
+
+test('the same-file check: with no file number (zero or left out) the size and the modified and change times in ns must all match', async () => {
+  for (const ino of [0n, undefined]) {
+    const same: Look = { ...UNCHANGED, ino }
+    for (const [label, other] of [
+      ['size', { ...same, size: same.size! + 1n }],
+      ['device number', { ...same, dev: same.dev! + 1n }],
+      ['modified time, 1 ns', { ...same, mtimeNs: same.mtimeNs! + 1n }],
+      ['change time, 1 ns', { ...same, ctimeNs: same.ctimeNs! + 1n }],
+      ['birth time, 1 ns', { ...same, birthtimeNs: same.birthtimeNs! + 1n }],
+      ['modified time left out', { ...same, mtimeNs: undefined }],
+      ['change time left out', { ...same, ctimeNs: undefined }],
+    ] as const) {
+      for (const [first, opened, second, where] of oneLookDiffers(same, other)) {
+        assert.equal((await readLooks(first, opened, second)).error, MEM_CHANGED, `file number ${ino}: ${label}, ${where}`)
+      }
+    }
+    // Times left out on every look prove nothing: the size alone does not pass.
+    const timeless: Look = { ...same, mtimeNs: undefined, ctimeNs: undefined, birthtimeNs: undefined }
+    assert.equal((await readLooks(timeless, timeless, timeless)).error, MEM_CHANGED, `file number ${ino}: no times at all`)
+    // The controls: an unchanged file on a drive that reports no file number goes, and so does one whose system
+    // gives no birth time (left out, or zero as Linux reports it without one) on either look.
+    const read = await readLooks(same, same, same)
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+    assert.equal(read.file.size, PDF.length)
+    for (const birthtimeNs of [undefined, 0n]) {
+      for (const [first, opened, second, where] of oneLookDiffers(same, { ...same, birthtimeNs })) {
+        const read = await readLooks(first, opened, second)
+        assert.equal(read.ok, true, `file number ${ino}: birth time ${birthtimeNs} on the ${where} only: ${JSON.stringify(read.error)}`)
+      }
+    }
+  }
+})
+
+test('the same-file check: with full numbers on every look the times are not needed', async () => {
+  const numbersOnly: Look = { dev: 3n, ino: 41n }
+  const read = await readLooks(numbersOnly, numbersOnly, numbersOnly)
+  assert.equal(read.ok, true, JSON.stringify(read.error))
+})
+
+test('the real file system export is frozen, as the other test exports are', async () => {
+  const lib = await m()
+  assert.equal(Object.isFrozen(lib.OUTBOUND_REAL_FS_FOR_TESTS), true)
+  assert.throws(() => { lib.OUTBOUND_REAL_FS_FOR_TESTS.lstat = async () => ({}) }, TypeError)
+})
+
+test('the real file system answers a stat with bigints, on a path and on an open file', async (t) => {
+  const lib = await m()
+  const home = scratchHome(t)
+  mkdirSync(join(home, 'docs'), { recursive: true })
+  const path = join(home, 'docs', 'report.pdf')
+  writeFileSync(path, PDF)
+  const fs = lib.OUTBOUND_REAL_FS_FOR_TESTS
+  const seen = await fs.lstat(path, { bigint: true })
+  assert.equal(typeof seen.ino, 'bigint')
+  assert.equal(typeof seen.dev, 'bigint')
+  // And the times in ns, which the same-file check falls back on when a drive gives no file number.
+  assert.equal(typeof seen.mtimeNs, 'bigint')
+  assert.equal(typeof seen.ctimeNs, 'bigint')
+  const handle = await fs.open(path, 'r')
+  try {
+    const opened = await handle.stat({ bigint: true })
+    assert.equal(typeof opened.ino, 'bigint')
+    assert.equal(typeof opened.dev, 'bigint')
+    assert.equal(opened.ino, seen.ino)
+    assert.equal(opened.dev, seen.dev)
+    assert.equal(opened.mtimeNs, seen.mtimeNs)
+    assert.equal(opened.ctimeNs, seen.ctimeNs)
+  } finally {
+    await handle.close()
+  }
+  // A drive that reports no file or device number: the real stats with those two set to zero. The file was written
+  // once above and is not touched again, so it is unchanged, and the times of the real looks agree: it still goes.
+  const noNumbers = (s: any) => ({
+    isFile: () => s.isFile(), size: s.size, dev: 0n, ino: 0n, mtimeNs: s.mtimeNs, ctimeNs: s.ctimeNs, birthtimeNs: s.birthtimeNs,
+  })
+  const zeroDrive = {
+    lstat: async (p: string, options: { bigint: true }) => noNumbers(await fs.lstat(p, options)),
+    open: async (p: string, flags: 'r') => {
+      const h = await fs.open(p, flags)
+      return { stat: async (options: { bigint: true }) => noNumbers(await h.stat(options)), read: h.read, close: h.close }
+    },
+  }
+  const read = await readOne(path, { home, fs: zeroDrive })
+  assert.equal(read.ok, true, JSON.stringify(read.error))
 })
 
 test('final fix: a file swapped in place between the check and the open is refused by the handle check (the inode)', async () => {
@@ -3827,7 +4268,7 @@ test('Windows aliases: the real home bounds the word rules after an 8.3 prefix o
     const read = await readOne(path, { home, fs })
     assert.equal(read.ok, true, JSON.stringify(read.error))
     assert.equal(read.file.realPath, real)
-    assert.equal(calls.filter((c) => c === `realpath ${home}`).length, 1, 'the given file system resolves the home once, after the lexical checks')
+    assert.equal(calls.filter((c) => c === `realpath ${home}`).length, 1, 'the home is resolved after the lexical checks')
     assert.equal(calls.filter((c) => c === `realpath ${path}`).length, 2, 'the second look still resolves the original path')
   }
 })
@@ -3849,7 +4290,7 @@ test('Windows aliases: resolving the home never exempts a sibling, an outside li
   const { fs, calls } = spyFs()
   const key = `${home}\\.ssh\\report.pdf`
   assert.equal(await refusal(key, { home, fs }), `${key} looks like a key or password file, so it is never attached. ${NO_WAY_AROUND}`)
-  assert.deepEqual(calls, [], 'a lexical refusal still resolves nothing through the given file system, the home included (homesOf reads only the owner\'s own home, for its real path)')
+  assert.deepEqual(calls, [], 'a lexical refusal still resolves nothing, including the home')
 })
 
 test('final fix 2: a file on a mapped network drive goes, read by its drive letter, when the share path is the given path below the drive', async () => {
@@ -4248,165 +4689,120 @@ test('final fix 4: a main thread stop is read over rounds: one spike passes, a s
   assert.equal(within.left(), 2)
 })
 
-// ── mailharden (board row 84f19b9f): a home behind a link, a file with two names, a FIFO swapped in ──
+// ── the text check runs in the content Worker ──
 
-const hardLinkSentence = (path: string) => `${path} has more than one name (a hard link), so it is not attached.`
+/** The refusal a .txt or .csv file gets when its bytes are not clean UTF-8 text. */
+const notTextSentence = (path: string) => `${path} is not really a text file (its contents say otherwise), so it is not attached.`
 
-test('mailharden 1: a home reached through a link (macOS /var is one) is the home by its real path too: a file named by that path is not refused', async (t) => {
-  const lib = await m()
-  // The temp folder by its real path first (on Windows it can hold an 8.3 name), so the one link here is the one made below.
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'hoai-outbound-files-')))
-  t.after(() => rmSync(root, { recursive: true, force: true }))
-  // As on macOS, where /var is a link to /private/var: the home is named through var, and really lives under private/var.
-  const realVar = join(root, 'private', 'var')
-  const realHome = join(realVar, 'John Key')
-  mkdirSync(join(realHome, 'Documents'), { recursive: true })
-  symlinkSync(realVar, join(root, 'var'), 'junction')
-  const home = join(root, 'var', 'John Key')
-  const report = join(realHome, 'Documents', 'report.pdf')
-  writeFileSync(report, PDF)
-  // Named by its real path, the word rules read below the home's real path, so the owner's name refuses nothing: the
-  // preflight, all four steps, and a runtime folder that holds the home (taken by its real path too) is not taken as one.
-  assert.equal(lib.outboundFileLexicalRefusal(report, { home }), null, 'the preflight')
-  assert.equal(await refusal(report, { home }), null, 'all four steps')
-  const dirs = lib.outboundRuntimeDirs([join(root, 'var')])
-  assert.equal(dirs.length, 2, JSON.stringify(dirs))
-  assert.equal(await refusal(report, { home, runtimeDirs: dirs }), null, 'a runtime folder that holds the home')
-  // Named through the link, as before.
-  assert.equal(await refusal(join(home, 'Documents', 'report.pdf'), { home }), null, 'through the link')
-  // The daemon passes no home: its own (os.homedir(), and USERPROFILE on Windows) counts by its real path the same way.
-  const was = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
-  process.env.HOME = home
-  process.env.USERPROFILE = home
+/** Files named .txt or .csv whose bytes are not clean text, and clean text that sits at the edge of the rule. */
+const TEXT_EDGES: readonly (readonly [string, Buffer, boolean])[] = [
+  ['program.txt', PROGRAM, false],
+  ['latin1.csv', Buffer.from('Name,City\nAna,Mal\xe9\n', 'latin1'), false],
+  ['bell.txt', Buffer.from('Hello\x07 there\n'), false],
+  ['tab-vt.txt', Buffer.from('one\x0btwo\n'), false],
+  ['del.csv', Buffer.from('a,b\x7f\n'), false],
+  ['c1.txt', Buffer.from('Price \u0085 list\n'), false],
+  ['nul-late.csv', Buffer.concat([Buffer.from('Item,Qty\n'.repeat(5000)), Buffer.from([0])]), false],
+  ['cut.txt', Buffer.from([0x61, 0x62, 0xe2, 0x82]), false],
+  ['surrogate.txt', Buffer.from([0x61, 0xed, 0xa0, 0x80, 0x0a]), false],
+  ['overlong.txt', Buffer.from([0xc0, 0xaf, 0x0a]), false],
+  ['bom.csv', Buffer.from('\ufeffName,Qty\nChairs,12\n'), true],
+  ['spacing.txt', Buffer.from('a\tb\r\n\fc\n'), true],
+  ['world.txt', Buffer.from('Grüße aus Köln, café, 日本語, thanks 🎉\n'), true],
+  ['markup.txt', Buffer.from('<html><body>Quarterly notes</body></html>\n'), true],
+]
+
+test('a .txt or .csv file whose bytes are not clean text is refused with the same sentence as before, under any budget; clean text at the edges goes', async () => {
+  for (const [name, bytes, goes] of TEXT_EDGES) {
+    const got = await memRefusal(name, bytes)
+    assert.equal(got.why, goes ? null : notTextSentence(got.path), name)
+    // A budget already spent says nothing about a file that is not text: it is still refused as not text.
+    if (!goes) assert.equal((await memRefusal(name, bytes, { officeReadMs: OVER_BUDGET_MS })).why, notTextSentence(got.path), `${name}, over budget`)
+  }
+})
+
+/**
+ * The text rule as it was before the check moved into the Worker, copied here and frozen, so a change to the shared
+ * rule (lib/email-clean-text.ts) shows up as a change in what is accepted.
+ */
+function frozenCleanText(bytes: Uint8Array): boolean {
+  let text: string
   try {
-    assert.equal(lib.outboundFileLexicalRefusal(report), null, 'no home passed: the preflight')
-    assert.equal(await refusal(report, {}), null, 'no home passed: all four steps')
-  } finally {
-    for (const [name, value] of Object.entries(was)) {
-      if (value === undefined) delete process.env[name]
-      else process.env[name] = value
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return false
+  }
+  return !/[\u0000-\u0008\u000B\u000E-\u001F\u007F-\u009F]/.test(text)
+}
+
+test('the text rule is unchanged: the inbound type check and the content stage both say not text exactly where the old rule did, before any budget is read', async () => {
+  const { isType } = await import('../lib/email-files.ts')
+  const { outboundContentVerdict } = await import('../lib/email-outbound-content.ts')
+  const samples: Buffer[] = TEXT_EDGES.map(([, bytes]) => bytes)
+  // Short printable lines, some with a two byte letter, and every third with one random byte put in: a fixed seed,
+  // so a run is repeatable.
+  let seed = 11
+  const next = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff)
+  for (let n = 0; n < 400; n++) {
+    const line = Array.from({ length: 1 + (next() % 24) }, () => 0x20 + (next() % 95))
+    if (n % 5 === 0) line.push(0xc3, 0xa9)
+    if (n % 3 === 0) line.splice(next() % line.length, 1, next() % 256)
+    samples.push(Buffer.from(line))
+  }
+  let notText = 0
+  for (const bytes of samples) {
+    const clean = frozenCleanText(bytes)
+    if (!clean) notText++
+    assert.equal(isType(bytes, 'text'), clean, `${bytes.toString('hex')}: inbound type check`)
+    for (const budget of [UNDER_BUDGET_MS, OVER_BUDGET_MS]) {
+      const verdict = await outboundContentVerdict(new Uint8Array(bytes), 'text', 'sample.txt', [], budget)
+      assert.equal(verdict.kind === 'not_type', !clean, `${bytes.toString('hex')} at budget ${budget}: ${verdict.kind}`)
     }
   }
-  // The controls: a key name below the real home, a key folder in it, a sibling of the real home, and a link from the home
-  // to that sibling stay refused; the real path exempts the home, nothing beside it.
-  const stripe = join(realHome, 'Documents', 'stripe key.txt')
-  assert.equal(await refusal(stripe, { home }), lookedSecret(stripe))
-  const ssh = join(realHome, '.ssh', 'report.pdf')
-  assert.equal(await refusal(ssh, { home }), lookedSecret(ssh))
-  const sibling = join(realVar, 'Bob Key')
-  mkdirSync(sibling, { recursive: true })
-  writeFileSync(join(sibling, 'report.pdf'), PDF)
-  assert.equal(await refusal(join(sibling, 'report.pdf'), { home }), lookedSecret(join(sibling, 'report.pdf')))
-  symlinkSync(sibling, join(realHome, 'Documents', 'bob'), 'junction')
-  const viaHome = join(home, 'Documents', 'bob', 'report.pdf')
-  assert.equal(await refusal(viaHome, { home }), `${viaHome} leads to a key or password file (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`)
+  // Both kinds were tried.
+  assert.ok(notText > 50 && notText < samples.length - 50, `${notText} of ${samples.length} samples were not text`)
 })
 
-test('mailharden 2: a file with more than one name (a hard link) is refused, by its path and again on the open handle', async (t) => {
-  const home = scratchHome(t)
-  mkdirSync(join(home, '.ssh'))
-  // A file in a key folder, refused by its own path, and a second name of it in a plain folder (an ordinary user can make
-  // one): realpath answers the second name as its own, so only the link count tells.
-  const key = join(home, '.ssh', 'backup.pdf')
-  writeFileSync(key, Buffer.concat([PDF, Buffer.from('% rig dummy\n')]))
-  const named = join(home, 'docs', 'report.pdf')
-  linkSync(key, named)
-  assert.equal(await refusal(named, { home }), hardLinkSentence(named))
-  // Refused by the path's own count, before the file is opened.
-  const opens: string[] = []
-  const counted = { open: async (p: string) => { opens.push(p); throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) } }
-  assert.equal(await refusal(named, { home, fs: counted }), hardLinkSentence(named))
-  assert.deepEqual(opens, [], 'not opened')
-  // The control: with one name again it goes.
-  rmSync(key)
-  assert.equal(await refusal(named, { home }), null, 'one name')
-  // On the handle: a second name made after the lstat (which saw one) and before the open is caught by the open file's
-  // own count (fstat).
-  const late = join(home, '.ssh', 'late.pdf')
-  let made = false
-  const fs = {
-    lstat: async (p: string) => {
-      const st = await lstatPromise(p)
-      if (!made) {
-        made = true
-        linkSync(p, late)
-      }
-      return st
-    },
-  }
-  assert.equal(await refusal(named, { home, fs }), hardLinkSentence(named))
-  assert.ok(made, 'the second name was made after the lstat')
-})
-
-test('mailharden 3: a FIFO swapped in for the file cannot freeze the read: the open never blocks (O_NONBLOCK; Windows opens read only, as before)', async (t) => {
-  // Windows has no FIFO to swap in (a named pipe is a \\.\pipe\ path, refused before any file system call).
-  if (process.platform !== 'win32') {
-    const home = scratchHome(t)
-    const path = join(home, 'docs', 'q3.pdf')
-    writeFileSync(path, PDF)
-    // lstat sees the regular file; then, before the open, the file is swapped for a FIFO no one writes to.
-    let swapped = false
-    const fs = {
-      lstat: async (p: string) => {
-        const st = await lstatPromise(p)
-        if (!swapped) {
-          swapped = true
-          rmSync(p)
-          execFileSync('mkfifo', [p])
+test('the main thread is free while a large text file is checked: a timer queued as the read ends is not held by the check', { timeout: 180_000 }, async (t) => {
+  const { isType } = await import('../lib/email-files.ts')
+  for (const [name, build] of [
+    ['digits.csv', () => digitLines(23 * MB)],
+    ['letters.txt', () => Buffer.from('Grüße aus Köln, café 日本語, see you Monday.\n'.repeat(480_000))],
+  ] as const) {
+    await t.test(name, async (t) => {
+      const bytes = build()
+      const ratios: number[] = []
+      // Three paired rounds, the median read: a GC or scheduling outlier comes once, a check on the main thread every time.
+      for (let round = 0; round < 3; round++) {
+        // What the text check costs on this thread, on this runner, right now.
+        const started = performance.now()
+        assert.equal(isType(bytes, 'text'), true, `${name}: inline calibration`)
+        const inlineMs = performance.now() - started
+        // The read ends at the handle's close. A timer queued there runs at the next turn of the event loop, so it is
+        // late by whatever this thread does between the close and the hand off to the Worker.
+        const fs = memFs(bytes)
+        const open = fs.open
+        let lateMs = -1
+        fs.open = async () => {
+          const handle = await open()
+          const close = handle.close
+          handle.close = async () => {
+            const queued = performance.now()
+            setImmediate(() => {
+              lateMs = performance.now() - queued
+            })
+            return close()
+          }
+          return handle
         }
-        return st
-      },
-    }
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const blocked = new Promise<'blocked'>((done) => {
-      timer = setTimeout(() => done('blocked'), 3000)
-    })
-    const outcome = await Promise.race([readOne(path, { home, fs }), blocked])
-    clearTimeout(timer)
-    if (outcome === 'blocked') {
-      // A writer arriving frees the open that hangs, so the run goes on; then the test fails.
-      try {
-        closeSync(openSync(path, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK))
-      } catch {
-        // nothing waits on it
+        const why = await refusal(`${MEM_HOME}\\Documents\\${name}`, { home: MEM_HOME, fs, officeReadMs: UNDER_BUDGET_MS })
+        assert.equal(why, null, name)
+        assert.ok(lateMs >= 0, `${name}: the timer ran`)
+        ratios.push(lateMs / inlineMs)
+        t.diagnostic(`round ${round + 1}: inline text check ${inlineMs.toFixed(1)} ms, timer late ${lateMs.toFixed(1)} ms`)
       }
-      assert.fail('the open of a FIFO blocked for 3 s')
-    }
-    assert.ok(swapped)
-    assert.equal(outcome.error, changedSentence(path))
+      const ratio = ratios.sort((a, b) => a - b)[1]!
+      assert.ok(ratio < 0.25, `${name}: the timer was held for ${ratio.toFixed(2)} of the inline text check, expected under 0.25`)
+    })
   }
-  // The flags of the one open: a number on every platform (undefined never reaches them), O_NONBLOCK where the platform
-  // has it, and on Windows read only, exactly the old 'r'.
-  const flagsOf = async (): Promise<unknown> => {
-    let seen: unknown = 'not opened'
-    const mem = memFs(PDF)
-    const fs = { ...mem, open: async (_path: string, flags: unknown) => ((seen = flags), mem.open()) }
-    const read = await readOne(`${MEM_HOME}\\Documents\\q3.pdf`, { home: MEM_HOME, fs })
-    assert.equal(read.ok, true, JSON.stringify(read.error))
-    return seen
-  }
-  for (const platform of ['linux', 'darwin', process.platform]) {
-    const flags = platform === process.platform ? await flagsOf() : await asPlatform(platform, flagsOf)
-    assert.equal(typeof flags, 'number', `${platform}: ${String(flags)}`)
-    assert.equal((flags as number) & 3, fsConstants.O_RDONLY, `${platform}: read only`)
-    if (platform !== 'win32' && typeof fsConstants.O_NONBLOCK === 'number') assert.equal((flags as number) & fsConstants.O_NONBLOCK, fsConstants.O_NONBLOCK, `${platform}: O_NONBLOCK`)
-  }
-  assert.equal(await asPlatform('win32', flagsOf), fsConstants.O_RDONLY, 'win32: read only and nothing else, as before')
-  // The open handle must be a regular file before a byte is read: one that is not (a FIFO, with the very file number the
-  // lstat saw) is refused and never read.
-  const reads: number[] = []
-  const notRegular = {
-    ...memFs(PDF),
-    open: async () => ({
-      stat: async () => ({ isFile: () => false, size: PDF.length, dev: 1, ino: 7 }),
-      read: async () => {
-        reads.push(1)
-        return { bytesRead: 0 }
-      },
-      close: async () => {},
-    }),
-  }
-  const odd = `${MEM_HOME}\\Documents\\q3.pdf`
-  assert.equal((await readOne(odd, { home: MEM_HOME, fs: notRegular })).error, changedSentence(odd))
-  assert.deepEqual(reads, [], 'nothing read')
 })

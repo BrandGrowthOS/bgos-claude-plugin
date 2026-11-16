@@ -1,0 +1,32 @@
+TAP version 13
+# Subtest: matching legacy reports verify every cached mission without an ambiguous implicit lookup
+not ok 1 - matching legacy reports verify every cached mission without an ambiguous implicit lookup
+  ---
+  duration_ms: 4.655167
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:8:24117'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    false !== true
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:652:10)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 576.52825

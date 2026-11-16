@@ -1,0 +1,35 @@
+Final audit before commit
+Full suite: 10,370 passed, zero failed, 60 skipped, 473 files; exit 0.
+Focused: 446 passed, zero failed. Typecheck: exit 0.
+15/15 targeted mutants caught, plus pre-fix production regressions.
+Final source hashes unchanged during full suite.
+Staged diff whitespace check: passed after trimming trailing spaces in captured red TAP logs.
+Three-way changelog merge: exit 0. Reviewed release history retained.
+Package, lockfile and plugin versions unchanged.
+Added-line private-path and em/en-dash scan: passed.
+No REPORT, BRIEF or .lane files staged.
+Node 26.0.0; Bun 1.3.14. Dependencies already installed.
+Requested author and committer: SeraphKc <194126295+SeraphKc@users.noreply.github.com>.
+No push, production call, deployment or publication.
+
+Staged files:
+CHANGELOG.md
+docs/evidence/2026-11-07-missions279d/README.md
+docs/evidence/2026-11-07-missions279d/baseline.log
+docs/evidence/2026-11-07-missions279d/changelog.log
+docs/evidence/2026-11-07-missions279d/environment-check.log
+docs/evidence/2026-11-07-missions279d/environment-timeouts.log
+docs/evidence/2026-11-07-missions279d/focused.log
+docs/evidence/2026-11-07-missions279d/full-suite.log
+docs/evidence/2026-11-07-missions279d/hygiene.log
+docs/evidence/2026-11-07-missions279d/initial-run.log
+docs/evidence/2026-11-07-missions279d/matching-legacy-red.log
+docs/evidence/2026-11-07-missions279d/mutations.log
+docs/evidence/2026-11-07-missions279d/mutations.mjs
+docs/evidence/2026-11-07-missions279d/red.log
+docs/evidence/2026-11-07-missions279d/review.txt
+docs/evidence/2026-11-07-missions279d/typecheck.log
+lib/mission-turn.mjs
+server.ts
+test/mission-turn-refresh.test.ts
+test/mission-turn-snapshots.test.ts
