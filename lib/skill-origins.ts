@@ -51,7 +51,7 @@ export function createTeachWindows() {
     noteTap(t: TeachTap): void {
       try {
         const key = windowKey(t.chatId, t.assistantId)
-        // An owner id alone proves no person tapped: pairing and API key callers are stamped as the owner too.
+        // A tap counts only when the click says a person made it, on this daemon's own posted button.
         if (key === null || !Number.isFinite(t.now) || !t.posted || t.humanPrincipal !== true ||
           (t.customText != null && String(t.customText) !== '') ||
           typeof t.ownerUserId !== 'string' || !t.ownerUserId.trim() ||
@@ -152,10 +152,12 @@ export function stampOrigin(file: string, folder: string, stamp: Omit<OriginStam
   let temp: string | undefined
   try {
     if (!SKILL_NAME_RE.test(folder) || !ORIGINS.has(stamp.origin) || !stamp.ident || !Number.isFinite(now)) return
-    // Every other entry stays as written, a newer build's mark this build cannot read included (a downgrade).
-    let skills: Record<string, unknown> = {}
+    // Every other entry stays as written, a newer build's mark this build cannot read included (a downgrade). Only a
+    // missing file starts empty: a file that cannot be read, or is not a v1 marks file, is never written over.
+    let skills: Record<string, unknown>
     try { skills = rawEntries(file) } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') failed()
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') { failed(); return }
+      skills = {}
     }
     skills[folder] = { origin: stamp.origin, at: now, ident: stamp.ident,
       ...(stamp.offerId !== undefined ? { offerId: stamp.offerId } : {}) }

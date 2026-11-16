@@ -405,3 +405,36 @@ test('origin errors go to the daemon log, one line each, never to the console', 
   logOriginsTo(() => { throw new Error('log down') })
   assert.doesNotThrow(() => readOrigins(w.file))
 })
+
+for (const [name, data] of Object.entries({
+  'bad JSON': '{"v":1,"skills":{"foo":{"origin":"taught","at":10,"ident":"1:2"}',
+  'a newer file version': '{"v":2,"skills":{"foo":{"origin":"taught","at":10,"ident":"1:2"}}}',
+  'a skills list that is not an object': '{"v":1,"skills":[]}',
+})) {
+  test(`a stamp never overwrites a marks file it cannot read: ${name}`, (t) => {
+    const { logOriginsTo, stampOrigin } = api()
+    const w = world()
+    const lines: string[] = []
+    logOriginsTo((msg: string) => { lines.push(msg) })
+    t.after(() => logOriginsTo(() => {}))
+    mkdirSync(join(w.root, 'state'))
+    writeFileSync(w.file, data)
+    stampOrigin(w.file, 'second', { origin: 'taught', ident: '2:2' }, 20)
+    assert.equal(readFileSync(w.file, 'utf8'), data, 'the file is left as it was')
+    assert.deepEqual(readdirSync(join(w.root, 'state')), ['skill-origins.json'], 'no temp file is left')
+    assert.deepEqual(lines, ['skills: origin unavailable'])
+  })
+}
+
+test('a stamp never overwrites a marks file whose read fails', (t) => {
+  const { logOriginsTo, stampOrigin } = api()
+  const w = world()
+  const lines: string[] = []
+  logOriginsTo((msg: string) => { lines.push(msg) })
+  t.after(() => logOriginsTo(() => {}))
+  mkdirSync(join(w.file, 'inside'), { recursive: true })
+  stampOrigin(w.file, 'second', { origin: 'taught', ident: '2:2' }, 20)
+  assert.deepEqual(readdirSync(w.file), ['inside'], 'the unreadable path is left as it was')
+  assert.deepEqual(readdirSync(join(w.root, 'state')), ['skill-origins.json'], 'no temp file is left')
+  assert.equal(lines.length, 1)
+})
