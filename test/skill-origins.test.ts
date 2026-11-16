@@ -84,13 +84,47 @@ test('teach window opens with empty typed words, as ownerTapOpens reads them', (
   }
 })
 
-test('the click reader returns the raw humanPrincipal field and nothing else', () => {
-  const { clickHumanPrincipal } = api()
-  assert.equal(clickHumanPrincipal({ humanPrincipal: true }), true)
-  assert.equal(clickHumanPrincipal({ humanPrincipal: 'true' }), 'true')
-  assert.equal(clickHumanPrincipal({ human_principal: true }), undefined)
-  assert.equal(clickHumanPrincipal({ HumanPrincipal: true }), undefined)
-  for (const payload of [null, undefined, 'humanPrincipal', true]) assert.equal(clickHumanPrincipal(payload), undefined)
+const WRONG = [false, 1, 'true', 'True', null, {}, [true], 0]
+
+test('a click is human only when its row or its answer payload says exactly true', () => {
+  const { isHumanClick } = api()
+  assert.equal(isHumanClick({ humanPrincipal: true }), true, 'a top-level row field')
+  assert.equal(isHumanClick({ answerPayload: { humanPrincipal: true } }), true, 'the click event')
+  assert.equal(isHumanClick({ answer_payload: { humanPrincipal: true } }), true, 'the click event, snake case container')
+  assert.equal(isHumanClick({ humanPrincipal: false, answerPayload: { humanPrincipal: true } }), true, 'true in either place')
+  assert.equal(isHumanClick({ humanPrincipal: true, answerPayload: { humanPrincipal: 'true' } }), true, 'true in either place')
+  for (const value of WRONG) {
+    assert.equal(isHumanClick({ humanPrincipal: value }), false, `row ${JSON.stringify(value)}`)
+    assert.equal(isHumanClick({ answerPayload: { humanPrincipal: value } }), false, `event ${JSON.stringify(value)}`)
+    assert.equal(isHumanClick({ humanPrincipal: value, answerPayload: { humanPrincipal: value } }), false, `both ${JSON.stringify(value)}`)
+  }
+  assert.equal(isHumanClick({}), false, 'absent')
+  assert.equal(isHumanClick({ answerPayload: {} }), false, 'absent from the event')
+  assert.equal(isHumanClick({ human_principal: true, answerPayload: { human_principal: true, HumanPrincipal: true } }), false, 'camelCase only')
+  assert.equal(isHumanClick({ answerPayload: true, humanprincipal: true }), false)
+  for (const row of [null, undefined, 'humanPrincipal', true, 1]) assert.equal(isHumanClick(row), false, JSON.stringify(row))
+})
+
+test('the human click reader never throws', () => {
+  const { isHumanClick } = api()
+  const hostile = { get humanPrincipal() { throw new Error('boom') }, answerPayload: { humanPrincipal: true } }
+  assert.doesNotThrow(() => assert.equal(isHumanClick(hostile), false))
+})
+
+test('a teach window opens when the click row says human in either place, and nothing else opens one', () => {
+  const { createTeachWindows, isHumanClick } = api()
+  const rows: Array<[unknown, boolean]> = [
+    [{ humanPrincipal: true }, true],
+    [{ answerPayload: { humanPrincipal: true } }, true],
+    [{}, false],
+    [{ answerPayload: {} }, false],
+    ...WRONG.flatMap((value): Array<[unknown, boolean]> => [[{ humanPrincipal: value }, false], [{ answerPayload: { humanPrincipal: value } }, false]]),
+  ]
+  for (const [row, opens] of rows) {
+    const windows = createTeachWindows()
+    windows.noteTap({ ...tap, humanPrincipal: isHumanClick(row) })
+    assert.equal(windows.take('chat', 'assistant', 101) !== null, opens, JSON.stringify(row))
+  }
 })
 
 for (const [name, change] of Object.entries({

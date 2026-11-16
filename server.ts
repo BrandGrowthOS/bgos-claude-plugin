@@ -97,7 +97,7 @@ import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { identOf, listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
-import { applyOrigins, clickHumanPrincipal, createTeachWindows, logOriginsTo, stampOrigin, stampTaughtWrite } from './lib/skill-origins.js'
+import { applyOrigins, createTeachWindows, isHumanClick, logOriginsTo, stampOrigin, stampTaughtWrite } from './lib/skill-origins.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
@@ -11013,7 +11013,7 @@ async function announceMissedPlanAnswers(): Promise<void> {
         channelNotify(() => ({
             // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. A late announce
             // opens no private turn (4bf28148: only the stream's, in its window).
-            content: privateTapCardNoting({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), humanPrincipal: clickHumanPrincipal(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+            content: privateTapCardNoting({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), humanPrincipal: isHumanClick(mm), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
             meta: buildButtonClickedMeta({
               chatId,
               messageId: row.id,
@@ -11122,8 +11122,8 @@ const turnChat = createTurnChatTracker()
 const teachWindows = createTeachWindows()
 logOriginsTo(log)
 
-// A teach window opens only on a person's own tap: humanPrincipal exactly true on the click, which each site reads off
-// the click's own answer payload (lib/skill-origins.ts noteTap).
+// A teach window opens only on a person's own tap: each site reads its click row with isHumanClick (an ask answer has
+// none, so null), and noteTap opens nothing unless that says true (lib/skill-origins.ts).
 function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { humanPrincipal: unknown }) {
   try {
     teachWindows.noteTap({
@@ -12581,7 +12581,7 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
   const postedButton = postedButtons.posted(mm.id, callbackData, buttonText, mm.text)
   log(`button_clicked ANNOUNCED via POLL for message ${mm.id} in chat ${chatId} (answeredAt=${mm.answeredAt})`)
   void trackMessageOperation(() => channelNotify(() => ({
-      content: privateTapCardNoting({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), humanPrincipal: clickHumanPrincipal(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+      content: privateTapCardNoting({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), humanPrincipal: isHumanClick(mm), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
       meta: buildButtonClickedMeta({ chatId, messageId: mm.id, callbackData: planAnswer.callbackData ?? agentCallbackData, buttonText, customText, tapperUserId: readTapperUserId(payload), assistantId: ASSISTANT_ID, ts: mm.answeredAt, card: cardAnswer }),
     }), { quiet: readTapperUserId(payload) === USER_ID ? { carried: true } : null })).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
 }
@@ -13182,7 +13182,7 @@ async function pollChat(chatId: string): Promise<void> {
       void trackMessageOperation(() => channelNotify(() => ({
           // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The poll opens no
           // private turn, however fresh the tap (4bf28148: only the stream's, in its window).
-          content: privateTapCardNoting({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), humanPrincipal: clickHumanPrincipal(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+          content: privateTapCardNoting({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), humanPrincipal: isHumanClick(mm), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
           // `user_id` is the tapper the server stamped on the answer, or
           // absent. It was this daemon's own USER_ID, so every tap read as
           // the owner's whoever made it.
@@ -13970,7 +13970,7 @@ function announceCompleteAsks(via: string): void {
           // The backend stamps no tapper on an ask answer, and typed words
           // ride in it, so it is never shown to be the owner's own words: it
           // opens no private turn and is noted like any other untracked card.
-          content: privateTapCardNoting({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, humanPrincipal: false, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+          content: privateTapCardNoting({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, humanPrincipal: isHumanClick(null), answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
           meta: event.meta,
         })),
     )
@@ -14192,7 +14192,7 @@ function askWithdrawnContent(
   return {
     // Typed answers ride in it, as in an ask_answered event: never shown
     // to be the owner's own words, and it opens no private turn.
-    content: privateTapCardNoting({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, humanPrincipal: false, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+    content: privateTapCardNoting({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, humanPrincipal: isHumanClick(null), answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
     meta: event.meta,
   }
 }
@@ -17773,7 +17773,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
         // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The owner's own tap,
         // as the backend stamped it, within PRIVATE_TAP_WINDOW_MS of its answeredAt, opens a private turn as the owner
         // (4bf28148), and the fire ledger makes a second announce of it a replay.
-        content: privateTapCardNoting({ tracker: privateTurns, lane: 'stream', ownerUserId: USER_ID, chatId: String(chatId), messageId: view.messageId, tapperUserId: answer.tapperUserId, humanPrincipal: clickHumanPrincipal(view.raw.answerPayload ?? view.raw.answer_payload), answeredAt: update.payload.answeredAt ?? update.payload.answered_at, receivedAt: receivedAtMs, callbackData: agentCallbackData, customText: answer.customText, posted: postedButton, content: contentLines.join('\n') }),
+        content: privateTapCardNoting({ tracker: privateTurns, lane: 'stream', ownerUserId: USER_ID, chatId: String(chatId), messageId: view.messageId, tapperUserId: answer.tapperUserId, humanPrincipal: isHumanClick(view.raw), answeredAt: update.payload.answeredAt ?? update.payload.answered_at, receivedAt: receivedAtMs, callbackData: agentCallbackData, customText: answer.customText, posted: postedButton, content: contentLines.join('\n') }),
         meta: buildStreamClickMeta({
           chatId,
           messageId: view.messageId,

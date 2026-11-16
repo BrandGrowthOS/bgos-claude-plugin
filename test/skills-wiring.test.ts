@@ -52,15 +52,18 @@ test('each tap site hands the click\'s own humanPrincipal to the teach window', 
   assert.deepEqual(lanes, ['boot', 'poll', 'poll', 'ask', 'ask', 'stream'])
   for (const call of calls.filter((c) => /lane: '(boot|poll)'/.test(c))) {
     assert.ok(call.includes('tapperUserId: readTapperUserId(payload)'), call)
-    assert.ok(call.includes('humanPrincipal: clickHumanPrincipal(payload)'), call)
+    assert.ok(call.includes('humanPrincipal: isHumanClick(mm)'), call)
   }
   const stream = calls[5]!
   assert.ok(stream.includes('tapperUserId: answer.tapperUserId'))
-  assert.ok(stream.includes('humanPrincipal: clickHumanPrincipal(view.raw.answerPayload ?? view.raw.answer_payload)'))
+  assert.ok(stream.includes('humanPrincipal: isHumanClick(view.raw)'))
   for (const call of calls.filter((c) => c.includes("lane: 'ask'"))) {
     assert.ok(call.includes('tapperUserId: null'), call)
-    assert.ok(call.includes('humanPrincipal: false'), call)
+    assert.ok(call.includes('humanPrincipal: isHumanClick(null)'), call)
   }
+  assert.equal((server.match(/humanPrincipal: isHumanClick\(/g) ?? []).length, 6, 'one reader at all six sites')
+  assert.equal((server.match(/\bisHumanClick\(/g) ?? []).length, 6, 'and nowhere else')
+  assert.doesNotMatch(server, /clickHumanPrincipal|(?<!input)\.humanPrincipal\b|human_principal/, 'no site reads the field itself')
 })
 
 test('only a PostToolUse Write takes the current chat window, judged by the hook line\'s receivedAt', () => {

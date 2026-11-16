@@ -33,11 +33,19 @@ type TeachTap = {
   now: number
 }
 
-/** The humanPrincipal field of a click's answer payload, raw (camelCase only), for noteTap to judge. */
-export function clickHumanPrincipal(answerPayload: unknown): unknown {
+/**
+ * Whether a click row says a person tapped: humanPrincipal exactly true (camelCase, boolean) on the row itself, beside
+ * its answer payload, or on the click event (the answer payload). Any other value, in either place, is not. The one
+ * reader every tap site uses; the server sets the field. Never throws.
+ */
+export function isHumanClick(row: unknown): boolean {
   try {
-    return answerPayload !== null && typeof answerPayload === 'object' ? (answerPayload as Record<string, unknown>).humanPrincipal : undefined
-  } catch { failed(); return undefined }
+    if (row === null || typeof row !== 'object') return false
+    const r = row as Record<string, unknown>
+    if (r.humanPrincipal === true) return true
+    const event = r.answerPayload ?? r.answer_payload
+    return event !== null && typeof event === 'object' && (event as Record<string, unknown>).humanPrincipal === true
+  } catch { failed(); return false }
 }
 
 function windowKey(chatId: unknown, assistantId: unknown): string | null {
