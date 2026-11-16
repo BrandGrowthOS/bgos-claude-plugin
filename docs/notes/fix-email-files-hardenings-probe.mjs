@@ -1,4 +1,4 @@
-// mailharden probe (board row 84f19b9f): can a trick file freeze readOutboundFile, and is a hard link read?
+// Hardenings probe: can a trick file freeze readOutboundFile, and is a hard link read?
 // Usage, from anywhere, on macOS or Linux:
 //   node --import tsx docs/notes/fix-email-files-hardenings-probe.mjs <plugin dir>
 //   bun docs/notes/fix-email-files-hardenings-probe.mjs <plugin dir>
@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url'
 
 const lib = await import(pathToFileURL(join(process.argv[2], 'lib', 'email-outbound-files.ts')).href)
 const runtime = typeof Bun !== 'undefined' ? `bun ${Bun.version}` : `node ${process.version}`
-const root = mkdtempSync(join(tmpdir(), 'mailharden-probe-'))
+const root = mkdtempSync(join(tmpdir(), 'hardenings-probe-'))
 const PDF = '%PDF-1.7\n%%EOF\n'
 
 /** Runs one read with a 3 s limit; a read that hangs on a FIFO is freed by a writer so the probe can go on. */
