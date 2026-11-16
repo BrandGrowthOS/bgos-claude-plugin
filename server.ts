@@ -12,6 +12,7 @@
  */
 
 import { cardAnswerClickOf, cardAnswerText } from './lib/card-answer.ts'
+import { REACT_TOOL, handleReactTool } from './lib/react-tool.ts'
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { execFile, spawn as spawnProcess } from 'node:child_process'
@@ -189,7 +190,8 @@ import {
 } from './lib/compact-inject.js'
 import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
 import { holdChannelCardsWhileBusy, ModelEffortControl } from './lib/model-effort-control.js'
-import { ModelEffortPickerHandler, pickerChatAllowed, rpcLogOp, rpcLogTag } from './lib/model-effort-rpc.js'
+import { ModelEffortPickerHandler, pickerChatAllowed, rpcLogOp, rpcLogTag, type SessionSettingsBody } from './lib/model-effort-rpc.js'
+import { SessionSettingsLiveReporter } from './lib/model-effort-live-report.js'
 import { parseHelpCatalog } from './lib/model-effort-catalog.js'
 import { processAncestry } from './lib/model-effort-pane.js'
 import { modelControlDir, readObservation, readOptIn, refreshBridgeCopy } from './lib/model-control-store.mjs'
@@ -212,6 +214,7 @@ import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
+import { ensureAutoHost } from './lib/vault-host-auto.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
@@ -3016,16 +3019,42 @@ function modelEffortDeclared(): boolean {
 // The picker's answers. Owner only and main chat only from the daemon's own
 // records (pickerChatAllowed), on top of BGOS's gate; voiceRpc below routes
 // the two ops here.
+/** The owner's own main chat, by the daemon's own records: the one rule for the picker and the pill. */
+const modelEffortChatAllowed = (chatId: string): boolean =>
+  pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => chatOwnership.isOwners(c), isOthers: (c) => chatOwnership.isOthers(c) })
+
+/** The session settings report (the pill), the one route for it. */
+const reportSessionSettings = (chatId: string, body: SessionSettingsBody): Promise<unknown> =>
+  bgosPatch(
+    `integrations/assistants/${encodeURIComponent(String(ASSISTANT_ID ?? ''))}/chats/${encodeURIComponent(chatId)}/session-settings`,
+    body as unknown as Record<string, unknown>,
+  )
+
+// The pill follows the session (asked for on 2026-11-15):
+// the report above used to go out from the picker's apply only, so a model
+// changed in the agent's own terminal, or by a restart, never reached the
+// app. The bridge's observation is looked at on a timer and reported when it
+// changed, through the picker's own gates (lib/model-effort-live-report.ts).
+const MODEL_EFFORT_LIVE_REPORT_MS = 15_000
+const modelEffortLiveReporter = new SessionSettingsLiveReporter({
+  optedIn: () => readOptIn(MODEL_CONTROL_DIR, String(ASSISTANT_ID ?? '')),
+  sessionId: () => provenSessionId(),
+  readObservation: (sessionId) => readObservation(MODEL_CONTROL_DIR, sessionId),
+  chats: () => mainChatIds.filter(modelEffortChatAllowed),
+  reportSettings: reportSessionSettings,
+  now: Date.now,
+  log,
+}, { staleMs: MODEL_EFFORT_STALE_MS, timeoutMs: HTTP_TIMEOUT_MS + 5_000 })
+
 const modelEffortPicker = new ModelEffortPickerHandler({
   assistantId: () => String(ASSISTANT_ID ?? ''),
-  chatAllowed: (chatId) =>
-    pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => chatOwnership.isOwners(c), isOthers: (c) => chatOwnership.isOthers(c) }),
+  chatAllowed: modelEffortChatAllowed,
   control: modelEffortControl,
   reportSettings: (chatId, body) =>
-    bgosPatch(
-      `integrations/assistants/${encodeURIComponent(String(ASSISTANT_ID ?? ''))}/chats/${encodeURIComponent(chatId)}/session-settings`,
-      body as unknown as Record<string, unknown>,
-    ),
+    reportSessionSettings(chatId, body).then((answer) => {
+      modelEffortLiveReporter.noteReported(chatId, body)
+      return answer
+    }),
   sendNote: (chatId, text) =>
     bgosPost('send-message', {
       chatId: Number(chatId),
@@ -5467,6 +5496,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['message_id', 'text'],
       },
     },
+    REACT_TOOL,
     {
       name: 'rename_chat',
       description: 'Rename a BGOS chat to give it a descriptive title.',
@@ -7024,6 +7054,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       pairingToken: AUTH.mode === 'pairing' ? AUTH.pairingToken : '',
       stateDir: vaultHostDir(stateDir),
       log,
+      autoHost: () => runVaultAutoHost('tool'),
     })
   }
 
@@ -7604,6 +7635,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           isError: true,
         }
       }
+    }
+
+    case 'react': {
+      return handleReactTool(rawArgs, { authMode: AUTH.mode, assistantId: ASSISTANT_ID, post: bgosPost })
     }
 
     case 'edit_message': {
@@ -9753,6 +9788,49 @@ const whenArmed =
     }
     handle(payload)
   }
+
+// The agent vault with no setup (lib/vault-host-auto.mjs, HOAI CORE-CONTRACTS
+// 18.8). Only the daemon that holds the pairing lock makes or offers this
+// machine's vault keys: when it arms, on the server's vault_host_setup frame
+// and on a vault tool's first use. One run at a time; the result is codes only.
+// A server that does not take offers answers `off`, remembered for ten minutes
+// so a vault tool call does not ask again each time.
+let vaultAutoHostRun: Promise<{ status: string; code?: string; retry?: true }> | null = null
+let vaultAutoHostOffUntil = 0
+// Found on a real Windows PC (2026-11-12): PowerShell can be too slow to answer while the computer is busy, and
+// the setup then ends "unavailable, retry". Nobody should have to do anything: try again, a few times, further apart.
+const VAULT_AUTO_HOST_RETRIES = 5
+const VAULT_AUTO_HOST_RETRY_MS = 30_000
+let vaultAutoHostRetries = 0
+function runVaultAutoHost(reason: string): Promise<{ status: string; code?: string; retry?: true }> {
+  if (AUTH.mode !== 'pairing' || !channelArmed) return Promise.resolve({ status: 'unavailable' })
+  if (vaultAutoHostRun) return vaultAutoHostRun
+  if (reason !== 'frame' && Date.now() < vaultAutoHostOffUntil) return Promise.resolve({ status: 'off' })
+  const stateDir = agentStateDir(homedir(), ASSISTANT_ID)
+  if (!stateDir) return Promise.resolve({ status: 'unavailable' })
+  const run = ensureAutoHost({
+    stateDir: vaultHostDir(stateDir),
+    assistantId: ASSISTANT_ID,
+    ownerId: USER_ID,
+    apiBase: API_BASE,
+    pairingToken: AUTH.pairingToken,
+    log,
+  })
+    .catch(() => ({ status: 'unavailable' }))
+    .then((result: { status: string; code?: string; retry?: true }) => {
+      vaultAutoHostRun = null
+      vaultAutoHostOffUntil = result.status === 'off' ? Date.now() + 10 * 60_000 : 0
+      if (result.status !== 'off' && result.status !== 'disabled') log(`vault: host setup (${reason}) is ${result.status}`)
+      if (result.status === 'unavailable' && result.retry === true && vaultAutoHostRetries < VAULT_AUTO_HOST_RETRIES) {
+        const wait = VAULT_AUTO_HOST_RETRY_MS * 2 ** vaultAutoHostRetries++
+        const timer = setTimeout(() => { void runVaultAutoHost('retry') }, wait)
+        timer.unref?.()
+      } else if (result.retry !== true) vaultAutoHostRetries = 0
+      return result
+    })
+  vaultAutoHostRun = run
+  return run
+}
 
 // The holder's home step has run (lib/agent-credentials.ts
 // homeStepWhileHolding): a pinned start confirms its folder once; nothing
@@ -18376,6 +18454,14 @@ function connectWebsocket(): void {
   // normalizeVoiceRpc (malformed frames drop; well-formed frames ALWAYS get
   // a result or descriptive error — the G2 silent-drop lesson). Duplicate
   // re-emits are deduped by rpcId inside the handler.
+  // The agent vault with no setup: the owner's app asked this machine to offer
+  // its vault key, or accepted it. Ids and a status only; nothing from the
+  // frame goes into a key or a request, and it is never shown to the model.
+  realtimeSocket.on('vault_host_setup', whenArmed('vault_host_setup', (frame: any) => {
+    if (Number(frame?.assistantId) !== Number(ASSISTANT_ID)) return
+    void runVaultAutoHost('frame')
+  }))
+
   realtimeSocket.on('voice_rpc', whenArmed('voice_rpc', (payload: any) => {
     if (updateDrainMode) return
     try {
@@ -20937,6 +21023,7 @@ async function main(): Promise<void> {
       startHookIntakeIfHolder()
       handleUnboundBeforeArm()
       reconcilePendingThreads('re-armed')
+      void runVaultAutoHost('armed')
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -21562,6 +21649,9 @@ async function main(): Promise<void> {
     // so the owner's chat never shows a silently dead agent. Cheap (reads only
     // appended bytes) and deduped per rest episode inside reportResting.
     setInterval(reportResting, 30_000).unref()
+    // The pill follows the session: one look now, then on a timer.
+    void modelEffortLiveReporter.tick()
+    setInterval(() => void modelEffortLiveReporter.tick(), MODEL_EFFORT_LIVE_REPORT_MS).unref()
     // Same cadence, same transcripts: the shared Claude login state.
     setInterval(sweepClaudeLogin, 30_000).unref()
     // The goal lane's belt: a Stop that never reached this process, or a
@@ -21804,6 +21894,8 @@ async function main(): Promise<void> {
     handleUnboundBeforeArm()
     // The first connect after a boot came before this arm: run what waits.
     reconcilePendingThreads('armed')
+    // Zero setup: this machine offers its vault key by itself (no terminal).
+    void runVaultAutoHost('armed')
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself

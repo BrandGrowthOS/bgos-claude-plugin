@@ -23,7 +23,7 @@
  * offers no efforts, because a change to it could never be confirmed.
  */
 
-import { EXACT_MODEL_LABELS, EXACT_MODEL_LITERALS, isEffortLevel, isModelFamily, MODEL_LITERALS, type EffortLevel, type ModelFamily } from './compact-inject.ts'
+import { EXACT_MODEL_LABELS, EXACT_MODEL_LITERALS, EXACT_MODEL_SINCE, isEffortLevel, isModelFamily, MODEL_LITERALS, type EffortLevel, type ModelFamily } from './compact-inject.ts'
 import type { ModelObservation } from './model-control-store.mjs'
 
 export interface HostCatalog {
@@ -72,13 +72,30 @@ export function parseHelpCatalog(help: string | null | undefined, version?: stri
     const alias = m[1]
     if (isModelFamily(alias) && !models.includes(alias)) models.push(alias)
   }
-  // 2.1.319's baked model registry is broader than its help's example aliases.
-  // The frozen table mirrors that registry, not arbitrary ids seen in text.
-  const current = version === '2.1.319'
-  if (current && models.length > 0) {
-    return { efforts, models: Object.keys(EXACT_MODEL_LITERALS).filter((id) => !CLI319_RETIRED_MODELS.has(id)) }
+  // From 2.1.319 the baked model registry is broader than the help's example
+  // aliases. The frozen table mirrors that registry, not arbitrary ids seen in
+  // text. It used to be offered to 2.1.319 ONLY, so every later CLI (2.1.321,
+  // 2.1.322) fell back to three aliases with no Haiku and no exact version
+  // (seen on 2026-11-12). An id newer than 2.1.319 is offered
+  // only from the release that carries it (EXACT_MODEL_SINCE).
+  if (atLeast(version, '2.1.319') && models.length > 0) {
+    const ids = (Object.keys(EXACT_MODEL_LITERALS) as (keyof typeof EXACT_MODEL_LITERALS)[]).filter((id) => {
+      const since = EXACT_MODEL_SINCE[id]
+      return !CLI319_RETIRED_MODELS.has(id) && (!since || atLeast(version, since))
+    })
+    return { efforts, models: ids }
   }
   return { efforts, models }
+}
+
+/** Is `version` a plain x.y.z at least `floor`? False for anything else. */
+export function atLeast(version: string | null | undefined, floor: string): boolean {
+  const parse = (v: string) => (/^\d+\.\d+\.\d+$/.test(v) ? v.split('.').map(Number) : null)
+  const a = typeof version === 'string' ? parse(version) : null
+  const b = parse(floor)
+  if (!a || !b) return false
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! > b[i]!
+  return true
 }
 
 /** The one table family a resolved model id names, or null for none or two. */
