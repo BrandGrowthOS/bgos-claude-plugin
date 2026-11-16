@@ -97,7 +97,7 @@ import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { identOf, listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
-import { applyOrigins, clickHumanPrincipal, createTeachWindows, readOrigins, skillFolderOfWrite, stampOrigin } from './lib/skill-origins.js'
+import { applyOrigins, clickHumanPrincipal, createTeachWindows, stampOrigin, stampTaughtWrite } from './lib/skill-origins.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
@@ -11917,24 +11917,24 @@ let hookLineStartedAt: number | undefined
 function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void {
   const event = parseHookEvent(payload)
   if (event === null) return
+  const receivedAt = line?.receivedAt ?? Date.now()
+  // A skill write is judged by when its line was received, never by when it drains: a SKILL.md written before the
+  // owner's Approve never reads taught (lib/skill-origins.ts stampTaughtWrite).
   try {
     if (event.name === 'PostToolUse' && payload.tool_name === 'Write') {
-      const input = payload.tool_input as { file_path?: unknown } | undefined
-      const folder = skillFolderOfWrite(input?.file_path, SKILLS_AGENT_DIR)
-      if (folder && SKILLS_AGENT_DIR) {
-        const folderPath = pathJoin(SKILLS_AGENT_DIR, '.claude', 'skills', folder)
-        const ident = identOf(folderPath, false)
-        const stamp = readOrigins(SKILL_ORIGINS_FILE).skills[folder]
-        if (stamp?.ident !== ident) {
-          const w = teachWindows.take(String(turnChat.current(Date.now())?.chatId ?? ''), ASSISTANT_ID, Date.now())
-          if (w && ident !== null) stampOrigin(SKILL_ORIGINS_FILE, folder, { origin: 'taught', ident })
-        }
-      }
+      stampTaughtWrite({
+        filePath: (payload.tool_input as { file_path?: unknown } | undefined)?.file_path,
+        agentDir: SKILLS_AGENT_DIR,
+        file: SKILL_ORIGINS_FILE,
+        windows: teachWindows,
+        chatId: String(turnChat.current(Date.now())?.chatId ?? ''),
+        assistantId: ASSISTANT_ID,
+        writtenAt: receivedAt,
+      })
     }
   } catch {
     log('skills: origin unavailable')
   }
-  const receivedAt = line?.receivedAt ?? Date.now()
   // When the CLI got to this event, for privateTurns.end(): the forwarder's own process start, which claude spawns
   // with the Stop hook at the Stop, before the next prompt's hook can run. Its receivedAt comes after the forwarder's
   // cold start and stdin read, which can be after the next prompt's marker (the re-review of c09e214e).

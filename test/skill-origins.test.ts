@@ -242,3 +242,63 @@ test('origin filesystem errors never escape', () => {
   const fs = { statSync: () => { throw new Error('unavailable') }, lstatSync: () => { throw new Error('unavailable') } }
   assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file, fs).skills[0]?.origin, undefined)
 })
+
+function writeOf(w: ReturnType<typeof world>, windows: unknown, writtenAt: number, extra: Record<string, unknown> = {}) {
+  return api().stampTaughtWrite({ filePath: join(w.folder, 'SKILL.md'), agentDir: w.agent, file: w.file, windows, chatId: 'chat', assistantId: 'assistant', writtenAt, ...extra })
+}
+
+test('a SKILL.md written before the Approve never reads taught, even when its line drains after it', () => {
+  const { createTeachWindows, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  windows.noteTap(tap)
+  assert.equal(writeOf(w, windows, 99), false, 'the line drains after the tap, but the write came first')
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
+  assert.equal(writeOf(w, windows, 101), true, 'the earlier write left the window for the write the owner approved')
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'taught')
+})
+
+test('a taught write needs the window of its own chat and assistant, and takes it once', () => {
+  const { createTeachWindows, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  windows.noteTap(tap)
+  assert.equal(writeOf(w, windows, 101, { chatId: 'other-chat' }), false)
+  assert.equal(writeOf(w, windows, 101, { assistantId: 'other-assistant' }), false)
+  assert.equal(writeOf(w, windows, 101, { filePath: join(w.folder, 'notes.md') }), false)
+  assert.equal(writeOf(w, windows, 101, { agentDir: null }), false)
+  assert.equal(writeOf(w, windows, 101), true)
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'taught')
+  assert.equal(windows.take('chat', 'assistant', 102), null, 'the stamp consumed the window')
+})
+
+test('a write to a skill already stamped for this folder leaves the window open', () => {
+  const { createTeachWindows, stampOrigin } = api()
+  const w = world()
+  const ident = identOf(w.folder, false)
+  assert.ok(ident)
+  stampOrigin(w.file, 'foo', { origin: 'shared', ident }, 50)
+  const windows = createTeachWindows()
+  windows.noteTap(tap)
+  assert.equal(writeOf(w, windows, 101), false)
+  assert.deepEqual(windows.take('chat', 'assistant', 102), { by: 'owner' })
+})
+
+test('a skill write with unknown identity consumes the teach window before another write', () => {
+  const { createTeachWindows, readOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  windows.noteTap(tap)
+  const unknown = { statSync: () => { throw new Error('unavailable') }, lstatSync: () => { throw new Error('unavailable') } }
+  assert.equal(writeOf(w, windows, 101, { identFs: unknown }), false)
+  assert.equal(writeOf(w, windows, 102), false, 'a later write must not inherit the consumed approval')
+  assert.deepEqual(readOrigins(w.file), { v: 1, skills: {} })
+  windows.noteTap({ ...tap, now: 200 })
+  assert.equal(writeOf(w, windows, 201), true)
+})
+
+test('a taught write never throws', () => {
+  const w = world()
+  const windows = { take: () => { throw new Error('broken') } }
+  assert.doesNotThrow(() => assert.equal(writeOf(w, windows, 101), false))
+})

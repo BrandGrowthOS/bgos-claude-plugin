@@ -18,51 +18,10 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import ts from 'typescript'
 
 const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
 const REGISTRATION = "realtimeSocket.on('skills_rpc', whenArmed('skills_rpc',"
-
-test('a skill write with unknown identity consumes the teach window before another write', () => {
-  const start = server.indexOf('function onHookPayload(')
-  const end = server.indexOf('  const receivedAt =', start)
-  assert.ok(start > 0 && end > start)
-  const js = ts.transpileModule(server.slice(start, end) + '}\n', {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
-  }).outputText
-  let available = true
-  let ident: string | null = null
-  const stamps: unknown[][] = []
-  const scope = {
-    parseHookEvent: () => ({ name: 'PostToolUse' }),
-    skillFolderOfWrite: () => 'foo',
-    SKILLS_AGENT_DIR: 'agent',
-    ASSISTANT_ID: 'assistant',
-    SKILL_ORIGINS_FILE: 'origins.json',
-    pathJoin: join,
-    identOf: () => ident,
-    readOrigins: () => ({ v: 1, skills: {} }),
-    teachWindows: { take: () => {
-      if (!available) return null
-      available = false
-      return { by: 'owner' }
-    } },
-    turnChat: { current: () => ({ chatId: 'chat' }) },
-    stampOrigin: (...args: unknown[]) => { stamps.push(args) },
-    log: () => {},
-  }
-  const hook = new Function(...Object.keys(scope), js + '\nreturn onHookPayload')(...Object.values(scope))
-  const write = { tool_name: 'Write', tool_input: { file_path: 'SKILL.md' } }
-  hook(write)
-  ident = '1:2'
-  hook(write)
-  assert.deepEqual(stamps, [], 'a later write must not inherit the consumed approval')
-  available = true
-  hook(write)
-  assert.deepEqual(stamps, [['origins.json', 'foo', { origin: 'taught', ident: '1:2' }]])
-})
 
 test('inventory list applies origins from the sidecar beside the skills trash', () => {
   assert.match(constructionSlice(), /list: \(\) =>\s*applyOrigins\(\s*listSkills\(/)
@@ -100,14 +59,21 @@ test('each tap site hands the click\'s own humanPrincipal to the teach window', 
   }
 })
 
-test('only a PostToolUse Write takes the current chat window for an unstamped skill', () => {
+test('only a PostToolUse Write takes the current chat window, judged by the hook line\'s receivedAt', () => {
   const hook = server.slice(server.indexOf('function onHookPayload('), server.indexOf('function startHookIntakeIfHolder('))
-  assert.match(hook, /event.name === 'PostToolUse' && payload.tool_name === 'Write'/)
-  assert.match(hook, /skillFolderOfWrite\([^\n]*file_path[^\n]*SKILLS_AGENT_DIR\)/)
-  assert.match(hook, /readOrigins\(SKILL_ORIGINS_FILE\)/)
-  assert.match(hook, /stamp\?\.ident !== ident/)
-  assert.match(hook, /teachWindows.take\(String\(turnChat.current\(Date.now\(\)\)\?\.chatId \?\? ''\), ASSISTANT_ID, Date.now\(\)\)/)
-  assert.match(hook, /stampOrigin\(SKILL_ORIGINS_FILE, folder, \{ origin: 'taught', ident \}\)/)
+  const received = hook.indexOf('const receivedAt = line?.receivedAt ?? Date.now()')
+  const write = hook.indexOf("event.name === 'PostToolUse' && payload.tool_name === 'Write'")
+  assert.ok(received > 0 && write > received, 'receivedAt is read before the skill write is judged')
+  const call = hook.slice(write, hook.indexOf('})', write))
+  assert.match(call, /stampTaughtWrite\(\{/)
+  assert.match(call, /filePath: \(payload.tool_input as \{ file_path\?: unknown \} \| undefined\)\?\.file_path/)
+  assert.match(call, /agentDir: SKILLS_AGENT_DIR/)
+  assert.match(call, /file: SKILL_ORIGINS_FILE/)
+  assert.match(call, /windows: teachWindows/)
+  assert.match(call, /chatId: String\(turnChat.current\(Date.now\(\)\)\?\.chatId \?\? ''\)/)
+  assert.match(call, /assistantId: ASSISTANT_ID/)
+  assert.match(call, /writtenAt: receivedAt/)
+  assert.doesNotMatch(hook, /teachWindows.take\(/, 'the window is taken only inside stampTaughtWrite')
 })
 
 test('install wiring stamps shared origin with destination identity and the offer', () => {

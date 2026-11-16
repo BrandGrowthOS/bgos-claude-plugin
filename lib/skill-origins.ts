@@ -63,8 +63,10 @@ export function createTeachWindows() {
         const key = windowKey(chatId, assistantId)
         if (key === null) return null
         const window = windows.get(key)
+        // A write from before the tap (or a clock set back) is not what the owner approved: it leaves the window.
+        if (!window || !Number.isFinite(now) || now < window.at) return null
         windows.delete(key)
-        if (!window || !Number.isFinite(now) || now < window.at || now - window.at > TEACH_WINDOW_MS) return null
+        if (now - window.at > TEACH_WINDOW_MS) return null
         return { by: window.by }
       } catch { failed(); return null }
     },
@@ -128,6 +130,34 @@ export function stampOrigin(file: string, folder: string, stamp: Omit<OriginStam
   } catch { failed() } finally {
     if (temp) { try { unlinkSync(temp) } catch { /* no completed stamp */ } }
   }
+}
+
+/**
+ * A Write the hook spool saw: stamps the skill taught when it is the immediate agent skill folder's SKILL.md, the
+ * folder holds no stamp for its identity yet, and the owner's teach window for this chat and assistant was open when
+ * the write happened (`writtenAt`, the hook line's receivedAt, never the drain time). A write with an unknown
+ * identity still takes the window, so no later write inherits that approval. Never throws.
+ */
+export function stampTaughtWrite(input: {
+  filePath: unknown
+  agentDir: string | null
+  file: string
+  windows: Pick<TeachWindows, 'take'>
+  chatId: string
+  assistantId: string
+  writtenAt: number
+  identFs?: IdentFs
+}): boolean {
+  try {
+    const folder = skillFolderOfWrite(input.filePath, input.agentDir)
+    if (!folder || !input.agentDir) return false
+    const ident = identOf(join(input.agentDir, '.claude', 'skills', folder), false, input.identFs)
+    if (ident !== null && readOrigins(input.file).skills[folder]?.ident === ident) return false
+    const window = input.windows.take(input.chatId, input.assistantId, input.writtenAt)
+    if (!window || ident === null) return false
+    stampOrigin(input.file, folder, { origin: 'taught', ident })
+    return true
+  } catch { failed(); return false }
 }
 
 export function originForRow(row: Pick<SkillItem, 'scope'>, stamp: OriginStamp | undefined, identNow: string | null): SkillOrigin | undefined {
