@@ -386,3 +386,22 @@ test('the skill folder compare fails closed on any other difference', () => {
   assert.equal(skillFolderOfWrite(write, 'agent-dir', driveFs('//server/agent', skill('//Server/agent')), 'win32'), null, 'no drive letter')
   assert.equal(skillFolderOfWrite(write, 'agent-dir', driveFs('k:/agent', '\u212a' + skill('k:/agent').slice(1)), 'win32'), null, 'a sign that lowercases to a drive letter')
 })
+
+test('origin errors go to the daemon log, one line each, never to the console', (t) => {
+  const { logOriginsTo, readOrigins, stampOrigin, skillFolderOfWrite } = api()
+  const w = world()
+  const lines: string[] = []
+  const consoleLines: unknown[] = []
+  t.mock.method(console, 'error', (...args: unknown[]) => { consoleLines.push(args) })
+  logOriginsTo((msg: string) => { lines.push(msg) })
+  t.after(() => logOriginsTo(() => {}))
+  mkdirSync(join(w.root, 'state'))
+  writeFileSync(w.file, '{broken')
+  readOrigins(w.file)
+  stampOrigin(join(w.folder, 'SKILL.md', 'origins.json'), 'foo', { origin: 'taught', ident: '1:2' }, 123)
+  skillFolderOfWrite(join(w.root, 'missing', 'SKILL.md'), w.agent)
+  assert.deepEqual(lines, ['skills: origin unavailable', 'skills: origin unavailable', 'skills: origin unavailable'])
+  assert.deepEqual(consoleLines, [])
+  logOriginsTo(() => { throw new Error('log down') })
+  assert.doesNotThrow(() => readOrigins(w.file))
+})

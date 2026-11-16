@@ -23,6 +23,10 @@ const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').re
 
 const REGISTRATION = "realtimeSocket.on('skills_rpc', whenArmed('skills_rpc',"
 
+test('origin errors are written to the daemon log', () => {
+  assert.match(server, /\nconst teachWindows = createTeachWindows\(\)\nlogOriginsTo\(log\)\n/)
+})
+
 test('inventory list applies origins from the sidecar beside the skills trash', () => {
   assert.match(constructionSlice(), /list: \(\) =>\s*applyOrigins\(\s*listSkills\(/)
   assert.match(constructionSlice(), /\}\),\s*SKILL_ORIGINS_FILE/)

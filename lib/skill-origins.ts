@@ -9,8 +9,15 @@ export type SkillOrigin = 'taught' | 'made' | 'installed' | 'shared' | 'repo' | 
 export const TEACH_APPROVE = 'teach_approve'
 export const TEACH_WINDOW_MS = 15 * 60_000
 
+let originLog: (msg: string) => void = () => {}
+
+/** Where origin errors go: the daemon's own log (server.ts sets it once). Until then they are dropped. */
+export function logOriginsTo(log: (msg: string) => void): void {
+  originLog = log
+}
+
 function failed(): void {
-  try { console.error('skills: origin unavailable') } catch { /* best effort */ }
+  try { originLog('skills: origin unavailable') } catch { /* best effort */ }
 }
 
 type TeachTap = {

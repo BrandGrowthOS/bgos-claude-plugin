@@ -97,7 +97,7 @@ import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { identOf, listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
-import { applyOrigins, clickHumanPrincipal, createTeachWindows, stampOrigin, stampTaughtWrite } from './lib/skill-origins.js'
+import { applyOrigins, clickHumanPrincipal, createTeachWindows, logOriginsTo, stampOrigin, stampTaughtWrite } from './lib/skill-origins.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
@@ -11120,6 +11120,7 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
  *  whoever sent it. Fed at the three inbound sites and the two meeting sites. */
 const turnChat = createTurnChatTracker()
 const teachWindows = createTeachWindows()
+logOriginsTo(log)
 
 // A teach window opens only on a person's own tap: humanPrincipal exactly true on the click, which each site reads off
 // the click's own answer payload (lib/skill-origins.ts noteTap).
