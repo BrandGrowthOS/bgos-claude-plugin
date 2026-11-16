@@ -95,19 +95,36 @@ export type Origins = { v: 1; skills: Record<string, OriginStamp> }
 const empty = (): Origins => ({ v: 1, skills: {} })
 const ORIGINS = new Set<SkillOrigin>(['taught', 'made', 'installed', 'shared', 'repo', 'synced'])
 
+function stampOf(value: unknown): OriginStamp | null {
+  const stamp = value as OriginStamp | null
+  if (!stamp || typeof stamp !== 'object' || !ORIGINS.has(stamp.origin) || !Number.isFinite(stamp.at) ||
+    typeof stamp.ident !== 'string' || !stamp.ident ||
+    (stamp.offerId !== undefined && typeof stamp.offerId !== 'string')) return null
+  return { origin: stamp.origin, at: stamp.at, ident: stamp.ident, ...(stamp.offerId !== undefined ? { offerId: stamp.offerId } : {}) }
+}
+
+/** Every entry under a skill name whose value is an object, as written: what a stamp keeps when it rewrites the file. */
+function rawEntries(file: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const parsed = JSON.parse(readFileSync(file, 'utf8'))
+  if (parsed?.v !== 1 || !parsed.skills || typeof parsed.skills !== 'object' || Array.isArray(parsed.skills)) throw new Error('invalid origins')
+  for (const [folder, value] of Object.entries(parsed.skills)) {
+    if (SKILL_NAME_RE.test(folder) && value !== null && typeof value === 'object' && !Array.isArray(value)) out[folder] = value
+  }
+  return out
+}
+
+/** The marks this build can read. One bad entry is skipped; only a file that is not a marks file at all reads empty. */
 export function readOrigins(file: string): Origins {
   try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8'))
-    if (parsed?.v !== 1 || !parsed.skills || typeof parsed.skills !== 'object' || Array.isArray(parsed.skills)) throw new Error('invalid origins')
     const out = empty()
-    for (const [folder, value] of Object.entries(parsed.skills)) {
-      const stamp = value as OriginStamp | null
-      if (!SKILL_NAME_RE.test(folder) || !stamp || !ORIGINS.has(stamp.origin) ||
-        !Number.isFinite(stamp.at) || typeof stamp.ident !== 'string' || !stamp.ident ||
-        (stamp.offerId !== undefined && typeof stamp.offerId !== 'string')) throw new Error('invalid origin')
-      out.skills[folder] = { origin: stamp.origin, at: stamp.at, ident: stamp.ident,
-        ...(stamp.offerId !== undefined ? { offerId: stamp.offerId } : {}) }
+    let skipped = false
+    for (const [folder, value] of Object.entries(rawEntries(file))) {
+      const stamp = stampOf(value)
+      if (stamp) out.skills[folder] = stamp
+      else skipped = true
     }
+    if (skipped) failed()
     return out
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') failed()
@@ -119,12 +136,16 @@ export function stampOrigin(file: string, folder: string, stamp: Omit<OriginStam
   let temp: string | undefined
   try {
     if (!SKILL_NAME_RE.test(folder) || !ORIGINS.has(stamp.origin) || !stamp.ident || !Number.isFinite(now)) return
-    const out = readOrigins(file)
-    out.skills[folder] = { origin: stamp.origin, at: now, ident: stamp.ident,
+    // Every other entry stays as written, a newer build's mark this build cannot read included (a downgrade).
+    let skills: Record<string, unknown> = {}
+    try { skills = rawEntries(file) } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') failed()
+    }
+    skills[folder] = { origin: stamp.origin, at: now, ident: stamp.ident,
       ...(stamp.offerId !== undefined ? { offerId: stamp.offerId } : {}) }
     mkdirSync(dirname(file), { recursive: true })
     temp = `${file}.${randomUUID()}.tmp`
-    writeFileSync(temp, JSON.stringify(out), { flag: 'wx', mode: 0o600 })
+    writeFileSync(temp, JSON.stringify({ v: 1, skills }), { flag: 'wx', mode: 0o600 })
     renameSync(temp, file)
     temp = undefined
   } catch { failed() } finally {

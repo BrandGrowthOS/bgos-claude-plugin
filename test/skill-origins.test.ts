@@ -304,3 +304,41 @@ test('a taught write never throws', () => {
   const windows = { take: () => { throw new Error('broken') } }
   assert.doesNotThrow(() => assert.equal(writeOf(w, windows, 101), false))
 })
+
+const marksWithBadEntries = JSON.stringify({ v: 1, skills: {
+  foo: { origin: 'taught', at: 10, ident: '1:2' },
+  later: { origin: 'learned-later', at: 11, ident: '1:3' },
+  'Bad_Name': { origin: 'taught', at: 12, ident: '1:4' },
+  empty: null,
+  noident: { origin: 'shared', at: 13, ident: '' },
+  offer: { origin: 'shared', at: 14, ident: '1:5', offerId: 7 },
+  kept: { origin: 'shared', at: 15, ident: '1:6', offerId: 'offer' },
+} })
+
+test('one bad entry in the marks file is skipped, never voids the file', () => {
+  const { readOrigins } = api()
+  const w = world()
+  mkdirSync(join(w.root, 'state'))
+  writeFileSync(w.file, marksWithBadEntries)
+  assert.deepEqual(readOrigins(w.file), { v: 1, skills: {
+    foo: { origin: 'taught', at: 10, ident: '1:2' },
+    kept: { origin: 'shared', at: 15, ident: '1:6', offerId: 'offer' },
+  } })
+})
+
+test('a later stamp keeps every other mark, the ones this build cannot read included', () => {
+  const { readOrigins, stampOrigin } = api()
+  const w = world()
+  mkdirSync(join(w.root, 'state'))
+  writeFileSync(w.file, marksWithBadEntries)
+  stampOrigin(w.file, 'second', { origin: 'taught', ident: '2:2' }, 20)
+  assert.deepEqual(readOrigins(w.file), { v: 1, skills: {
+    foo: { origin: 'taught', at: 10, ident: '1:2' },
+    kept: { origin: 'shared', at: 15, ident: '1:6', offerId: 'offer' },
+    second: { origin: 'taught', at: 20, ident: '2:2' },
+  } })
+  const raw = JSON.parse(readFileSync(w.file, 'utf8'))
+  assert.deepEqual(raw.skills.later, { origin: 'learned-later', at: 11, ident: '1:3' }, 'a newer build\'s mark survives a downgrade')
+  assert.equal('Bad_Name' in raw.skills, false, 'an entry no build could name is dropped')
+  assert.equal('empty' in raw.skills, false, 'an entry that is not an object is dropped')
+})
