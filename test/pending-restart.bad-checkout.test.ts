@@ -54,8 +54,8 @@ const twoCheckouts = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
-/** What the idle update reads (server.ts daemonStagedVersion): the latched answer, then the checkout held bad, then
- *  the unlatched answer. */
+/** What the idle update reads (server.ts daemonStagedVersion): the latched answer, then the unlatched one, which
+ *  for a clone names its checkout held bad before anything else. */
 const staged = (input: any): string | null =>
   resolvePendingRestartVersion(input) ?? heldBadCheckoutVersion(input) ?? resolvePendingRestartVersion({ ...input, heldBad: undefined })
 
@@ -110,6 +110,7 @@ test('heldBadCheckoutVersion: only a checkout a restart would boot, held bad her
     ['an older checkout held bad is still what a restart would boot', { readCheckoutVersion: () => '0.89.0', heldBad: (v: string) => v === '0.89.0' }, '0.89.0'],
     ['no latch reader holds nothing', { heldBad: undefined }, null],
     ['a latch reader that throws holds nothing', { heldBad: boom }, null],
+    ['a latch reader that answers anything but true holds nothing', { heldBad: () => undefined }, null],
     ['a checkout reader that throws holds nothing', { readCheckoutVersion: boom }, null],
     ['an unreadable checkout holds nothing', { readCheckoutVersion: () => null }, null],
     ['an unknown running build holds nothing', { runningVersion: null }, null],
@@ -169,7 +170,13 @@ test('server.ts: the idle update reads the held checkout before the unlatched an
   assert.ok(at >= 0)
   assert.match(
     server.slice(at, server.indexOf('\n}\n', at)),
-    /return daemonPendingRestartVersion\(\) \?\? daemonHeldBadCheckoutVersion\(\) \?\? daemonPendingRestartVersion\(undefined, \{ latched: false \}\)/,
+    /return daemonPendingRestartVersion\(\) \?\? daemonPendingRestartVersion\(undefined, \{ latched: false \}\)/,
+  )
+  const pending = server.indexOf('function daemonPendingRestartVersion(')
+  assert.ok(pending >= 0)
+  assert.match(
+    server.slice(pending, server.indexOf('\n}\n', pending)),
+    /\): string \| null \{\n  if \(!latched\) \{\n    const held = daemonHeldBadCheckoutVersion\(\)\n    if \(held\) return held\n  \}\n  return resolvePendingRestartVersion\(\{/,
   )
   const held = server.indexOf('function daemonHeldBadCheckoutVersion(')
   assert.ok(held >= 0)
