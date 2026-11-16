@@ -203,6 +203,36 @@ export function pendingRestartVersionFrom(
   return installed
 }
 
+/**
+ * The build a restart of a CLONE would boot, when it is held bad on this
+ * computer, else null. Never throws.
+ *
+ * WHY (board row 10f8bc52, Data decided 2026-11-16). A clone restarts onto
+ * whatever its checkout holds, not onto the target its self updater staged.
+ * With a second checkout under the same HOME the checkout can move to a build
+ * an agent here marked bad while this daemon's staged answer still names a
+ * good one, and #185's rule (the self updater's answer wins over the
+ * checkout, lib/pending-restart.ts E5) then sent the agent onto the bad build.
+ * For this case the bad mark wins: nothing is pending, a click is refused
+ * with version_held_bad, and the idle update holds on the running build with
+ * its plain line. #185's rule stands everywhere else, so this answers only
+ * with a latch reader, for a checkout that differs from the running build.
+ */
+export function heldBadCheckoutVersion(input: {
+  installMethod?: 'marketplace' | 'clone'
+  runningVersion: string | null | undefined
+  readCheckoutVersion: () => string | null | undefined
+  heldBad?: (version: string) => boolean
+}): string | null {
+  if (input.installMethod === 'marketplace' || !input.heldBad) return null
+  try {
+    const checkout = pendingRestartVersionFrom(input.runningVersion, input.readCheckoutVersion())
+    return checkout && input.heldBad(checkout) === true ? checkout : null
+  } catch {
+    return null
+  }
+}
+
 export function updateJitterMs(randomValue: number, maxMs = UPDATE_JITTER_MAX_MS): number {
   const bounded = Number.isFinite(randomValue)
     ? Math.min(1, Math.max(0, randomValue))
@@ -1025,6 +1055,10 @@ type ApplyUpdateOutcome =
 export interface SelfUpdaterOptions {
   /** A version held bad on this computer (lib/idle-update.mjs): never pulled, by a click or the nightly check. */
   heldBad?: (version: string) => boolean
+  /** The version in the package.json of the root this daemon runs from, read now: the build a restart boots. A
+   *  staged target is not handed to a click's ladder while this is held bad (heldBadCheckoutVersion). Optional:
+   *  absent holds nothing. */
+  readCheckoutVersion?: () => string | null
   rootDir: string
   stateFilePath: string
   env: Record<string, string | undefined>
@@ -1317,6 +1351,15 @@ export class SelfUpdater {
         // for no gain. See observeLatestVersion.
         const pending = this.pendingRestartVersion()
         if (pending && this.opts.heldBad?.(pending)) return { kind: 'no-update', latestVersion: pending, reason: 'version_held_bad' }
+        // The restart boots the checkout, not this target: a checkout held bad wins (board row 10f8bc52).
+        const onDisk = pending
+          ? heldBadCheckoutVersion({
+              runningVersion: this.opts.runningVersion,
+              readCheckoutVersion: () => this.opts.readCheckoutVersion?.() ?? null,
+              heldBad: this.opts.heldBad,
+            })
+          : null
+        if (onDisk) return { kind: 'no-update', latestVersion: onDisk, reason: 'version_held_bad' }
         return pending ? { kind: 'installed', targetVersion: pending } : { kind: 'busy' }
       }
       const inspection = await inspectGitUpdate({
