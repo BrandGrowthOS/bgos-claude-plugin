@@ -95,8 +95,9 @@ import {
 import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './lib/memory.js'
 import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
-import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
+import { identOf, listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
+import { applyOrigins, createTeachWindows, readOrigins, skillFolderOfWrite, stampOrigin } from './lib/skill-origins.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
@@ -1235,7 +1236,7 @@ import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-proces
 import { laneShellSandboxAvailable } from './lib/lane-policy.mjs'
 import { findOnPath } from './lib/lane-cli-probe.mjs'
 import { spawnStreamJson } from './lib/stream-json-child.ts'
-import { join as pathJoin, dirname as pathDirname, resolve as pathResolve } from 'node:path'
+import { join as pathJoin, dirname as pathDirname, resolve as pathResolve, basename as pathBasename } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 // Agent activity from the session's own hooks (stage 4). The mapper is pure
 // (lib/hook-events.ts), the intake is a spool file per session
@@ -11012,7 +11013,7 @@ async function announceMissedPlanAnswers(): Promise<void> {
         channelNotify(() => ({
             // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. A late announce
             // opens no private turn (4bf28148: only the stream's, in its window).
-            content: privateTapCard({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+            content: privateTapCardNoting({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
             meta: buildButtonClickedMeta({
               chatId,
               messageId: row.id,
@@ -11118,6 +11119,23 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
 /** The chat a hook event belongs to: the last thing delivered to this session,
  *  whoever sent it. Fed at the three inbound sites and the two meeting sites. */
 const turnChat = createTurnChatTracker()
+const teachWindows = createTeachWindows()
+
+function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0]) {
+  try {
+    teachWindows.noteTap({
+      chatId: input.chatId,
+      tapperUserId: input.tapperUserId,
+      ownerUserId: input.ownerUserId,
+      callbackData: input.callbackData,
+      posted: input.posted,
+      now: Date.now(),
+    })
+  } catch {
+    log('skills: origin unavailable')
+  }
+  return privateTapCard(input)
+}
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
 // The owner is named so that no turn acts as the owner once someone else reached it (board row f81a527c), and the
 // markers tie each person who reached the session to the CLI turn running then, whatever the forwarder lines' order.
@@ -11894,6 +11912,23 @@ let hookLineStartedAt: number | undefined
 function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void {
   const event = parseHookEvent(payload)
   if (event === null) return
+  try {
+    if (event.name === 'PostToolUse' && payload.tool_name === 'Write') {
+      const input = payload.tool_input as { file_path?: unknown } | undefined
+      const folder = skillFolderOfWrite(input?.file_path, SKILLS_AGENT_DIR)
+      if (folder && SKILLS_AGENT_DIR) {
+        const folderPath = pathJoin(SKILLS_AGENT_DIR, '.claude', 'skills', folder)
+        const ident = identOf(folderPath, false)
+        const stamp = readOrigins(SKILL_ORIGINS_FILE).skills[folder]
+        if (stamp?.ident !== ident) {
+          const w = teachWindows.take(String(turnChat.current(Date.now())?.chatId ?? ''), Date.now())
+          if (w && ident !== null) stampOrigin(SKILL_ORIGINS_FILE, folder, { origin: 'taught', ident })
+        }
+      }
+    }
+  } catch {
+    log('skills: origin unavailable')
+  }
   const receivedAt = line?.receivedAt ?? Date.now()
   // When the CLI got to this event, for privateTurns.end(): the forwarder's own process start, which claude spawns
   // with the Stop hook at the Stop, before the next prompt's hook can run. Its receivedAt comes after the forwarder's
@@ -12540,7 +12575,7 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
   const postedButton = postedButtons.posted(mm.id, callbackData, buttonText, mm.text)
   log(`button_clicked ANNOUNCED via POLL for message ${mm.id} in chat ${chatId} (answeredAt=${mm.answeredAt})`)
   void trackMessageOperation(() => channelNotify(() => ({
-      content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+      content: privateTapCardNoting({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
       meta: buildButtonClickedMeta({ chatId, messageId: mm.id, callbackData: planAnswer.callbackData ?? agentCallbackData, buttonText, customText, tapperUserId: readTapperUserId(payload), assistantId: ASSISTANT_ID, ts: mm.answeredAt, card: cardAnswer }),
     }), { quiet: readTapperUserId(payload) === USER_ID ? { carried: true } : null })).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
 }
@@ -13141,7 +13176,7 @@ async function pollChat(chatId: string): Promise<void> {
       void trackMessageOperation(() => channelNotify(() => ({
           // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The poll opens no
           // private turn, however fresh the tap (4bf28148: only the stream's, in its window).
-          content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+          content: privateTapCardNoting({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
           // `user_id` is the tapper the server stamped on the answer, or
           // absent. It was this daemon's own USER_ID, so every tap read as
           // the owner's whoever made it.
@@ -13929,7 +13964,7 @@ function announceCompleteAsks(via: string): void {
           // The backend stamps no tapper on an ask answer, and typed words
           // ride in it, so it is never shown to be the owner's own words: it
           // opens no private turn and is noted like any other untracked card.
-          content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+          content: privateTapCardNoting({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
           meta: event.meta,
         })),
     )
@@ -14151,7 +14186,7 @@ function askWithdrawnContent(
   return {
     // Typed answers ride in it, as in an ask_answered event: never shown
     // to be the owner's own words, and it opens no private turn.
-    content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+    content: privateTapCardNoting({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
     meta: event.meta,
   }
 }
@@ -16838,16 +16873,20 @@ const skillsTrashDir = (): string =>
     }),
     'skills-trash',
   )
+const SKILL_ORIGINS_FILE = pathJoin(pathDirname(skillsTrashDir()), 'skill-origins.json')
 const skillsRpc = new SkillsRpcHandler({
   inventory: {
     list: () =>
-      listSkills({
-        agentDir: SKILLS_AGENT_DIR,
-        configDir: CLAUDE_CONFIG_DIR,
-        home: homedir(),
-        managedDir: SKILLS_MANAGED_DIR,
-        log,
-      }),
+      applyOrigins(
+        listSkills({
+          agentDir: SKILLS_AGENT_DIR,
+          configDir: CLAUDE_CONFIG_DIR,
+          home: homedir(),
+          managedDir: SKILLS_MANAGED_DIR,
+          log,
+        }),
+        SKILL_ORIGINS_FILE,
+      ),
     remove: (payload) =>
       removeAgentSkill({
         agentDir: SKILLS_AGENT_DIR,
@@ -16879,6 +16918,14 @@ const skillsRpc = new SkillsRpcHandler({
         now: () => Date.now(),
         payload,
         progress,
+        onInstalled: (dest) => {
+          const ident = identOf(dest, false)
+          if (ident !== null) stampOrigin(SKILL_ORIGINS_FILE, pathBasename(dest), {
+            origin: 'shared',
+            ident,
+            offerId: typeof payload.offerId === 'string' ? payload.offerId : undefined,
+          })
+        },
         log,
       }),
   },
@@ -17720,7 +17767,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
         // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The owner's own tap,
         // as the backend stamped it, within PRIVATE_TAP_WINDOW_MS of its answeredAt, opens a private turn as the owner
         // (4bf28148), and the fire ledger makes a second announce of it a replay.
-        content: privateTapCard({ tracker: privateTurns, lane: 'stream', ownerUserId: USER_ID, chatId: String(chatId), messageId: view.messageId, tapperUserId: answer.tapperUserId, answeredAt: update.payload.answeredAt ?? update.payload.answered_at, receivedAt: receivedAtMs, callbackData: agentCallbackData, customText: answer.customText, posted: postedButton, content: contentLines.join('\n') }),
+        content: privateTapCardNoting({ tracker: privateTurns, lane: 'stream', ownerUserId: USER_ID, chatId: String(chatId), messageId: view.messageId, tapperUserId: answer.tapperUserId, answeredAt: update.payload.answeredAt ?? update.payload.answered_at, receivedAt: receivedAtMs, callbackData: agentCallbackData, customText: answer.customText, posted: postedButton, content: contentLines.join('\n') }),
         meta: buildStreamClickMeta({
           chatId,
           messageId: view.messageId,

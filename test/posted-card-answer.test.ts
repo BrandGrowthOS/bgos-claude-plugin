@@ -66,7 +66,7 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown> = async () 
     // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
     get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (note: (typeof notes)[number]) => { notes.push(note) } },
-    privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }), privateTapCard,
+    privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }), privateTapCardNoting: privateTapCard,
     settlePlan: (chatId: string) => { settlements.push(chatId); openPlansByChat.delete(chatId) },
     loginMethodCard: null, loginController: { button: () => 'ignored' },
     streamAuthority: null, askTracker: { askIdOf: () => null, trackedMessageIds: () => new Set() },

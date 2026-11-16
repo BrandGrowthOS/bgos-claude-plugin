@@ -322,7 +322,7 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     // The daemon's own tracker (server.ts): a tap by anyone but the owner is noted with it (70f1898b).
     privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }),
     // Every tap site announces through it (4bf28148): only the owner's own stream tap in its window opens a turn.
-    privateTapCard,
+    privateTapCardNoting: privateTapCard,
     // The cards this daemon life posted (server.ts): none here, so no tap of this rig opens a private turn.
     postedButtons: createPostedButtons(),
     streamAuthority: {},

@@ -209,7 +209,7 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; handedOn?: number[]; c
         await notify()
       },
     },
-    privateTapCard: (o: { content: string }) => o.content,
+    privateTapCardNoting: (o: { content: string }) => o.content,
     privateTurns: {},
     tellRetiredOwnOnTick,
     retiredOwnNotes,

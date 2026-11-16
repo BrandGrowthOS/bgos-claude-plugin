@@ -453,6 +453,7 @@ export type InstallBundleInput = {
   now: () => number
   payload: Record<string, unknown>
   progress?: (stage: 'verifying' | 'writing') => void | Promise<void>
+  onInstalled?: (folder: string) => void
   /** The final move; renameSync unless a test stands in for it. */
   rename?: (from: string, to: string) => void
   log?: (msg: string) => void
@@ -686,6 +687,11 @@ export async function installBundle(input: InstallBundleInput): Promise<InstallA
     log(`skills: install of ${shown} failed moving into place: ${displayPath(String((err as Error)?.message ?? err), home)}`)
     if (code === 'EEXIST') return fail('name_taken', 'this agent already has a skill of that name')
     return fail('write_failed', 'the skill could not be moved into the skills folder')
+  }
+  try {
+    input.onInstalled?.(dest)
+  } catch {
+    log('skills: origin unavailable')
   }
   log(`skills: installed ${shown}${taken.length ? ' (replaced, the old copy is in the trash)' : ''}`)
   return { ok: true, payload: { path: shown, name } }
