@@ -342,3 +342,20 @@ test('a later stamp keeps every other mark, the ones this build cannot read incl
   assert.equal('Bad_Name' in raw.skills, false, 'an entry no build could name is dropped')
   assert.equal('empty' in raw.skills, false, 'an entry that is not an object is dropped')
 })
+
+test('teach window refuses a take on a clock set back before the tap, and keeps the window', () => {
+  const { createTeachWindows, TEACH_WINDOW_MS } = api()
+  const windows = createTeachWindows()
+  windows.noteTap({ ...tap, now: 10 * TEACH_WINDOW_MS })
+  assert.equal(windows.take('chat', 'assistant', 10 * TEACH_WINDOW_MS - 1), null)
+  assert.equal(windows.take('chat', 'assistant', 2 * TEACH_WINDOW_MS), null, 'far back is refused too')
+  assert.deepEqual(windows.take('chat', 'assistant', 10 * TEACH_WINDOW_MS + 1), { by: 'owner' })
+})
+
+for (const [name, id] of Object.entries({ 'both empty': '', 'both blank': '  ' })) {
+  test(`teach window refuses an owner and tapper that are ${name}`, () => {
+    const windows = api().createTeachWindows()
+    windows.noteTap({ ...tap, ownerUserId: id, tapperUserId: id })
+    assert.equal(windows.take('chat', 'assistant', 101), null)
+  })
+}
