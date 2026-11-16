@@ -4290,7 +4290,7 @@ test('Windows aliases: resolving the home never exempts a sibling, an outside li
   const { fs, calls } = spyFs()
   const key = `${home}\\.ssh\\report.pdf`
   assert.equal(await refusal(key, { home, fs }), `${key} looks like a key or password file, so it is never attached. ${NO_WAY_AROUND}`)
-  assert.deepEqual(calls, [], 'a lexical refusal still resolves nothing, including the home')
+  assert.deepEqual(calls, [], 'a lexical refusal still resolves nothing through the given file system, the home included (homesOf reads only the owner\'s own home, for its real path)')
 })
 
 test('final fix 2: a file on a mapped network drive goes, read by its drive letter, when the share path is the given path below the drive', async () => {
@@ -4805,4 +4805,56 @@ test('the main thread is free while a large text file is checked: a timer queued
       assert.ok(ratio < 0.25, `${name}: the timer was held for ${ratio.toFixed(2)} of the inline text check, expected under 0.25`)
     })
   }
+})
+
+// ── hardenings: a home behind a link, a file with two names, a FIFO swapped in ──
+
+test('hardening 1: a home reached through a link (macOS /var is one) is the home by its real path too: a file named by that path is not refused', async (t) => {
+  const lib = await m()
+  // The temp folder by its real path first (on Windows it can hold an 8.3 name), so the one link here is the one made below.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'hoai-outbound-files-')))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  // As on macOS, where /var is a link to /private/var: the home is named through var, and really lives under private/var.
+  const realVar = join(root, 'private', 'var')
+  const realHome = join(realVar, 'John Key')
+  mkdirSync(join(realHome, 'Documents'), { recursive: true })
+  symlinkSync(realVar, join(root, 'var'), 'junction')
+  const home = join(root, 'var', 'John Key')
+  const report = join(realHome, 'Documents', 'report.pdf')
+  writeFileSync(report, PDF)
+  // Named by its real path, the word rules read below the home's real path, so the owner's name refuses nothing: the
+  // preflight, all four steps, and a runtime folder that holds the home (taken by its real path too) is not taken as one.
+  assert.equal(lib.outboundFileLexicalRefusal(report, { home }), null, 'the preflight')
+  assert.equal(await refusal(report, { home }), null, 'all four steps')
+  const dirs = lib.outboundRuntimeDirs([join(root, 'var')])
+  assert.equal(dirs.length, 2, JSON.stringify(dirs))
+  assert.equal(await refusal(report, { home, runtimeDirs: dirs }), null, 'a runtime folder that holds the home')
+  // Named through the link, as before.
+  assert.equal(await refusal(join(home, 'Documents', 'report.pdf'), { home }), null, 'through the link')
+  // The daemon passes no home: its own (os.homedir(), and USERPROFILE on Windows) counts by its real path the same way.
+  const was = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
+  process.env.HOME = home
+  process.env.USERPROFILE = home
+  try {
+    assert.equal(lib.outboundFileLexicalRefusal(report), null, 'no home passed: the preflight')
+    assert.equal(await refusal(report, {}), null, 'no home passed: all four steps')
+  } finally {
+    for (const [name, value] of Object.entries(was)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+  // The controls: a key name below the real home, a key folder in it, a sibling of the real home, and a link from the home
+  // to that sibling stay refused; the real path exempts the home, nothing beside it.
+  const stripe = join(realHome, 'Documents', 'stripe key.txt')
+  assert.equal(await refusal(stripe, { home }), lookedSecret(stripe))
+  const ssh = join(realHome, '.ssh', 'report.pdf')
+  assert.equal(await refusal(ssh, { home }), lookedSecret(ssh))
+  const sibling = join(realVar, 'Jane Key')
+  mkdirSync(sibling, { recursive: true })
+  writeFileSync(join(sibling, 'report.pdf'), PDF)
+  assert.equal(await refusal(join(sibling, 'report.pdf'), { home }), lookedSecret(join(sibling, 'report.pdf')))
+  symlinkSync(sibling, join(realHome, 'Documents', 'jane'), 'junction')
+  const viaHome = join(home, 'Documents', 'jane', 'report.pdf')
+  assert.equal(await refusal(viaHome, { home }), `${viaHome} leads to a key or password file (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`)
 })

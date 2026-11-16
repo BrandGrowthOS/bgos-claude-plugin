@@ -62,6 +62,7 @@
 import { realpath as realpathCallback, realpathSync } from 'node:fs'
 import { lstat as lstatPromise, open as openPromise, realpath as realpathPromise } from 'node:fs/promises'
 import { homedir } from 'node:os'
+import { isAbsolute } from 'node:path'
 import { Worker } from 'node:worker_threads'
 
 import {
@@ -457,9 +458,28 @@ function secretWordsForm(form: string, ctx: OutboundFileCtx): string {
   return below ?? form
 }
 
-/** The owner's home folders: the home passed in, else this daemon's os.homedir() and, on Windows, USERPROFILE. */
+/**
+ * The owner's home folders: the home passed in, else this daemon's os.homedir() and, on Windows, USERPROFILE. Each
+ * beside its real path when that is another spelling, so a home reached through a link (macOS's /var is a link to
+ * /private/var; a junction or an 8.3 name on Windows) is the home by either spelling: a file named by the real path is
+ * read below the home, and a runtime folder that holds the real home is not taken as one. Only the home itself is
+ * resolved, never the path being checked, and only a home that is a full local path of this computer (homeForm, and
+ * absolute here), so a network, relative or drive top home reaches no file system call. A home that does not resolve
+ * stays alone.
+ */
 function homesOf(ctx: OutboundFileCtx): unknown[] {
-  return ctx.home !== undefined ? [ctx.home] : [homedir(), process.platform === 'win32' ? process.env.USERPROFILE : undefined]
+  const homes: unknown[] = ctx.home !== undefined ? [ctx.home] : [homedir(), process.platform === 'win32' ? process.env.USERPROFILE : undefined]
+  for (const home of [...homes]) {
+    if (typeof home !== 'string' || homeForm(home) === null || !isAbsolute(home)) continue
+    let real: string
+    try {
+      real = plainLocal(nativeRealpathSync(home))
+    } catch {
+      continue
+    }
+    if (!homes.includes(real)) homes.push(real)
+  }
+  return homes
 }
 
 /**
@@ -516,7 +536,8 @@ type Lexical = { kind: LexicalKind } | { kind: 'ok'; form: string }
 const NETWORK_OR_DEVICE = /^[\\/]{2}/
 
 /**
- * Steps 1 and 2 on one spelling: no file system call. `form` is the lower
+ * Steps 1 and 2 on one spelling: no file system call on the path (only the
+ * owner's home is resolved, homesOf). `form` is the lower
  * case, forward slash, resolved path that both secret checks read.
  */
 function lexical(path: string, ctx: OutboundFileCtx): Lexical {
@@ -604,7 +625,8 @@ function lexicalSentence(kind: Exclude<LexicalKind, 'ok'>, path: string, followe
 }
 
 /**
- * Steps 1 and 2 alone, with no file system call: why this path is refused
+ * Steps 1 and 2 alone, with no file system call on the path (only the owner's
+ * home is resolved, homesOf): why this path is refused
  * before anything is read, or null. The permission relay runs it on the CLI's
  * preview so a key path never reaches a card or the floor check.
  */

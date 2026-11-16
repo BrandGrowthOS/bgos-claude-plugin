@@ -550,7 +550,7 @@ export function emailCallRefusal(name: string, rawArgs: unknown, secrets: readon
   return secretRefusal(name, target.kind === 'new' ? [target.to, target.subject, text] : [text], secrets) ?? filesLexicalRefusal(name, files, fileCtx)
 }
 
-/** Rule 4's steps 1 and 2 on every path, with no file system call: why one is refused, or null. */
+/** Rule 4's steps 1 and 2 on every path, with no file system call on a path (only the owner's home is resolved): why one is refused, or null. */
 function filesLexicalRefusal(tool: string, files: readonly string[], fileCtx: OutboundFileCtx = {}): string | null {
   for (const path of files) {
     const why = outboundFileLexicalRefusal(path, fileCtx)
