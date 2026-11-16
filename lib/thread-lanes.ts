@@ -165,9 +165,19 @@ function isStopHookFeedback(frame: Record<string, unknown>): boolean {
   })
 }
 
-/** The pending route, scoped to the agents this daemon serves (the server answers nothing without them). */
-export function threadsPendingPath(assistantIds: readonly string[]): string {
-  return `integrations/threads/pending?assistantIds=${assistantIds.map((id) => encodeURIComponent(id)).join(',')}`
+/** At most this many held threads are named in one pending read (the server reads no more). */
+export const THREAD_PENDING_ROOTS_MAX = 200
+
+/**
+ * The pending route, scoped to the agents this daemon serves (the server
+ * answers nothing without them). `roots`: the threads this daemon still holds
+ * open on disk, so the server can say which of them were closed, merged or
+ * deleted while it was away (`gone`, 0.91.0). An older server ignores it.
+ */
+export function threadsPendingPath(assistantIds: readonly string[], roots: readonly string[] = []): string {
+  const base = `integrations/threads/pending?assistantIds=${assistantIds.map((id) => encodeURIComponent(id)).join(',')}`
+  const held = roots.filter((r) => ROOT_ID_RE.test(r)).slice(0, THREAD_PENDING_ROOTS_MAX)
+  return held.length > 0 ? `${base}&roots=${held.map((r) => encodeURIComponent(r)).join(',')}` : base
 }
 
 export class ThreadLaneError extends Error {
@@ -730,16 +740,18 @@ export class ThreadLaneManager {
    * naming the lane's last finished reply only puts the thread back to Open
    * with a short plain reply when nothing is left to land.
    */
-  reconcile(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[] } = {}): Promise<number> {
+  reconcile(fetchPending: (roots: string[]) => Promise<unknown>, opts: { assistantIds?: readonly string[] } = {}): Promise<number> {
     // Tracked from its first step: a read still out may start a turn, so a restart waits for it (activeWork).
     const run = this.reconcileNow(fetchPending, opts)
     this.track(run)
     return run
   }
 
-  private async reconcileNow(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[] }): Promise<number> {
-    const raw = await fetchPending()
+  private async reconcileNow(fetchPending: (roots: string[]) => Promise<unknown>, opts: { assistantIds?: readonly string[] }): Promise<number> {
+    const held = this.heldOpenRoots()
+    const raw = await fetchPending(held)
     const body = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+    await this.closeGone(body?.gone, held)
     const rows: unknown[] = Array.isArray(body?.turns) ? (body!.turns as unknown[]) : []
     const served = opts.assistantIds ? new Set(opts.assistantIds.map(String)) : null
     let started = 0
@@ -769,6 +781,56 @@ export class ThreadLaneManager {
     }
     for (const n of await Promise.all(later)) started += n
     return started
+  }
+
+  /**
+   * The threads this daemon holds open on disk or in memory, oldest root
+   * first: each one whose state is not closed (and not a kept working copy,
+   * which is closed). Named in the pending read so the server can say which
+   * were closed while this daemon was away.
+   */
+  private heldOpenRoots(): string[] {
+    const roots = new Set<string>()
+    for (const [rootId, lane] of this.lanes) if (!lane.closed && lane.state.closedAt === null) roots.add(rootId)
+    let names: string[] = []
+    try {
+      names = this.deps.fs.list(this.deps.stateDir)
+    } catch {}
+    for (const name of names) {
+      const m = /^([A-Za-z0-9_-]{1,64})\.json$/.exec(name)
+      if (!m || m[1] === 'empty-mcp' || roots.has(m[1]!) || this.lanes.has(m[1]!)) continue
+      const state = this.load(m[1]!)
+      if (state && state.closedAt === null && state.kept !== true) roots.add(m[1]!)
+    }
+    const numeric = (r: string) => (/^\d+$/.test(r) ? Number(r) : Number.MAX_SAFE_INTEGER)
+    return [...roots].sort((a, b) => numeric(a) - numeric(b) || a.localeCompare(b)).slice(0, THREAD_PENDING_ROOTS_MAX)
+  }
+
+  /**
+   * The server's `gone`: threads closed, merged or deleted while this daemon
+   * was away, cleaned up exactly as a live `thread_close` (BRIEF-addition
+   * item 5). Only roots this daemon asked about, and never one with a turn
+   * running, starting or queued, or one already being removed. An answer
+   * that is not a list (an older server) closes nothing.
+   */
+  private async closeGone(gone: unknown, asked: readonly string[]): Promise<void> {
+    if (!Array.isArray(gone)) return
+    const askedSet = new Set(asked)
+    for (const item of gone) {
+      if (!item || typeof item !== 'object') continue
+      const rootId = str((item as Record<string, unknown>).rootId)
+      if (!ROOT_ID_RE.test(rootId) || !askedSet.has(rootId)) continue
+      const lane = this.lanes.get(rootId)
+      if (lane && (lane.current || lane.queue.length > 0 || lane.starting || lane.child)) continue
+      if (this.exiting.has(rootId)) continue
+      const removeWorktree = (item as Record<string, unknown>).removeWorktree === true
+      this.deps.log(`threads: thread ${rootId} was ${removeWorktree ? 'deleted' : 'closed'} while this daemon was away, its files are removed now`)
+      try {
+        await this.close({ rootId, removeWorktree })
+      } catch (err) {
+        this.deps.log(`threads: thread ${rootId} could not be cleaned up (${describeError(err)})`)
+      }
+    }
   }
 
   /** One pending row, once no post for its lane is in flight: 1 when a turn started. */

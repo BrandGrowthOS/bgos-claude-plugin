@@ -369,6 +369,109 @@ test('a reply to a thread that was closed and cleaned up starts a new fork and s
   assert.ok(said.endsWith('\n\nOne more thing.'))
 })
 
+// -- a thread closed while the daemon was off (BRIEF-addition item 5) ------
+//
+// The owner closes, merges or deletes a thread while this daemon is off: the
+// thread_close frame reaches nobody and is never sent again. On its next
+// reconnect the daemon names the threads it still holds open on disk in its
+// pending read (`roots`), and the server answers which of them are `gone`.
+
+/** What the daemon asked the pending read for, and the answer it got. */
+function pendingAnswer(gone: Array<{ rootId: string; removeWorktree: boolean }> | undefined) {
+  const asked: string[][] = []
+  return { asked, fetch: async (roots: string[]) => { asked.push([...roots]); return { turns: [], ...(gone ? { gone } : {}) } } }
+}
+
+test('the reconnect names every thread the daemon still holds open on disk, and none that is closed or kept', POSIX, async () => {
+  const r = rig()
+  await confinedThread(r, '101', FORK_A)
+  await confinedThread(r, '102', FORK_B)
+  // 103: open, known only from its state file (the daemon restarted).
+  r.files.set(join(STATE, '103.json'), JSON.stringify({ rootId: '103', chatId: '55', title: 'T', forkSessionId: null, folder: wt('103'), cwd: wt('103'), worktree: false, readOnly: true, closedAt: null, lastReplyId: '', lastDelivered: true, pid: null, pidStamp: null }))
+  // 104: closed earlier; 105: closed with its working copy kept.
+  r.files.set(join(STATE, '104.json'), JSON.stringify({ rootId: '104', chatId: '55', title: 'T', forkSessionId: null, folder: wt('104'), cwd: wt('104'), worktree: false, readOnly: true, closedAt: 5, lastReplyId: '', lastDelivered: true, pid: null, pidStamp: null }))
+  r.files.set(join(STATE, '105.json'), JSON.stringify({ rootId: '105', chatId: '55', title: 'T', forkSessionId: null, folder: wt('105'), cwd: wt('105'), worktree: true, readOnly: false, closedAt: 5, kept: true, lastReplyId: '', lastDelivered: true, pid: null, pidStamp: null }))
+  const p = pendingAnswer([])
+  await r.manager.reconcile(p.fetch, { assistantIds: ['7'] })
+  assert.deepEqual(p.asked, [['101', '102', '103']])
+})
+
+test('a thread closed or merged while the daemon was off is cleaned up on the reconnect, as a live close would', POSIX, async () => {
+  const r = rig()
+  await confinedThread(r, '101', FORK_A)
+  r.git.branches.set('hoai/thread-101', 'c-thread-only')
+  const p = pendingAnswer([{ rootId: '101', removeWorktree: false }])
+  await r.manager.reconcile(p.fetch, { assistantIds: ['7'] })
+  await r.manager.idle()
+  assert.deepEqual(r.left(wt('101')), [], 'its worktree is gone')
+  assert.equal(r.files.has(transcript(wt('101'), FORK_A)), false, 'and its session')
+  assert.equal(r.files.has(join(STATE, '101.json')), false, 'and its state')
+  assert.equal(r.git.branches.get('hoai/thread-101'), 'c-thread-only', 'a branch with work of its own is kept, as on a live close')
+  assert.equal(r.kept.length, 1)
+  assert.ok(r.logs.some((l) => /thread 101 .*closed while this daemon was away/.test(l)), r.logs.join(' | '))
+})
+
+test('a thread deleted while the daemon was off takes its branch too, as a live delete does', POSIX, async () => {
+  const r = rig()
+  await confinedThread(r, '101', FORK_A)
+  r.git.branches.set('hoai/thread-101', 'c-thread-only')
+  await r.manager.reconcile(pendingAnswer([{ rootId: '101', removeWorktree: true }]).fetch, { assistantIds: ['7'] })
+  await r.manager.idle()
+  assert.equal(r.git.branches.has('hoai/thread-101'), false)
+  assert.deepEqual(leftovers(r, '101', FORK_A), [])
+})
+
+test('a full access thread closed while the daemon was off leaves none of its session behind', async () => {
+  const r = rig({ fullAccess: true })
+  await fullThread(r)
+  await r.manager.reconcile(pendingAnswer([{ rootId: '101', removeWorktree: false }]).fetch, { assistantIds: ['7'] })
+  await r.manager.idle()
+  assert.deepEqual(leftovers(r, '101', FORK_A), [])
+  assert.ok(r.files.has(r.mainPath), "the main session's transcript stays")
+})
+
+test('the reconnect never closes a thread with a turn running', POSIX, async () => {
+  const r = rig()
+  r.manager.turn(turn('102'))
+  await r.manager.idle()
+  const child = r.spawned.at(-1)!.child
+  child.init(FORK_B)
+  await r.manager.reconcile(pendingAnswer([{ rootId: '102', removeWorktree: true }]).fetch, { assistantIds: ['7'] })
+  // Asserted before waiting on anything: a stopped process would never exit in this fake.
+  assert.deepEqual(child.killed, [], 'the running thread is not stopped')
+  assert.ok(r.files.has(join(STATE, '102.json')), 'nor closed')
+  child.result('Done.')
+  await r.manager.idle()
+})
+
+test('the reconnect never acts on a root it did not ask about: a kept working copy stays even if the answer names it', POSIX, async () => {
+  const r = rig()
+  r.dirs.add(wt('105'))
+  r.files.set(join(wt('105'), '.git'), 'gitdir: x\n')
+  r.files.set(join(wt('105'), 'work.txt'), 'work only here')
+  r.files.set(join(STATE, '105.json'), JSON.stringify({ rootId: '105', chatId: '55', title: 'T', forkSessionId: null, folder: wt('105'), cwd: wt('105'), worktree: true, readOnly: false, closedAt: 5, kept: true, lastReplyId: '', lastDelivered: true, pid: null, pidStamp: null }))
+  await confinedThread(r, '101', FORK_A)
+  const p = pendingAnswer([{ rootId: '105', removeWorktree: true }, { rootId: '999', removeWorktree: true }, { rootId: '../x', removeWorktree: true }])
+  await r.manager.reconcile(p.fetch, { assistantIds: ['7'] })
+  await r.manager.idle()
+  assert.deepEqual(p.asked, [['101']])
+  assert.ok(r.files.has(join(wt('105'), 'work.txt')), 'the kept working copy was not asked about, so it is not removed')
+  assert.ok(r.files.has(join(STATE, '105.json')))
+  assert.ok(r.files.has(join(STATE, '101.json')), 'a thread the answer did not name stays')
+  assert.equal(r.gitCalls.some((c) => c.join(' ').includes('999') || c.join(' ').includes('../x') || c.join(' ').includes('105')), false, 'no git command for a root it did not ask about')
+})
+
+test('an older server that answers no list closes nothing', POSIX, async () => {
+  const r = rig()
+  await confinedThread(r, '101', FORK_A)
+  await r.manager.reconcile(pendingAnswer(undefined).fetch, { assistantIds: ['7'] })
+  await r.manager.reconcile(async () => ({ turns: [], gone: 'not a list' }), { assistantIds: ['7'] })
+  await r.manager.reconcile(async () => ({ turns: [], gone: { rootId: '101', removeWorktree: true } }), { assistantIds: ['7'] })
+  await r.manager.idle()
+  assert.ok(r.files.has(join(STATE, '101.json')))
+  assert.ok(r.files.has(join(wt('101'), 'checkout.bin')))
+})
+
 // -- the sweep when the daemon starts ---------------------------------------
 
 const closedState = (rootId: string, fork: string, over: Record<string, unknown> = {}) => JSON.stringify({

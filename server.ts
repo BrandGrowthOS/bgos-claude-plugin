@@ -15878,7 +15878,8 @@ function reconcilePendingThreads(why: string): void {
         if (!channelArmed || updateDrainMode) return 0
       }
       // no-cache: an ETag 304 would hide turns this new process never ran.
-      return threadLanes.reconcile(() => bgosGet(threadsPendingPath(assistantIds), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
+      // `roots`: the threads this daemon still holds open, so a thread closed while it was away is cleaned up too.
+      return threadLanes.reconcile((roots) => bgosGet(threadsPendingPath(assistantIds, roots), { headers: { 'Cache-Control': 'no-cache' } }), { assistantIds })
     })
     .then((started) => { if (started > 0) log(`threads: ${started} pending thread turn(s) started (${why})`) })
     .catch((err) => log(`threads: pending reconcile failed (${why}): ${err instanceof Error ? err.name : 'error'}`))

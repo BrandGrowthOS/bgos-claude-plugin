@@ -850,6 +850,11 @@ test('a root id that could leave the threads folder is refused', () => {
 test('the pending route names the agents this daemon serves, and any other answer shape starts nothing', async () => {
   assert.equal(threadsPendingPath(['7']), 'integrations/threads/pending?assistantIds=7')
   assert.equal(threadsPendingPath(['7', '12']), 'integrations/threads/pending?assistantIds=7,12')
+  // 0.91.0: the threads this daemon holds, only well formed ids and at most 200; none, and the path is as before.
+  assert.equal(threadsPendingPath(['7'], []), 'integrations/threads/pending?assistantIds=7')
+  assert.equal(threadsPendingPath(['7'], ['101', '102']), 'integrations/threads/pending?assistantIds=7&roots=101,102')
+  assert.equal(threadsPendingPath(['7'], ['101', '../x', 'a b']), 'integrations/threads/pending?assistantIds=7&roots=101')
+  assert.equal(threadsPendingPath(['7'], Array.from({ length: 250 }, (_, i) => String(i + 1))).split('&roots=')[1]!.split(',').length, 200)
   const r = rig()
   const row = { chatId: '55', rootId: '102', replyId: '1021', mode: 'reply', text: 'x', title: 'T' }
   assert.equal(await r.manager.reconcile(async () => [row]), 0)

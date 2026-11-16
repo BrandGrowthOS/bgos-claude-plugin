@@ -40,12 +40,12 @@ function reconcileStartup() {
     threadsDeclared: () => answer?.ok === true,
     threadsCliGate: { ready: () => probe },
     ASSISTANT_ID: 7,
-    threadsPendingPath: (ids: string[]) => `integrations/threads/pending?assistantIds=${ids.join(',')}`,
+    threadsPendingPath: (ids: string[], roots: string[] = []) => `integrations/threads/pending?assistantIds=${ids.join(',')}${roots.length ? `&roots=${roots.join(',')}` : ''}`,
     bgosGet: async (path: string, options: unknown) => ({ path, options }),
     threadLanes: {
-      reconcile: async (fetch: () => Promise<{ path: string; options: unknown }>, options: { assistantIds: string[] }) => {
+      reconcile: async (fetch: (roots: string[]) => Promise<{ path: string; options: unknown }>, options: { assistantIds: string[] }) => {
         order.push('pending')
-        requests.push({ ...await fetch(), assistantIds: options.assistantIds })
+        requests.push({ ...await fetch([]), assistantIds: options.assistantIds })
         return 1
       },
       sweepLeftovers: async () => {
@@ -184,7 +184,8 @@ test('pending threads are reconciled with the served agent ids and the server re
   const fn = block('function reconcilePendingThreads(why: string): void {', '\n}\n')
   assert.match(fn, /if \(!channelArmed\) return/)
   assert.match(fn, /const assistantIds = \[String\(ASSISTANT_ID\)\]/)
-  assert.match(fn, /\.reconcile\(\(\) => bgosGet\(threadsPendingPath\(assistantIds\), \{ headers: \{ 'Cache-Control': 'no-cache' \} \}\), \{ assistantIds \}\)/)
+  // 0.91.0: the threads this daemon still holds go along (`roots`), so one closed while it was away is cleaned up.
+  assert.match(fn, /\.reconcile\(\(roots\) => bgosGet\(threadsPendingPath\(assistantIds, roots\), \{ headers: \{ 'Cache-Control': 'no-cache' \} \}\), \{ assistantIds \}\)/)
   assert.doesNotMatch(server, /bgosGet\('integrations\/threads\/pending'\)/, 'never the call with no agent ids')
   const connect = block("realtimeSocket.on('connect', () => {", '\n  })\n')
   assert.match(connect, /reconcilePendingThreads\('ws connect'\)/)
