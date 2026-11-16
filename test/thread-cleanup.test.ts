@@ -444,6 +444,23 @@ test('the reconnect never closes a thread with a turn running', POSIX, async () 
   await r.manager.idle()
 })
 
+test('a closed thread whose process is still alive and idle (the daemon only lost its connection) is stopped and cleaned up', POSIX, async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const child = r.spawned.at(-1)!.child
+  child.init(FORK_A)
+  r.sessionFiles(wt('101'), FORK_A)
+  child.result('Done.')
+  await r.manager.idle()
+  // The process idles for 20 minutes after its turn: it is still alive here.
+  await r.manager.reconcile(pendingAnswer([{ rootId: '101', removeWorktree: false }]).fetch, { assistantIds: ['7'] })
+  assert.deepEqual(child.killed, ['SIGTERM'], 'the idle process is stopped, as a live close stops it')
+  child.exit(null)
+  await r.manager.idle()
+  assert.deepEqual(leftovers(r, '101', FORK_A), [])
+})
+
 test('the reconnect never acts on a root it did not ask about: a kept working copy stays even if the answer names it', POSIX, async () => {
   const r = rig()
   r.dirs.add(wt('105'))

@@ -821,7 +821,8 @@ export class ThreadLaneManager {
       const rootId = str((item as Record<string, unknown>).rootId)
       if (!ROOT_ID_RE.test(rootId) || !askedSet.has(rootId)) continue
       const lane = this.lanes.get(rootId)
-      if (lane && (lane.current || lane.queue.length > 0 || lane.starting || lane.child)) continue
+      // A turn running, starting or queued is held back; a process that only idles after its turn is stopped by the close.
+      if (lane && (lane.current || lane.queue.length > 0 || lane.starting)) continue
       if (this.exiting.has(rootId)) continue
       const removeWorktree = (item as Record<string, unknown>).removeWorktree === true
       this.deps.log(`threads: thread ${rootId} was ${removeWorktree ? 'deleted' : 'closed'} while this daemon was away, its files are removed now`)

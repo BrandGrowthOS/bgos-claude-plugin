@@ -127,6 +127,33 @@ test(`a thread on a real Claude Code agent (${CLAUDE_VERSION || 'no claude'}) ge
   }
 })
 
+test('0.91.0: a thread closed while the daemon was away is cleaned up on its reconnect, through the real daemon', OPTS, async () => {
+  const h = await startDaemonHarness({ claude: CLAUDE })
+  try {
+    h.threadTurn({ rpcId: 'rpc-live-away', chatId: '7', rootId: 'R7', replyId: 'p7', text: 'THREAD-QUESTION are you there?' })
+    await waitFor(() => replies(h).some((r) => r.rootId === 'R7') || h.exited !== null, 120_000)
+    assert.match(String(replies(h).find((r) => r.rootId === 'R7')?.text), /^THREAD-ANSWER-\d+$/, `the thread answered${h.tail()}`)
+    const state = JSON.parse(readFileSync(join(h.stateDir, 'R7.json'), 'utf8'))
+    const forkId = state.forkSessionId as string
+    assert.match(forkId, /^[0-9a-f-]{36}$/)
+    // The owner closes R7 while the daemon cannot hear: no thread_close frame is sent. The server now says it is gone.
+    h.gone.push({ rootId: 'R7', removeWorktree: false })
+    const asked = h.pendingRoots.length
+    h.reconnect()
+    await waitFor(() => !existsSync(join(h.stateDir, 'R7.json')) || h.exited !== null, 60_000)
+    assert.ok(h.pendingRoots.slice(asked).some((roots) => roots.includes('R7')), `the reconnect named the thread it still held: ${JSON.stringify(h.pendingRoots)}${h.tail()}`)
+    assert.equal(existsSync(join(h.stateDir, 'R7.json')), false, `its lane state is gone${h.tail()}`)
+    await waitFor(() => h.stderr.some((l) => /threads: thread R7 closed, /.test(l)), 15_000)
+    assert.ok(h.stderr.some((l) => /threads: thread R7 was closed while this daemon was away/.test(l)), h.tail())
+    assert.match(h.stderr.find((l) => /threads: thread R7 closed, /.test(l)) ?? '', /freed [1-9]\d* bytes/, h.tail())
+    const leftOfFork = spawnSync('find', [h.home, '-name', `${forkId}*`], { encoding: 'utf8' }).stdout.trim()
+    assert.equal(leftOfFork, '', 'no file or folder named by the fork\'s session id is left under the home folder')
+    assert.equal(h.exited, null, `the daemon went away${h.tail()}`)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a thread answer the server refuses is tried once, is saved, and the owner is told in the thread', OPTS, async () => {
   const h = await startDaemonHarness({ claude: CLAUDE, refuseThreadReply: (body) => /^THREAD-ANSWER/.test(String(body?.text)) })
   try {
