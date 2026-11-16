@@ -77,7 +77,16 @@ export type TeachWindows = ReturnType<typeof createTeachWindows>
 
 type WriteFs = Pick<typeof import('node:fs'), 'lstatSync' | 'realpathSync'>
 
-export function skillFolderOfWrite(filePath: unknown, agentDir: string | null, fs: WriteFs = { lstatSync, realpathSync }): string | null {
+const DRIVE = /^[A-Za-z]:/
+
+/** Equal real paths. On Windows a drive letter may differ in case alone; any other difference is no match. */
+function samePath(a: string, b: string, platform: NodeJS.Platform): boolean {
+  if (a === b) return true
+  return platform === 'win32' && DRIVE.test(a) && DRIVE.test(b) &&
+    a[0]!.toLowerCase() === b[0]!.toLowerCase() && a.slice(1) === b.slice(1)
+}
+
+export function skillFolderOfWrite(filePath: unknown, agentDir: string | null, fs: WriteFs = { lstatSync, realpathSync }, platform: NodeJS.Platform = process.platform): string | null {
   try {
     if (typeof filePath !== 'string' || !agentDir || basename(filePath) !== 'SKILL.md') return null
     const folderPath = dirname(resolve(filePath))
@@ -86,7 +95,7 @@ export function skillFolderOfWrite(filePath: unknown, agentDir: string | null, f
     const stat = fs.lstatSync(folderPath)
     if (!stat.isDirectory() || stat.isSymbolicLink()) return null
     const expected = join(fs.realpathSync(agentDir), '.claude', 'skills', folder)
-    return fs.realpathSync(folderPath) === expected ? folder : null
+    return samePath(fs.realpathSync(folderPath), expected, platform) ? folder : null
   } catch { failed(); return null }
 }
 

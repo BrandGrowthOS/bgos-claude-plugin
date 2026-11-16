@@ -359,3 +359,30 @@ for (const [name, id] of Object.entries({ 'both empty': '', 'both blank': '  ' }
     assert.equal(windows.take('chat', 'assistant', 101), null)
   })
 }
+
+const skill = (agent: string) => join(agent, '.claude', 'skills', 'foo')
+
+function driveFs(agentReal: string, folderReal: string) {
+  return {
+    lstatSync: () => ({ isDirectory: () => true, isSymbolicLink: () => false }),
+    realpathSync: (path: string) => path === 'agent-dir' ? agentReal : folderReal,
+  } as unknown as Parameters<typeof import('../lib/skill-origins.ts').skillFolderOfWrite>[2]
+}
+
+test('on Windows the skill folder compare ignores only the drive letter case', () => {
+  const { skillFolderOfWrite } = api()
+  const write = 'x/foo/SKILL.md'
+  assert.equal(skillFolderOfWrite(write, 'agent-dir', driveFs('c:/agent', skill('C:/agent')), 'win32'), 'foo')
+  assert.equal(skillFolderOfWrite(write, 'agent-dir', driveFs('E:/agent', skill('e:/agent')), 'win32'), 'foo')
+  assert.equal(skillFolderOfWrite(write, 'agent-dir', driveFs('c:/agent', skill('c:/agent')), 'win32'), 'foo', 'control: same case')
+})
+
+test('the skill folder compare fails closed on any other difference', () => {
+  const { skillFolderOfWrite } = api()
+  const write = 'x/foo/SKILL.md'
+  assert.equal(skillFolderOfWrite(write, 'agent-dir', driveFs('c:/agent', skill('C:/agent')), 'linux'), null, 'not Windows')
+  assert.equal(skillFolderOfWrite(write, 'agent-dir', driveFs('c:/agent', skill('C:/Agent')), 'win32'), null, 'case beyond the drive letter')
+  assert.equal(skillFolderOfWrite(write, 'agent-dir', driveFs('c:/agent', skill('D:/agent')), 'win32'), null, 'another drive')
+  assert.equal(skillFolderOfWrite(write, 'agent-dir', driveFs('//server/agent', skill('//Server/agent')), 'win32'), null, 'no drive letter')
+  assert.equal(skillFolderOfWrite(write, 'agent-dir', driveFs('k:/agent', '\u212a' + skill('k:/agent').slice(1)), 'win32'), null, 'a sign that lowercases to a drive letter')
+})
