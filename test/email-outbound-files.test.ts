@@ -19,7 +19,8 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { closeSync, constants as fsConstants, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { lstat as lstatPromise } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -4897,4 +4898,77 @@ test('hardening 2: a file with more than one name (a hard link) is refused, by i
   }
   assert.equal(await refusal(named, { home, fs }), hardLinkSentence(named))
   assert.ok(made, 'the second name was made after the lstat')
+})
+
+test('hardening 3: a FIFO swapped in for the file cannot freeze the read: the open never blocks (O_NONBLOCK; Windows opens read only, as before)', async (t) => {
+  // Windows has no FIFO to swap in (a named pipe is a \\.\pipe\ path, refused before any file system call).
+  if (process.platform !== 'win32') {
+    const home = scratchHome(t)
+    const path = join(home, 'docs', 'q3.pdf')
+    writeFileSync(path, PDF)
+    // lstat sees the regular file; then, before the open, the file is swapped for a FIFO no one writes to.
+    let swapped = false
+    const fs = {
+      lstat: async (p: string, options?: { bigint: true }) => {
+        const st = await lstatPromise(p, options)
+        if (!swapped) {
+          swapped = true
+          rmSync(p)
+          execFileSync('mkfifo', [p])
+        }
+        return st
+      },
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const blocked = new Promise<'blocked'>((done) => {
+      timer = setTimeout(() => done('blocked'), 3000)
+    })
+    const outcome = await Promise.race([readOne(path, { home, fs }), blocked])
+    clearTimeout(timer)
+    if (outcome === 'blocked') {
+      // A writer arriving frees the open that hangs, so the run goes on; then the test fails.
+      try {
+        closeSync(openSync(path, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK))
+      } catch {
+        // nothing waits on it
+      }
+      assert.fail('the open of a FIFO blocked for 3 s')
+    }
+    assert.ok(swapped)
+    assert.equal(outcome.error, changedSentence(path))
+  }
+  // The flags of the one open: a number on every platform (undefined never reaches them), O_NONBLOCK where the platform
+  // has it, and on Windows read only, exactly the old 'r'.
+  const flagsOf = async (): Promise<unknown> => {
+    let seen: unknown = 'not opened'
+    const mem = memFs(PDF)
+    const fs = { ...mem, open: async (_path: string, flags: unknown) => ((seen = flags), mem.open()) }
+    const read = await readOne(`${MEM_HOME}\\Documents\\q3.pdf`, { home: MEM_HOME, fs })
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+    return seen
+  }
+  for (const platform of ['linux', 'darwin', process.platform]) {
+    const flags = platform === process.platform ? await flagsOf() : await asPlatform(platform, flagsOf)
+    assert.equal(typeof flags, 'number', `${platform}: ${String(flags)}`)
+    assert.equal((flags as number) & 3, fsConstants.O_RDONLY, `${platform}: read only`)
+    if (platform !== 'win32' && typeof fsConstants.O_NONBLOCK === 'number') assert.equal((flags as number) & fsConstants.O_NONBLOCK, fsConstants.O_NONBLOCK, `${platform}: O_NONBLOCK`)
+  }
+  assert.equal(await asPlatform('win32', flagsOf), fsConstants.O_RDONLY, 'win32: read only and nothing else, as before')
+  // The open handle must be a regular file before a byte is read: one that is not (a FIFO, with the very file number the
+  // lstat saw) is refused and never read.
+  const reads: number[] = []
+  const notRegular = {
+    ...memFs(PDF),
+    open: async () => ({
+      stat: async () => ({ isFile: () => false, size: PDF.length, dev: 1, ino: 7 }),
+      read: async () => {
+        reads.push(1)
+        return { bytesRead: 0 }
+      },
+      close: async () => {},
+    }),
+  }
+  const odd = `${MEM_HOME}\\Documents\\q3.pdf`
+  assert.equal((await readOne(odd, { home: MEM_HOME, fs: notRegular })).error, changedSentence(odd))
+  assert.deepEqual(reads, [], 'nothing read')
 })

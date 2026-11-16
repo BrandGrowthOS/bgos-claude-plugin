@@ -23,7 +23,8 @@
 //   4. a regular file with one name only (hardening 2: a hard link passes
 //      every path rule above, so more than one name is refused, on the stat
 //      and on the handle), read through one open handle checked against the
-//      stat, at most 25 MB each and 25 MB in all, at most 10, and its bytes
+//      stat (hardening 3: opened without blocking where the platform can, so
+//      a FIFO swapped in cannot hang it), at most 25 MB each and 25 MB in all, at most 10, and its bytes
 //      the type its name says, on the same safe list as an inbound file
 //      (lib/email-files.ts isType); a text file whose header has a password
 //      column is a renamed password export, and one that holds a private key
@@ -61,7 +62,7 @@
 //
 // No em or en dashes in this file.
 
-import { realpath as realpathCallback, realpathSync } from 'node:fs'
+import { constants as fsConstants, realpath as realpathCallback, realpathSync } from 'node:fs'
 import { lstat as lstatPromise, open as openPromise, realpath as realpathPromise } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute } from 'node:path'
@@ -315,7 +316,8 @@ export interface OutboundHandle {
 export interface OutboundFs {
   realpath(path: string): Promise<string>
   lstat(path: string, options: typeof FILE_NUMBERS_AS_BIGINT): Promise<OutboundStat>
-  open(path: string, flags: 'r'): Promise<OutboundHandle>
+  /** Opens with outboundOpenFlags(): read only, and never blocking where the platform can say so. */
+  open(path: string, flags: number): Promise<OutboundHandle>
 }
 
 export interface OutboundFileCtx {
@@ -388,6 +390,17 @@ export const OUTBOUND_REAL_FS_FOR_TESTS = REAL_FS
 
 function fsOf(ctx: OutboundFileCtx): OutboundFs {
   return { ...REAL_FS, ...(ctx.fs ?? {}) } as OutboundFs
+}
+
+/**
+ * Hardening 3: the flags of the one open. O_NONBLOCK, where the platform has it, so a FIFO swapped in for the file after
+ * the lstat cannot hold the open (and the read) forever: it opens at once and the handle check refuses it as no regular
+ * file. Windows has no O_NONBLOCK (fs.constants leaves it undefined there) and no FIFO to swap in, so it opens read only,
+ * exactly as the 'r' flag did; undefined never reaches the flags.
+ */
+function outboundOpenFlags(): number {
+  const nonBlock = fsConstants.O_NONBLOCK
+  return fsConstants.O_RDONLY | (process.platform !== 'win32' && typeof nonBlock === 'number' ? nonBlock : 0)
 }
 
 /** Hardening 2: a file with more than one name (a hard link); a stat that gives no count (a test's) counts as one name. */
@@ -1131,12 +1144,14 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
   let bytes: Uint8Array
   let handle: OutboundHandle
   try {
-    handle = await fs.open(real, 'r')
+    // Hardening 3: never blocking where the platform can say so, so a FIFO swapped in after the lstat cannot hang it.
+    handle = await fs.open(real, outboundOpenFlags())
   } catch {
     return { ok: false, error: notFound }
   }
   try {
-    // The handle must be the file just checked: a swap between the stat and the open is refused.
+    // The handle must be the file just checked: a swap between the stat and the open is refused, and so is anything
+    // but a regular file (a FIFO), before a byte is read.
     const opened = readStat(await handle.stat(FILE_NUMBERS_AS_BIGINT))
     const changed = `${shown(path)} changed while HOAI read it, so it is not attached.`
     // Compared by device and file number where the system gives both (a zero is none), else by size and times (sameFileAs).
