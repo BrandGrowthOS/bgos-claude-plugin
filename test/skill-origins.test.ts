@@ -243,7 +243,9 @@ test('origin filesystem errors never escape', () => {
   assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file, fs).skills[0]?.origin, undefined)
 })
 
-function writeOf(w: ReturnType<typeof world>, windows: unknown, writtenAt: number, extra: Record<string, unknown> = {}) {
+type Take = { take: (chatId: string, assistantId: string, now: number) => { by: string } | null }
+
+function writeOf(w: ReturnType<typeof world>, windows: Take, writtenAt: number, extra: Record<string, unknown> = {}) {
   return api().stampTaughtWrite({ filePath: join(w.folder, 'SKILL.md'), agentDir: w.agent, file: w.file, windows, chatId: 'chat', assistantId: 'assistant', writtenAt, ...extra })
 }
 
