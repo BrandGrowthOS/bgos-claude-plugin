@@ -27,17 +27,71 @@ function row(path: string, scope: SkillScope = 'agent'): SkillItem {
   return { name: 'display-name', description: '', path, scope, provenance: 'local', removable: true, shareable: true }
 }
 
-const tap = { chatId: 'chat', tapperUserId: 'owner', ownerUserId: 'owner', callbackData: 'teach_approve', posted: true, now: 100 }
+const tap = { chatId: 'chat', assistantId: 'assistant', tapperUserId: 'owner', ownerUserId: 'owner', callbackData: 'teach_approve', customText: undefined as unknown, humanPrincipal: true as unknown, posted: true, now: 100 }
 
 for (const callbackData of ['teach_approve', 'u:teach_approve']) {
   test(`teach window accepts owner posted ${callbackData}, once in the same chat`, () => {
     const windows = api().createTeachWindows()
     windows.noteTap({ ...tap, callbackData })
-    assert.equal(windows.take('other-chat', 101), null)
-    assert.deepEqual(windows.take('chat', 101), { by: 'owner' })
-    assert.equal(windows.take('chat', 102), null)
+    assert.equal(windows.take('other-chat', 'assistant', 101), null)
+    assert.deepEqual(windows.take('chat', 'assistant', 101), { by: 'owner' })
+    assert.equal(windows.take('chat', 'assistant', 102), null)
   })
 }
+
+test('teach window is keyed by chat plus assistant', () => {
+  const windows = api().createTeachWindows()
+  windows.noteTap(tap)
+  assert.equal(windows.take('chat', 'other-assistant', 101), null)
+  assert.equal(windows.take('chat', '', 101), null)
+  assert.deepEqual(windows.take('chat', 'assistant', 101), { by: 'owner' })
+  windows.noteTap({ ...tap, assistantId: '' })
+  assert.equal(windows.take('chat', '', 101), null)
+})
+
+test('a pairing or API key click with the owner id and no humanPrincipal stays unmarked', () => {
+  const windows = api().createTeachWindows()
+  const { humanPrincipal: _dropped, ...credentialClick } = tap
+  windows.noteTap(credentialClick)
+  assert.equal(windows.take('chat', 'assistant', 101), null)
+})
+
+for (const humanPrincipal of [false, 1, 'true', 'True', null, {}, [true]]) {
+  test(`teach window refuses humanPrincipal ${JSON.stringify(humanPrincipal)}`, () => {
+    const windows = api().createTeachWindows()
+    windows.noteTap({ ...tap, humanPrincipal })
+    assert.equal(windows.take('chat', 'assistant', 101), null)
+  })
+}
+
+for (const [name, change] of Object.entries({
+  'typed words with the approve value': { customText: 'yes, teach it' },
+  'typed words that are not a string': { customText: 0 },
+  'a Custom reply': { callbackData: '__custom__', customText: 'teach_approve' },
+})) {
+  test(`teach window refuses ${name}`, () => {
+    const windows = api().createTeachWindows()
+    windows.noteTap({ ...tap, ...change })
+    assert.equal(windows.take('chat', 'assistant', 101), null)
+  })
+}
+
+test('teach window opens with empty typed words, as ownerTapOpens reads them', () => {
+  for (const customText of [undefined, null, '']) {
+    const windows = api().createTeachWindows()
+    windows.noteTap({ ...tap, customText })
+    assert.deepEqual(windows.take('chat', 'assistant', 101), { by: 'owner' }, JSON.stringify(customText))
+  }
+})
+
+test('the click reader returns the raw humanPrincipal field and nothing else', () => {
+  const { clickHumanPrincipal } = api()
+  assert.equal(clickHumanPrincipal({ humanPrincipal: true }), true)
+  assert.equal(clickHumanPrincipal({ humanPrincipal: 'true' }), 'true')
+  assert.equal(clickHumanPrincipal({ human_principal: true }), undefined)
+  assert.equal(clickHumanPrincipal({ HumanPrincipal: true }), undefined)
+  for (const payload of [null, undefined, 'humanPrincipal', true]) assert.equal(clickHumanPrincipal(payload), undefined)
+})
 
 for (const [name, change] of Object.entries({
   'generic approve': { callbackData: 'approve' },
@@ -50,7 +104,7 @@ for (const [name, change] of Object.entries({
   test(`teach window refuses ${name}`, () => {
     const windows = api().createTeachWindows()
     windows.noteTap({ ...tap, ...change })
-    assert.equal(windows.take('chat', 101), null)
+    assert.equal(windows.take('chat', 'assistant', 101), null)
   })
 }
 
@@ -60,10 +114,10 @@ test('teach window expires after fifteen minutes', () => {
   assert.equal(TEACH_WINDOW_MS, 15 * 60_000)
   const windows = createTeachWindows()
   windows.noteTap(tap)
-  assert.deepEqual(windows.take('chat', 100 + TEACH_WINDOW_MS), { by: 'owner' })
+  assert.deepEqual(windows.take('chat', 'assistant', 100 + TEACH_WINDOW_MS), { by: 'owner' })
   windows.noteTap(tap)
-  assert.equal(windows.take('chat', 101 + TEACH_WINDOW_MS), null)
-  assert.equal(windows.take('chat', 101), null)
+  assert.equal(windows.take('chat', 'assistant', 101 + TEACH_WINDOW_MS), null)
+  assert.equal(windows.take('chat', 'assistant', 101), null)
 })
 
 test('skill write accepts only the immediate agent skill folder', () => {

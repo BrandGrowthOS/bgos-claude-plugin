@@ -15,11 +15,27 @@ function failed(): void {
 
 type TeachTap = {
   chatId: string
+  assistantId: unknown
   tapperUserId: unknown
   ownerUserId: unknown
   callbackData: unknown
+  customText?: unknown
+  /** The click's own humanPrincipal, raw: only exactly true says a person tapped. */
+  humanPrincipal?: unknown
   posted: unknown
   now: number
+}
+
+/** The humanPrincipal field of a click's answer payload, raw (camelCase only), for noteTap to judge. */
+export function clickHumanPrincipal(answerPayload: unknown): unknown {
+  try {
+    return answerPayload !== null && typeof answerPayload === 'object' ? (answerPayload as Record<string, unknown>).humanPrincipal : undefined
+  } catch { failed(); return undefined }
+}
+
+function windowKey(chatId: unknown, assistantId: unknown): string | null {
+  if (typeof chatId !== 'string' || !chatId || typeof assistantId !== 'string' || !assistantId) return null
+  return JSON.stringify([assistantId, chatId])
 }
 
 export function createTeachWindows() {
@@ -27,28 +43,35 @@ export function createTeachWindows() {
   return {
     noteTap(t: TeachTap): void {
       try {
-        if (!t.chatId || !Number.isFinite(t.now) || !t.posted ||
+        const key = windowKey(t.chatId, t.assistantId)
+        // An owner id alone proves no person tapped: pairing and API key callers are stamped as the owner too.
+        if (key === null || !Number.isFinite(t.now) || !t.posted || t.humanPrincipal !== true ||
+          (t.customText != null && String(t.customText) !== '') ||
           typeof t.ownerUserId !== 'string' || !t.ownerUserId.trim() ||
           typeof t.tapperUserId !== 'string' || !t.tapperUserId.trim() ||
           t.tapperUserId !== t.ownerUserId ||
           typeof t.callbackData !== 'string' ||
           unescapeAgentButtonValue(t.callbackData) !== TEACH_APPROVE) return
-        for (const [chat, window] of windows) {
-          if (t.now - window.at > TEACH_WINDOW_MS) windows.delete(chat)
+        for (const [open, window] of windows) {
+          if (t.now - window.at > TEACH_WINDOW_MS) windows.delete(open)
         }
-        windows.set(t.chatId, { by: t.tapperUserId, at: t.now })
+        windows.set(key, { by: t.tapperUserId, at: t.now })
       } catch { failed() }
     },
-    take(chatId: string, now: number): { by: string } | null {
+    take(chatId: string, assistantId: string, now: number): { by: string } | null {
       try {
-        const window = windows.get(chatId)
-        windows.delete(chatId)
+        const key = windowKey(chatId, assistantId)
+        if (key === null) return null
+        const window = windows.get(key)
+        windows.delete(key)
         if (!window || !Number.isFinite(now) || now < window.at || now - window.at > TEACH_WINDOW_MS) return null
         return { by: window.by }
       } catch { failed(); return null }
     },
   }
 }
+
+export type TeachWindows = ReturnType<typeof createTeachWindows>
 
 type WriteFs = Pick<typeof import('node:fs'), 'lstatSync' | 'realpathSync'>
 

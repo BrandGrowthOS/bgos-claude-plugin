@@ -39,6 +39,7 @@ test('a skill write with unknown identity consumes the teach window before anoth
     parseHookEvent: () => ({ name: 'PostToolUse' }),
     skillFolderOfWrite: () => 'foo',
     SKILLS_AGENT_DIR: 'agent',
+    ASSISTANT_ID: 'assistant',
     SKILL_ORIGINS_FILE: 'origins.json',
     pathJoin: join,
     identOf: () => ident,
@@ -74,9 +75,29 @@ test('all six tap delivery sites note the teach window through one wrapper', () 
   assert.equal((server.match(/\bprivateTapCardNoting\(\{/g) ?? []).length, 6)
   const wrapper = server.slice(server.indexOf('function privateTapCardNoting('), server.indexOf('function privateTapCardNoting(') + 850)
   assert.match(wrapper, /try\s*\{\s*teachWindows.noteTap\(/)
-  for (const field of ['chatId', 'tapperUserId', 'ownerUserId', 'callbackData', 'posted']) assert.ok(wrapper.includes(`${field}: input.${field}`), field)
+  for (const field of ['chatId', 'tapperUserId', 'ownerUserId', 'callbackData', 'customText', 'humanPrincipal', 'posted']) assert.ok(wrapper.includes(`${field}: input.${field}`), field)
+  assert.match(wrapper, /assistantId: ASSISTANT_ID/)
   assert.match(wrapper, /now: Date.now\(\)/)
   assert.match(wrapper, /return privateTapCard\(input\)/)
+  assert.match(server, /function privateTapCardNoting\(input: Parameters<typeof privateTapCard>\[0\] & \{ humanPrincipal: unknown \}\)/)
+})
+
+test('each tap site hands the click\'s own humanPrincipal to the teach window', () => {
+  const calls = [...server.matchAll(/privateTapCardNoting\(\{[^\n]*\}\)/g)].map((m) => m[0])
+  assert.equal(calls.length, 6)
+  const lanes = calls.map((call) => /lane: '(\w+)'/.exec(call)?.[1])
+  assert.deepEqual(lanes, ['boot', 'poll', 'poll', 'ask', 'ask', 'stream'])
+  for (const call of calls.filter((c) => /lane: '(boot|poll)'/.test(c))) {
+    assert.ok(call.includes('tapperUserId: readTapperUserId(payload)'), call)
+    assert.ok(call.includes('humanPrincipal: clickHumanPrincipal(payload)'), call)
+  }
+  const stream = calls[5]!
+  assert.ok(stream.includes('tapperUserId: answer.tapperUserId'))
+  assert.ok(stream.includes('humanPrincipal: clickHumanPrincipal(view.raw.answerPayload ?? view.raw.answer_payload)'))
+  for (const call of calls.filter((c) => c.includes("lane: 'ask'"))) {
+    assert.ok(call.includes('tapperUserId: null'), call)
+    assert.ok(call.includes('humanPrincipal: false'), call)
+  }
 })
 
 test('only a PostToolUse Write takes the current chat window for an unstamped skill', () => {
@@ -85,7 +106,7 @@ test('only a PostToolUse Write takes the current chat window for an unstamped sk
   assert.match(hook, /skillFolderOfWrite\([^\n]*file_path[^\n]*SKILLS_AGENT_DIR\)/)
   assert.match(hook, /readOrigins\(SKILL_ORIGINS_FILE\)/)
   assert.match(hook, /stamp\?\.ident !== ident/)
-  assert.match(hook, /teachWindows.take\(String\(turnChat.current\(Date.now\(\)\)\?\.chatId \?\? ''\), Date.now\(\)\)/)
+  assert.match(hook, /teachWindows.take\(String\(turnChat.current\(Date.now\(\)\)\?\.chatId \?\? ''\), ASSISTANT_ID, Date.now\(\)\)/)
   assert.match(hook, /stampOrigin\(SKILL_ORIGINS_FILE, folder, \{ origin: 'taught', ident \}\)/)
 })
 

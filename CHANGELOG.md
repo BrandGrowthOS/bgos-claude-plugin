@@ -4,7 +4,7 @@ Notable changes to the HOAI Claude Code plugin.
 
 ## Unreleased
 
-Skill lists now include a source when known: taught after an approved teach write, shared after a bundle install, installed for plugin and managed skills, repo for repository skills, and synced for synced skills. Unknown sources stay unmarked. Local stamps live outside skill folders and stop applying when a folder is replaced.
+Skill lists now include a source when known: taught after an approved teach write, where the Approve tap's click says a person tapped (`humanPrincipal` exactly true; an owner id alone, typed words, or any other value mark nothing), shared after a bundle install, installed for plugin and managed skills, repo for repository skills, and synced for synced skills. Unknown sources stay unmarked. Local stamps live outside skill folders and stop applying when a folder is replaced.
 
 Show agent windows per agent. The watcher reads `agentWindows` (`{ "<id>": true | false }`) from the keep-alive answer, beside `showAgentWindows`, keeps it in its cache and hands it to the windows pass. With the map, an agent's window opens only when its own value is true, and an agent the server does not list yet stays off until it is listed. Setting one agent off closes its window now and forgets its 5 minute reopen wait, so setting it on again opens its window now; an agent that restarts in a loop still waits. Without the map (an older server) every agent follows `showAgentWindows` exactly as before, and the cache file is byte for byte the same. Nothing starts, stops or restarts an agent.
 

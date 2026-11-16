@@ -155,7 +155,7 @@ test('control: replay lines name a tap as a button tap', () => {
 test('server.ts: every tap site announces through privateTapCard with its own lane; only the stream passes the backend\'s answeredAt and its receipt time', () => {
   const source = readFileSync('server.ts', 'utf8')
   assert.equal(typeof (privateTurn as any).privateTapCard, 'function', 'lib/private-turn.mjs exports privateTapCard')
-  const sites = [...source.matchAll(/content: privateTapCardNoting\(\{ tracker: privateTurns, lane: '(boot|poll|stream)', ownerUserId: USER_ID, chatId: String\(chatId\), messageId: [^,]+, tapperUserId: [^,]+, answeredAt: ([^,]+), receivedAt: ([^,]+), callbackData: ([^,]+), customText: ([^,]+), posted: ([^,]+), content: contentLines\.join\('\\n'\) \}\),\n/g)]
+  const sites = [...source.matchAll(/content: privateTapCardNoting\(\{ tracker: privateTurns, lane: '(boot|poll|stream)', ownerUserId: USER_ID, chatId: String\(chatId\), messageId: [^,]+, tapperUserId: [^,]+, humanPrincipal: [^,]+, answeredAt: ([^,]+), receivedAt: ([^,]+), callbackData: ([^,]+), customText: ([^,]+), posted: ([^,]+), content: contentLines\.join\('\\n'\) \}\),\n/g)]
   assert.deepEqual(sites.map((m) => m[1]), ['boot', 'poll', 'poll', 'stream'], 'the boot sweep, posted-card recovery, the poll and the stream, in that order')
   const stream = sites.find((m) => m[1] === 'stream')!
   assert.equal(stream[2], 'update.payload.answeredAt ?? update.payload.answered_at', 'the stream passes the backend\'s answeredAt')
