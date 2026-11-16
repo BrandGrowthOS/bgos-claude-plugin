@@ -11122,8 +11122,8 @@ const turnChat = createTurnChatTracker()
 const teachWindows = createTeachWindows()
 logOriginsTo(log)
 
-// A teach window opens only on a person's own tap: each site reads its click row with isHumanClick (an ask answer has
-// none, so null), and noteTap opens nothing unless that says true (lib/skill-origins.ts).
+// A teach window opens only on the owner's own tap as a person: each site reads its click row with isHumanClick (an
+// ask answer has none, so null), and noteTap also needs the owner's id (lib/skill-origins.ts).
 function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { humanPrincipal: unknown }) {
   try {
     teachWindows.noteTap({

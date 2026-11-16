@@ -86,39 +86,37 @@ test('teach window opens with empty typed words, as ownerTapOpens reads them', (
 
 const WRONG = [false, 1, 'true', 'True', null, {}, [true], 0]
 
-test('a click is human only when its row or its answer payload says exactly true', () => {
+test('a click is human only when its row or live click event says exactly true at the top level', () => {
   const { isHumanClick } = api()
-  assert.equal(isHumanClick({ humanPrincipal: true }), true, 'a top-level row field')
-  assert.equal(isHumanClick({ answerPayload: { humanPrincipal: true } }), true, 'the click event')
-  assert.equal(isHumanClick({ answer_payload: { humanPrincipal: true } }), true, 'the click event, snake case container')
-  assert.equal(isHumanClick({ humanPrincipal: false, answerPayload: { humanPrincipal: true } }), true, 'true in either place')
-  assert.equal(isHumanClick({ humanPrincipal: true, answerPayload: { humanPrincipal: 'true' } }), true, 'true in either place')
+  assert.equal(isHumanClick({ humanPrincipal: true }), true, 'a top-level row field, or a live click event')
+  assert.equal(isHumanClick({ humanPrincipal: true, answerPayload: { callbackData: 'teach_approve' } }), true, 'beside the answer payload')
+  assert.equal(isHumanClick({ humanPrincipal: true, answerPayload: { humanPrincipal: false } }), true, 'the top level decides')
   for (const value of WRONG) {
     assert.equal(isHumanClick({ humanPrincipal: value }), false, `row ${JSON.stringify(value)}`)
-    assert.equal(isHumanClick({ answerPayload: { humanPrincipal: value } }), false, `event ${JSON.stringify(value)}`)
-    assert.equal(isHumanClick({ humanPrincipal: value, answerPayload: { humanPrincipal: value } }), false, `both ${JSON.stringify(value)}`)
+    assert.equal(isHumanClick({ humanPrincipal: value, answerPayload: { humanPrincipal: true } }), false, `row ${JSON.stringify(value)}, payload true`)
   }
   assert.equal(isHumanClick({}), false, 'absent')
-  assert.equal(isHumanClick({ answerPayload: {} }), false, 'absent from the event')
-  assert.equal(isHumanClick({ human_principal: true, answerPayload: { human_principal: true, HumanPrincipal: true } }), false, 'camelCase only')
-  assert.equal(isHumanClick({ answerPayload: true, humanprincipal: true }), false)
+  assert.equal(isHumanClick({ answerPayload: { humanPrincipal: true } }), false, 'never read inside the answer payload')
+  assert.equal(isHumanClick({ answer_payload: { humanPrincipal: true } }), false, 'nor the snake case payload')
+  assert.equal(isHumanClick({ answeredByPerson: true, answerPayload: { answeredByPerson: true } }), false, 'the card alias is not the canon field')
+  assert.equal(isHumanClick({ human_principal: true, HumanPrincipal: true, humanprincipal: true }), false, 'camelCase only')
   for (const row of [null, undefined, 'humanPrincipal', true, 1]) assert.equal(isHumanClick(row), false, JSON.stringify(row))
 })
 
 test('the human click reader never throws', () => {
   const { isHumanClick } = api()
-  const hostile = { get humanPrincipal() { throw new Error('boom') }, answerPayload: { humanPrincipal: true } }
+  const hostile = { get humanPrincipal() { throw new Error('boom') } }
   assert.doesNotThrow(() => assert.equal(isHumanClick(hostile), false))
 })
 
-test('a teach window opens when the click row says human in either place, and nothing else opens one', () => {
+test('a teach window opens when the click row says human at the top level, and nothing else opens one', () => {
   const { createTeachWindows, isHumanClick } = api()
   const rows: Array<[unknown, boolean]> = [
     [{ humanPrincipal: true }, true],
-    [{ answerPayload: { humanPrincipal: true } }, true],
+    [{ humanPrincipal: true, answerPayload: {} }, true],
+    [{ answerPayload: { humanPrincipal: true } }, false],
     [{}, false],
-    [{ answerPayload: {} }, false],
-    ...WRONG.flatMap((value): Array<[unknown, boolean]> => [[{ humanPrincipal: value }, false], [{ answerPayload: { humanPrincipal: value } }, false]]),
+    ...WRONG.map((value): [unknown, boolean] => [{ humanPrincipal: value }, false]),
   ]
   for (const [row, opens] of rows) {
     const windows = createTeachWindows()
@@ -471,4 +469,18 @@ test('a stamp never overwrites a marks file whose read fails', (t) => {
   assert.deepEqual(readdirSync(w.file), ['inside'], 'the unreadable path is left as it was')
   assert.deepEqual(readdirSync(join(w.root, 'state')), ['skill-origins.json'], 'no temp file is left')
   assert.equal(lines.length, 1)
+})
+
+test('a signed-in teammate is a person too, and still opens no teach window', () => {
+  const { createTeachWindows, isHumanClick } = api()
+  const windows = createTeachWindows()
+  windows.noteTap({ ...tap, tapperUserId: 'teammate', humanPrincipal: isHumanClick({ humanPrincipal: true }) })
+  assert.equal(windows.take('chat', 'assistant', 101), null)
+})
+
+test('a watch or notification reply says false and opens no teach window', () => {
+  const { createTeachWindows, isHumanClick } = api()
+  const windows = createTeachWindows()
+  windows.noteTap({ ...tap, humanPrincipal: isHumanClick({ humanPrincipal: false, answerPayload: { callbackData: 'teach_approve' } }) })
+  assert.equal(windows.take('chat', 'assistant', 101), null)
 })

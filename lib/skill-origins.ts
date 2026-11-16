@@ -34,17 +34,14 @@ type TeachTap = {
 }
 
 /**
- * Whether a click row says a person tapped: humanPrincipal exactly true (camelCase, boolean) on the row itself, beside
- * its answer payload, or on the click event (the answer payload). Any other value, in either place, is not. The one
- * reader every tap site uses; the server sets the field. Never throws.
+ * Whether a click says a person tapped: humanPrincipal exactly true (camelCase, boolean) at the top level of the click
+ * row (beside its answer payload, on the poll and update stream rows) or of a live click event. The server sets it;
+ * it is never read inside the answer payload, and any other value is not a person. The one reader every tap site
+ * uses. Never throws.
  */
 export function isHumanClick(row: unknown): boolean {
   try {
-    if (row === null || typeof row !== 'object') return false
-    const r = row as Record<string, unknown>
-    if (r.humanPrincipal === true) return true
-    const event = r.answerPayload ?? r.answer_payload
-    return event !== null && typeof event === 'object' && (event as Record<string, unknown>).humanPrincipal === true
+    return row !== null && typeof row === 'object' && (row as Record<string, unknown>).humanPrincipal === true
   } catch { failed(); return false }
 }
 
