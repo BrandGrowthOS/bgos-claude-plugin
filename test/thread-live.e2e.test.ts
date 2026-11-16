@@ -87,7 +87,7 @@ test(`a thread on a real Claude Code agent (${CLAUDE_VERSION || 'no claude'}) ge
     // The lane really forked the main session: the fake API saw the main turn's word in the thread's request.
     const threadRequest = h.api.requests.find((r) => JSON.stringify(r.messages ?? '').includes('THREAD-QUESTION'))
     assert.ok(threadRequest && JSON.stringify(threadRequest.messages).includes('PELICAN'), 'the thread knows the main conversation')
-    // 0.88.0: the owner's own thread is a true fork in the agent's own folder: no worktree, no copy.
+    // 0.91.0: the owner's own thread is a true fork in the agent's own folder: no worktree, no copy.
     assert.equal(existsSync(join(h.folder, '.hoai', 'threads', 'R1')), false, 'the owner\'s thread gets no worktree')
     const state = JSON.parse(readFileSync(join(h.stateDir, 'R1.json'), 'utf8'))
     assert.equal(state.access, 'full')
@@ -175,7 +175,7 @@ test('a thread that cannot open says so in its own thread, and the daemon and th
     // A file where the threads folder must go: no worktree can be made.
     mkdirSync(join(h.folder, '.hoai'), { recursive: true })
     writeFileSync(join(h.folder, '.hoai', 'threads'), 'not a folder\n')
-    // 0.88.0: a confined thread (a person's) needs that folder; the owner's own full access thread does not (below).
+    // 0.91.0: a confined thread (a person's) needs that folder; the owner's own full access thread does not (below).
     h.threadTurn({ rpcId: 'rpc-live-3', chatId: '7', rootId: 'R3', replyId: 'p3', text: 'THREAD-QUESTION hello?', person: 'user_2person' })
     await waitFor(() => replies(h).length > 0 || h.exited !== null, 60_000)
     assert.equal(h.exited, null, `the daemon went away${h.tail()}`)
@@ -217,7 +217,7 @@ test('a repository too large to copy: a recipient\'s thread runs read only in pl
     for (const tool of ['Bash', 'Edit', 'Write', 'NotebookEdit']) assert.equal(recipientTools.includes(tool), false, `${tool} is not offered to a read only thread`)
     assert.ok(recipientTools.includes('Read'))
 
-    // 0.88.0: the owner, same repository, same limit: a full fork with every tool, nothing copied, not read only.
+    // 0.91.0: the owner, same repository, same limit: a full fork with every tool, nothing copied, not read only.
     h.threadTurn({ rpcId: 'rpc-live-4o', chatId: '7', rootId: 'R4o', replyId: 'p4o', text: 'THREAD-QUESTION full access?' })
     await waitFor(() => replies(h).some((r) => r.rootId === 'R4o') || h.exited !== null, 120_000)
     assert.match(String(replies(h).find((r) => r.rootId === 'R4o')?.text), /^THREAD-ANSWER-\d+$/, `the owner's thread answered${h.tail()}`)

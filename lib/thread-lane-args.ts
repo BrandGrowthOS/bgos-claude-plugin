@@ -38,7 +38,7 @@
  * Other hook events remain enabled, including the private prompt boundary,
  * tool floor and private tool guard. Never disable all hooks in a thread.
  *
- * FULL ACCESS (0.88.0): a thread the agent's OWNER opens is a true fork with
+ * FULL ACCESS (0.91.0): a thread the agent's OWNER opens is a true fork with
  * the agent's own access (threadFullArgs), unless the owner turned the
  * setting `threads.fullAccess` off: `--resume <main> --fork-session` in the
  * agent's own folder, the main session's permission mode, and no
@@ -328,7 +328,7 @@ export function threadOpener(raw: unknown): ThreadOpener {
  * THE SPLIT. Full access only when the thread's opener is positively the
  * owner AND the owner's setting `threads.fullAccess` is on. A recipient, an
  * opener that is missing or cannot be read, and a setting that is off or
- * unreadable all run confined, exactly as before 0.88.0.
+ * unreadable all run confined, exactly as before 0.91.0.
  */
 export function threadAccess(input: { opener: unknown; fullAccess: unknown }): ThreadAccess {
   return input.opener === 'owner' && input.fullAccess === true ? 'full' : 'confined'
@@ -677,7 +677,7 @@ export function threadTurnPrompt(input: {
   // The root's own full stop is kept, never doubled.
   const root = input.rootText.trim()
   const rootSentence = /[.!?]$/.test(root) ? root : `${root}.`
-  // A start names its root exactly as before 0.88.0; only a reopened reply may have none to name.
+  // A start names its root exactly as before 0.91.0; only a reopened reply may have none to name.
   const about = input.mode === 'reply' && root === '' ? 'It is a separate conversation.' : `It is a separate conversation about this message: ${rootSentence}`
   const reopened = input.mode === 'reply'
     ? ' This thread has no working session on this computer any more (the files of a closed thread are cleaned up), so what was said in it earlier is not in your memory: if you need it, ask.'

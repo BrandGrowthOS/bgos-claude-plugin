@@ -169,7 +169,7 @@ What else was measured, to tell a result that is the turn's own from one that is
 
 So the lane skips an empty result with no model turn, and any result before the turn's first `assistant` frame. Known limit: the last two cases are the turn's own result with no `assistant` frame, so the lane skips them too and that turn ends at the 30 minute turn timeout, where up to 0.87.3 the hook's text was posted, or the generic failure, at once. A lane keeps the plugin's UserPromptSubmit hooks, and the private turn hook blocks a message when it cannot write its boundary. See `test/thread-lanes.test.ts` and the last case of `test/thread-live.e2e.test.ts`.
 
-## (j) An owner's thread as a true fork in the agent's own folder (2026-11-12, 0.88.0)
+## (j) An owner's thread as a true fork in the agent's own folder (2026-11-12, 0.91.0)
 
 Measured on CLI 2.1.322 on macOS with an isolated configuration (`CLAUDE_CONFIG_DIR`, a throwaway `HOME`), a local scripted Messages API and a made up key. No real session, account or agent state was read or written. The parent was a headless session started with `--dangerously-skip-permissions`; every fork was `-p --input-format stream-json --output-format stream-json --verbose --resume <parent> --fork-session` plus the flags named, with the thread's message on stdin.
 

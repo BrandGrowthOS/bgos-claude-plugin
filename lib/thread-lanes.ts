@@ -20,7 +20,7 @@
  *    process group, then SIGKILL after 10 s); its next turn resumes it by its
  *    own id. A turn that has neither answered nor ended after 30 minutes is
  *    failed and its lane stopped the same way.
- *  - Full access (0.88.0): a thread its OWNER opens is a true fork with the
+ *  - Full access (0.91.0): a thread its OWNER opens is a true fork with the
  *    agent's own access, in the agent's own folder, on a repository of any
  *    size (threadFullArgs), unless the owner's setting `threads.fullAccess`
  *    is off. No worktree, no copy of the repository; the prompts it still
@@ -58,7 +58,7 @@
  *    pid and start stamp are in the lane state, so the next start, a close or
  *    a delete stops it first (lib/lane-process.ts), never two lanes on one
  *    thread.
- *  - Close (0.88.0: the owner closes the thread or merges it back) stops the
+ *  - Close (0.91.0: the owner closes the thread or merges it back) stops the
  *    lane and removes everything the thread put on this computer: its
  *    worktree (git worktree remove and prune), its fork's session files, its
  *    temp files and its state, and logs the bytes freed. Its branch goes
@@ -106,7 +106,7 @@ import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 export const THREAD_LANE_MAX_RUNNING = 2
 export const THREAD_LANE_IDLE_MS = 20 * 60_000
 export const THREAD_LANE_KILL_GRACE_MS = 10_000
-/** 0.88.0: a closed thread is removed at once. Kept for a caller that sets its own wait (deps.keepClosedMs). */
+/** 0.91.0: a closed thread is removed at once. Kept for a caller that sets its own wait (deps.keepClosedMs). */
 export const THREAD_LANE_KEEP_CLOSED_MS = 0
 /** A turn with no result and no exit after this long is failed and its lane stopped. */
 export const THREAD_TURN_TIMEOUT_MS = 30 * 60_000
@@ -341,7 +341,7 @@ export interface ThreadLaneState {
   /**
    * How the lane last started: `full` in the agent's own folder (cwd is the
    * agent folder; `folder` is '' or an earlier worktree still to remove), or
-   * `confined` in its own folder. A state saved before 0.88.0 has none and
+   * `confined` in its own folder. A state saved before 0.91.0 has none and
    * reads as confined.
    */
   access: ThreadAccess
@@ -2073,7 +2073,7 @@ export class ThreadLaneManager {
    * branch. `safe` (a close): uncommitted changes are first saved on the
    * branch as a commit, and the branch goes only when nothing on it is
    * missing from every other branch and remote; otherwise it is kept and the
-   * owner is told. `force` (a delete): the branch goes, as before 0.88.0.
+   * owner is told. `force` (a delete): the branch goes, as before 0.91.0.
    * True when the worktree itself had to be kept (its changes could not be
    * saved): then nothing of the folder is removed.
    */

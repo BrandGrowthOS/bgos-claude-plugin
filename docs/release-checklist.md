@@ -42,7 +42,7 @@ the plugin's hooks), or the thread wiring in `server.ts`.
    `HOAI_LIVE_THREAD=1` makes a missing Claude Code a failure instead of a
    skip; `HOAI_LIVE_CLAUDE=<path>` picks a specific `claude` binary.
 
-   Since 0.88.0 the same gate also holds the owner and recipient split: the
+   Since 0.91.0 the same gate also holds the owner and recipient split: the
    owner's thread (a frame with no lane stamp) runs in the agent's own folder
    with no worktree and every tool, closing it leaves no file named by its
    session id under the home folder and logs the bytes freed, and a frame

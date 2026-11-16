@@ -1,0 +1,6 @@
+P1 gate dropped: KILLED
+    not ok 3 - propose_plan asks before the retire PATCH and before the post, and refuses with that line
+P2 any id admitted: KILLED
+    not ok 1 - the open plan, or a message this agent sent, may be superseded; nothing else
+P3 open plan ignored: KILLED
+    not ok 1 - the open plan, or a message this agent sent, may be superseded; nothing else

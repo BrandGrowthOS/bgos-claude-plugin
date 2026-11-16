@@ -62,8 +62,38 @@ test('the picker answers only the owner\'s main chat, from the daemon\'s own cha
   const at = server.indexOf('const modelEffortPicker = new ModelEffortPickerHandler(')
   assert.ok(at > 0)
   const body = server.slice(at, at + 1500)
-  assert.match(body, /chatAllowed: \(chatId\) =>\s*pickerChatAllowed\(\{ chatId, mainChatIds, isOwners: \(c\) => chatOwnership\.isOwners\(c\), isOthers: \(c\) => chatOwnership\.isOthers\(c\) \}\)/)
+  // The rule has a name now, because the pill's live report uses it too
+  // (2026-11-15): the picker is handed that one function, and the function is
+  // still the daemon's own chat records and nothing else.
+  assert.match(body, /chatAllowed: modelEffortChatAllowed,/)
+  assert.match(server, /const modelEffortChatAllowed = \(chatId: string\): boolean =>\s*pickerChatAllowed\(\{ chatId, mainChatIds, isOwners: \(c\) => chatOwnership\.isOwners\(c\), isOthers: \(c\) => chatOwnership\.isOthers\(c\) \}\)/)
   assert.match(body, /control: modelEffortControl,/)
+})
+
+test('the pill follows the session: the daemon looks on a timer, through the picker\'s own gates', () => {
+  // Seen on 2026-11-15: the session settings report
+  // went out from the picker's apply only, so a model changed in the agent's
+  // own terminal never reached the app.
+  const at = server.indexOf('const modelEffortLiveReporter = new SessionSettingsLiveReporter(')
+  assert.ok(at > 0, 'the live reporter is built in server.ts')
+  const deps = server.slice(at, server.indexOf('\n})\n', at))
+  assert.match(deps, /optedIn: \(\) => readOptIn\(MODEL_CONTROL_DIR/)
+  assert.match(deps, /sessionId: \(\) => provenSessionId\(\)/)
+  assert.match(deps, /readObservation: \(sessionId\) => readObservation\(MODEL_CONTROL_DIR, sessionId\)/)
+  // The owner's own main chats only: the picker's chat rule, not a second one.
+  assert.match(deps, /chats: \(\) => mainChatIds\.filter\(modelEffortChatAllowed\)/)
+  assert.match(deps, /reportSettings: reportSessionSettings,/)
+  assert.match(deps, /staleMs: MODEL_EFFORT_STALE_MS/)
+  // One rule for the chat and one route for the report, shared with the picker.
+  assert.equal(server.split('pickerChatAllowed({').length - 1, 1)
+  assert.equal(server.split('/session-settings`').length - 1, 1)
+  const picker = server.slice(server.indexOf('const modelEffortPicker = new ModelEffortPickerHandler('))
+  assert.match(picker.slice(0, 900), /chatAllowed: modelEffortChatAllowed,/)
+  // A report the picker's apply got through is not sent a second time.
+  assert.match(picker.slice(0, 900), /modelEffortLiveReporter\.noteReported\(chatId, body\)/)
+  // Looked at on a timer that never keeps the process alive, and once at boot.
+  assert.match(server, /setInterval\(\(\) => void modelEffortLiveReporter\.tick\(\), MODEL_EFFORT_LIVE_REPORT_MS\)\.unref\(\)/)
+  assert.match(server, /void modelEffortLiveReporter\.tick\(\)\n/)
 })
 
 test('the control lock is part of every other injection\'s busy check', () => {

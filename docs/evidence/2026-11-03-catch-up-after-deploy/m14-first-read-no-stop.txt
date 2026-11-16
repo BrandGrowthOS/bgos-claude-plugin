@@ -32,7 +32,7 @@ exit=1
 test at test/catch-up-after-deploy.e2e.test.ts:3:15612
 ✖ a chat this daemon has never read: 120 unanswered rows above a long answered history, and the walk stops at the reply (2229.790609ms)
   AssertionError [ERR_ASSERTION]: the answered history is not read: 6 older pages
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m14-first-read-no-stop.79cm2mmi/test/catch-up-after-deploy.e2e.test.ts:933:14)
+      at TestContext.<anonymous> (/home/you/lane-tmp/d041/mut/m14-first-read-no-stop.79cm2mmi/test/catch-up-after-deploy.e2e.test.ts:933:14)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
     generatedMessage: false,
@@ -54,7 +54,7 @@ test at test/catch-up-after-deploy.e2e.test.ts:3:16971
   + ]
   - []
   
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m14-first-read-no-stop.79cm2mmi/test/catch-up-after-deploy.e2e.test.ts:971:14)
+      at TestContext.<anonymous> (/home/you/lane-tmp/d041/mut/m14-first-read-no-stop.79cm2mmi/test/catch-up-after-deploy.e2e.test.ts:971:14)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Suite.processPendingSubtests (node:internal/test_runner/test:974:7) {
     generatedMessage: false,

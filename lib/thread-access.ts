@@ -1,5 +1,5 @@
 /**
- * The owner's setting `threads.fullAccess` (0.88.0), and what a closed thread
+ * The owner's setting `threads.fullAccess` (0.91.0), and what a closed thread
  * leaves on disk.
  *
  * FULL ACCESS. A thread the agent's owner opens is a true fork with the
@@ -11,7 +11,7 @@
  *
  * or for one daemon with HOAI_THREADS_FULL_ACCESS=false in its environment
  * (the variable wins over the file). Off, the owner's threads run confined
- * as before 0.88.0. It is read at every thread start, so a change needs no
+ * as before 0.91.0. It is read at every thread start, so a change needs no
  * restart. On is the default, so a file that is not there, is empty, or says
  * nothing about the setting reads as on. But a setting somebody WROTE and
  * this code cannot read is never read as on, because the owner may have

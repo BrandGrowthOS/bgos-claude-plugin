@@ -86,7 +86,7 @@ const MB = 1024 * 1024
 
 /**
  * THE SECRET LIST (rule 4), read on the lower case, forward slash, resolved
- * form of a path (`c:/users/kc/.ssh/id_rsa`, `/home/kc/.aws/config`). Any
+ * form of a path (`c:/users/you/.ssh/id_rsa`, `/home/you/.aws/config`). Any
  * match refuses the file. lanePathIsSecret runs beside it and adds
  * .config/gcloud, .bgos-plugin-state, another person's lane and any `..` that
  * climbs out. One list, so a test can empty it and see the refusals go.
@@ -534,7 +534,7 @@ function lexical(path: string, ctx: OutboundFileCtx): Lexical {
   if (!drive && !slashed.startsWith('/')) return { kind: 'not_full' }
   const rest = drive ? slashed.slice(2) : slashed
   // Final fix 4: Windows' own rules, read on a path with a drive letter or on Windows; on Linux and macOS a ?, * or : and
-  // a device word are ordinary parts of a name (/home/kc/Meeting 10:30.pdf, /home/kc/con.pdf).
+  // a device word are ordinary parts of a name (/home/you/Meeting 10:30.pdf, /home/you/con.pdf).
   const windows = drive !== '' || process.platform === 'win32'
   // A wildcard or a colon after the drive (an NTFS stream such as a.pdf:hidden) names no plain file.
   if (windows && /[?*:]/.test(rest)) return { kind: 'device' }
@@ -625,7 +625,7 @@ const SHARE_ANSWER = /^(?:\\\\\?\\UNC\\|[\\/]{2}(?![?.][\\/]))[^\\/]+[\\/][^\\/]
 /**
  * Final fix 3: a share path as the checks of steps 1 and 2 read it, for those checks only (nothing is opened by it): the
  * given drive plus the share and the folders below it. The server's name is dropped, so a NAS named keys refuses
- * nothing. An admin share is the disk it stands for (\\localhost\C$\Users\kc is C:\Users\kc), so a moved runtime folder
+ * nothing. An admin share is the disk it stands for (\\localhost\C$\Users\you is C:\Users\you), so a moved runtime folder
  * and the owner's home are found there. The word rules read the rest of any share as a place outside the home. Final
  * fix 4: a hidden share is read without its one trailing $ (\\nas\Keys$ as Keys), as the name rules end a word at a
  * slash, a dot or the end of the name; the admin share is told first, as its $ is what makes it one.

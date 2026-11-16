@@ -12,6 +12,7 @@
  */
 
 import { cardAnswerClickOf, cardAnswerText } from './lib/card-answer.ts'
+import { REACT_TOOL, handleReactTool } from './lib/react-tool.ts'
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { execFile, spawn as spawnProcess } from 'node:child_process'
@@ -189,7 +190,8 @@ import {
 } from './lib/compact-inject.js'
 import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
 import { holdChannelCardsWhileBusy, ModelEffortControl } from './lib/model-effort-control.js'
-import { ModelEffortPickerHandler, pickerChatAllowed, rpcLogOp, rpcLogTag } from './lib/model-effort-rpc.js'
+import { ModelEffortPickerHandler, pickerChatAllowed, rpcLogOp, rpcLogTag, type SessionSettingsBody } from './lib/model-effort-rpc.js'
+import { SessionSettingsLiveReporter } from './lib/model-effort-live-report.js'
 import { parseHelpCatalog } from './lib/model-effort-catalog.js'
 import { processAncestry } from './lib/model-effort-pane.js'
 import { modelControlDir, readObservation, readOptIn, refreshBridgeCopy } from './lib/model-control-store.mjs'
@@ -212,8 +214,10 @@ import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
+import { ensureAutoHost } from './lib/vault-host-auto.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
-import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
+import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
+import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_OUTBOUND_FILES_PATH,
@@ -363,7 +367,7 @@ import {
   type StopGoalView,
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
-import { PRIVATE_HOOK_MISSING_REFUSAL, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
+import { PRIVATE_HOOK_MISSING_REFUSAL, createPrivateHookLiveness, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
 import { registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
 import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
@@ -523,6 +527,7 @@ import {
   marketplaceChannelSpec,
 } from './bin/bgos-install-method.mjs'
 import { resolveChannelSpec } from './bin/hoai-core.mjs'
+import { writeCredentialsFile } from './bin/bgos-pair.mjs'
 import { threadOptionsWarning } from './bin/bgos-launch.mjs'
 import {
   UpdateStreamConsumer,
@@ -617,6 +622,8 @@ import {
   buildPlanCardBody,
   buildPlanCardPayload,
   buildPlanRetireBody,
+  planSupersedesAdmitted,
+  planSupersedesRefusal,
   buildPlanSupersedeBody,
   describePlanClick,
   isPlanCardPayload,
@@ -656,6 +663,7 @@ import {
   resolveAuthRecheckIntervalMs,
   AuthRecheckMonitor,
 } from './lib/auth-recheck.js'
+import { CredentialsFileRestorer } from './lib/credentials-restore.js'
 import {
   detectCompactCapability,
   formatCompactDetection,
@@ -670,6 +678,7 @@ import {
   VERSION_HEARTBEAT_INTERVAL_MS,
 } from './lib/version-heartbeat'
 import { errorBodyText } from './lib/error-body'
+import { OwnMessages, ownMessageRefusal, ownMessagesFilePath } from './lib/own-messages'
 import { mcpServerInfo } from './lib/mcp-server-info'
 import { markConnectionText } from './lib/connection-texts.ts'
 import { createVerdictSender } from './lib/verdict-sender.ts'
@@ -1040,6 +1049,15 @@ const ASSISTANT_ID = AUTH.assistantId
 const POLL_INTERVAL_MS = Number(process.env.BGOS_POLL_INTERVAL_MS) || 2000
 const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
 
+// The messages this agent sent, as the server answered their creates (lib/own-messages.ts). edit_message edits only
+// these: with the owner's credential the edit route would otherwise rewrite the owner's own lines and the lines of
+// the owner's other agents. Declared up here, before anything can post, so bgosPost can always note an answer.
+const ownMessages = new OwnMessages({
+  filePath: ownMessagesFilePath(resolveCursorFilePath({ assistantId: ASSISTANT_ID, cwd: process.cwd() })),
+  assistantId: ASSISTANT_ID,
+  log: (line) => log(line),
+})
+
 // Person lanes (P3): asked by the three declaredCapabilities call sites, so it
 // lives above them all.
 /** Lanes can run here: a pairing, a host and a CLI with every locked flag (cached per binary). */
@@ -1387,6 +1405,45 @@ function log(msg: string): void {
 // resolved, and no token is ever logged (fingerprints only).
 const authRecheckMonitor = new AuthRecheckMonitor(authSnapshot(AUTH, CREDENTIALS_PATH))
 
+// ── Lost credentials file: written back from the token this daemon holds ─────
+// 2026-11-13 an accident deleted every credentials-<id>.json on a Mac; each
+// daemon ran on in memory, but a restart would have come up unpaired and the
+// Helper read the missing file as "agent not on this machine". On the same
+// recheck (interval and file watch) the boot file is checked: when it is gone
+// AND a fresh GET integrations/me with the in-memory token answers 200 listing
+// this assistant, it is written back by bgos-pair's own writer (0600, exclusive
+// create, so a re-pair that lands meanwhile wins) and one WARN names the path.
+// Never another assistant's file, never the shared credentials.json, never on
+// a failing token, nothing posted to chat (lib/credentials-restore.ts).
+const credentialsRestorer = new CredentialsFileRestorer({
+  path: CREDENTIALS_PATH,
+  via: CREDENTIALS_SELECTION.via,
+  auth: AUTH,
+  bootCreds: CREDENTIALS_FILE,
+  exists: existsSync,
+  readCreds: loadCredentialsFile,
+  probeMe: () =>
+    bgosCall(
+      {
+        url: `${API_BASE}/integrations/me`,
+        init: { headers: { ...authHeaders(AUTH) } },
+        timeoutMs: HTTP_TIMEOUT_MS,
+        label: 'GET integrations/me (credentials restore)',
+      },
+      async (response) => ({
+        status: response.status,
+        body: response.ok ? await response.json().catch(() => null) : null,
+      }),
+    ),
+  writeExclusive: async (path, creds) => {
+    const written = await writeCredentialsFile(path, creds, { exclusive: true })
+    if (written?.aclApplied === false) {
+      log(`WARN restored credentials file ${path} is UNPROTECTED: ${written.aclError ?? 'the ACL lock failed'}`)
+    }
+  },
+  log,
+})
+
 function credentialsMtimeMs(path: string): number | null {
   try {
     return statSync(path).mtimeMs
@@ -1395,8 +1452,11 @@ function credentialsMtimeMs(path: string): number | null {
   }
 }
 
-function runAuthRecheck(): void {
+async function runAuthRecheck(): Promise<void> {
   try {
+    // First, a lost boot file is written back while the token still works,
+    // so the comparison below sees the file again instead of a divergence.
+    if ((await credentialsRestorer.check()) === 'restored') armCredentialsWatch()
     // cwd is load-bearing, not decoration. Without it the resolver cannot see
     // the <cwd>/.bgos-agent-id folder pin, so on a host with several paired
     // agents it falls through to the shared legacy file, and this recheck would
@@ -1423,12 +1483,68 @@ function runAuthRecheck(): void {
     )
     if (line) log(line)
   } catch (err) {
-    // Visibility-only feature: a recheck failure must never hurt the daemon.
+    // A recheck (or restore) failure must never hurt the daemon.
     log(`auth recheck skipped: ${err}`)
   }
 }
 
 let authWatchDebounce: ReturnType<typeof setTimeout> | null = null
+let authWatchers: Array<ReturnType<typeof watch>> = []
+
+function scheduleAuthRecheck(): void {
+  if (authWatchDebounce) clearTimeout(authWatchDebounce)
+  authWatchDebounce = setTimeout(runAuthRecheck, 500)
+  authWatchDebounce.unref?.()
+}
+
+/**
+ * Cheap immediate signal on file change; guarded so watcher failures (missing
+ * file, platform quirks, watcher error events) never crash anything - the
+ * interval remains the backstop. Two watches: the file itself (a rewrite in
+ * place), and its folder, filtered to the file's own name, because under bun on
+ * Linux a watch on a file reports NOTHING when that file is deleted (measured
+ * 2026-11-14, bun 1.3.11; node reports a rename) while a folder watch reports
+ * it. Armed again after a restore: the old watches follow the deleted inode
+ * (or a folder that was removed), so the restored file needs its own.
+ */
+function armCredentialsWatch(): boolean {
+  for (const watcher of authWatchers) {
+    try {
+      watcher.close()
+    } catch {
+      /* already closed */
+    }
+  }
+  authWatchers = []
+  const fileName = basename(CREDENTIALS_PATH)
+  const targets: Array<[string, (event: string, name: string | Buffer | null) => void]> = [
+    [CREDENTIALS_PATH, () => scheduleAuthRecheck()],
+    [
+      pathDirname(CREDENTIALS_PATH),
+      (_event, name) => {
+        // A folder holds every agent's files; only this file's own name, an
+        // event that names nothing, or this file being absent is worth a
+        // recheck. The absence test is there because bun reports one name for
+        // a batch of deletions (rm -rf of the folder named another file).
+        if (name == null || String(name) === fileName || !existsSync(CREDENTIALS_PATH)) {
+          scheduleAuthRecheck()
+        }
+      },
+    ],
+  ]
+  for (const [target, onEvent] of targets) {
+    try {
+      const watcher = watch(target, { persistent: false }, onEvent)
+      watcher.on('error', () => {
+        /* watcher death is fine; the periodic recheck continues */
+      })
+      authWatchers.push(watcher)
+    } catch {
+      /* no watch on this platform/path; periodic recheck only */
+    }
+  }
+  return authWatchers.length > 0
+}
 
 function startAuthRecheck(): void {
   const intervalMs = resolveAuthRecheckIntervalMs(process.env)
@@ -1437,23 +1553,7 @@ function startAuthRecheck(): void {
     return
   }
   setInterval(runAuthRecheck, intervalMs).unref()
-  // Cheap immediate signal on file change; guarded so watcher failures
-  // (missing file, platform quirks, watcher error events) never crash
-  // anything - the interval above remains the backstop.
-  let watching = false
-  try {
-    const watcher = watch(CREDENTIALS_PATH, { persistent: false }, () => {
-      if (authWatchDebounce) clearTimeout(authWatchDebounce)
-      authWatchDebounce = setTimeout(runAuthRecheck, 500)
-      authWatchDebounce.unref?.()
-    })
-    watcher.on('error', () => {
-      /* watcher death is fine; the periodic recheck continues */
-    })
-    watching = true
-  } catch {
-    /* no watch on this platform/path; periodic recheck only */
-  }
+  const watching = armCredentialsWatch()
   log(
     `auth recheck enabled (every ${Math.round(intervalMs / 1000)}s` +
       (watching ? ' + credentials-file watch)' : ', no file watch)'),
@@ -1700,6 +1800,21 @@ const usageTracker = new UsageTracker(CLAUDE_PROJECT_CWD, CLAUDE_CONFIG_DIR)
 // `bgos_capabilities` tool. Falls back to the bundled copy on any fetch error,
 // so the plugin never hard-fails when the endpoint is unreachable.
 let cachedCapabilities: ServedCapabilities | null = null
+// The quiet turn's server switch (review round 2, F3 and F2): the backend says `quietTurn: true` in its Claude Code
+// capabilities reply only while its VOICE_ASK_STAMP is on. Until it does, this daemon holds no card outside the
+// owner's turn and treats an unstamped voice card as it always did. Off at boot, off when the fetch fails, and read
+// again on every socket connect, since the switch only changes with a backend restart.
+const serverQuiet = createServerQuietSwitch({ log })
+/** Read the switch again, off on any failure. Never throws, never holds the caller. */
+function refreshServerQuietTurn(): void {
+  void (async () => {
+    let data: unknown = null
+    try {
+      data = await bgosGetCapped(capabilitiesFetchPath(RUNNING_VERSION ?? '0.0.0', []), CAPABILITIES_FETCH_MAX_BYTES, STARTUP_WARMUP_TIMEOUT_MS)
+    } catch { /* Off: a server that cannot be asked has not said on. */ }
+    serverQuiet.note(data)
+  })()
+}
 
 // SECURITY: the canon is injected into the agent's context, so cap the fetch.
 // The real canon is a few KB; reject a body that declares more than this so a
@@ -1932,6 +2047,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
       )
     }
     cachedCapabilities = pickCapabilities(data, declared)
+    serverQuiet.note(data)
     log(
       `Capability canon ready: v${cachedCapabilities.version} ` +
         `(${cachedCapabilities.text.length} chars) [source=${cachedCapabilities.source}]`,
@@ -2023,7 +2139,15 @@ async function bgosPost(
           text.slice(0, 8192),
         )
       }
-      return response.json()
+      const answer = await response.json()
+      // A create of this agent's own row is noted for edit_message (lib/own-messages.ts), from the server's answer.
+      // Noting never fails the post.
+      try {
+        ownMessages.noteCreate(path, answer)
+      } catch (err) {
+        log(`own messages: answer to POST ${path} not noted: ${String(err)}`)
+      }
+      return answer
     },
   )
 }
@@ -2802,15 +2926,18 @@ type ChannelCardParams = { content: string; meta?: unknown } & Record<string, un
  * so whatever it records in the private turn tracker (deliver, noteUntracked, a tap) happens when the card reaches the
  * session, never while it waits. A builder that returns null sends nothing. A granted wake names its grant. The method
  * is spelled here and nowhere else (test/schedule-grant-run.test.ts fails a card sent any other way).
+ * `quiet` names what the card is to the quiet turn hold (lib/quiet-turn.mjs, 2026-11-11): a card the server stamped for the
+ * owner, one that holds nobody's words, or a Stop. A card that names nothing waits while the owner's trusted turn runs.
  */
 function channelNotify(
   build: () => ChannelCardParams | null,
-  options: { scheduleGrant?: ReturnType<typeof scheduleGrantOf> } = {},
+  options: { scheduleGrant?: ReturnType<typeof scheduleGrantOf>; quiet?: ReturnType<typeof quietCardOf> | { carried: true } | { stop: true } | { within: number } | null } = {},
 ): Promise<void> {
   return mcp.notification({
     method: 'notifications/claude/channel',
     params: build,
     ...(options.scheduleGrant ? { scheduleGrant: options.scheduleGrant } : {}),
+    ...(options.quiet ? { quiet: options.quiet } : {}),
   } as unknown as Parameters<typeof mcp.notification>[0])
 }
 
@@ -2912,16 +3039,42 @@ function modelEffortDeclared(): boolean {
 // The picker's answers. Owner only and main chat only from the daemon's own
 // records (pickerChatAllowed), on top of BGOS's gate; voiceRpc below routes
 // the two ops here.
+/** The owner's own main chat, by the daemon's own records: the one rule for the picker and the pill. */
+const modelEffortChatAllowed = (chatId: string): boolean =>
+  pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => chatOwnership.isOwners(c), isOthers: (c) => chatOwnership.isOthers(c) })
+
+/** The session settings report (the pill), the one route for it. */
+const reportSessionSettings = (chatId: string, body: SessionSettingsBody): Promise<unknown> =>
+  bgosPatch(
+    `integrations/assistants/${encodeURIComponent(String(ASSISTANT_ID ?? ''))}/chats/${encodeURIComponent(chatId)}/session-settings`,
+    body as unknown as Record<string, unknown>,
+  )
+
+// The pill follows the session (asked for on 2026-11-15):
+// the report above used to go out from the picker's apply only, so a model
+// changed in the agent's own terminal, or by a restart, never reached the
+// app. The bridge's observation is looked at on a timer and reported when it
+// changed, through the picker's own gates (lib/model-effort-live-report.ts).
+const MODEL_EFFORT_LIVE_REPORT_MS = 15_000
+const modelEffortLiveReporter = new SessionSettingsLiveReporter({
+  optedIn: () => readOptIn(MODEL_CONTROL_DIR, String(ASSISTANT_ID ?? '')),
+  sessionId: () => provenSessionId(),
+  readObservation: (sessionId) => readObservation(MODEL_CONTROL_DIR, sessionId),
+  chats: () => mainChatIds.filter(modelEffortChatAllowed),
+  reportSettings: reportSessionSettings,
+  now: Date.now,
+  log,
+}, { staleMs: MODEL_EFFORT_STALE_MS, timeoutMs: HTTP_TIMEOUT_MS + 5_000 })
+
 const modelEffortPicker = new ModelEffortPickerHandler({
   assistantId: () => String(ASSISTANT_ID ?? ''),
-  chatAllowed: (chatId) =>
-    pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => chatOwnership.isOwners(c), isOthers: (c) => chatOwnership.isOthers(c) }),
+  chatAllowed: modelEffortChatAllowed,
   control: modelEffortControl,
   reportSettings: (chatId, body) =>
-    bgosPatch(
-      `integrations/assistants/${encodeURIComponent(String(ASSISTANT_ID ?? ''))}/chats/${encodeURIComponent(chatId)}/session-settings`,
-      body as unknown as Record<string, unknown>,
-    ),
+    reportSessionSettings(chatId, body).then((answer) => {
+      modelEffortLiveReporter.noteReported(chatId, body)
+      return answer
+    }),
   sendNote: (chatId, text) =>
     bgosPost('send-message', {
       chatId: Number(chatId),
@@ -5345,16 +5498,24 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'edit_message',
-      description: 'Edit a previously sent message in the BGOS chat.',
+      description:
+        'Edit the text of one of your previously sent messages in the BGOS chat. Only a message this agent ' +
+        'sent can be edited, never the owner\'s or another agent\'s. ' +
+        'Answers "Edited" only when the backend took the edit; otherwise it returns an error with the reason, ' +
+        'and the message is unchanged.',
       inputSchema: {
         type: 'object' as const,
         properties: {
-          message_id: { type: 'string', description: 'The message ID to edit' },
+          message_id: {
+            type: 'string',
+            description: 'The message ID to edit: the number a reply returned ("Sent (message_id: N)").',
+          },
           text: { type: 'string', description: 'The new message text' },
         },
         required: ['message_id', 'text'],
       },
     },
+    REACT_TOOL,
     {
       name: 'rename_chat',
       description: 'Rename a BGOS chat to give it a descriptive title.',
@@ -6912,6 +7073,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       pairingToken: AUTH.mode === 'pairing' ? AUTH.pairingToken : '',
       stateDir: vaultHostDir(stateDir),
       log,
+      autoHost: () => runVaultAutoHost('tool'),
     })
   }
 
@@ -7353,6 +7515,18 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       // rebuilt, so the fallback strips the chips and nothing else
       // (buildPlanRetireBody): the old card stops being answerable, which is
       // the half that matters, and loses only its explanation.
+      // ONLY THIS AGENT'S OWN CARD. `supersedes` comes from the model, and the
+      // retire below PATCHes it with the owner's credential, which the backend
+      // admits for any row the owner may edit: another agent's open question
+      // or approval card would lose its buttons, and so would the owner's own
+      // row. Refused before the retire and before the post, like a failed
+      // retire (lib/plan-card.ts, planSupersedesAdmitted).
+      if (
+        payload.supersedes !== undefined &&
+        !planSupersedesAdmitted(payload.supersedes, openPlan?.messageId, (id) => ownMessages.has(id))
+      ) {
+        return { content: [{ type: 'text', text: planSupersedesRefusal(payload.supersedes) }], isError: true }
+      }
       if (payload.supersedes !== undefined) {
         const retireBody =
           openPlan?.messageId === payload.supersedes
@@ -7482,48 +7656,64 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       }
     }
 
+    case 'react': {
+      return handleReactTool(rawArgs, { authMode: AUTH.mode, assistantId: ASSISTANT_ID, post: bgosPost })
+    }
+
     case 'edit_message': {
-      const message_id = rawArgs.message_id as string | undefined
+      const message_id = rawArgs.message_id as string | number | undefined
       const text = rawArgs.text as string | undefined
-      if (!message_id || !text) {
-        return { content: [{ type: 'text', text: 'Error: message_id and text required' }] }
+      if (message_id == null || message_id === '' || !text) {
+        return { content: [{ type: 'text', text: 'Error: message_id and text required' }], isError: true }
+      }
+      // A message id is the number a reply answered with. Anything else (a
+      // made up id, a path, a chat id with a suffix) is refused here, before
+      // it can become part of the PATCH path.
+      const id = String(message_id).trim()
+      if (!/^[1-9]\d{0,17}$/.test(id)) {
+        return { content: [{ type: 'text', text: 'Error: message_id must be a message id from a reply' }], isError: true }
+      }
+      // ONLY A MESSAGE THIS AGENT SENT. The PATCH below carries the owner's
+      // credential, and the backend admits any row the owner may edit: the
+      // owner's own lines (in a room, the ones other members read) and the
+      // lines of the owner's other agents. The model sees the owner's message
+      // ids all the time, so the id must be one the server answered as this
+      // agent's own row when the daemon created it (lib/own-messages.ts).
+      if (!ownMessages.has(id)) {
+        return { content: [{ type: 'text', text: ownMessageRefusal(id) }], isError: true }
       }
       try {
         // Same CommonMark backslash protection as the reply path, an edited
         // message is rendered the same way, so it needs the same fix.
         const safeText = protectBackslashesForMarkdown(text)
-        const baseUrl = BACKEND_URL.replace(/\/api\/v1$/i, '').replace(/\/$/, '')
-        await bgosCall(
-          {
-            url: `${baseUrl}/webhook/edited_message`,
-            init: {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                event_type: 'edited_message',
-                message_id,
-                chat_id: '0',
-                user_id: USER_ID,
-                timestamp: new Date().toISOString(),
-                text: safeText,
-                message: { text: safeText },
-              }),
-            },
-            timeoutMs: HTTP_TIMEOUT_MS,
-            label: 'POST webhook/edited_message',
-          },
-          // The original code never inspected the response; it only needed the
-          // request to leave. Keep that, but bounded. The posted buttons record
-          // follows only an edit the backend took: a refused one leaves the card
-          // as it stands, and the owner's tap on it is the owner's.
-          async (response) => {
-            if (response.ok) postedButtons.edited(message_id, safeText)
-          },
-        )
+        // The edit route the app itself uses, with this daemon's own
+        // credential: the backend binds the owner to the credential and asks
+        // the chat kind's own edit rule. Before this, the tool POSTed to the
+        // unsigned webhook bridge for edits, naming no real chat, which the
+        // backend refused every time (message_not_in_named_chat), and the
+        // tool answered "Edited" without reading the answer. bgosPatch throws
+        // on any answer that is not 2xx, so a refused edit reaches the catch
+        // below as the backend's own line, with isError.
+        await bgosPatch(`messages/${id}`, { text: safeText })
+        // The posted buttons record follows only an edit the backend took: a
+        // refused one throws above and leaves the card as it stands, so the
+        // owner's tap on it is the owner's.
+        postedButtons.edited(id, safeText)
         return { content: [{ type: 'text', text: 'Edited' }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
-        return { content: [{ type: 'text', text: `Failed: ${errMsg}` }], isError: true }
+        // The backend answered and refused (HttpError): its own line. Anything
+        // else got no usable answer (a timeout or a dropped connection after
+        // the request left, or an unreadable 2xx), so the edit may have
+        // landed; sending the same text again is harmless.
+        if (err instanceof HttpError) {
+          return { content: [{ type: 'text', text: `Failed: ${errMsg}` }], isError: true }
+        }
+        const line = errMsg.replace(/\s+/g, ' ').trim().replace(/\.?$/, '.')
+        return {
+          content: [{ type: 'text', text: `Failed: ${line} The edit may have landed; editing again with the same text is safe.` }],
+          isError: true,
+        }
       }
     }
 
@@ -7964,6 +8154,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const body = failed
         ? { ok: false, error: { code: 'DISPATCH_FAILED', message: resultText } }
         : { ok: true, payload: { text: resultText } }
+      // The task is reported, done or failed: the owner's trust for it ends here, before the report is even posted
+      // (lib/private-turn.mjs endDispatch, the quiet turn, 2026-11-11). Only this task's own turn; what waited outside it goes out.
+      privateTurns.endDispatch(taskId)
+      quietTurns.recheck()
+      publishBrowserPrivateTurn()
       await bgosPost(`integrations/voice-tasks/${encodeURIComponent(taskId)}/result`, body)
       return {
         content: [
@@ -9613,6 +9808,49 @@ const whenArmed =
     handle(payload)
   }
 
+// The agent vault with no setup (lib/vault-host-auto.mjs, HOAI CORE-CONTRACTS
+// 18.8). Only the daemon that holds the pairing lock makes or offers this
+// machine's vault keys: when it arms, on the server's vault_host_setup frame
+// and on a vault tool's first use. One run at a time; the result is codes only.
+// A server that does not take offers answers `off`, remembered for ten minutes
+// so a vault tool call does not ask again each time.
+let vaultAutoHostRun: Promise<{ status: string; code?: string; retry?: true }> | null = null
+let vaultAutoHostOffUntil = 0
+// Found on a real Windows PC (2026-11-12): PowerShell can be too slow to answer while the computer is busy, and
+// the setup then ends "unavailable, retry". Nobody should have to do anything: try again, a few times, further apart.
+const VAULT_AUTO_HOST_RETRIES = 5
+const VAULT_AUTO_HOST_RETRY_MS = 30_000
+let vaultAutoHostRetries = 0
+function runVaultAutoHost(reason: string): Promise<{ status: string; code?: string; retry?: true }> {
+  if (AUTH.mode !== 'pairing' || !channelArmed) return Promise.resolve({ status: 'unavailable' })
+  if (vaultAutoHostRun) return vaultAutoHostRun
+  if (reason !== 'frame' && Date.now() < vaultAutoHostOffUntil) return Promise.resolve({ status: 'off' })
+  const stateDir = agentStateDir(homedir(), ASSISTANT_ID)
+  if (!stateDir) return Promise.resolve({ status: 'unavailable' })
+  const run = ensureAutoHost({
+    stateDir: vaultHostDir(stateDir),
+    assistantId: ASSISTANT_ID,
+    ownerId: USER_ID,
+    apiBase: API_BASE,
+    pairingToken: AUTH.pairingToken,
+    log,
+  })
+    .catch(() => ({ status: 'unavailable' }))
+    .then((result: { status: string; code?: string; retry?: true }) => {
+      vaultAutoHostRun = null
+      vaultAutoHostOffUntil = result.status === 'off' ? Date.now() + 10 * 60_000 : 0
+      if (result.status !== 'off' && result.status !== 'disabled') log(`vault: host setup (${reason}) is ${result.status}`)
+      if (result.status === 'unavailable' && result.retry === true && vaultAutoHostRetries < VAULT_AUTO_HOST_RETRIES) {
+        const wait = VAULT_AUTO_HOST_RETRY_MS * 2 ** vaultAutoHostRetries++
+        const timer = setTimeout(() => { void runVaultAutoHost('retry') }, wait)
+        timer.unref?.()
+      } else if (result.retry !== true) vaultAutoHostRetries = 0
+      return result
+    })
+  vaultAutoHostRun = run
+  return run
+}
+
 // The holder's home step has run (lib/agent-credentials.ts
 // homeStepWhileHolding): a pinned start confirms its folder once; nothing
 // else ever writes the home.
@@ -10306,7 +10544,7 @@ function checkReplyOverdue(): void {
           ts: new Date(now).toISOString(),
           ...(p.ownerInbound ? { owner_inbound: 'true' } : {}),
         },
-      }))).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
+      }), { quiet: p.ownerInbound ? { carried: true } : null })).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
   }
 }
 /**
@@ -10806,7 +11044,7 @@ async function announceMissedPlanAnswers(): Promise<void> {
               assistantId: ASSISTANT_ID,
               ts: mm.answeredAt ?? '',
             }),
-          })),
+          }), { quiet: readTapperUserId(payload) === USER_ID ? { carried: true } : null }),
       ).catch((err) => {
         log(`Plan boot sweep: failed to deliver the answer to Claude: ${err}`)
       })
@@ -10909,7 +11147,24 @@ const turnChat = createTurnChatTracker()
 // message the same way, as owner:<message id>.
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
-const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)) })
+const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn(); quietTurns.recheck() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)), voiceCardsUntrusted: () => serverQuiet.on() })
+// A trusted turn is quiet (lib/quiet-turn.mjs, 2026-11-11): while the owner's own turn is bound in the tracker above (a
+// stamped voice ask, the owner's typed message, the owner's scheduled wake), every other channel card waits in the
+// notification chain below, five minutes at most, so nobody else's words reach that turn and end its trust. It reads
+// the tracker's own bound turn and adds only the gap before a card's prompt begins. Off with no private turn hook (no
+// turn is ever admitted then), while this daemon does not hold the lock, with BGOS_QUIET_TURN=off, and until the
+// SERVER says on (serverQuiet above: its VOICE_ASK_STAMP switch).
+const QUIET_TURN_ENABLED = quietTurnEnabled(process.env.BGOS_QUIET_TURN)
+const quietTurns = createQuietTurns({
+  trusted: () => privateTurns.quiet(),
+  deliveryOf: (card: unknown) => privateTurns.deliveryOf(card),
+  ownerUserId: USER_ID,
+  // Between turns a card sent now starts a prompt of its own; mid turn it is injected or queued, and holds nothing yet.
+  idle: () => !hookTurnLive,
+  enabled: () => QUIET_TURN_ENABLED && serverQuiet.on() && lockHeld && PRIVATE_HOOK.registered,
+})
+// At the four tap sites below, the owner's own tap (the tapper the server stamped is this agent's owner) names itself
+// `{ carried: true }`: it holds nobody's words but the owner's, so it passes the hold, and privateTapCard decides the rest.
 // A scheduled run keeps the permission of the person who scheduled it (lib/schedule-grant-run.mjs, 0.86.20). While a
 // granted run is live, every other channel card waits (the hold in the notification chain below) and the boards calls
 // of the wake's own turn carry the grant. Its end tells the server, which uses the grant up for good and lifts its
@@ -10990,6 +11245,13 @@ mcp.notification = holdChannelCardsDuringGrantedRun(scheduleGrantRuns, mcp.notif
   log,
   resend: (notification: Parameters<typeof mcp.notification>[0]) => mcp.notification(notification),
 }) as typeof mcp.notification
+// The quiet turn hold (lib/quiet-turn.mjs, 2026-11-11), outside the scheduled run hold (which builds a card) and inside the
+// lock: while the owner's trusted turn is live every other card waits here, unbuilt, five minutes at most. A released
+// card goes back through the whole chain too.
+mcp.notification = holdChannelCardsDuringQuietTurn(quietTurns, mcp.notification.bind(mcp), {
+  log,
+  resend: (notification: Parameters<typeof mcp.notification>[0]) => mcp.notification(notification),
+}) as typeof mcp.notification
 // OUTERMOST, so the private turn record above runs when a held card really
 // goes out: the model and effort control's lock over every card that can open
 // a turn (lib/model-effort-control.ts holdChannelCardsWhileBusy, round 3 review
@@ -11001,11 +11263,14 @@ mcp.notification = holdChannelCardsWhileBusy(modelEffortControl, mcp.notificatio
 function publishBrowserPrivateTurn(): void {
   if (!lockHeld) return
   try {
+    const turn = privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS })
+    // The hook's own marker read for a turn proves it runs in this session (QUIETTURN4, privateHook below).
+    privateHook.noteTurn(turn)
     publishPrivateContext({
       path: privateContextPath(FLOOR_STATE_ROOT, ASSISTANT_ID),
       secret: AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey,
       assistantId: ASSISTANT_ID, ownerUserId: USER_ID, claudePid: agentClaudePid(),
-      turn: privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS }),
+      turn,
     })
   } catch { /* An absent or expired context refuses private tools. */ }
 }
@@ -11558,6 +11823,8 @@ function endHookTurn(keepCard: boolean): void {
   privateTurns.end(hookLineAt === null ? {} : { at: hookLineAt, startedAt: hookLineStartedAt })
   // A granted scheduled run whose turn began ends with it, and what waited is delivered.
   scheduleGrantRuns.noteStop()
+  // The owner's trusted turn ended with the CLI turn: what waited outside it goes out (lib/quiet-turn.mjs).
+  quietTurns.recheck()
   publishBrowserPrivateTurn()
 }
 
@@ -11688,12 +11955,15 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt, startedAt: line?.startedAt })
   // The session that ran a granted scheduled run is gone: the run is over, and what waited is delivered.
   if (event.name === 'SessionEnd') scheduleGrantRuns.end('session ended')
+  if (event.name === 'SessionEnd') quietTurns.recheck()
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
     // startedAt: when claude submitted it (the forwarder's own start), so a Stop line places it by that, wherever the
     // two lines land (lib/private-turn.mjs ranSinceStop, the final review of e7166041).
     const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id, startedAt: line?.startedAt })
     scheduleGrantRuns.noteBegin(payload.prompt)
+    // After the tracker's begin: a pending card's own prompt hands over to the tracker's bound turn.
+    quietTurns.noteBegin(payload.prompt)
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
@@ -12292,7 +12562,7 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
   void trackMessageOperation(() => channelNotify(() => ({
       content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
       meta: buildButtonClickedMeta({ chatId, messageId: mm.id, callbackData: planAnswer.callbackData ?? agentCallbackData, buttonText, customText, tapperUserId: readTapperUserId(payload), assistantId: ASSISTANT_ID, ts: mm.answeredAt, card: cardAnswer }),
-    }))).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
+    }), { quiet: readTapperUserId(payload) === USER_ID ? { carried: true } : null })).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
 }
 
 async function pollChat(chatId: string): Promise<void> {
@@ -12906,7 +13176,7 @@ async function pollChat(chatId: string): Promise<void> {
             ts: mm.answeredAt,
             card: cardAnswer,
           }),
-        }))).catch((err) => {
+        }), { quiet: readTapperUserId(payload) === USER_ID ? { carried: true } : null })).catch((err) => {
         log(`Failed to deliver button_clicked to Claude: ${err}`)
       })
     }
@@ -13109,7 +13379,7 @@ async function pollChat(chatId: string): Promise<void> {
         const meetingHandoff = trackMessageOperation(() => channelNotify(() => {
           card.content += privateTurns.noteUntracked({ chatId })
           return card
-        }))
+        }, { quiet: { within: 150_000 } }))
         humanMessageEdits.rememberOriginal(
           viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
           meetingHandoff, card.meta,
@@ -13303,7 +13573,7 @@ async function pollChat(chatId: string): Promise<void> {
             !isSlashCommand && !pollIsEmail ? pollEventMeta : null,
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
-        }), { scheduleGrant: pollGrant })))
+        }), { scheduleGrant: pollGrant, quiet: steerPlan ? { stop: true } : quietCardOf({ ownerUserId: USER_ID, actingUserId: pollActor, senderType: pollSenderType, chatId }) })))
       if (!isSlashCommand) humanMessageEdits.rememberOriginal(
         viewStreamMessage({ seq: 0, kind: 'message_new', chatId: Number(chatId), messageId: msg.message.id, payload: msg as unknown as Record<string, unknown> }, ASSISTANT_ID),
         humanHandoff,
@@ -15190,7 +15460,7 @@ const threadLanes = new ThreadLaneManager({
     clearGoal: (path) => clearActiveGoal(path),
     hasActiveGoal: async (path) => (await findActiveGoalRow(path)) !== null,
   },
-  // 0.88.0: a thread the owner opens is a true fork with the agent's own
+  // 0.91.0: a thread the owner opens is a true fork with the agent's own
   // access, unless the owner turned `threads.fullAccess` off for this agent
   // (lib/thread-access.ts). Read at every thread start, so no restart.
   fullAccess: () => threadFullAccessOn(),
@@ -15305,7 +15575,7 @@ function permissionRequestHandler(): ((notification: unknown) => unknown) | null
 }
 
 /**
- * A prompt of an owner's full access thread (0.88.0), through the very
+ * A prompt of an owner's full access thread (0.91.0), through the very
  * handler the owner's own chat's prompts go through: auto approve, the hard
  * floor ("Always ask") and the approval card in the owner's main chat. With
  * no such handler the card is asked. Refused when neither can be reached.
@@ -15595,7 +15865,7 @@ function reconcilePendingThreads(why: string): void {
       // blocking, then check the lock again before recovering pending turns.
       // Nor once an update has drained: a turn started now would die with the restart, and the reconnect reads again.
       if (!answer.ok || !channelArmed || updateDrainMode) return 0
-      // THE START SWEEP (0.88.0), once per daemon life and before any pending turn runs: what a crash left
+      // THE START SWEEP (0.91.0), once per daemon life and before any pending turn runs: what a crash left
       // of threads that are already closed. Never an open thread, never the main session's files.
       if (!threadLeftoversSwept) {
         threadLeftoversSwept = true
@@ -15668,12 +15938,16 @@ const voiceRpc = new VoiceRpcHandler({
       `integrations/voice-rpc/${encodeURIComponent(rpcId)}/result`,
       body as unknown as Record<string, unknown>,
     ),
-  notify: (content, meta, consult) =>
+  notify: (content, meta, consult, dispatch) =>
     channelNotify(() => ({
         // A voice consult card is a delivery like any message: its own
         // single use token, and the owner only when the backend's stamp
         // verified (lib/private-turn.mjs voiceConsultActor). Its turn is
         // that consult's alone and ends with it (onConsultEnded below).
+        // A paired dispatch card the same way when the backend stamped it
+        // (voiceDispatchActor, the quiet turn, 2026-11-11): its turn is that task's alone and
+        // ends when the task is reported (complete_voice_task). One with no
+        // stamp is pushed with no delivery, exactly as before.
         content: consult
           ? privateTurns.deliver({
             content,
@@ -15681,9 +15955,16 @@ const voiceRpc = new VoiceRpcHandler({
             chatId: consult.chatId,
             consult: { consultId: consult.consultId, deadline: consult.actor?.deadline ?? null },
           })
-          : content,
+          : dispatch?.actor
+            ? privateTurns.deliver({
+              content,
+              actingUserId: dispatch.actor.actingUserId,
+              chatId: dispatch.chatId,
+              dispatch: { taskId: dispatch.taskId, deadline: dispatch.actor.deadline },
+            })
+            : content,
         meta,
-      })),
+      }), { quiet: voiceQuietCard({ ownerUserId: USER_ID, consult, dispatch, meta }) }),
   onConsultEnded: (consultId) => {
     privateTurns.endConsult(consultId)
   },
@@ -15709,7 +15990,9 @@ const voiceRpc = new VoiceRpcHandler({
   // The owner's model and effort picker (lib/model-effort-rpc.ts).
   modelEffort: modelEffortPicker,
   // A dispatch card queued behind a change is accepted at once.
-  cardsHeld: () => modelEffortControl.busy,
+  // A model or effort change holds every card; the owner's trusted turn holds this one unless it is the owner's own
+  // stamped ask in that turn's chat (lib/quiet-turn.mjs).
+  cardsHeld: (card) => modelEffortControl.busy || quietTurns.holds(card?.stamped ? { opens: 'ask', chatId: card.chatId } : null),
   // Threads phase 1 (lib/thread-rpc.ts): thread_turn, thread_close, aside.
   // Not on Windows in phase 1: the ops answer unsupported there.
   ...(process.platform !== 'win32'
@@ -16186,7 +16469,7 @@ const FLOOR_HOOK: FloorHookPresence = (() => {
  * lets the daemon say so, once at boot and in the refusal text. It never opens
  * the gate (lib/private-hook-presence.ts).
  */
-const PRIVATE_HOOK: PrivateHookPresence = (() => {
+const PRIVATE_HOOK_AT_BOOT: PrivateHookPresence = (() => {
   try {
     return privateHookPresence({
       installMethod: INSTALL_METHOD,
@@ -16202,6 +16485,14 @@ const PRIVATE_HOOK: PrivateHookPresence = (() => {
     return { registered: false, where: `could not look (${err})` }
   }
 })()
+// QUIETTURN4 (the two account test, 2026-11-13): the boot read above is not the last word. A clone's boot that found
+// no entry writes it (registerCloneHooksAtBoot) and the CLI can run it from its next prompt on, long before the
+// watcher's one restart; read once, the quiet turn hold stayed off and refusals blamed a running hook for the whole
+// daemon life. PRIVATE_HOOK.registered is read at each use and says the boot read OR the hook's own marker read for a
+// turn since (publishBrowserPrivateTurn, at every hook event). At boot the two are the same, so the boot line and the
+// boot hook registration below read what they always did.
+const privateHook = createPrivateHookLiveness({ atBoot: PRIVATE_HOOK_AT_BOOT, log })
+const PRIVATE_HOOK: PrivateHookPresence = privateHook.presence
 
 function safeUsername(): string {
   try {
@@ -16843,7 +17134,7 @@ async function forwardHumanEdit(view: StreamMessageView, transport: 'poll' | 'ws
       await trackMessageOperation(() => channelNotify(() => ({
           content: privateTurns.deliver({ content, chatId: edited.chatId, emailBasis: emailSendBasis({ senderType: 'user', messageId: edited.messageId, backlog: false }), fireKey: null, actingUserId: privateActor({ senderType: 'user', senderUserId: privateSenderUserId(edited.raw) }) }),
           meta,
-        })))
+        }), { quiet: quietCardOf({ ownerUserId: USER_ID, actingUserId: privateActor({ senderType: 'user', senderUserId: privateSenderUserId(edited.raw) }), senderType: 'user', chatId: edited.chatId }) }))
     }
     if (humanMessageEdits.isDeleted(edited)) return
     lastInboundAtMs = Date.now()
@@ -17252,7 +17543,7 @@ async function forwardStreamInbound(
               streamEventMeta,
               interrupted ? STEER_INTERRUPTED_META : null,
             ),
-          }), { scheduleGrant: streamGrant })),
+          }), { scheduleGrant: streamGrant, quiet: steerPlan ? { stop: true } : quietCardOf({ ownerUserId: USER_ID, actingUserId: streamActor, senderType: isSystem ? 'system' : view.senderKind, chatId }) })),
       )
       if (!isSlash) humanMessageEdits.rememberOriginal(view, humanHandoff)
       await humanHandoff
@@ -17544,7 +17835,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
           assistantId: String(ASSISTANT_ID),
           card: cardAnswer,
         }),
-      })),
+      }), { quiet: answer.tapperUserId === USER_ID ? { carried: true } : null }),
   )
     .then(() =>
       // Handoff to the MCP transport, NOT the moment the agent's turn applies
@@ -18192,6 +18483,8 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
+    // The quiet turn's server switch changes only with a backend restart, which this connect follows (review F3).
+    refreshServerQuietTurn()
     // From here every chat is behind this connection until a read says otherwise.
     socketEpoch++
     // Threads phase 1: a turn the person sent while this daemon was away is
@@ -18264,6 +18557,14 @@ function connectWebsocket(): void {
   // normalizeVoiceRpc (malformed frames drop; well-formed frames ALWAYS get
   // a result or descriptive error — the G2 silent-drop lesson). Duplicate
   // re-emits are deduped by rpcId inside the handler.
+  // The agent vault with no setup: the owner's app asked this machine to offer
+  // its vault key, or accepted it. Ids and a status only; nothing from the
+  // frame goes into a key or a request, and it is never shown to the model.
+  realtimeSocket.on('vault_host_setup', whenArmed('vault_host_setup', (frame: any) => {
+    if (Number(frame?.assistantId) !== Number(ASSISTANT_ID)) return
+    void runVaultAutoHost('frame')
+  }))
+
   realtimeSocket.on('voice_rpc', whenArmed('voice_rpc', (payload: any) => {
     if (updateDrainMode) return
     try {
@@ -18425,20 +18726,38 @@ function connectWebsocket(): void {
         return
       }
       const { taskId, question, context, chatId } = parsed.task
-      log(`voice_task_dispatch received (task=${taskId})`)
-      void trackMessageOperation(() => channelNotify(() => ({
-          content: buildVoiceTaskDispatchText({ taskId, question, context }),
-          meta: channelMeta(
-            {
-              event_type: 'voice_task_dispatch',
-              chat_id: chatId,
-              user_id: USER_ID,
-              assistant_id: ASSISTANT_ID,
-              transport: 'ws',
-            },
-            { task_id: taskId },
-          ),
-        }))).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
+      // The owner, only when the backend proved that this task answers the owner's own words on a live call and the
+      // stamp is for this agent, this owner and this very task (lib/private-turn.mjs voiceDispatchActor, the quiet turn, 2026-11-11).
+      // Read from the event's own eventMeta, never from its question, context or user_id.
+      const dispatchActor = voiceDispatchActor({ meta: payload?.eventMeta, taskId, frameAssistantId: payload?.assistant_id, assistantId: ASSISTANT_ID, ownerUserId: USER_ID, now: Date.now() })
+      log(`voice_task_dispatch received (task=${taskId}${dispatchActor ? ', the owner\'s own ask' : ''})`)
+      void trackMessageOperation(() => channelNotify(() => {
+          const text = buildVoiceTaskDispatchText({ taskId, question, context, ...(dispatchActor ? { ownerWords: dispatchActor.ownerWords } : {}) })
+          return {
+            // A stamped task is a delivery like a consult: its own single use token, a turn that is that task's alone,
+            // ended when the task is reported (complete_voice_task), when the CLI turn stops, or at its deadline. One
+            // with no stamp is pushed with no delivery, exactly as before.
+            // No emailBasis, like a consult's card: a voice ask is never a reason to send email.
+            content: dispatchActor
+              ? privateTurns.deliver({
+                content: text,
+                actingUserId: dispatchActor.actingUserId,
+                chatId,
+                dispatch: { taskId: dispatchActor.taskId, deadline: dispatchActor.deadline },
+              })
+              : text,
+            meta: channelMeta(
+              {
+                event_type: 'voice_task_dispatch',
+                chat_id: chatId,
+                user_id: USER_ID,
+                assistant_id: ASSISTANT_ID,
+                transport: 'ws',
+              },
+              { task_id: taskId },
+            ),
+          }
+        }, { quiet: quietCardOf({ ownerUserId: USER_ID, actingUserId: dispatchActor?.actingUserId ?? null, senderType: 'user', chatId, ask: true }) })).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
     } catch (err) {
       log(`voice_task_dispatch handler error: ${err}`)
     }
@@ -18848,7 +19167,7 @@ function connectWebsocket(): void {
         const meetingHandoff = trackMessageOperation(() => channelNotify(() => {
           card.content += privateTurns.noteUntracked({ chatId })
           return card
-        }))
+        }, { quiet: { within: 150_000 } }))
         humanMessageEdits.rememberOriginal(
           viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
           meetingHandoff, card.meta,
@@ -18974,7 +19293,7 @@ function connectWebsocket(): void {
             !isWsSlashCommand && !wsIsEmail ? wsEventMeta : null,
             interrupted ? STEER_INTERRUPTED_META : null,
           ),
-        }), { scheduleGrant: wsGrant })))
+        }), { scheduleGrant: wsGrant, quiet: steerPlan ? { stop: true } : quietCardOf({ ownerUserId: USER_ID, actingUserId: wsActor, senderType: wsSenderType, chatId }) })))
       if (!isWsSlashCommand) humanMessageEdits.rememberOriginal(
         viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
         humanHandoff,
@@ -19037,7 +19356,7 @@ function connectWebsocket(): void {
           assistant_id: ASSISTANT_ID,
           transport: 'ws',
         },
-      }))).catch(() => {})
+      }), { quiet: { carried: true } })).catch(() => {})
   }))
 
   realtimeSocket.on('peer_turn_yielded', whenArmed('peer_turn_yielded', (payload: any) => {
@@ -19312,7 +19631,7 @@ function connectWebsocket(): void {
         const meetingHandoff = trackMessageOperation(() => channelNotify(() => {
           card.content += privateTurns.noteUntracked({ chatId })
           return card
-        }))
+        }, { quiet: { within: 150_000 } }))
         if (senderId == null) humanMessageEdits.rememberOriginal(
           viewStreamMessage({ seq: 0, kind: 'message_new', chatId: null, messageId, payload }, ASSISTANT_ID),
           meetingHandoff, card.meta,
@@ -19375,7 +19694,7 @@ function connectWebsocket(): void {
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
           },
-        }))).catch(() => {})
+        }), { quiet: { within: 150_000 } })).catch(() => {})
     }
   }))
 
@@ -19446,7 +19765,7 @@ function connectWebsocket(): void {
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
           },
-        }))).catch(() => {})
+        }), { quiet: { within: 150_000 } })).catch(() => {})
     } catch (err) {
       log(`meeting_state_resync handler error: ${err}`)
     }
@@ -20308,7 +20627,7 @@ async function main(): Promise<void> {
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
   setInterval(() => { agentStatePublisher.tick(); publishBrowserPrivateTurn() }, AGENT_STATE_TICK_MS).unref()
-  // A closed thread is removed when it closes (0.88.0); this hourly pass removes one whose close was cut short.
+  // A closed thread is removed when it closes (0.91.0); this hourly pass removes one whose close was cut short.
   setInterval(() => {
     void threadLanes
       .sweepClosed(Date.now())
@@ -20807,6 +21126,7 @@ async function main(): Promise<void> {
       startHookIntakeIfHolder()
       handleUnboundBeforeArm()
       reconcilePendingThreads('re-armed')
+      void runVaultAutoHost('armed')
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -21432,6 +21752,9 @@ async function main(): Promise<void> {
     // so the owner's chat never shows a silently dead agent. Cheap (reads only
     // appended bytes) and deduped per rest episode inside reportResting.
     setInterval(reportResting, 30_000).unref()
+    // The pill follows the session: one look now, then on a timer.
+    void modelEffortLiveReporter.tick()
+    setInterval(() => void modelEffortLiveReporter.tick(), MODEL_EFFORT_LIVE_REPORT_MS).unref()
     // Same cadence, same transcripts: the shared Claude login state.
     setInterval(sweepClaudeLogin, 30_000).unref()
     // The goal lane's belt: a Stop that never reached this process, or a
@@ -21674,6 +21997,8 @@ async function main(): Promise<void> {
     handleUnboundBeforeArm()
     // The first connect after a boot came before this arm: run what waits.
     reconcilePendingThreads('armed')
+    // Zero setup: this machine offers its vault key by itself (no terminal).
+    void runVaultAutoHost('armed')
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself

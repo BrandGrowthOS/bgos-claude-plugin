@@ -134,7 +134,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       if (sub[0] === 'rev-parse' && sub[2] === '--git-common-dir') return { ok: true, stdout: `${join(AGENT, '.git')}\n` }
       if (sub[0] === 'rev-parse' && sub[2] === '--git-dir') return { ok: true, stdout: `${join(AGENT, '.git', 'worktrees', basename(args[1]!))}\n` }
       if (sub[0] === 'for-each-ref') return { ok: true, stdout: `refs/heads/main\nrefs/heads/hoai/thread-${'101'}\n` }
-      // 0.88.0: a close asks which branch the worktree is on before it saves anything there.
+      // 0.91.0: a close asks which branch the worktree is on before it saves anything there.
       if (sub[0] === 'symbolic-ref') return { ok: true, stdout: `refs/heads/hoai/thread-${basename(args[1]!)}\n` }
       if (sub[0] === 'branch' && sub[1] === '-D') { branchesDeleted.push(sub[2]!); return { ok: true, stdout: '' } }
       if (sub[0] === 'worktree' && sub[1] === 'add') { dirs.add(join(AGENT, sub[2]!)); return { ok: true, stdout: '' } }
@@ -149,7 +149,7 @@ function rig(opts: { repo?: boolean; mainId?: string | null; startAt?: number; f
       appendFile: (p, s, mode) => { files.set(p, (files.get(p) ?? '') + s); if (mode !== undefined) modes.set(p, mode) },
       copyFile: (a, b) => { const v = files.get(a); if (v === undefined) throw new Error(`ENOENT ${a}`); files.set(b, v) },
       unlink: (p) => { if (!files.delete(p)) throw new Error(`ENOENT ${p}`) },
-      // Everything under the path goes, as on a real disk (0.88.0: a close removes whole folders).
+      // Everything under the path goes, as on a real disk (0.91.0: a close removes whole folders).
       rmrf: (p) => { removed.push(p); dirs.delete(p); for (const k of [...files.keys()]) if (k === p || k.startsWith(p + sep)) files.delete(k) },
       createExclusive: (p, s) => { if (files.has(p)) throw new Error(`EEXIST ${p}`); files.set(p, s) },
       rename: (a, b) => { const v = files.get(a); if (v === undefined) throw new Error(`ENOENT ${a}`); files.delete(a); files.set(b, v) },
@@ -489,7 +489,7 @@ test('a lane that dies mid turn fails that turn and frees its slot', async () =>
   assert.equal(r.spawned.length, 3, 'the waiting thread took the slot')
 })
 
-// 0.88.0: a close no longer keeps the worktree for 7 days. It removes everything at once (test/thread-cleanup.test.ts).
+// 0.91.0: a close no longer keeps the worktree for 7 days. It removes everything at once (test/thread-cleanup.test.ts).
 test('close stops the lane and removes its worktree, its session file and its state at once, with nothing left for a sweep', async () => {
   const r = rig()
   r.manager.turn(turn('101'))
@@ -621,7 +621,7 @@ for (const scenario of ['sweep', 'delete', 'sweep then close'] as const) {
     await closing
     await r.manager.idle()
     if (scenario === 'sweep then close') {
-      // 0.88.0: a close removes the state too, so the deleted fork cannot be persisted by it.
+      // 0.91.0: a close removes the state too, so the deleted fork cannot be persisted by it.
       assert.equal(r.files.has(join(STATE, '101.json')), false, 'a later close cannot persist the deleted fork')
       assert.deepEqual(r.manager.turn(turn('101', { mode: 'reply', replyId: '1012', text: 'queued reopen' })), { accepted: true, state: 'waiting' })
     } else {
@@ -763,7 +763,7 @@ test('close with removeWorktree removes the worktree, the fork session file and 
   assert.deepEqual(await r.manager.close({ rootId: '101', removeWorktree: true }), { stopped: true })
   c.exit(null)
   await r.manager.idle()
-  // 0.88.0: remove, then prune, then the branch.
+  // 0.91.0: remove, then prune, then the branch.
   assert.deepEqual(r.gitCalls.slice(-3), [
     ['-C', AGENT, 'worktree', 'remove', '--force', wt('101')],
     ['-C', AGENT, 'worktree', 'prune'],
@@ -781,7 +781,7 @@ test('deleting a read only lane removes its plain folder', async () => {
   await r.manager.close({ rootId: '101', removeWorktree: true })
   r.spawned[0]!.child.exit(null)
   await r.manager.idle()
-  // 0.88.0: the folder, then the whole project folder of that folder (its session file and tool results inside it).
+  // 0.91.0: the folder, then the whole project folder of that folder (its session file and tool results inside it).
   assert.deepEqual(r.removed.slice(0, 2), [wt('101'), dirname(sessionTranscriptPath(HOME, wt('101'), FORK_A, ''))])
   for (const p of r.removed.slice(2)) assert.ok(p.includes(FORK_A), `only paths keyed by the fork's own id: ${p}`)
 })
@@ -825,7 +825,7 @@ test('reconcile runs a reply turn for each pending thread and skips one already 
   assert.equal(ran, 1)
   assert.equal(r.spawned.length, 2)
   assert.equal(r.spawned[1]!.cwd, wt('102'))
-  // 0.88.0: a reply for a thread with no session here (it was closed and cleaned up) is framed like a first turn.
+  // 0.91.0: a reply for a thread with no session here (it was closed and cleaned up) is framed like a first turn.
   assert.equal(r.spawned[1]!.child.stdin[0], userMessageLine(threadTurnPrompt({ mode: 'reply', text: 'pending one', title: 'T102', rootText: '', readOnly: false, agentFolder: AGENT, fresh: true })))
   assert.ok(r.spawned[1]!.child.stdin[0]!.includes('pending one'))
 })
@@ -923,7 +923,7 @@ test('a plain close while the worktree is still being made removes it once it is
   await r.manager.idle()
   assert.equal(r.spawned.length, 0)
   assert.equal(r.files.has(sessionTranscriptPath(HOME, wt('101'), MAIN, '')), false)
-  // 0.88.0: nothing waits for a sweep.
+  // 0.91.0: nothing waits for a sweep.
   assert.equal(r.dirs.has(wt('101')), false, 'the worktree made meanwhile is removed')
   assert.equal(r.files.has(join(STATE, '101.json')), false)
   assert.deepEqual(await r.manager.sweepClosed(r.clock.now + 7 * DAY + 1), [])
@@ -1185,7 +1185,7 @@ test('delete removes the fork session folder (its tool-results) with the session
   await r.manager.close({ rootId: '101', removeWorktree: true })
   c.exit(null)
   await r.manager.idle()
-  // 0.88.0: the whole project folder of the thread's own folder goes, the session folder inside it.
+  // 0.91.0: the whole project folder of the thread's own folder goes, the session folder inside it.
   assert.ok(r.removed.includes(dirname(forkDir(wt('101'), FORK_A))), `removed: ${r.removed.join(', ')}`)
 })
 
@@ -1533,7 +1533,7 @@ test('a delayed summary from a closed lane cannot overwrite its reopened lane st
       const reopened = saved(r)
       assert.equal(reopened.closedAt, null)
       assert.equal(reopened.pid, r.spawned[1]!.child.pid)
-      // 0.88.0: the close removed the closed lane's state, so the reopened lane is a new one
+      // 0.91.0: the close removed the closed lane's state, so the reopened lane is a new one
       // and the closed lane's late summary has nothing of it to mark.
       assert.equal(reopened.lastReplyId, '')
       if (closeAgain) {

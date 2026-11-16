@@ -36,7 +36,17 @@ import {
   windowsCapability,
   windowsHealth,
 } from '../lib/agent-windows-plan.mjs'
-import { POSIX_VIEWER_FILE_NAME, VIEWER_LAUNCHER_FILE_NAME, VIEWER_SCRIPT_FILE_NAME, findTool, runWindowsPass } from '../lib/agent-windows.mjs'
+import {
+  POSIX_VIEWER_FILE_NAME,
+  TMUX_FIELD_SEPARATOR,
+  VIEWER_LAUNCHER_FILE_NAME,
+  VIEWER_SCRIPT_FILE_NAME,
+  findTool,
+  hasUtf8Locale,
+  runWindowsPass,
+  splitTmuxFields,
+  tmuxEnv,
+} from '../lib/agent-windows.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 
@@ -496,7 +506,7 @@ test('runWindowsPass win32: an unreadable process table opens nothing (a second 
 
 // -- runWindowsPass, Mac and Linux --------------------------------------------------------------
 
-const PHOME = '/Users/kc'
+const PHOME = '/Users/person'
 const TMUX = '/opt/homebrew/bin/tmux'
 
 /** A fake tmux: sessions and clients per socket ('' = the default server). */
@@ -516,8 +526,14 @@ function tmuxEffects(servers: Record<string, { sessions: Array<[string, number]>
     }
     const server = servers[socket]
     if (!server) return { code: 1, stdout: '', stderr: `no server running on /tmp/tmux-501/${socket || 'default'}`, error: null, timedOut: false }
-    if (list[0] === 'list-sessions') return { code: 0, stdout: server.sessions.map(([n, c]) => `${n}\t${c}`).join('\n') + '\n', stderr: '', error: null, timedOut: false }
-    if (list[0] === 'list-clients') return { code: 0, stdout: server.clients.map(([n, p, ro, s]) => `${n}\t${p}\t${ro}\t${s}`).join('\n') + '\n', stderr: '', error: null, timedOut: false }
+    // The answer is the -F format the pass asked for, rendered as tmux renders it.
+    const format = list[list.indexOf('-F') + 1] ?? ''
+    const render = (vars: Record<string, string | number>) => format.replace(/#\{(\w+)\}/g, (_, key: string) => String(vars[key] ?? ''))
+    if (list[0] === 'list-sessions') return { code: 0, stdout: server.sessions.map(([n, c]) => render({ session_name: n, session_created: c })).join('\n') + '\n', stderr: '', error: null, timedOut: false }
+    if (list[0] === 'list-clients') {
+      const lines = server.clients.map(([n, p, ro, s]) => render({ client_name: n, client_pid: p, client_readonly: ro, session_name: s }))
+      return { code: 0, stdout: lines.join('\n') + '\n', stderr: '', error: null, timedOut: false }
+    }
     return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
   }
   return {
@@ -548,7 +564,7 @@ const NO_TMUX_KILL = (fx: ReturnType<typeof tmuxEffects>) =>
 
 test('runWindowsPass darwin, setting ON: a read only Terminal per agent session (own socket, or the default server for a one shot), opened with open -a Terminal; no Automation prompt, nothing typed', async () => {
   const fs = memoryFs()
-  const rows = [posixRow('912', '/Users/kc/hoai-agents/Wolf'), posixRow('55', '/Users/kc/hoai-agents/Nova', { supervisor: 'launcher-live' })]
+  const rows = [posixRow('912', '/Users/person/hoai-agents/Wolf'), posixRow('55', '/Users/person/hoai-agents/Nova', { supervisor: 'launcher-live' })]
   const fx = tmuxEffects({ 'hoai-912': { sessions: [['hoai-912', 1000]], clients: [] }, '': { sessions: [['hoai-55', 900], ['scratch', 10]], clients: [] } })
   const out = await runWindowsPass(posixCtx('darwin', fx, fs, rows, true) as any)
   assert.deepEqual(out.report, { mode: 'tmux', reason: 'showing' })
@@ -569,7 +585,7 @@ test('runWindowsPass darwin, setting ON: a read only Terminal per agent session 
 
 test('runWindowsPass darwin, setting OFF: each READ ONLY client (a viewer) is detached; a person\'s own read-write attach is left alone; the agent session is never touched', async () => {
   const fs = memoryFs()
-  const rows = [posixRow('912', '/Users/kc/hoai-agents/Wolf')]
+  const rows = [posixRow('912', '/Users/person/hoai-agents/Wolf')]
   const fx = tmuxEffects({ 'hoai-912': { sessions: [['hoai-912', 1000]], clients: [['/dev/ttys003', 3003, 1, 'hoai-912'], ['/dev/ttys004', 3004, 0, 'hoai-912']] } })
   const out = await runWindowsPass(posixCtx('darwin', fx, fs, rows, false, { ...emptyViewerMemory(), lastShow: true, scanned: true }) as any)
   assert.deepEqual(out.report, { mode: 'tmux', reason: 'setting_off' })
@@ -582,7 +598,7 @@ test('runWindowsPass darwin, setting OFF: each READ ONLY client (a viewer) is de
 
 test('runWindowsPass darwin per agent: with the computer value off, only the agent set On gets a Terminal; the one not listed gets nothing', async () => {
   const fs = memoryFs()
-  const rows = [posixRow('912', '/Users/kc/hoai-agents/Wolf'), posixRow('55', '/Users/kc/hoai-agents/Nova', { supervisor: 'launcher-live' })]
+  const rows = [posixRow('912', '/Users/person/hoai-agents/Wolf'), posixRow('55', '/Users/person/hoai-agents/Nova', { supervisor: 'launcher-live' })]
   const fx = tmuxEffects({ 'hoai-912': { sessions: [['hoai-912', 1000]], clients: [] }, '': { sessions: [['hoai-55', 900]], clients: [] } })
   const memory = { ...emptyViewerMemory(), lastShow: false, scanned: true }
   const out = await runWindowsPass({ ...posixCtx('darwin', fx, fs, rows, false, memory), agentWindows: { '912': true } } as any)
@@ -592,7 +608,7 @@ test('runWindowsPass darwin per agent: with the computer value off, only the age
 })
 
 test('runWindowsPass darwin: Terminal could not be opened is said as open_failed; a Mac without tmux opens nothing and says no_tmux', async () => {
-  const rows = [posixRow('912', '/Users/kc/hoai-agents/Wolf')]
+  const rows = [posixRow('912', '/Users/person/hoai-agents/Wolf')]
   const failing = tmuxEffects({ 'hoai-912': { sessions: [['hoai-912', 1000]], clients: [] } }, { openCode: 1 })
   const out = await runWindowsPass(posixCtx('darwin', failing, memoryFs(), rows, true) as any)
   assert.deepEqual(out.report, { mode: 'tmux', reason: 'open_failed' })
@@ -603,15 +619,15 @@ test('runWindowsPass darwin: Terminal could not be opened is said as open_failed
 })
 
 test('runWindowsPass linux: with a screen, the first terminal on PATH runs a read only tmux attach (no wrapper shell); with no screen nothing runs and it says no_screen', async () => {
-  const rows = [posixRow('912', '/home/kc/hoai-agents/Wolf', { stateDir: '/home/kc/.bgos-agent/912' })]
+  const rows = [posixRow('912', '/home/person/hoai-agents/Wolf', { stateDir: '/home/person/.bgos-agent/912' })]
   const fx = tmuxEffects({ 'hoai-912': { sessions: [['hoai-912', 1000]], clients: [] } })
-  const ctx = { ...posixCtx('linux', fx, memoryFs(), rows, true, emptyViewerMemory(), { DISPLAY: ':0' }), home: '/home/kc', hasCommand: (n: string) => n === 'gnome-terminal' }
+  const ctx = { ...posixCtx('linux', fx, memoryFs(), rows, true, emptyViewerMemory(), { DISPLAY: ':0' }), home: '/home/person', hasCommand: (n: string) => n === 'gnome-terminal' }
   const out = await runWindowsPass(ctx as any)
   assert.deepEqual(out.report, { mode: 'tmux', reason: 'showing' })
   assert.deepEqual(fx.spawns.map((s) => [s.file, ...s.args]), [['gnome-terminal', '--', TMUX, '-L', 'hoai-912', 'attach-session', '-r', '-t', '=hoai-912']])
   assert.equal(fx.spawns[0]!.opts.env.TMUX, undefined)
   const dark = tmuxEffects({ 'hoai-912': { sessions: [['hoai-912', 1000]], clients: [] } })
-  const none = await runWindowsPass({ ...posixCtx('linux', dark, memoryFs(), rows, true), home: '/home/kc', hasCommand: () => true } as any)
+  const none = await runWindowsPass({ ...posixCtx('linux', dark, memoryFs(), rows, true), home: '/home/person', hasCommand: () => true } as any)
   assert.deepEqual(none.report, { mode: 'none', reason: 'no_screen' })
   assert.deepEqual(dark.execs, [])
   assert.deepEqual(dark.spawns, [])
@@ -619,8 +635,43 @@ test('runWindowsPass linux: with a screen, the first terminal on PATH runs a rea
 
 test('findTool: PATH first, then the fixed dirs (Homebrew, /usr/local, ~/.local/bin, /usr/bin, /bin); null when nowhere', () => {
   const exists = (p: string) => p === '/opt/homebrew/bin/tmux' || p === '/custom/bin/tmux'
-  assert.equal(findTool('tmux', { env: { PATH: '/custom/bin:/usr/bin' }, home: '/Users/kc', exists }), '/custom/bin/tmux')
-  assert.equal(findTool('tmux', { env: { PATH: '/usr/bin' }, home: '/Users/kc', exists }), '/opt/homebrew/bin/tmux')
-  assert.equal(findTool('tmux', { env: { PATH: '/usr/bin' }, home: '/Users/kc', exists: (p: string) => p === '/Users/kc/.local/bin/tmux' }), '/Users/kc/.local/bin/tmux')
-  assert.equal(findTool('tmux', { env: {}, home: '/Users/kc', exists: () => false }), null)
+  assert.equal(findTool('tmux', { env: { PATH: '/custom/bin:/usr/bin' }, home: '/Users/person', exists }), '/custom/bin/tmux')
+  assert.equal(findTool('tmux', { env: { PATH: '/usr/bin' }, home: '/Users/person', exists }), '/opt/homebrew/bin/tmux')
+  assert.equal(findTool('tmux', { env: { PATH: '/usr/bin' }, home: '/Users/person', exists: (p: string) => p === '/Users/person/.local/bin/tmux' }), '/Users/person/.local/bin/tmux')
+  assert.equal(findTool('tmux', { env: {}, home: '/Users/person', exists: () => false }), null)
+})
+
+// -- tmux with no UTF-8 locale (board row c502fb7b; the pass itself is in test/agent-windows-locale.test.ts) --
+
+test('hasUtf8Locale: the locale tmux reads is LC_ALL, else LC_CTYPE, else LANG, the first one set; only a UTF-8 one counts', () => {
+  assert.equal(hasUtf8Locale({}), false, 'a launchd job has none')
+  assert.equal(hasUtf8Locale({ LANG: 'en_US.UTF-8' }), true)
+  assert.equal(hasUtf8Locale({ LC_CTYPE: 'C.utf8' }), true)
+  assert.equal(hasUtf8Locale({ LC_ALL: 'C', LANG: 'en_US.UTF-8' }), false, 'LC_ALL=C wins over a UTF-8 LANG')
+  assert.equal(hasUtf8Locale({ LC_ALL: '', LC_CTYPE: '', LANG: 'de_DE.UTF-8' }), true, 'an empty one is not set')
+  assert.equal(hasUtf8Locale({ LANG: 'C' }), false)
+  assert.equal(hasUtf8Locale(undefined as any), false)
+})
+
+test('tmuxEnv: drops TMUX and TMUX_PANE; adds LC_ALL only when the locale is not UTF-8 (en_US.UTF-8 on a Mac, C.UTF-8 elsewhere); never changes the caller\'s object', () => {
+  const launchd = { PATH: '/usr/bin:/bin', HOME: '/Users/person', TMUX: '/tmp/tmux-501/default,1,0', TMUX_PANE: '%3' }
+  assert.deepEqual(tmuxEnv(launchd, 'darwin'), { PATH: '/usr/bin:/bin', HOME: '/Users/person', LC_ALL: 'en_US.UTF-8' })
+  assert.deepEqual(tmuxEnv({ PATH: '/usr/bin' }, 'linux'), { PATH: '/usr/bin', LC_ALL: 'C.UTF-8' })
+  assert.deepEqual(tmuxEnv({ PATH: '/usr/bin', LC_ALL: 'C' }, 'darwin'), { PATH: '/usr/bin', LC_ALL: 'en_US.UTF-8' })
+  const utf8 = { PATH: '/usr/bin', LANG: 'en_GB.UTF-8', LC_CTYPE: 'en_GB.UTF-8' }
+  assert.deepEqual(tmuxEnv(utf8, 'linux'), utf8, 'a UTF-8 environment is passed on as it is')
+  assert.deepEqual(tmuxEnv(utf8, 'darwin'), utf8)
+  assert.equal('TMUX' in launchd && !('LC_ALL' in launchd), true, 'the caller keeps its own environment')
+  assert.deepEqual(tmuxEnv(undefined, 'darwin'), { LC_ALL: 'en_US.UTF-8' })
+})
+
+test('splitTmuxFields: splits on the colon, keeps any colon after the last split in the last field, and refuses a line with too few fields (a tab tmux printed as _ included)', () => {
+  assert.equal(TMUX_FIELD_SEPARATOR, ':')
+  assert.deepEqual(splitTmuxFields('1794619730:hoai-912', 2), ['1794619730', 'hoai-912'])
+  assert.deepEqual(splitTmuxFields('3003:1:hoai-912:/dev/ttys003', 4), ['3003', '1', 'hoai-912', '/dev/ttys003'])
+  assert.deepEqual(splitTmuxFields('3003:1:hoai-912:odd:name', 4), ['3003', '1', 'hoai-912', 'odd:name'])
+  assert.deepEqual(splitTmuxFields('1794619730:hoai-912\r', 2), ['1794619730', 'hoai-912'])
+  assert.equal(splitTmuxFields('hoai-912_1794619730', 2), null)
+  assert.equal(splitTmuxFields('', 2), null)
+  assert.deepEqual(splitTmuxFields('only', 1), ['only'])
 })

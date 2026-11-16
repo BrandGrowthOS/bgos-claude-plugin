@@ -403,7 +403,7 @@ export const THREAD_CAPABILITY_TOKENS: readonly string[] = Object.freeze(['messa
 
 /**
  * A thread the owner opens is a true fork with the agent's full access, in
- * the agent's own folder (0.88.0, lib/thread-lane-args.ts threadFullArgs).
+ * the agent's own folder (0.91.0, lib/thread-lane-args.ts threadFullArgs).
  * Declared beside the thread tokens only while the owner's setting
  * `threads.fullAccess` is on (lib/thread-access.ts): the server then tells
  * the agent's main session so (BGOS capability canon, `-threadfull1`). The

@@ -1,6 +1,6 @@
 /**
  * A thread lane manager on fakes (no claude, no git, no disk), for the full
- * access fork and the cleanup tests (0.88.0). The disk is a map of files and
+ * access fork and the cleanup tests (0.91.0). The disk is a map of files and
  * a set of folders, so "nothing is left" is a question the test can ask of
  * every path at once; git answers from a small model of one repository.
  */

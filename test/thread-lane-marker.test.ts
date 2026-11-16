@@ -1,6 +1,6 @@
 /**
  * Never a second copy of this plugin inside an owner's full access thread
- * (lib/thread-lane-marker.mjs, 0.88.0), and never a plugin kept out anywhere
+ * (lib/thread-lane-marker.mjs, 0.91.0), and never a plugin kept out anywhere
  * else: the mark is the path of the thread's own lane state file, believed
  * only by a process that file's own CLI started, and by a hook of that
  * file's own session.

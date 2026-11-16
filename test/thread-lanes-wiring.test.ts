@@ -29,7 +29,7 @@ function reconcileStartup() {
   let answer: { ok: boolean } | null = null
   const probe = new Promise<{ ok: boolean }>((resolve) => { resolveProbe = resolve })
   const requests: Array<{ path: string; options: unknown; assistantIds: string[] }> = []
-  /** What ran, in order: the start sweep (0.88.0) and each pending read. */
+  /** What ran, in order: the start sweep (0.91.0) and each pending read. */
   const order: string[] = []
   const sweep = { fails: false }
   const scope = {

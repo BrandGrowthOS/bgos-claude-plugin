@@ -39,6 +39,7 @@ import {
   voiceConsultActor,
 } from '../lib/private-turn.mjs'
 import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
+import { voiceQuietCard } from '../lib/quiet-turn.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 import { VoiceRpcHandler, type VoiceRpcDeps, type VoiceRpcFrame } from '../lib/voice-rpc.ts'
 
@@ -435,7 +436,7 @@ test('the handler names nobody for another agent’s or another owner’s stamp,
 // ── The daemon wiring (server.ts, executed) ──────────────────────────────────
 
 const source = readFileSync('server.ts', 'utf8')
-const voiceDepsStart = source.indexOf('  notify: (content, meta, consult) =>')
+const voiceDepsStart = source.indexOf('  notify: (content, meta, consult, dispatch) =>')
 const voiceDepsSource = source.slice(voiceDepsStart, source.indexOf('  getIdentity: getVoiceIdentity,', voiceDepsStart))
 function execute(body: string, bindings: Record<string, unknown>) {
   const js = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
@@ -469,6 +470,8 @@ test('the daemon delivers every consult card through privateTurns.deliver and en
     get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (n: { params: { content: string; meta: unknown } }) => { sent.push(n.params) } },
     privateTurns: f.tracker,
+    // The voice card's descriptor for the quiet turn hold (2026-11-11), as server.ts names it.
+    voiceQuietCard, USER_ID: OWNER,
   })
   const h = handlerDeps()
   const handler = new VoiceRpcHandler({ ...h.deps, notify: wiring.notify, onConsultEnded: wiring.onConsultEnded })
@@ -494,6 +497,8 @@ test('the daemon names nobody on an unstamped consult card, and that card still 
     get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (n: { params: { content: string; meta: { user_id?: unknown } } }) => { sent.push(n.params) } },
     privateTurns: f.tracker,
+    // The voice card's descriptor for the quiet turn hold (2026-11-11), as server.ts names it.
+    voiceQuietCard, USER_ID: OWNER,
   })
   f.submit(f.tracker.deliver({ content: 'owner typed', actingUserId: OWNER, chatId: '10' }))
   assert.equal(f.gate().actingUserId, OWNER)

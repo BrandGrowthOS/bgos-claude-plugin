@@ -60,7 +60,7 @@ test('the three thread ops pass the normalizer and are guarded locally', () => {
 test('thread_turn is acked, handed to the lanes, and answered with accepted and the state at once', async () => {
   const r = rig()
   await r.handler.handle(frame(THREAD_TURN, turnPayload))
-  // 0.88.0: the owner's own frame (no lane stamp, no person named) says the owner opened the thread.
+  // 0.91.0: the owner's own frame (no lane stamp, no person named) says the owner opened the thread.
   assert.deepEqual(r.turns, [{ chatId: '55', rootId: '101', replyId: '1010', mode: 'start', text: 'look', title: 'T', rootText: 'root', opener: 'owner' }])
   assert.deepEqual(r.timeline, ['ack rpc-1', 'result rpc-1'])
   assert.deepEqual(r.results[0]!.body, { ok: true, payload: { accepted: true, state: 'waiting' } })

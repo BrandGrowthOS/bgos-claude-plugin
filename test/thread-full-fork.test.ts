@@ -1,6 +1,6 @@
 /**
  * An owner's thread is a true fork with the agent's full access; a share
- * recipient's thread keeps the confinement it had (0.88.0).
+ * recipient's thread keeps the confinement it had (0.91.0).
  *
  * The split is one function (threadAccess) fed by who opened the thread
  * (threadOpener, read from the frame's own lane stamp) and the owner's
@@ -328,7 +328,7 @@ test('RECIPIENT: a working thread is exactly the confined command of before: --r
   assert.deepEqual(s.args, threadLaneArgs({
     mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP,
     confinement: { root: wt('101'), readOnly: false, shellSandbox: true, protectedPaths: settings.sandbox.filesystem.denyWrite, secretPaths: settings.sandbox.filesystem.denyRead, readablePaths: [] },
-  }), 'byte for byte the command threadLaneArgs builds, as before 0.88.0')
+  }), 'byte for byte the command threadLaneArgs builds, as before 0.91.0')
   assert.ok(settings.sandbox.filesystem.denyRead.includes(join(HOME, '.bgos-agent')), 'the agents\' credentials stay unreadable to its Bash')
   assert.ok(s.args.includes('--restricted'))
   assert.equal(flag(s.args, '--tools'), 'Bash,Read,Edit,Write,Glob,Grep,NotebookEdit,WebFetch,WebSearch')
@@ -420,7 +420,7 @@ test('the setting is read at each start: turned off, the owner\'s thread goes ba
   assert.ok(r.files.has(r.mainPath), 'the main transcript is never moved')
 })
 
-test('a thread opened confined before 0.88.0 gets full access on its owner\'s next message: its session moves to the agent folder and it is told where its earlier work is', async () => {
+test('a thread opened confined before 0.91.0 gets full access on its owner\'s next message: its session moves to the agent folder and it is told where its earlier work is', async () => {
   const r = rig({ fullAccess: true })
   r.dirs.add(wt('101'))
   r.files.set(join(wt('101'), '.git'), 'gitdir: x\n')

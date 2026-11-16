@@ -1,6 +1,6 @@
 /**
  * The owner's full access thread and a recipient's confined thread against the
- * REAL Claude Code CLI (0.88.0). Opt in: set THREADS_FULL_CLAUDE to a local
+ * REAL Claude Code CLI (0.91.0). Opt in: set THREADS_FULL_CLAUDE to a local
  * CLI executable. A scripted Messages API on 127.0.0.1 stands in for the
  * model (no account, no real key), and everything lives in one throwaway
  * folder under the home folder (the CLI's sandbox lets every command write
@@ -17,7 +17,7 @@
  *             prompt reaches the approval path; git checkout is refused; an
  *             active /goal of the main chat does not come along; closing the
  *             thread leaves nothing of it on disk.
- *  RECIPIENT  the same command as before 0.88.0: Bash cannot write outside
+ *  RECIPIENT  the same command as before 0.91.0: Bash cannot write outside
  *             its worktree; on a repository above the copy limit it has no
  *             Bash and no editing tool at all.
  */

@@ -4,7 +4,7 @@
  * worktree and its branch are made, the `-b` refusal falls back to the branch
  * left from an earlier worktree, the lane's sandbox protects the source
  * repository's own git state, and Delete removes the worktree and only its
- * branch. Since 0.88.0 a plain close removes the worktree too (remove and
+ * branch. Since 0.91.0 a plain close removes the worktree too (remove and
  * prune) and its branch unless the branch holds work found nowhere else;
  * uncommitted changes are saved on the branch first. claude itself is a
  * fake: no process starts.
@@ -247,7 +247,7 @@ test('a real git on Linux with no stash: the placeholders are invisible to git, 
   }
 })
 
-// -- 0.88.0: a closed thread leaves nothing behind, with a real git ------------
+// -- 0.91.0: a closed thread leaves nothing behind, with a real git ------------
 
 test('close removes the worktree and prunes it, and the branch with it when the branch holds nothing of its own', async () => {
   const r = setup()

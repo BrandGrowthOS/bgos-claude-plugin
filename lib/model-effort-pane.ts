@@ -40,7 +40,7 @@
  * prompt's first input column, on that row. Anything else remains unknown.
  */
 
-import { EXACT_MODEL_LABELS, isModelFamily } from './compact-inject.ts'
+import { EXACT_MODEL_LABELS, PANE_STATE_SEPARATOR, isModelFamily } from './compact-inject.ts'
 
 export interface PaneState {
   /** tmux pane id, %N. */
@@ -65,7 +65,7 @@ export interface TerminalCursor {
 
 /** Parse lib/compact-inject.ts PANE_STATE_FORMAT, or null for anything else. */
 export function parsePaneState(stdout: string): PaneState | null {
-  const fields = String(stdout ?? '').replace(/\r?\n$/, '').split('\t')
+  const fields = String(stdout ?? '').replace(/\r?\n$/, '').split(PANE_STATE_SEPARATOR)
   if (fields.length !== 5 && fields.length !== 8) return null
   const [paneId, tty, dead, inMode, pid] = fields as [string, string, string, string, string]
   if (!/^%\d+$/.test(paneId)) return null
@@ -330,12 +330,25 @@ export function readComposer(capture: string, cursor?: TerminalCursor): Composer
   }
   if (composer.more.length > 0) return 'unknown'
   if (first !== 'unknown') return first
-  // 2.1.319 leaves the cursor to the terminal. Only a completely blank row
-  // with the visible terminal cursor immediately after the prompt is empty.
-  // Typed spaces move that cursor; dim placeholders and tags remain unknown.
-  if (composer.first.length !== 0) return 'unknown'
+  // 2.1.319 leaves the cursor to the terminal. A row is empty only with the
+  // visible terminal cursor immediately after the prompt, and nothing on it
+  // but, at most, the CLI's own dim hint starting at that cursor (seen on
+  // 2026-11-12: "restart the session to load it" and suggested prompts sat
+  // in 6 of 8 agents' boxes on one machine, so refusing every dim
+  // word refused every switch). Typed text is never dim and moves the
+  // cursor; a typed space moves it too; the CLI's reference tags are the
+  // owner's content and stay unknown.
+  if (composer.first.length !== 0 && !isDimHint(composer.first)) return 'unknown'
   return cursor?.visible === true && Number.isSafeInteger(cursor.x) && Number.isSafeInteger(cursor.y)
     && cursor.x === composer.column && cursor.y === composer.row ? 'empty' : 'unknown'
+}
+
+/** Only the CLI's dim hint: drawn from the first cell, every visible glyph SGR 2, no cursor cell, not a reference tag. */
+function isDimHint(chars: readonly Glyph[]): boolean {
+  const head = chars[0]
+  if (!head || isBlank(head) || !head.faint) return false
+  if (chars.some((g) => g.inverse || (!isBlank(g) && !g.faint))) return false
+  return !REFERENCE_TAG_RE.test(chars.map((g) => g.ch).join(''))
 }
 
 /** The model switch question only, with Yes selected and no other UI below it. */

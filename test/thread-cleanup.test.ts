@@ -1,5 +1,5 @@
 /**
- * A closed thread leaves nothing on the agent's computer (0.88.0, the owner's
+ * A closed thread leaves nothing on the agent's computer (0.91.0, the owner's
  * "make sure when thread is closed the space it took is cleaned up as well so
  * we dont bloat the machines").
  *

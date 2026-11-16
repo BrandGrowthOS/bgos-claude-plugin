@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 
-const PLUGIN = '/Users/fitecho/BGOS-worktrees/plugin-restart'
+const PLUGIN = '/Users/you/BGOS-worktrees/plugin-restart'
 const { superviseClaude, RESTART_MARKER_FILE_NAME } = await import(
   `${PLUGIN}/bin/hoai-core.mjs`
 )

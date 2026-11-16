@@ -1,6 +1,6 @@
 /**
  * The two readers an owner's full access thread and a thread's cleanup rest
- * on (0.88.0), on a real disk: the main session's permission mode as its
+ * on (0.91.0), on a real disk: the main session's permission mode as its
  * transcript names it (lib/thread-transcript.ts latestPermissionMode), and
  * the bytes a path holds (lib/thread-access.ts diskUsage), which the close
  * log line reports.

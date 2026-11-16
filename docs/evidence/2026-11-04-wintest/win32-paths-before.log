@@ -102,7 +102,7 @@ test at test/thread-lanes.test.ts:6:3040
   + undefined
   - '{"main":true}\n'
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:196:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:196:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
     generatedMessage: false,
@@ -116,28 +116,28 @@ test at test/thread-lanes.test.ts:6:3040
 test at test/thread-lanes.test.ts:6:4726
 ✖ the init frame records the fork id in the lane state file and deletes the copied main transcript, once (0.442042ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:220:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:220:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:5446
 ✖ each result is posted as one thread reply, final unless it ends asking a question (0.362ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:238:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:238:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:6255
 ✖ a summary turn posts the draft to the summary route, never as a reply (0.326084ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:258:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:258:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:6901
 ✖ a failed result puts the thread back to open and says so in one plain sentence (0.395541ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:276:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:276:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
@@ -147,7 +147,7 @@ test at test/thread-lanes.test.ts:6:7418
   
   0 !== 2
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:294:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:294:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -161,70 +161,70 @@ test at test/thread-lanes.test.ts:6:7418
 test at test/thread-lanes.test.ts:6:8354
 ✖ turns for one thread are serialized: the second waits for the first result (0.34175ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:316:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:316:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:8918
 ✖ a re sent turn for the same reply is not run twice (0.232875ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:331:17)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:331:17)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:9219
 ✖ a lane idle for 20 minutes is stopped (SIGTERM, then SIGKILL after 10 s) and resumes by its own id (0.2645ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:341:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:341:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:10047
 ✖ a turn before the idle stop cancels it (0.18825ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:366:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:366:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:10437
 ✖ a daemon restart resumes the lane by the fork id it saved (0.194708ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:381:21)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:381:21)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:11027
 ✖ a folder that is not a git repository runs the lane read only in a plain folder (0.222666ms)
   TypeError: Cannot read properties of undefined (reading 'cwd')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:399:18)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:399:18)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:12025
 ✖ a lane that dies mid turn fails that turn and frees its slot (0.380084ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:426:17)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:426:17)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:12422
 ✖ close stops the lane, keeps the worktree, and the sweep removes it only after 7 days (0.201708ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:437:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:437:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:13377
 ✖ the sweep leaves open lanes alone, however old (0.142291ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:462:17)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:462:17)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:13632
 ✖ a turn on a closed thread reopens it, so the sweep no longer removes it (0.183042ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:471:17)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:471:17)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
@@ -234,7 +234,7 @@ test at test/thread-lanes.test.ts:6:14208
   
   false !== true
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:497:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:497:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -251,7 +251,7 @@ test at test/thread-lanes.test.ts:6:16220
   
   0 !== 2
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:530:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:530:12)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -268,7 +268,7 @@ test at test/thread-lanes.test.ts:6:16220
   
   0 !== 2
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:530:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:530:12)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -285,7 +285,7 @@ test at test/thread-lanes.test.ts:6:16220
   
   0 !== 2
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:530:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:530:12)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -299,7 +299,7 @@ test at test/thread-lanes.test.ts:6:16220
 test at test/thread-lanes.test.ts:6:18982
 ✖ late delivery cannot restore a deleted fork while its reopen waits for capacity (5.106041ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:586:34)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:586:34)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
@@ -313,7 +313,7 @@ test at test/thread-lanes.test.ts:6:20797
   -   '101'
   - ]
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:648:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:648:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -330,7 +330,7 @@ test at test/thread-lanes.test.ts:6:21579
   
   0 !== 1
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:677:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:677:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -344,21 +344,21 @@ test at test/thread-lanes.test.ts:6:21579
 test at test/thread-lanes.test.ts:6:22852
 ✖ close with removeWorktree removes the worktree, the fork session file and the lane state (0.46925ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:687:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:687:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:23514
 ✖ deleting a read only lane removes its plain folder (0.394709ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:705:17)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:705:17)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:23915
 ✖ closing a running lane frees its slot for a waiting thread and drops its late result (0.991791ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:718:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:718:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
@@ -368,7 +368,7 @@ test at test/thread-lanes.test.ts:6:24510
   
   2 !== 1
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:748:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:748:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -394,7 +394,7 @@ test at test/thread-lanes.test.ts:6:25286
   -   ]
   - ]
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:760:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:760:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -408,7 +408,7 @@ test at test/thread-lanes.test.ts:6:25286
 test at test/thread-lanes.test.ts:6:26451
 ✖ a turn that arrives while the idle stop is under way runs on a new process, never failed by the old one (0.371208ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:785:29)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:785:29)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
@@ -422,7 +422,7 @@ test at test/thread-lanes.test.ts:6:28497
   -   '101'
   - ]
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:848:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:848:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -436,14 +436,14 @@ test at test/thread-lanes.test.ts:6:28497
 test at test/thread-lanes.test.ts:6:29363
 ✖ delete removes the thread branch, only that one, once the worktree is gone (0.733291ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:856:17)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:856:17)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:30133
 ✖ a reply longer than the server holds is cut to 20,000 characters with a plain note (0.367375ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:878:17)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:878:17)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
@@ -454,21 +454,21 @@ test at test/thread-lanes.test.ts:6:30538
 test at test/thread-lanes.test.ts:6:31239
 ✖ a reply post that keeps failing puts the thread back to open with a short reply, never stuck at working (0.830959ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:907:17)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:907:17)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:31988
 ✖ a turn with no result after 30 minutes is failed and its lane stopped, freeing the slot (0.618041ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:926:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:926:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:33057
 ✖ a result ends its turn timer (0.230208ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:949:17)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:949:17)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
@@ -478,7 +478,7 @@ test at test/thread-lanes.test.ts:6:33283
   
   0 !== 2
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:961:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:961:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -492,21 +492,21 @@ test at test/thread-lanes.test.ts:6:33283
 test at test/thread-lanes.test.ts:6:33878
 ✖ on a host with no Bash sandbox the lane runs without Bash, and the repository state is not even read (0.260209ms)
   TypeError: Cannot read properties of undefined (reading 'args')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:977:34)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:977:34)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:34316
 ✖ a lane whose repository state cannot be read runs without Bash, never with an unprotected sandbox (0.213625ms)
   TypeError: Cannot read properties of undefined (reading 'args')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:992:30)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:992:30)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:35527
 ✖ delete removes the fork session folder (its tool-results) with the session file (0.373834ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1026:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1026:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
@@ -520,7 +520,7 @@ test at test/thread-lanes.test.ts:6:36943
   -   '101'
   - ]
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1055:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1055:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -550,22 +550,22 @@ test at test/thread-lanes.test.ts:6:40476
 test at test/thread-lanes.test.ts:6:42032
 ✖ a working lane refuses Bash reads of ~/.ssh, the CLI credentials and ~/.bgos-agent (0.493708ms)
   TypeError: Cannot read properties of undefined (reading 'args')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1176:30)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1176:30)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:42870
 ✖ a repository on the reftable backend keeps every ref in one place the sandbox cannot split: the lane runs without Bash (0.276ms)
   TypeError: Cannot read properties of undefined (reading 'args')
-      at laneSettings (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1193:31)
+      at laneSettings (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1193:31)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:6:43304
 ✖ on Linux a branch kept only in packed-refs is written out as a loose ref before the lane starts, so the sandbox can protect it (0.512709ms)
   AssertionError [ERR_ASSERTION]: refs/tags exists, so it can be bound read only
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1210:87)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1210:87)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -579,15 +579,15 @@ test at test/thread-lanes.test.ts:6:43304
 test at test/thread-lanes.test.ts:8:588
 ✖ on Linux a packed-only branch that cannot be written out leaves the lane without Bash, never unprotected (0.445917ms)
   TypeError: Cannot read properties of undefined (reading 'args')
-      at laneSettings (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1218:16)
+      at laneSettings (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1218:16)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:8:1987
 ✖ a lane process is written into the lane state with its start stamp, and taken out when it exits (0.318708ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1255:29)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1255:29)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
@@ -597,7 +597,7 @@ test at test/thread-lanes.test.ts:8:2392
   
   0 !== 1
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1270:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1270:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -614,7 +614,7 @@ test at test/thread-lanes.test.ts:8:2832
   
   0 !== 1
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1281:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1281:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -631,7 +631,7 @@ test at test/thread-lanes.test.ts:8:3660
   
   0 !== 1
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1298:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1298:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -645,28 +645,28 @@ test at test/thread-lanes.test.ts:8:3660
 test at test/thread-lanes.test.ts:8:4298
 ✖ after a restart a listed row naming a summary that already landed leaves the thread alone (0.739959ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1316:28)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1316:28)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:8:5225
 ✖ after a restart a listed row naming an answer that already landed posts nothing either (0.357791ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1338:18)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1338:18)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:8:5762
 ✖ a delayed summary from a closed lane cannot overwrite its reopened lane state (0.551834ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1361:35)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1361:35)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:8:7673
 ✖ on Linux with no stash yet, refs/stash is made an empty folder and logs/refs/stash an empty file, so both can be bound read only (1.011667ms)
   AssertionError [ERR_ASSERTION]: an empty folder git ignores, and replaces on the owner's own git stash
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1411:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1411:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -680,39 +680,39 @@ test at test/thread-lanes.test.ts:8:7673
 test at test/thread-lanes.test.ts:12:136
 ✖ on Linux a stash log that cannot be made leaves the lane without Bash (0.60125ms)
   TypeError: Cannot read properties of undefined (reading 'args')
-      at laneSettings (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1439:16)
+      at laneSettings (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1439:16)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:13:277
 ✖ a working lane can read its own email files but not the rest of ~/.bgos-agent (0.282083ms)
   TypeError: Cannot read properties of undefined (reading 'args')
-      at laneSettings (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1451:26)
+      at laneSettings (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1451:26)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:13:1092
 ✖ pairing another agent after a lane starts cannot expose its new credentials through the attachment exception (0.234917ms)
   TypeError: Cannot read properties of undefined (reading 'args')
-      at laneSettings (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1464:22)
+      at laneSettings (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1464:22)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:13:2238
 ✖ a workspace inside the credential tree and its attachments reopen only their own directories (0.177792ms)
   TypeError: Cannot read properties of undefined (reading 'args')
-      at laneSettings (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1484:22)
+      at laneSettings (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1185:30)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1484:22)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
 test at test/thread-lanes.test.ts:13:2825
 ✖ a lane whose start stamp cannot be read at spawn still has its pid saved, and its stamp once it can be read (0.161291ms)
   TypeError: Cannot read properties of undefined (reading 'child')
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1496:27)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1496:27)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
 
@@ -722,7 +722,7 @@ test at test/thread-lanes.test.ts:13:3302
   
   0 !== 1
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1522:14)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1522:14)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -739,7 +739,7 @@ test at test/thread-lanes.test.ts:13:5343
   
   0 !== 1
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1579:14)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1579:14)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -753,7 +753,7 @@ test at test/thread-lanes.test.ts:13:5343
 test at test/thread-lanes.test.ts:13:5343
 ✖ unknown cwd inspection preserves a live unstamped PID during sweep (3.06675ms)
   AssertionError [ERR_ASSERTION]: sweep: cleanup resumes after confirmed exit
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1584:14)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1584:14)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -770,7 +770,7 @@ test at test/thread-lanes.test.ts:13:7202
   
   0 !== 1
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1619:42)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1619:42)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -791,7 +791,7 @@ test at test/thread-lanes.test.ts:13:7202
   -   '101'
   - ]
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1615:17)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1615:17)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: true,
@@ -808,7 +808,7 @@ test at test/thread-lanes.test.ts:13:8687
   
   0 !== 1
   
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/thread-lanes.test.ts:1639:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/thread-lanes.test.ts:1639:10)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,

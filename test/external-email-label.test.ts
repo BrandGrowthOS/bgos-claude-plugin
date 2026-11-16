@@ -1797,7 +1797,11 @@ test('read attachments, re-armed: an email nobody delivered keeps the cursor bel
     ws.scope.channelArmed = false
     h.saverScope.lockHeld = false
     h.open()
-    await sleep(60)
+    // Wait for the socket's own decision, not a fixed time: it lets go of its hold, undelivered, only after the file is
+    // saved, and on a slow disk (a loaded Windows runner) that took longer than the 60 ms this test used to sleep. The
+    // re-arm below then came first, the email was never owed, and the chat was not read (PR #376, run 43586786959).
+    const holds = h.shared.emailCursorHolds as ReturnType<typeof emailFiles.createEmailCursorHolds>
+    await until(() => holds.held(CHAT).length === 0 && holds.owes(CHAT), 'the socket refused the email and let go of its hold undelivered')
     assert.equal(forwarded.has(9001), false)
     // The rival dies before reading the chat; this daemon re-arms by the short path (no poll).
     ws.scope.channelArmed = true
@@ -1867,7 +1871,9 @@ test('read attachments, the meeting lane: stood down while the files downloaded,
     meeting.scope.channelArmed = false
     h.saverScope.lockHeld = false
     h.open()
-    await sleep(60)
+    // Wait for the lane's own decision, not a fixed time: it un-claims the email only after the file is saved, which on
+    // a slow disk (a loaded Windows runner) takes longer than the 60 ms this test used to sleep.
+    await until(() => !forwarded.has(9001), 'the stood down meeting lane un-claimed the email once its file was saved')
     assert.equal(meeting.run.notifications.length, 0)
     assert.equal(forwarded.has(9001), false, 'un-claimed: the holder, or this daemon re-armed, delivers it')
   })
