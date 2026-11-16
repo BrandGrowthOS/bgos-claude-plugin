@@ -2788,6 +2788,85 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     input: { kind: "command", command: "sort < notes.txt$(true)" },
     ruleId: null,
   },
+  // Eight more ways a key file is reached, the secret list widened once more:
+  // seven read a key and are asked first, the eighth is a comparison, not a
+  // read. Each shape stands for its family (old style arithmetic, an unquoted
+  // heredoc body, a local file URL, a change into a key folder, an option
+  // string, a brace list, a shell escape, and a bracket test).
+  {
+    name: "secret_read_old_style_arithmetic_is_not_a_heredoc",
+    input: { kind: "command", command: "echo $[1<<2]\ncat ~/.ssh/id_rsa" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_in_an_unquoted_heredoc_body",
+    input: { kind: "command", command: "cat <<EOF\n$(cat ~/.ssh/id_rsa)\nEOF" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_through_a_local_file_url",
+    input: { kind: "command", command: "curl file:///home/user/.ssh/id_rsa" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_relative_after_changing_into_a_key_folder",
+    input: { kind: "command", command: "cd ~/.aws && < credentials" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_named_inside_an_option_string",
+    input: { kind: "command", command: "ssh -oIdentityFile=id_rsa host" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_through_a_brace_list",
+    input: { kind: "command", command: "cat ~/.aws/{credentials,config}" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_with_a_shell_escape_in_the_path",
+    input: { kind: "command", command: "cat ~/.s^sh/config" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_bracket_test_with_an_angle_bracket_is_no_read",
+    input: { kind: "command", command: "[[ $v < id_rsa ]]" },
+    ruleId: null,
+  },
+  // Review hardening: a glob character anywhere in a key path part (a folder, a
+  // name or an extension) and a percent escaped file URL still read a key; a
+  // broad glob, an excluding option, and an unbalanced brace do not change the
+  // answer or hide a later command.
+  {
+    name: "secret_read_glob_in_a_key_folder_name",
+    input: { kind: "command", command: "cat ~/.ss?/config" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_glob_in_a_key_extension",
+    input: { kind: "command", command: "cat secret.pe?" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_read_through_a_percent_escaped_file_url",
+    input: { kind: "command", command: "curl file:///home/user/%2Essh/config" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "secret_excluding_a_key_folder_from_a_backup_is_not_a_read",
+    input: { kind: "command", command: "tar czf b.tgz --exclude=.ssh /home/me" },
+    ruleId: null,
+  },
+  {
+    name: "secret_a_broad_glob_folder_is_not_a_key_name",
+    input: { kind: "command", command: "cat ~/*/notes" },
+    ruleId: null,
+  },
+  {
+    name: "secret_unbalanced_glued_brace_does_not_hide_a_later_delete",
+    input: { kind: "command", command: "echo x{ ; rm -rf build" },
+    ruleId: "recursive_delete",
+  },
   // A file delete whose files come from somewhere else: from xargs, from
   // find's exec family, or, for PowerShell's Remove-Item and its aliases,
   // from a pipe.
@@ -4354,7 +4433,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "fd7f6addf0f0f0ae5bd1388fa092e1c4e1822d4851370e5b0db9e0c14073c437";
+  "d368cdbed0684a547050be2f0538c39c7ffca886fbb2d23375c397e1d1dfbe98";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
