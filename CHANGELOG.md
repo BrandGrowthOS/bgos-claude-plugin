@@ -12,6 +12,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.3 (2026-11-17)
+
+**fix(pending restart): a checkout held bad wins over a good staged answer (#384).** When one checkout is marked bad and a good update is staged, the agent no longer restarts into the bad checkout. Red first test for the two checkout case.
+
 ## 0.90.2 (2026-11-16)
 
 **fix(email files): a file to attach is a real file with one name, read without blocking, and the owner's home counts by its real path too (#299).** Three follow ups to the email files tools (#296), in `lib/email-outbound-files.ts`. A file with more than one name (a hard link, which an ordinary user can make and which passes every path rule, since realpath answers each name as its own) is refused, on its stat before the open and again on the open handle, in the words "has more than one name (a hard link), so it is not attached". The one open uses `O_NONBLOCK` where the platform has it (Windows opens read only, as before), so a FIFO swapped in after the stat cannot freeze the read and the send: it is refused as changed, before a byte is read. The owner's home also counts by its real path, so a home reached through a link (macOS's `/var`, a junction, an 8.3 name) is the home by either spelling: a file named by that path is not refused for a word in the owner's name, and a runtime folder that holds the home is not taken as one. Only the home is resolved, never the path being checked. Guard: three new cases in `test/email-outbound-files.test.ts`, each red on 0.90.1's code first.

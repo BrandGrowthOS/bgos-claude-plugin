@@ -39,6 +39,14 @@
  * again. A version latched bad on this computer (lib/idle-update.mjs
  * isVersionHeldBad) is therefore not pending; a newer one is.
  *
+ * WHY a bad checkout wins (board row 10f8bc52, Data decided 2026-11-16). A
+ * clone restarts onto its checkout, whatever the self updater staged. With a
+ * second checkout under the same HOME the checkout moved to a build marked
+ * bad here while the self updater's good staged answer came first, so every
+ * reader restarted the agent onto the bad build. A checkout held bad
+ * (lib/self-update.ts heldBadCheckoutVersion) is therefore no pending restart,
+ * whatever the earlier sources say; the self updater still wins otherwise.
+ *
  * Never throws: telemetry must never break a heartbeat. Each source is read
  * on its own guard, so one unreadable file cannot hide what another says.
  */
@@ -46,7 +54,9 @@
 import { isNewerVersion } from './idle-update.mjs'
 import { pendingMarketplaceRestartVersion } from './marketplace-update.mjs'
 import { installedEntryFrom, marketplaceConfigPaths } from './plugin-cli.mjs'
-import { pendingRestartVersionFrom } from './self-update.js'
+import { heldBadCheckoutVersion, pendingRestartVersionFrom } from './self-update.js'
+
+export { heldBadCheckoutVersion }
 
 /** <config>/plugins/installed_plugins.json, in the config dir's own
  *  separator style (CLAUDE_CONFIG_DIR moves the whole tree). */
@@ -125,6 +135,8 @@ export function resolvePendingRestartVersion(input: {
       const pending = pendingMarketplaceRestartVersion({ installed, runningVersion: input.runningVersion ?? null })
       return pending && held(pending) ? null : pending
     }
+    // A clone boots its checkout: held bad there, no other answer may send it onto that build (board row 10f8bc52).
+    if (heldBadCheckoutVersion(input)) return null
     const sources = [
       () => attempt(input.updaterPending),
       () => pendingRestartVersionFrom(input.runningVersion, attempt(input.stagedTargetVersion)),
