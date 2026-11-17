@@ -23,6 +23,7 @@ function failed(): void {
 
 type TeachTap = {
   chatId: string
+  messageId?: unknown
   assistantId: unknown
   tapperUserId: unknown
   ownerUserId: unknown
@@ -103,14 +104,28 @@ export function createTeachWindows() {
 
 export type TeachWindows = ReturnType<typeof createTeachWindows>
 
+/** Where a tap is noted as its chat's delivery: closingTeachWindows' tracker. */
+type TapDeliveries = { note(input: TurnChatNote): void; noteOwnTap(input: TurnChatNote): void }
+
 /**
  * A tap reached the session (server.ts privateTapCardNoting, all six tap sites). The owner's own teach Approve opens a
- * window; any tap that is not the owner's own closes the window of its chat. Never throws.
+ * window; any tap that is not the owner's own closes the window of its chat. The tap is also noted as its chat's
+ * delivery, without text (a tap's words prove nothing about which session this daemon feeds), so the turn it starts
+ * is filed under the tapped chat even when a peer message or a wake arrived just before. Never throws.
  */
-export function noteTeachTap(deps: { windows: Pick<TeachWindows, 'noteTap' | 'close'>; assistantId: string }, t: Omit<TeachTap, 'assistantId'>): void {
+export function noteTeachTap(
+  deps: { windows: Pick<TeachWindows, 'noteTap' | 'close'>; assistantId: string; deliveries?: TapDeliveries },
+  t: Omit<TeachTap, 'assistantId'>,
+): void {
   try {
-    if (!ownPersonTap(t)) deps.windows.close(t.chatId, deps.assistantId)
+    const own = ownPersonTap(t)
+    if (!own) deps.windows.close(t.chatId, deps.assistantId)
     deps.windows.noteTap({ ...t, assistantId: deps.assistantId })
+    if (deps.deliveries) {
+      const delivery: TurnChatNote = { chatId: t.chatId, messageId: typeof t.messageId === 'number' && Number.isFinite(t.messageId) ? t.messageId : null, kind: 'user', now: t.now }
+      if (own) deps.deliveries.noteOwnTap(delivery)
+      else deps.deliveries.note(delivery)
+    }
   } catch { failed() }
 }
 

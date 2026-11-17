@@ -600,3 +600,32 @@ test('the tap noter never throws', () => {
   const windows = { noteTap: () => { throw new Error('broken') }, close: () => { throw new Error('broken') } }
   assert.doesNotThrow(() => noteTeachTap({ windows, assistantId: 'assistant' } as never, tap))
 })
+
+for (const [kind, text] of [['peer', 'a peer agent wrote this just before'], ['system', 'scheduled wake: check the inbox now']] as const) {
+  test(`the write after a tap is filed under the tapped chat, even when a ${kind} message arrived just before`, () => {
+    const { createTeachWindows, closingTeachWindows, noteTeachTap, applyOrigins } = api()
+    const w = world()
+    const windows = createTeachWindows()
+    const turnChat = closingTeachWindows(createTurnChatTracker(), windows, 'assistant')
+    turnChat.note({ chatId: 'other-chat', messageId: 4, kind, text, now: 99 })
+    noteTeachTap({ windows, assistantId: 'assistant', deliveries: turnChat }, { ...tap, messageId: 5 })
+    // The tap's prompt carries no delivered text of another chat, so the turn takes the last delivery: the tap.
+    turnChat.beginTurn({ chatId: turnChat.matchDelivered('[button_clicked] Clicked: Approve')?.chatId ?? null, now: 101 })
+    const chatId = String(turnChat.current(101)?.chatId ?? '')
+    assert.equal(chatId, 'chat')
+    assert.equal(api().noteSkillToolUse({ toolName: 'Write', toolInput: { file_path: join(w.folder, 'SKILL.md') }, agentDir: w.agent, file: w.file, windows, chatId, assistantId: 'assistant', writtenAt: 102 }), true)
+    assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'taught')
+  })
+}
+
+test('a tap is noted as its chat\'s delivery with its message, and adds no delivered text', () => {
+  const { createTeachWindows, closingTeachWindows, noteTeachTap } = api()
+  const windows = createTeachWindows()
+  const turnChat = closingTeachWindows(createTurnChatTracker(), windows, 'assistant')
+  noteTeachTap({ windows, assistantId: 'assistant', deliveries: turnChat }, { ...tap, tapperUserId: 'teammate', chatId: 'team-chat', messageId: 9 })
+  assert.deepEqual(turnChat.current(101), { chatId: 'team-chat', messageId: 9, at: 100, kind: 'user' })
+  assert.equal(turnChat.matchDelivered('[button_clicked] Clicked: teach_approve (in reply to message_id=9)'), null)
+  noteTeachTap({ windows, assistantId: 'assistant', deliveries: turnChat }, { ...tap, messageId: 'not a number' })
+  assert.deepEqual(turnChat.current(101), { chatId: 'chat', messageId: null, at: 100, kind: 'user' })
+  assert.deepEqual(windows.take('chat', 'assistant', 101), { by: 'owner' }, 'the owner\'s own tap note keeps its window')
+})

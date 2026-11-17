@@ -11124,11 +11124,13 @@ logOriginsTo(log)
 const turnChat = closingTeachWindows(createTurnChatTracker(), teachWindows, ASSISTANT_ID)
 
 // A teach window opens only on the owner's own tap as a person: each site reads its click row with isHumanClick (an
-// ask answer has none, so null). Any tap that is not the owner's own closes its chat's window (lib/skill-origins.ts).
+// ask answer has none, so null). Any tap that is not the owner's own closes its chat's window, and every tap is noted
+// as its chat's delivery, so the turn it starts is filed under that chat (lib/skill-origins.ts noteTeachTap).
 function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { humanPrincipal: unknown }) {
   try {
-    noteTeachTap({ windows: teachWindows, assistantId: ASSISTANT_ID }, {
+    noteTeachTap({ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat }, {
       chatId: input.chatId,
+      messageId: input.messageId,
       tapperUserId: input.tapperUserId,
       ownerUserId: input.ownerUserId,
       callbackData: input.callbackData,
