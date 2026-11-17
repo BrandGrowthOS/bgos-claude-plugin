@@ -144,6 +144,7 @@ function setup(over: Record<string, any> = {}) {
   const remembered: Array<{ origin: string | null; choice: string }> = []
   let verdict: any = over.verdict ?? { verdict: 'ask', gate: 'download' }
   let owner = false
+  let heldSinceAgent = false
   const slot = new SlotDownloads({
     store,
     key: 'owner',
@@ -153,6 +154,7 @@ function setup(over: Record<string, any> = {}) {
     decide: () => verdict,
     remember: (origin: string | null, choice: string) => remembered.push({ origin, choice }),
     ownerControl: () => owner,
+    ownerHeldSinceAgent: () => heldSinceAgent,
     choices: DOWNLOAD_CHOICES,
     graceMs: 60,
     heldPollMs: 10,
@@ -175,6 +177,7 @@ function setup(over: Record<string, any> = {}) {
     remembered,
     setVerdict: (v: any) => (verdict = v),
     setOwner: (v: boolean) => (owner = v),
+    setHeldSinceAgent: (v: boolean) => (heldSinceAgent = v),
     advance: (ms: number) => (t += ms),
     now: () => t,
     downloadCards: () => srv.cards.filter((c) => c.kind === 'download'),
@@ -556,6 +559,100 @@ test("a download the OWNER starts while holding the browser is kept for them, wi
     assert.ok(s.downloadCards().every((c) => !/^download mine\.p8 into/.test(c.summary)), 'no ask')
     await until(() => s.downloadCards().some((c) => /mine\.p8.*kept for you/.test(c.summary)), () => 'told')
     assert.deepEqual(filesUnder(s.outputDir), [])
+  } finally {
+    s.done()
+  }
+})
+
+// ── The owner's own download: one path (board row bc4607ec, KC's option A) ────
+//
+// Every file that may be the owner's gets the card the app already has for a
+// kept file: Allow once or Deny, nothing remembered, and never filed as the
+// agent's grant. "May be": raised while the owner holds the browser, or after
+// the hand back and before the agent's next action (Chrome raises it late).
+
+const keptCards = (s: ReturnType<typeof setup>) => s.downloadCards().filter((c) => c.download?.stage === 'kept')
+
+for (const [when, holds, since] of [
+  ['while the owner holds the browser', true, false],
+  ["after the hand back, before the agent's next action", false, true],
+] as const) {
+  test(`a download that may be the owner's, ${when}, gets Allow once or Deny, and Allow once remembers nothing`, async () => {
+    const s = setup()
+    try {
+      s.setOwner(holds)
+      s.setHeldSinceAgent(since)
+      s.slot.onDownload(fakeDownload(s.paths.held, { name: 'mine.p8' }))
+      await until(() => keptCards(s).length === 1, () => JSON.stringify(s.downloadCards().map((c) => [c.choices, c.download])))
+      const card = keptCards(s)[0]!
+      assert.deepEqual(card.choices, ['allow_once', 'deny'], 'never the four answers of an agent ask')
+      assert.equal(card.download.reason, 'owner_download')
+      assert.ok(s.downloadCards().every((c) => c.download?.stage !== 'ask'), 'no agent ask for it')
+      s.srv.answer(String(card.gateId), 'allow_once')
+      await until(() => filesUnder(s.outputDir).length === 1, () => status(s))
+      assert.deepEqual(s.remembered, [], "the owner's file never becomes the agent's grant")
+    } finally {
+      s.done()
+    }
+  })
+}
+
+for (const choice of ['allow_session', 'trust_site', 'always_allow']) {
+  test(`an answer of ${choice} on the owner's file is not an answer the card has: nothing given, nothing remembered`, async () => {
+    const s = setup()
+    try {
+      s.setHeldSinceAgent(true)
+      s.slot.onDownload(fakeDownload(s.paths.held, { name: 'mine.p8' }))
+      await until(() => keptCards(s).length === 1, () => 'told')
+      s.srv.answer(String(keptCards(s)[0]!.gateId), choice)
+      await new Promise((r) => setTimeout(r, 120))
+      assert.deepEqual(filesUnder(s.outputDir), [], 'not given to the agent')
+      assert.equal(filesUnder(s.paths.kept).length, 1, 'still kept for the owner')
+      assert.deepEqual(s.remembered, [])
+    } finally {
+      s.done()
+    }
+  })
+}
+
+test("the owner's file is asked about even where the agent holds a grant for that site", async () => {
+  const s = setup({ verdict: { verdict: 'allow', reason: 'session' } })
+  try {
+    s.setHeldSinceAgent(true)
+    s.slot.onDownload(fakeDownload(s.paths.held, { name: 'mine.p8' }))
+    await until(() => keptCards(s).length === 1, () => status(s))
+    assert.deepEqual(filesUnder(s.outputDir), [], "the agent's grant never covers the owner's file")
+  } finally {
+    s.done()
+  }
+})
+
+test("Deny on the owner's file deletes it, and nothing is remembered", async () => {
+  const s = setup()
+  try {
+    s.setHeldSinceAgent(true)
+    s.slot.onDownload(fakeDownload(s.paths.held, { name: 'mine.p8' }))
+    await until(() => keptCards(s).length === 1, () => 'told')
+    s.srv.answer(String(keptCards(s)[0]!.gateId), 'deny')
+    await until(() => filesUnder(s.paths.kept).length === 0, () => status(s))
+    assert.deepEqual(filesUnder(s.outputDir), [])
+    assert.deepEqual(s.remembered, [])
+  } finally {
+    s.done()
+  }
+})
+
+test("the agent's own download keeps its four answers, and a yes is the agent's grant as before", async () => {
+  const s = setup()
+  try {
+    s.slot.onDownload(fakeDownload(s.paths.held, { name: 'report.csv', url: 'https://billing.example.com/r.csv' }))
+    await until(() => s.downloadCards().length === 1, () => 'asked')
+    const card = s.downloadCards()[0]!
+    assert.equal(card.download.stage, 'ask')
+    assert.deepEqual(card.choices, DOWNLOAD_CHOICES)
+    s.srv.answer(String(card.gateId), 'trust_site')
+    await until(() => filesUnder(s.outputDir).length === 1, () => status(s))
+    assert.deepEqual(s.remembered, [{ origin: 'https://billing.example.com', choice: 'trust_site' }])
   } finally {
     s.done()
   }
