@@ -36,6 +36,8 @@ import {
 import {
   classifyPermissionRequest,
   classifyToolCall,
+  isOwnSendingTool,
+  readPermissionRequest,
   type HardFloorMatch,
 } from '../lib/hard-floor.ts'
 import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
@@ -158,6 +160,18 @@ test('with no record, a cut shell preview asks the server about what was cut rat
     planFloorRequest({ autoApprove: true, toolName: 'Bash', inputPreview: '{ "command": "ls" }', record: null, previewMatch: null }).action,
     'none',
   )
+})
+
+test('with no record, a preview whose reading stopped at the nesting limit asks the server, as a cut one does', () => {
+  // `eval` five deep: the relay's own reading stops at the nesting limit, and
+  // under auto approve the relay used to answer allow (the fix round, I3).
+  const preview = JSON.stringify({ command: 'eval eval eval eval eval rm -rf ~' })
+  const plan = (autoApprove: boolean, previewStoppedEarly: boolean) =>
+    planFloorRequest({ autoApprove, toolName: 'Bash', inputPreview: preview, record: null, previewMatch: null, previewStoppedEarly })
+  assert.equal(plan(true, true).action, 'ask_elided')
+  assert.equal(plan(true, false).action, 'none')
+  // With auto approve off the CLI asks the owner itself, exactly as for a cut preview.
+  assert.equal(plan(false, true).action, 'none')
 })
 
 test('with auto approve off, only a request the hook record vouches for is asked about', () => {
@@ -430,6 +444,37 @@ const handler = SRC.slice(
 const bodyOf = (signature: string, next: string) =>
   SRC.slice(SRC.indexOf(signature), SRC.indexOf(next, SRC.indexOf(signature) + signature.length))
 
+test('the relay wiring, RUN from server.ts: what the preview reads reaches the plan (round 29, review A item 9)', () => {
+  // The test below matches the wiring's source; this one runs it. The lines
+  // from the preview read to the plan are cut out of server.ts as written and
+  // run with the real reader and the real plan, so a reading the list makes
+  // (a delete inside old style arithmetic, a read stopped five deep) is shown
+  // to decide what the relay does, not only to be spelled in the file.
+  const start = handler.indexOf('const previewRead =')
+  const end = handler.indexOf("if (floorPlan.action === 'consult')")
+  assert.ok(start > 0 && end > start, 'the wiring is in the handler')
+  const run = new Function(
+    'floorRecord',
+    'AUTO_APPROVE',
+    'tool_name',
+    'input_preview',
+    'isOwnSendingTool',
+    'readPermissionRequest',
+    'planFloorRequest',
+    `${handler.slice(start, end)}\nreturn floorPlan`,
+  ) as (...args: unknown[]) => { action: string; match?: HardFloorMatch | null }
+  const plan = (command: string, autoApprove = true) =>
+    run(null, autoApprove, 'Bash', JSON.stringify({ command }), isOwnSendingTool, readPermissionRequest, planFloorRequest)
+  const arith = plan('echo $[ $(rm -rf build) ]')
+  assert.equal(arith.action, 'consult')
+  assert.equal(arith.match?.ruleId, 'recursive_delete')
+  assert.equal(plan('[[ -n $(echo X=1 > .env) ]]').match?.ruleId, 'env_file_write')
+  assert.equal(plan('eval eval eval eval eval rm -rf ~').action, 'ask_elided')
+  assert.equal(plan('ls').action, 'none')
+  // With auto approve off the preview is not read: only a record is asked about.
+  assert.equal(plan('echo $[ $(rm -rf build) ]', false).action, 'none')
+})
+
 test('the floor is asked BEFORE the auto approve branch, from the hook record first', () => {
   // The permission-relay.test.ts slice pattern. Run D3 is exactly what
   // happens if these two ever swap: auto approve answers first and the floor
@@ -437,7 +482,7 @@ test('the floor is asked BEFORE the auto approve branch, from the hook record fi
   assert.ok(handler.length > 0)
   const record = handler.indexOf('const floorRecord = takeOwnFloorRecord(tool_name, input_preview)')
   const plan = handler.indexOf('const floorPlan = planFloorRequest({')
-  const classify = handler.indexOf('classifyPermissionRequest(tool_name, input_preview)')
+  const classify = handler.indexOf('readPermissionRequest(tool_name, input_preview)')
   const settle = handler.indexOf("if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)")
   const owner = handler.indexOf("if (floorPlan.action === 'ask_elided') {")
   const auto = handler.indexOf('if (AUTO_APPROVE) {')
@@ -446,7 +491,12 @@ test('the floor is asked BEFORE the auto approve branch, from the hook record fi
   assert.ok(settle < auto && owner < auto, 'and a match leaves before auto approve can answer it')
   // The preview is read only when there is no record (it is the lossy copy).
   // (and with auto approve off for this channel's email_send only, whose card needs the floor to hold it)
-  assert.match(handler, /floorRecord === null && \(AUTO_APPROVE \|\| isOwnSendingTool\(tool_name\)\)\s*\?\s*classifyPermissionRequest\(tool_name, input_preview\)\s*:\s*null/)
+  assert.match(handler, /floorRecord === null && \(AUTO_APPROVE \|\| isOwnSendingTool\(tool_name\)\)\s*\?\s*readPermissionRequest\(tool_name, input_preview\)\s*:\s*null/)
+  // Its lead is the preview's match, and a read that stopped at the list's
+  // nesting limit is passed on, so the plan asks the server (the fix round, I3).
+  assert.match(handler, /previewMatch: previewRead\?\.lead \?\? null,/)
+  assert.match(handler, /previewStoppedEarly: previewRead\?\.stoppedEarly === true,/)
+  assert.ok(classify < plan, 'the preview is read before the plan')
   assert.match(handler, /autoApprove: AUTO_APPROVE,/)
   const ownerExit = handler.slice(owner, auto)
   assert.ok(ownerExit.includes('return settleElidedFloorRequest(params)'), 'a cut preview with no record asks the server')

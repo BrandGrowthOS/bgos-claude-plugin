@@ -51,6 +51,7 @@ import {
   HARD_FLOOR_RULES_VERSION,
   classifyCommand,
   classifyFloor,
+  classifyFloorAll,
   classifyPermissionRequest,
   type HardFloorInput,
 } from '../lib/hard-floor.ts'
@@ -58,8 +59,8 @@ import { permissionCardTool } from '../lib/permission-relay.ts'
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex')
 
-test('the rules version is the cross repo key, and both sides say 3', () => {
-  assert.equal(HARD_FLOOR_FIXTURE_RULES_VERSION, 3)
+test('the rules version is the cross repo key, and both sides say 4', () => {
+  assert.equal(HARD_FLOOR_FIXTURE_RULES_VERSION, 4)
   assert.equal(HARD_FLOOR_RULES_VERSION, HARD_FLOOR_FIXTURE_RULES_VERSION)
 })
 
@@ -80,16 +81,16 @@ test('this plugin carries exactly the fixture rule ids and words, in order', () 
  * here first. The BGOS backend copy and its spec must take the same bytes and
  * literals; until then the two repos differ only in those example paths.
  */
-const PINNED_FIXTURE_DIGEST = 'e7f331150d318b37e7aa1fe887e25bc3ac78fa0b8de503fd4e61d201dcde4b3d'
-const PINNED_CARD_FIXTURE_DIGEST = '87efa65cfcfbd2f24e8a991d1229d5ab53461eb8aeb4619b045590d3ebebd920'
-const PINNED_RULES_DIGEST = 'f92093a8f99e6d472ddc5b5834d044cb628cb54727795247b2189c8f6d5c75e9'
+const PINNED_FIXTURE_DIGEST = '28f23163c2e46862cfd320a83aa843dfad191e54efb4a39c6dbe2b6769ae8600'
+const PINNED_CARD_FIXTURE_DIGEST = '854ceb97cc68bbe28be7f87b81e2c4238a87e1dc8942212d7804f52f8ce05bd6'
+const PINNED_RULES_DIGEST = '1129586f99287d66f67a3154eff4614c47d8a5799f057a10f9a766fb379b98c5'
 /**
  * sha256 of lib/hard-floor-fixture.ts's BYTES, equal to the backend spec's
  * PINNED_FIXTURE_FILE_SHA256 (the #1623 / #152 shape). The data digests
  * above let a comment, a type or the header drift in one copy while both
  * suites stay green; this does not.
  */
-const PINNED_FIXTURE_FILE_SHA256 = 'a57b08dee483ab15895f9594d3c9154b5e328e57c121dcd84d8de4573770f033'
+const PINNED_FIXTURE_FILE_SHA256 = '660f4843212494029df5684e734065eaa1410892950f69cd6f80c9b89a52a61f'
 
 test('pins the fixture data and the rules against the file AND a literal here (regenerate BOTH repos together)', () => {
   const fixture = sha256(JSON.stringify(HARD_FLOOR_FIXTURE))
@@ -173,6 +174,21 @@ test('every named case classifies exactly as the fixture says', () => {
     const got = classifyFloor(testCase.input as HardFloorInput)?.ruleId ?? null
     if (got !== testCase.ruleId) {
       wrong.push(`${testCase.name}: expected ${testCase.ruleId}, got ${got}`)
+    }
+  }
+  assert.deepEqual(wrong, [])
+})
+
+test('every named case keeps every matched kind (classifyFloorAll), as the fixture says', () => {
+  // Version 4: a case with `ruleIds` names more than one kind; every other
+  // case names exactly its single `ruleId` (or none). ruleIds[0] is the single
+  // ruleId, so an older reader that takes only the first reads the same kind.
+  const wrong: string[] = []
+  for (const testCase of HARD_FLOOR_FIXTURE) {
+    const want = testCase.ruleIds ?? (testCase.ruleId === null ? [] : [testCase.ruleId])
+    const got = classifyFloorAll(testCase.input as HardFloorInput).map((m) => m.ruleId)
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+      wrong.push(`${testCase.name}: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`)
     }
   }
   assert.deepEqual(wrong, [])

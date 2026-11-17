@@ -42,10 +42,11 @@ import {
 } from '../lib/hard-floor.ts'
 import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
 
-test('the seven rules, their ids and their words, exactly as spec section 1 writes them', () => {
+test('the eleven rules, their ids and their words, exactly as spec section 1 writes them', () => {
   // Rules version 2 (BGOS DSH parity item 10, 2026-10-02): adds_skill_or_plugin.
   // Rules version 3 (Data, 2026-10-13): the channel's own email_send acts on the owner's behalf.
-  assert.equal(HARD_FLOOR_RULES_VERSION, 3)
+  // Rules version 4: every risk a command carries is kept, plus file_delete, admin_rights, uses_secret_key, sends_data_off.
+  assert.equal(HARD_FLOOR_RULES_VERSION, 4)
   assert.deepEqual(
     HARD_FLOOR_RULES.map((r) => [r.id, r.words]),
     [
@@ -56,6 +57,10 @@ test('the seven rules, their ids and their words, exactly as spec section 1 writ
       ['home_dotfile_write', 'changing a settings file in your home folder'],
       ['acts_on_owners_behalf', 'sending, posting, paying or deleting on your behalf'],
       ['adds_skill_or_plugin', 'installing a new plugin or tool that stays after this chat'],
+      ['file_delete', 'deleting a file'],
+      ['admin_rights', 'using admin rights on this computer'],
+      ['uses_secret_key', 'using a secret key or a key file'],
+      ['sends_data_off', 'sending data off this computer'],
     ],
   )
   assert.deepEqual([...HARD_FLOOR_RULE_IDS], HARD_FLOOR_RULES.map((r) => r.id))
@@ -78,7 +83,7 @@ test('a match carries the rule, the version, the words and what matched', () => 
   const match = classifyToolCall('Bash', { command: 'cd app && rm -rf build', description: 'x' })
   assert.deepEqual(match, {
     ruleId: 'recursive_delete',
-    rulesVersion: 3,
+    rulesVersion: 4,
     words: 'deleting a folder and everything in it',
     evidence: 'rm -rf build',
   })
@@ -105,7 +110,8 @@ test('the shell reader: simple commands, quotes removed, a comment and a heredoc
     ['cd', 'a'],
     ['bash', '-c', 'rm -rf b'],
     ['tee', 'c'],
-    ['echo'],
+    // The substitution's output becomes words of echo, so a stand-in keeps its place.
+    ['echo', '$(...)'],
     ['ls'],
   ])
   // A backslash before a newline continues the line; before a plain letter it is a character.
@@ -152,6 +158,259 @@ test('a shell\'s script is read as a command, four levels deep and no deeper', (
   assert.equal(classifyCommand(five), null, 'a fifth level is not read')
 })
 
+test("find's exec family: each command is read once, to its own end, however many there are", () => {
+  // About 100K characters of commands that each end at their own `;`, so a
+  // reader that walks on past each end reads the rest again every time and
+  // spends the hook's budget.
+  const chain = '-exec nice -n \\; '.repeat(6000)
+  const kinds = (command: string) => core.classifyFloorAll({ kind: 'command', command }).map((m) => m.ruleId)
+  const started = performance.now()
+  assert.deepEqual(kinds(`find . ${chain}-exec rm -rf build \\;`), ['recursive_delete'])
+  assert.deepEqual(kinds(`find . ${chain}-exec sudo reboot \\;`), ['admin_rights'])
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test("find's exec family: other long chains stay quick too (no end at all, batch ends, bare -exec words)", () => {
+  for (const chain of ['-exec nice '.repeat(9000), '-exec x {} + '.repeat(7500), '-exec '.repeat(16000)]) {
+    const started = performance.now()
+    core.classifyFloorAll({ kind: 'command', command: `find . ${chain}` })
+    const elapsed = performance.now() - started
+    assert.ok(elapsed < 2000, `${chain.slice(0, 12)}... read in ${Math.round(elapsed)} ms`)
+  }
+})
+
+test('a long command that goes on after each of many substitutions stays quick', () => {
+  // One command keeps its words across its substitutions, so a check that
+  // wrote the whole command out at every match would read it over and over.
+  for (const command of [
+    'find . ' + '-exec rm $(x) {} + '.repeat(10000),
+    'find . ' + '-exec rm -rf $(x) {} + '.repeat(5000),
+    'echo ' + '$(x) w > f '.repeat(10000),
+    'x ' + '$(a) >> log '.repeat(10000),
+  ]) {
+    const started = performance.now()
+    core.classifyFloorAll({ kind: 'command', command })
+    const elapsed = performance.now() - started
+    assert.ok(elapsed < 2000, `${command.slice(0, 16)}... read in ${Math.round(elapsed)} ms`)
+  }
+})
+
+test('one script fed to many shells is read once', () => {
+  // Every shell a find runs is handed the same input, so reading that input
+  // again for each shell would cost its length times the number of shells.
+  const command = 'find . ' + '-exec sh \\; '.repeat(3000) + "<<'EOF'\n" + 'echo hello\n'.repeat(3000) + 'EOF'
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('one long pipe feeding many shells is read once', () => {
+  // Each shell after a substitution takes the same pipe, so the check that
+  // the pipe was already read comes before its words are read at all.
+  const command = 'echo ' + '-n '.repeat(20000) + 'x | sh' + ' $(x) sh'.repeat(20000)
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+// The next two tests time growth, not the clock: a command of size n and one
+// of size 10n are read in the same run, so a slow or busy machine slows both
+// alike. A reader that grows with the length takes about 10 times as long at
+// 10n; one that walks every earlier part again for each new one (quadratic)
+// takes about 100 times. 30 sits about three times above the first and three
+// times below the second: these reads measured 8 to 15 times on the real
+// code, pinned to one busy core too, and 64 to 99 times with the walk put
+// back. Each test's timeout only stops a hang; the ratio is the test.
+const GROWTH_BOUND = 30
+
+/**
+ * How many times as long the 10n command takes to read. The small one is read
+ * once to warm the reader up, then three times; its fastest read is the
+ * divisor, since a busy machine only ever adds time, with a 5 ms floor so a
+ * near zero time cannot blow the ratio up. The long one is read up to three
+ * times and stops at its first read under the bound.
+ */
+function growth(
+  build: (n: number) => string,
+  n: number,
+  times = 10,
+  bound = GROWTH_BOUND,
+): { ratio: number; small: number; long: number } {
+  const readTime = (command: string): number => {
+    const started = performance.now()
+    core.classifyFloorAll({ kind: 'command', command })
+    return performance.now() - started
+  }
+  const small = build(n)
+  readTime(small)
+  const base = Math.max(Math.min(readTime(small), readTime(small), readTime(small)), 5)
+  const long = build(times * n)
+  let best = Infinity
+  for (let i = 0; i < 3 && best / base >= bound; i++) best = Math.min(best, readTime(long))
+  return { ratio: best / base, small: base, long: best }
+}
+
+/** The growth in plain words, for the run's log and for a failure. */
+const growthWords = ({ ratio, small, long }: { ratio: number; small: number; long: number }): string =>
+  `the command ten times as long took ${ratio.toFixed(1)} times as long to read ` +
+  `(${small.toFixed(1)} ms, then ${long.toFixed(1)} ms); keeping pace is about 10, ` +
+  `reading everything again for each part is about 100`
+
+test('a pipe whose feeder gives no script is read once, however many readings it has', { timeout: 120_000 }, (t) => {
+  // A feeder with many substitutions has a reading after each one, and every
+  // shell on the pipe would walk them all again if a miss were not kept: the
+  // readings times the shells.
+  const pipe = (n: number) => 'yes ' + '$(x) a '.repeat(n) + '| sh' + ' $(x) sh'.repeat(n)
+  const measured = growth(pipe, 500)
+  t.diagnostic(growthWords(measured))
+  assert.ok(measured.ratio < GROWTH_BOUND, growthWords(measured))
+})
+
+test('a substitution where a program may go is told from a heredoc owner at once, however many heredocs wait', { timeout: 120_000 }, (t) => {
+  // Each such substitution asks whether the command so far owns a heredoc
+  // whose body comes after the line. Walking every waiting heredoc for it
+  // would grow with their count times the substitutions.
+  const heredocs = (n: number) => 'cat <<A;'.repeat(n) + ' $(x);'.repeat(n)
+  const measured = growth(heredocs, 4000)
+  t.diagnostic(growthWords(measured))
+  assert.ok(measured.ratio < GROWTH_BOUND, growthWords(measured))
+})
+
+test('an old style arithmetic left open on each line stops at its line end, however many lines', { timeout: 180_000 }, (t) => {
+  // A `$[` with no `]` used to look for one to the end of the whole text on
+  // every line: the lines times the text (the review: 1.2 MB in 8.8 s, far
+  // past the hook's budget). It now stops at its line end. Twenty times the
+  // lines take about twenty times as long when the read keeps pace; the
+  // search to the end measured 54 to 78 times. Its own bound, 40, sits
+  // between the two, as 30 does for ten times above.
+  const lines = (n: number) => '$[\n'.repeat(n)
+  const measured = growth(lines, 15000, 20, 40)
+  t.diagnostic(growthWords(measured).replace('ten times', 'twenty times'))
+  assert.ok(measured.ratio < 40, growthWords(measured).replace('ten times', 'twenty times'))
+})
+
+// ── The fix round's review (hf28): what read too slowly or stopped early ────
+
+test('a long cd before many reads is read in step with its length, the folder judged once', { timeout: 120_000 }, (t) => {
+  // A relative `<` read after a `cd` was judged under the whole cd folder,
+  // so the folder was read again for every read (the review: 64 KB of plain
+  // folders took 6 s, past the CLI's 3 s, and the hook printed nothing).
+  const joins = (n: number) => 'cd ' + 'a/'.repeat(n) + '; ' + 'cat <x;'.repeat(n) + ' rm -rf ~'
+  const measured = growth(joins, 300)
+  t.diagnostic(growthWords(measured))
+  assert.ok(measured.ratio < GROWTH_BOUND, growthWords(measured))
+})
+
+test('a class written backwards costs about what one written forwards does', { timeout: 120_000 }, (t) => {
+  // A backwards class (`[z-a]`) was compiled again, and failed again, for
+  // every name it was matched against, and each failure built an exception:
+  // the review's 6.5 KB `cd [z-a]/...` command took 4.7 s, and 63 KB of
+  // `cat [z-a]...` took 1.8 s. The same shapes written forwards are the
+  // measure, so a busy machine slows both alike.
+  const bestRead = (command: string): number => {
+    core.classifyFloorAll({ kind: 'command', command })
+    let best = Infinity
+    for (let i = 0; i < 3; i++) {
+      const started = performance.now()
+      core.classifyFloorAll({ kind: 'command', command })
+      best = Math.min(best, performance.now() - started)
+    }
+    return Math.max(best, 5)
+  }
+  const shapes = [
+    (cls: string) => ('cat ' + cls.repeat(25) + ';').repeat(500),
+    (cls: string) => 'cd ' + (cls + '/').repeat(500) + '; ' + 'cat <x;'.repeat(500) + ' rm -rf ~',
+  ]
+  for (const shape of shapes) {
+    const forwards = bestRead(shape('[a-z]'))
+    const backwards = bestRead(shape('[z-a]'))
+    const words = `backwards ${backwards.toFixed(0)} ms, forwards ${forwards.toFixed(0)} ms`
+    t.diagnostic(words)
+    assert.ok(backwards / forwards < 3, words)
+  }
+})
+
+test('a read that stops at the nesting limit says so, and the hook and the server can ask', () => {
+  // `eval` five deep reads past the nesting limit: the read stopped there and
+  // said nothing, so nothing asked (the review's I3). It now says it stopped
+  // early, which the hook, the relay and the server each read as unchecked.
+  const deep = core.readToolCall('Bash', { command: 'eval eval eval eval eval rm -rf ~' })
+  assert.equal(deep.lead, null)
+  assert.equal(deep.stoppedEarly, true)
+  const four = core.readToolCall('Bash', { command: 'eval eval eval eval rm -rf ~' })
+  assert.equal(four.lead?.ruleId, 'recursive_delete')
+  assert.equal(four.stoppedEarly, false)
+  for (const command of ['ls', 'git status', "bash -c 'echo hi'", 'eval eval eval eval echo hi', 'git commit -m "$(cat <<\'EOF\'\nfix\nEOF\n)"']) {
+    assert.equal(core.readToolCall('Bash', { command }).stoppedEarly, false, command)
+  }
+  // A key file five deep is still named: its name is in the words each
+  // reading sees, so the stop changes nothing for it but adds the flag.
+  const key = core.classifyFloorRead({ kind: 'command', command: 'eval eval eval eval eval cat ~/.ssh/id_rsa' })
+  assert.deepEqual(key.matches.map((m: { ruleId: string }) => m.ruleId), ['uses_secret_key'])
+  assert.equal(key.stoppedEarly, true)
+  assert.equal(core.classifyFloorRead({ kind: 'command', command: 'ls' }).stoppedEarly, false)
+  const preview = JSON.stringify({ command: 'eval eval eval eval eval rm -rf ~' })
+  assert.equal(core.readPermissionRequest('Bash', preview).stoppedEarly, true)
+  assert.equal(core.readPermissionRequest('Bash', JSON.stringify({ command: 'ls' })).stoppedEarly, false)
+})
+
+// The second review: a script is read again at each nesting level, and more
+// than once there, so a 4 KB command of nested shells read for 1.8 s. These
+// build the shapes it measured, with harmless words inside.
+const nestShells = (inner: string, wrap: (s: string) => string, times: number) => {
+  let s = inner
+  for (let i = 0; i < times; i++) s = wrap(s)
+  return s
+}
+
+test('a nested script is not read again at the same depth, so a plain one stays quiet', () => {
+  const command = nestShells('echo hi\n'.repeat(100), (s) => `sh -c "$(${s})" x$(b)`, 3)
+  const read = core.classifyFloorRead({ kind: 'command', command })
+  assert.deepEqual(read.matches, [])
+  assert.equal(read.stoppedEarly, false)
+})
+
+test('a read that lexes past its budget stops early, says so, and stays fast', () => {
+  const inner = 'a `\n' + 'echo $[1]\n'.repeat(400)
+  const command = nestShells(nestShells(inner, (s) => `sh -c "$(${s})" x$(b) > "$(a)"`, 2), (s) => `sudo sh -c "$(${s})" x$(b)`, 1)
+  assert.ok(command.length < 4096, String(command.length))
+  const started = performance.now()
+  const read = core.readToolCall('Bash', { command })
+  const elapsed = performance.now() - started
+  assert.equal(read.stoppedEarly, true)
+  // Half the hook's 1500 ms budget: before the bound this read took 1.8 s.
+  assert.ok(elapsed < 750, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('a here string that many readings of one command share is scanned for a key once', () => {
+  // The words after each substitution are a reading of their own that keeps
+  // the command's here strings. Scanning them all again for each reading
+  // would grow with the readings times the here strings.
+  const command = '0<<<x $(x) sh '.repeat(6000)
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('a long heredoc body that many readings of one command share is scanned for a key once', () => {
+  const command = 'cat <<E' + ' $(x) a'.repeat(30000) + '\n' + 'z'.repeat(200000) + '\nE'
+  const started = performance.now()
+  core.classifyFloorAll({ kind: 'command', command })
+  const elapsed = performance.now() - started
+  assert.ok(elapsed < 2000, `read in ${Math.round(elapsed)} ms`)
+})
+
+test('a very long list of words after a double dash is read without running out of room', () => {
+  // The words after the dash are gathered one at a time, never handed over as
+  // one call's arguments, which has a limit far below the longest command.
+  const command = 'scp -- ' + 'a '.repeat(200000) + 'backup/'
+  assert.deepEqual(core.classifyFloorAll({ kind: 'command', command }), [])
+})
+
 test('spec 4.2: a mention is not the action, and neither is a comment or a script written to a file', () => {
   // The shapes an agent uses all day, each of which the server says null to.
   // With the switch off, every one of these that asked cost a round trip, a
@@ -184,8 +443,8 @@ test('GNU long option prefixes (--r, --rec, --recur) are in the SHARED fixture n
     ['rm_long_prefix_r', 'rm --r build', 'recursive_delete'],
     ['rm_long_prefix_rec_with_force', 'rm --rec -f build', 'recursive_delete'],
     ['rm_long_prefix_recur', 'rm --recur build', 'recursive_delete'],
-    ['rm_long_force_is_not_recursive', 'rm --force build', null],
-    ['rm_double_dash_then_a_file_named_like_a_flag', 'rm -- --r', null],
+    ['rm_long_force_is_not_recursive', 'rm --force build', 'file_delete'],
+    ['rm_double_dash_then_a_file_named_like_a_flag', 'rm -- --r', 'file_delete'],
   ] as const) {
     const c = byName.get(name)
     assert.deepEqual(c?.input, { kind: 'command', command }, name)
@@ -251,6 +510,17 @@ test('a command past the size limit is read up to the limit, and not beyond', ()
   const pad = 'x'.repeat(HARD_FLOOR_MAX_TEXT)
   assert.equal(classifyCommand(`rm -rf a ${pad}`), 'recursive_delete')
   assert.equal(classifyCommand(`echo ${pad} && rm -rf a`), null)
+})
+
+test('a request preview is read up to the limit too: a command past its first megabyte is not reached', () => {
+  // The same limit as the server's (the fix round, X1), so the two lists name
+  // the same kinds for one preview; the server's floor check holds a preview
+  // past the limit as a cut one.
+  const far = JSON.stringify({ description: 'x'.repeat(HARD_FLOOR_MAX_TEXT), command: 'rm -rf ~/work' })
+  assert.deepEqual(core.classifyFloorAll({ kind: 'request', toolName: 'Bash', inputPreview: far }), [])
+  const near = JSON.stringify({ description: 'x', command: 'rm -rf ~/work' })
+  const read = core.classifyFloorAll({ kind: 'request', toolName: 'Bash', inputPreview: near })
+  assert.deepEqual(read.map((m: { ruleId: string }) => m.ruleId), ['recursive_delete'])
 })
 
 test('paths: separators, long path prefixes and case do not change the answer', () => {
@@ -516,6 +786,6 @@ test('a plugin install reads in a Claude Code permission request and names its w
     inputPreview: JSON.stringify({ command: 'claude plugin install page-checker@site-tools', description: 'Add it' }),
   })
   assert.equal(match?.ruleId, 'adds_skill_or_plugin')
-  assert.equal(match?.rulesVersion, 3)
+  assert.equal(match?.rulesVersion, 4)
   assert.equal(match?.words, 'installing a new plugin or tool that stays after this chat')
 })

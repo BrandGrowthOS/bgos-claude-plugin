@@ -8,7 +8,7 @@
  * It differs from the owner's floor hook (bin/hoai-floor-hook.mjs) in the
  * three ways a lane needs:
  *
- *   1. RULES VERSION 4 (lib/hard-floor-lane.mjs): version 3's actions plus
+ *   1. RULES VERSION 5 (lib/hard-floor-lane.mjs): version 4's actions plus
  *      any read of a secret or of another person's lane, judged here on the
  *      same bytes the backend judges (lib/hard-floor-lane-fixture.ts).
  *   2. The floor is ON whatever the owner's switch says, and a hold is a
@@ -36,6 +36,16 @@ export const HOOK_LANE_USER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
 export const LANE_FLOOR_HOOK_BUDGET_MS = 3_000
 export const LANE_FLOOR_STDIN_MAX_BYTES = 16 * 1024 * 1024
 
+/**
+ * How much of a command the owner list reads (the core's HARD_FLOOR_MAX_TEXT,
+ * a test pins the two equal). Held here too so the hook refuses a longer
+ * command with nothing matched whichever reader it was handed.
+ */
+export const LANE_FLOOR_MAX_TEXT = 1024 * 1024
+
+/** The shell tools whose command is read as shell text (the core's FLOOR_SHELL_TOOLS). */
+const LANE_SHELL_TOOLS = ['Bash', 'PowerShell']
+
 /** The PreToolUse answer that refuses the call. */
 export function laneFloorDeny(reason) {
   return JSON.stringify({
@@ -62,7 +72,9 @@ export function laneFromArgv(argv) {
  * @param {string} text the hook's stdin
  * @param {string | null} userId
  * @param {((toolName: string, toolInput: unknown, ctx: { actorUserId: string }) => unknown) | null} classify
- *   lib/hard-floor-lane.mjs classifyLaneToolCall, or null when it could not be loaded
+ *   lib/hard-floor-lane.mjs readLaneToolCall (its match and whether the read
+ *   stopped early) or classifyLaneToolCall (the match alone), or null when it
+ *   could not be loaded
  */
 export function decideLaneFloor(text, userId, classify) {
   if (typeof classify !== 'function') return laneFloorDeny('This lane\'s floor could not load its rules, so it refuses every action.')
@@ -77,11 +89,28 @@ export function decideLaneFloor(text, userId, classify) {
     return laneFloorDeny('This lane\'s floor could not read the action, so it refuses it.')
   }
   let match
+  let stoppedEarly = false
   try {
-    match = classify(payload.tool_name, payload.tool_input, { actorUserId: userId })
+    const read = classify(payload.tool_name, payload.tool_input, { actorUserId: userId })
+    // readLaneToolCall answers `{ match, stoppedEarly }`; classifyLaneToolCall the match alone.
+    if (read && typeof read === 'object' && 'stoppedEarly' in read) {
+      match = read.match
+      stoppedEarly = read.stoppedEarly === true
+    } else match = read
   } catch {
     return laneFloorDeny('This lane\'s floor could not judge the action, so it refuses it.')
   }
+  // A command longer than the list reads (round 29, review B item 1): its
+  // tail was never judged, as the backend's lane route holds it.
+  const input = payload.tool_input
+  const command = input && typeof input === 'object' ? input.command : undefined
+  if (LANE_SHELL_TOOLS.includes(payload.tool_name) && typeof command === 'string' && command.length > LANE_FLOOR_MAX_TEXT) {
+    stoppedEarly = true
+  }
+  // A read that stopped at the list's nesting limit or its budget (`eval`
+  // five deep, the fix round's review, I3), or past its length, did not judge
+  // what lies past it: refused.
+  if (!match && stoppedEarly) return laneFloorDeny('This lane\'s floor could not read the action to its end, so it refuses it.')
   if (!match) return ''
   return laneFloorDeny(`Not on this computer from a shared lane: ${match.words}.`)
 }
@@ -105,7 +134,8 @@ export async function main(argv = process.argv.slice(2)) {
   }, LANE_FLOOR_HOOK_BUDGET_MS)
   let classify = null
   try {
-    classify = (await import('../lib/hard-floor-lane.mjs')).classifyLaneToolCall
+    const lane = await import('../lib/hard-floor-lane.mjs')
+    classify = lane.readLaneToolCall ?? lane.classifyLaneToolCall
   } catch { /* decideLaneFloor denies without its rules */ }
   let out
   try {
