@@ -3756,7 +3756,11 @@ const mcp = new Server(
       '   during tool activity at most once per 10 minutes. Stop clears the',
       '   selection: select again on resuming. After 15 minutes without tool',
       '   activity, marks clear until tools resume. Without hooks, refresh',
-      '   within 30 minutes. Send working: false when you hand a goal off. A',
+      '   within 30 minutes. Send working: false when you hand a goal off.',
+      '   When workers you started keep running in the background after your',
+      '   turn, pass held: true (held_minutes up to 240, 120 by default) for',
+      '   each goal a worker serves: Stop and idle time leave a held mark on',
+      '   until its hold runs out; send working: false when that worker ends. A',
       '   tick ends the mark, and a mark is not progress: it never ticks a',
       '   goal. When a goal waits on your owner or another agent, say so with',
       '   `set_goal_waiting` (goal_id, on "owner" or "agent", who, why), and',
@@ -6437,7 +6441,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'without tool activity, hooks clear the marks and restore them on ' +
         'resumed activity. If hooks are unavailable, call this again with ' +
         'working: true within 30 minutes for every goal you are still working ' +
-        'on, or the mark lapses. A tick ends the ' +
+        'on, or the mark lapses. When the work runs in the background after ' +
+        'your turn ends (workers you started), pass held: true: Stop, ' +
+        'SessionEnd, a new prompt and idle time do not clear a held mark, and ' +
+        'this daemon refreshes it until its hold runs out, 120 minutes by ' +
+        'default or held_minutes (1 to 240); call again to restart the hold. ' +
+        'Mark each goal a running worker serves, and send working: false when ' +
+        'that worker finishes. A call without held makes the mark an ordinary ' +
+        'one again. A tick ends the ' +
         'mark by itself, a ticked goal is refused, and a paused or closed ' +
         'mission takes no new mark. A mark is not progress: it never ticks a ' +
         'goal, so still call tick_mini_goal when a check is true. One request ' +
@@ -6460,6 +6471,20 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'true: select these goals for hook-driven refresh while tools run. ' +
               'Without hooks, refresh within 30 minutes. false: deselect and clear.',
+          },
+          held: {
+            type: 'boolean',
+            description:
+              'Optional, with working: true. true keeps the mark for background ' +
+              'work after your turn ends: Stop, SessionEnd, a new prompt and idle ' +
+              'time leave it on until the hold runs out (120 minutes unless ' +
+              'held_minutes is given), you send working: false, or the goal is ticked.',
+          },
+          held_minutes: {
+            type: 'number',
+            description:
+              'Optional hold time in whole minutes, 1 to 240; implies held: true. ' +
+              'Calling again restarts the hold.',
           },
           mission_id: {
             type: 'number',
@@ -9105,6 +9130,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const built = buildMissionGoalWorkingInput({
         goal_ids: rawArgs.goal_ids,
         working: rawArgs.working,
+        held: rawArgs.held,
+        held_minutes: rawArgs.held_minutes,
       })
       if (!built.ok) {
         return {
@@ -9127,6 +9154,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           }
         }
         const { goalIds, working } = built.body
+        // Only a daemon running the hook intake runs the sweep that keeps a
+        // held mark fresh. Without it a hold would be a promise nobody keeps,
+        // so the mark is sent as an ordinary one and the agent is told why.
+        const holdMinutes = hookIntake ? built.body.holdMinutes ?? 0 : 0
+        const holdRefused = !!built.body.holdMinutes && !holdMinutes
         for (const goalId of goalIds) {
           const builtPath = buildMissionGoalWorkingPath(ASSISTANT_ID, missionId, goalId)
           if (!builtPath.ok) {
@@ -9153,6 +9185,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           try {
             const result = (await missionWorking.mark({
               sessionId: workingContext.sessionId, context: workingContext, missionId, goalId, working,
+              ...(holdMinutes ? { holdMs: holdMinutes * 60_000 } : {}),
               headers: privateCall!.headers,
             })) as {
               mission?: MissionSnapshot
@@ -9172,14 +9205,23 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           ids.length === 1 ? `goal ${ids[0]}` : `goals ${ids.join(', ')}`
         log(
           `set_goal_working: mission #${missionId} working=${working}` +
+            (holdMinutes ? ` held=${holdMinutes}m` : '') +
             (marked.length > 0 ? ` ${named(marked)}` : '') +
             (failed.length > 0 ? `, refused ${named(failed.map((f) => f.goalId))}` : ''),
         )
         const lines: string[] = []
         if (marked.length > 0) {
           lines.push(
-            working
+            working && holdMinutes
+              ? `Held working: ${named(marked)}, for ${holdMinutes} minutes. ` +
+                  `Stop, a new prompt and idle time leave ${marked.length === 1 ? 'it' : 'them'} on, and this daemon ` +
+                  'refreshes the mark until the hold runs out. Call again to restart the hold, and send ' +
+                  'working: false when the worker for a goal finishes.'
+              : working
               ? `Marked working: ${named(marked)}. ` +
+                  (holdRefused
+                    ? 'This daemon cannot hold the mark after your turn: it has no hook intake running. '
+                    : '') +
                   (workingContext.sessionId
                     ? 'Hook activity refreshes selected goals; Stop clears the selection, so select again when you resume. Without hooks, '
                     : 'There is no bound hook session for this mark; ') +
@@ -14309,6 +14351,8 @@ function noteMissionPendingSelfWrite(missionId: number): void {
 function rememberMissionSelfWrite(mission: unknown): void {
   missionSelfWrites.noteWritten(mission)
   noteMissionTurnSnapshot(mission)
+  // The agent's own tick ends a held working mark (lib/mission-working.ts).
+  missionWorking.noteMission(mission)
 }
 
 // -- The mission turn check (mission turn checks) ----
@@ -15202,6 +15246,8 @@ function handleMissionEvent(frame: string, payload: unknown): void {
 
     const chatId = missionChatId(event.mission)
     noteMissionTurnSnapshot(event.mission, event.chatId)
+    // Any tick, the owner's or the server's check, ends a held working mark.
+    missionWorking.noteMission(event.mission)
     // Asked ONCE: the ledger's pending stamp is consumed by the question, so
     // a second ask would answer no and narrate the daemon's own write back to
     // its model.
