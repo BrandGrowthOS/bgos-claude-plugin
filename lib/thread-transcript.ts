@@ -185,3 +185,46 @@ export async function clearActiveGoal(path: string, chunkBytes: number = CHUNK_B
   await spliceRow(path, edit)
   return true
 }
+
+const MODE_MARKER = Buffer.from('permission-mode')
+
+/**
+ * The permission mode the session at `path` is in now: its LATEST
+ * `{"type":"permission-mode","permissionMode":...}` row (the CLI writes one at
+ * start and at every change of mode; measured on 2.1.322). Null when the
+ * transcript holds none (a headless run writes none) or cannot be read. Read
+ * backwards in chunks like findActiveGoalRow, parsing only lines that name
+ * the row type, so a transcript of hundreds of megabytes costs one chunk.
+ * An owner's full access thread starts in this mode
+ * (lib/thread-lane-args.ts threadFullPermissionMode).
+ */
+export async function latestPermissionMode(path: string, chunkBytes: number = CHUNK_BYTES): Promise<string | null> {
+  const modeOf = (line: Buffer): string | null => {
+    if (line.indexOf(MODE_MARKER) < 0) return null
+    try {
+      const row = JSON.parse(line.toString('utf8')) as { type?: unknown; permissionMode?: unknown } | null
+      return row?.type === 'permission-mode' && typeof row.permissionMode === 'string' && row.permissionMode !== '' ? row.permissionMode : null
+    } catch {
+      return null
+    }
+  }
+  let fh: FileHandle
+  try {
+    fh = await open(path, 'r')
+  } catch {
+    return null
+  }
+  try {
+    const { size } = await fh.stat()
+    let mode: string | null = null
+    await scanLinesBackwards(fh, size, chunkBytes, (line) => {
+      mode = modeOf(line)
+      return mode !== null
+    })
+    return mode
+  } catch {
+    return null
+  } finally {
+    await fh.close()
+  }
+}

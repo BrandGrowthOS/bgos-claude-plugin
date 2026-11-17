@@ -39,6 +39,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { nodeFloorNotice } from '../lib/browser-profile-node-runtime.mjs'
+import { startedByThreadLane } from '../lib/thread-lane-marker.mjs'
 import { findAttachedKey, floorStateRoot, sessionFolders } from '../lib/floor-state.mjs'
 import { privateContextPath } from '../lib/private-turn.mjs'
 
@@ -331,7 +332,11 @@ export function isRunAsMain(argv1 = process.argv[1], moduleUrl = import.meta.url
   }
 }
 
-if (isRunAsMain()) {
+// Started by an owner's full access thread, this plugin never starts a second
+// copy of itself (lib/thread-lane-marker.mjs): exit at once, before bun is looked for.
+if (isRunAsMain() && startedByThreadLane()) {
+  process.exitCode = 0
+} else if (isRunAsMain()) {
   main()
     .then((code) => {
       process.exitCode = code

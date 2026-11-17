@@ -889,6 +889,23 @@ test('no thread token on Windows in phase 1, nor where threads cannot run', () =
   }
 })
 
+test('thread_full_access is declared beside the thread tokens only while the owner\'s setting is on, and never where threads are not', () => {
+  const base = { canInjectGoal: true, floorHook: true, authMode: 'pairing' as const }
+  const on = declaredCapabilities({ ...base, threads: true, threadFullAccess: true, platform: 'darwin' })
+  assert.ok(on.includes('thread_full_access'))
+  assert.equal(on.indexOf('thread_full_access'), on.indexOf('asides') + 1, 'right after the thread tokens')
+  assert.ok(declaredCapabilities({ ...base, authMode: 'apikey', threads: true, threadFullAccess: true, platform: 'linux' }).includes('thread_full_access'), 'wherever threads are declared')
+  for (const shape of [
+    { threads: true, threadFullAccess: false, platform: 'darwin' as const },
+    { threads: true, platform: 'darwin' as const },
+    { threads: false, threadFullAccess: true, platform: 'darwin' as const },
+    { threads: true, threadFullAccess: true, platform: 'win32' as const },
+    { threadFullAccess: true, platform: 'linux' as const },
+  ]) {
+    assert.equal(declaredCapabilities({ ...base, ...shape }).includes('thread_full_access'), false, JSON.stringify(shape))
+  }
+})
+
 test('the fullest declaration, every token in its place, is exactly this list', () => {
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: true, floorHook: true, personLanes: true, modelEffortPicker: true, threads: true, authMode: 'pairing', platform: 'darwin' })],

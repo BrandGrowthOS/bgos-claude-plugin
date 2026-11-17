@@ -70,8 +70,22 @@ export interface DaemonHarness {
   exited: { at: number } | null
   /** Pending threads the fake backend lists (GET integrations/threads/pending). */
   pending: Array<Record<string, unknown>>
+  /**
+   * Threads the fake backend says are no longer open (0.91.0, the pending read's `gone`): answered only for the
+   * roots the daemon named, as the server does. `pendingRoots` records what each pending read named.
+   */
+  gone: Array<{ rootId: string; removeWorktree: boolean }>
+  pendingRoots: string[][]
+  /** Drop the daemon's socket: it reconnects, and reads its pending turns again as it does at startup. */
+  reconnect(): void
   emit(event: string, payload: unknown): void
-  threadTurn(input: { rpcId: string; chatId: string; rootId: string; replyId: string; text: string; mode?: string }): void
+  /**
+   * `person`: stamp the frame for a person the agent is shared with (`lane` and `actorUserId` at its top level, as
+   * the server stamps a person's frame). Without it the frame is the owner's own: no stamp, no person.
+   */
+  threadTurn(input: { rpcId: string; chatId: string; rootId: string; replyId: string; text: string; mode?: string; person?: string }): void
+  /** The owner closes (or, with removeWorktree, deletes) a thread. */
+  threadClose(input: { rpcId: string; chatId: string; rootId: string; removeWorktree?: boolean }): void
   /** The owner writes in the main chat: stored, and pushed on the socket like the backend does. Answers its id. */
   pushChatMessage(text: string): number
   /** The channel notifications the daemon sent Claude Code (main chat messages handed to the session). */
@@ -173,6 +187,8 @@ export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHa
   const posts: Post[] = []
   const refused: Post[] = []
   const pending: Array<Record<string, unknown>> = []
+  const gone: Array<{ rootId: string; removeWorktree: boolean }> = []
+  const pendingRoots: string[][] = []
   // The owner's main chat with this agent, as the backend stores it.
   const rows: Array<Record<string, unknown> & { id: number; chatId: number }> = []
   let messageSeq = 1000
@@ -201,7 +217,12 @@ export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHa
         return res.end(JSON.stringify({ chats: [{ id: MAIN_CHAT, assistantId: ASSISTANT_ID, kind: 'main', userId: USER_ID }] }))
       }
       if (req.method === 'GET' && path === 'meetings') return res.end('[]')
-      if (req.method === 'GET' && path === 'integrations/threads/pending') return res.end(JSON.stringify({ turns: pending }))
+      if (req.method === 'GET' && path === 'integrations/threads/pending') {
+        const named = (url.searchParams.get('roots') ?? '').split(',').filter(Boolean)
+        pendingRoots.push(named)
+        const answer = gone.filter((g) => named.includes(g.rootId))
+        return res.end(JSON.stringify({ turns: pending, ...(named.length > 0 ? { gone: answer } : {}) }))
+      }
       const history = /^chats\/(\d+)\/messages$/.exec(path)
       if (req.method === 'GET' && history) {
         const afterId = Number(url.searchParams.get('afterId') ?? 0)
@@ -339,6 +360,10 @@ export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHa
     api,
     exited: null,
     pending,
+    gone,
+    pendingRoots,
+    // A dropped transport, as a network outage looks: the client reconnects by itself (a server kick it would not retry).
+    reconnect: () => { for (const socket of io.sockets.sockets.values()) socket.conn.close() },
     channelCards,
     emit: (event, payload) => {
       io.emit(event, payload)
@@ -349,7 +374,17 @@ export async function startDaemonHarness(opts: HarnessOptions): Promise<DaemonHa
         op: 'thread_turn',
         assistantId: ASSISTANT_ID,
         chatId: t.chatId,
+        ...(t.person ? { actorUserId: t.person, lane: `person:${t.person}` } : {}),
         payload: { chatId: t.chatId, rootId: t.rootId, replyId: t.replyId, mode: t.mode ?? 'start', text: t.text, title: 'A thread', rootText: 'The root message' },
+      })
+    },
+    threadClose: (t) => {
+      io.emit('voice_rpc', {
+        rpcId: t.rpcId,
+        op: 'thread_close',
+        assistantId: ASSISTANT_ID,
+        chatId: t.chatId,
+        payload: { chatId: t.chatId, rootId: t.rootId, removeWorktree: t.removeWorktree === true },
       })
     },
     pushChatMessage: (text) => {
