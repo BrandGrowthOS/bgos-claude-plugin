@@ -97,7 +97,7 @@ import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
-import { applyOrigins, closingTeachWindows, createCardDeliveries, createTeachWindows, isHumanClick, logOriginsTo, noteSkillToolUse, noteTeachTap, originIdentOf, stampOrigin } from './lib/skill-origins.js'
+import { TEACH_WRITE_FIRST, applyOrigins, closingTeachWindows, createCardDeliveries, createTeachWindows, isHumanClick, logOriginsTo, noteSkillToolUse, noteTeachTap, originIdentOf, stampOrigin, teachTapOpens } from './lib/skill-origins.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
@@ -11130,7 +11130,16 @@ const teachCards = createCardDeliveries(teachWindows)
 // ask answer has none, so null). Any tap that is not the owner's own closes its chat's window, and every tap is noted
 // as its chat's delivery, so the turn it starts is filed under that chat (lib/skill-origins.ts noteTeachTap).
 function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { humanPrincipal: unknown }) {
-  const card = privateTapCard(input)
+  let idle = false
+  let opens = false
+  try {
+    idle = teachSessionIdle()
+    opens = idle && teachTapOpens({ tapperUserId: input.tapperUserId, ownerUserId: input.ownerUserId, callbackData: input.callbackData, customText: input.customText, humanPrincipal: input.humanPrincipal, posted: input.posted })
+  } catch {
+    log('skills: origin unavailable')
+  }
+  // The Approve that opens a window tells the agent the one write that can mark the skill taught.
+  const card = privateTapCard(opens ? { ...input, content: `${input.content}\n${TEACH_WRITE_FIRST}` } : input)
   try {
     const own = noteTeachTap({ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat }, {
       chatId: input.chatId,
@@ -11141,7 +11150,7 @@ function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { hu
       customText: input.customText,
       humanPrincipal: input.humanPrincipal,
       posted: input.posted,
-      idle: teachSessionIdle(),
+      idle,
       card,
       now: Date.now(),
     })

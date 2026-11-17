@@ -10,6 +10,8 @@ import { deliveredNeedle, promptCarriesDelivered, type TurnChatNote } from './tu
 export type SkillOrigin = 'taught' | 'made' | 'installed' | 'shared' | 'repo' | 'synced'
 export const TEACH_APPROVE = 'teach_approve'
 export const TEACH_WINDOW_MS = 15 * 60_000
+/** Added to the owner's Approve card when it opens a window: the one write that can mark the skill taught. */
+export const TEACH_WRITE_FIRST = 'Teach approved: write this skill\'s SKILL.md now with the Write tool, before any other tool. If any other tool or message comes first, the skill shows no Taught mark.'
 
 let originLog: (msg: string) => void = () => {}
 

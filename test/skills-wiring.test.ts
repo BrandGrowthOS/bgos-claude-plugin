@@ -19,7 +19,7 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
-import { closingTeachWindows, createCardDeliveries, createTeachWindows, noteTeachTap } from '../lib/skill-origins.ts'
+import { TEACH_WRITE_FIRST, closingTeachWindows, createCardDeliveries, createTeachWindows, noteTeachTap, teachTapOpens } from '../lib/skill-origins.ts'
 import { createTurnChatTracker } from '../lib/turn-chat.ts'
 
 const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -45,10 +45,11 @@ test('inventory list applies origins from the sidecar beside the skills trash', 
 test('all six tap delivery sites note the teach window through one wrapper', () => {
   assert.equal((server.match(/\bprivateTapCard\(/g) ?? []).length, 1)
   assert.equal((server.match(/\bprivateTapCardNoting\(\{/g) ?? []).length, 6)
-  const wrapper = server.slice(server.indexOf('function privateTapCardNoting('), server.indexOf('function privateTapCardNoting(') + 950)
-  assert.match(wrapper, /const card = privateTapCard\(input\)\n\s*try\s*\{\s*const own = noteTeachTap\(\{ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat \}, \{/)
+  const wrapper = server.slice(server.indexOf('function privateTapCardNoting('), server.indexOf('function privateTapCardNoting(') + 1500)
+  assert.match(wrapper, /const card = privateTapCard\(opens \? \{ \.\.\.input, content: `\$\{input\.content\}\\n\$\{TEACH_WRITE_FIRST\}` \} : input\)\n\s*try\s*\{\s*const own = noteTeachTap\(\{ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat \}, \{/)
   for (const field of ['chatId', 'messageId', 'tapperUserId', 'ownerUserId', 'callbackData', 'customText', 'humanPrincipal', 'posted']) assert.ok(wrapper.includes(`${field}: input.${field}`), field)
-  assert.match(wrapper, /idle: teachSessionIdle\(\),\n\s*card,\n\s*now: Date.now\(\),/)
+  assert.match(wrapper, /idle = teachSessionIdle\(\)/)
+  assert.match(wrapper, /idle,\n\s*card,\n\s*now: Date.now\(\),/)
   assert.match(wrapper, /if \(own\) teachCards\.ownTap\(card\)\n\s*\} catch \{\n\s*log\('skills: origin unavailable'\)\n\s*\}\n\s*return card/)
   assert.match(server, /function privateTapCardNoting\(input: Parameters<typeof privateTapCard>\[0\] & \{ humanPrincipal: unknown \}\)/)
 })
@@ -178,9 +179,9 @@ test('privateTapCardNoting, run as server.ts has it: the owner\'s Approve on an 
   const teachWindows = createTeachWindows()
   const turnChat = closingTeachWindows(createTurnChatTracker(), teachWindows, 'assistant')
   const cards: unknown[] = []
-  const wrapper = tapWrapper({ noteTeachTap, teachWindows, turnChat, teachCards: createCardDeliveries(teachWindows), teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: (input: unknown) => { cards.push(input); return TAP_CARD }, log: () => {} })
+  const wrapper = tapWrapper({ noteTeachTap, teachTapOpens, TEACH_WRITE_FIRST, teachWindows, turnChat, teachCards: createCardDeliveries(teachWindows), teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: (input: unknown) => { cards.push(input); return TAP_CARD }, log: () => {} })
   assert.equal(wrapper(ownApprove), TAP_CARD)
-  assert.deepEqual(cards, [ownApprove], 'privateTapCard gets the tap as given')
+  assert.deepEqual(cards, [{ ...ownApprove, content: `tap\n${TEACH_WRITE_FIRST}` }], 'privateTapCard gets the tap, told to write SKILL.md first')
   assert.equal(turnChat.current(Date.now())?.chatId, 'chat', 'the tap is its chat\'s delivery')
   teachWindows.beginTurn(tapPrompt)
   assert.ok(teachWindows.take('chat', 'assistant', Date.now() + 1), 'the window opened, for this assistant, and the tap card started its turn')
@@ -190,7 +191,7 @@ test('privateTapCardNoting, run as server.ts has it: the owner\'s Approve on an 
   assert.equal(teachWindows.take('chat', 'assistant', Date.now() + 1), null, 'a teammate\'s tap closed it')
   for (const change of [{ humanPrincipal: 'true' }, { customText: 'words' }, { posted: false }, { tapperUserId: 'teammate' }]) {
     const windows = createTeachWindows()
-    tapWrapper({ noteTeachTap, teachWindows: windows, turnChat, teachCards: createCardDeliveries(windows), teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: () => TAP_CARD, log: () => {} })({ ...ownApprove, ...change })
+    tapWrapper({ noteTeachTap, teachTapOpens, TEACH_WRITE_FIRST, teachWindows: windows, turnChat, teachCards: createCardDeliveries(windows), teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: () => TAP_CARD, log: () => {} })({ ...ownApprove, ...change })
     windows.beginTurn(tapPrompt)
     assert.equal(windows.take('chat', 'assistant', Date.now() + 1), null, JSON.stringify(change))
   }
@@ -198,7 +199,7 @@ test('privateTapCardNoting, run as server.ts has it: the owner\'s Approve on an 
 
 test('privateTapCardNoting, run as server.ts has it: the owner\'s Approve while another turn is live opens no window', () => {
   const teachWindows = createTeachWindows()
-  const wrapper = tapWrapper({ noteTeachTap, teachWindows, turnChat: closingTeachWindows(createTurnChatTracker(), teachWindows, 'assistant'), teachCards: createCardDeliveries(teachWindows), teachSessionIdle: () => false, ASSISTANT_ID: 'assistant', privateTapCard: () => TAP_CARD, log: () => {} })
+  const wrapper = tapWrapper({ noteTeachTap, teachTapOpens, TEACH_WRITE_FIRST, teachWindows, turnChat: closingTeachWindows(createTurnChatTracker(), teachWindows, 'assistant'), teachCards: createCardDeliveries(teachWindows), teachSessionIdle: () => false, ASSISTANT_ID: 'assistant', privateTapCard: () => TAP_CARD, log: () => {} })
   wrapper(ownApprove)
   teachWindows.beginTurn(tapPrompt)
   assert.equal(teachWindows.take('chat', 'assistant', Date.now() + 1), null)
@@ -206,7 +207,7 @@ test('privateTapCardNoting, run as server.ts has it: the owner\'s Approve while 
 
 test('privateTapCardNoting still returns the card when the teach code throws', () => {
   const lines: string[] = []
-  const wrapper = tapWrapper({ noteTeachTap: () => { throw new Error('broken') }, teachWindows: {}, turnChat: {}, teachCards: { ownTap: () => { throw new Error('unreached') } }, teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: () => 'card', log: (msg: string) => { lines.push(msg) } })
+  const wrapper = tapWrapper({ teachTapOpens, TEACH_WRITE_FIRST, noteTeachTap: () => { throw new Error('broken') }, teachWindows: {}, turnChat: {}, teachCards: { ownTap: () => { throw new Error('unreached') } }, teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: () => 'card', log: (msg: string) => { lines.push(msg) } })
   assert.equal(wrapper(ownApprove), 'card')
   assert.deepEqual(lines, ['skills: origin unavailable'])
 })
@@ -257,7 +258,7 @@ test('every channel card that reaches the session, run as server.ts has it, clos
   const turnChat = closingTeachWindows(createTurnChatTracker(), teachWindows, 'assistant')
   const scope = { groupNotificationStep: () => null, privateTurns: { tagRawCard: (c: unknown) => c, rawCard: () => {} }, teachCards }
   const { send, sent } = cardStep(scope)
-  const wrapper = tapWrapper({ noteTeachTap, teachWindows, turnChat, teachCards, teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: () => TAP_CARD, log: () => {} })
+  const wrapper = tapWrapper({ noteTeachTap, teachTapOpens, TEACH_WRITE_FIRST, teachWindows, turnChat, teachCards, teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: () => TAP_CARD, log: () => {} })
   const card = (content: string) => ({ method: 'notifications/claude/channel', params: { content, meta: { chat_id: 'other' } } })
   await send(card(String(wrapper(ownApprove))))
   assert.equal(sent.length, 1)
@@ -274,4 +275,20 @@ test('every channel card that reaches the session, run as server.ts has it, clos
 test('a /goal typed into the pane closes every teach window: its words are not what the owner approved', () => {
   const goal = server.slice(server.indexOf('async function runGoalInjection('))
   assert.match(goal.slice(0, 600), /goalInjectionsInFlight\+\+\n\s*\/\/[^\n]*\n\s*teachWindows\.closeAll\(\)\n\s*try \{/)
+})
+
+test('the Approve card tells the agent to write SKILL.md first, only when that tap opens a window', () => {
+  assert.match(TEACH_WRITE_FIRST, /SKILL\.md/)
+  assert.match(TEACH_WRITE_FIRST, /before any other tool/)
+  const run = (idle: boolean, tap: Record<string, unknown>) => {
+    const seen: string[] = []
+    const windows = createTeachWindows()
+    tapWrapper({ noteTeachTap, teachTapOpens, TEACH_WRITE_FIRST, teachWindows: windows, turnChat: closingTeachWindows(createTurnChatTracker(), windows, 'assistant'), teachCards: createCardDeliveries(windows), teachSessionIdle: () => idle, ASSISTANT_ID: 'assistant', privateTapCard: (input: { content: string }) => { seen.push(input.content); return input.content }, log: () => {} })(tap)
+    return seen[0]
+  }
+  assert.equal(run(true, ownApprove), `tap\n${TEACH_WRITE_FIRST}`)
+  assert.equal(run(false, ownApprove), 'tap', 'another turn is live: no window, no line')
+  for (const change of [{ tapperUserId: 'teammate' }, { callbackData: 'teach_edit' }, { humanPrincipal: undefined }, { customText: 'words' }, { posted: false }]) {
+    assert.equal(run(true, { ...ownApprove, ...change }), 'tap', JSON.stringify(change))
+  }
 })
