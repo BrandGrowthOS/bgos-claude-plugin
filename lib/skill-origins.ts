@@ -219,7 +219,9 @@ const known = (v: unknown): boolean => v !== undefined && v !== null && String(v
  * A skill folder's identity for its mark, never following a link: its file number (dev:ino) and, where the filesystem
  * keeps one, its birth time in nanoseconds. A folder deleted and made again gets a new identity even where the file
  * number comes back (ext4), as long as it is made again after the filesystem's clock tick; on a filesystem with no
- * birth time a reused file number keeps the mark. Null when either number is unknown. Never throws.
+ * birth time a reused file number keeps the mark. Birth time is checked on Windows only (node and bun). On Linux
+ * without statx node reads the change time as the birth time, which moves when a file is added or renamed inside: the
+ * mark drops, never a wrong one. Null when either number is unknown. Never throws.
  */
 export function originIdentOf(path: string, fs: IdentFs = { statSync, lstatSync }): string | null {
   try {
