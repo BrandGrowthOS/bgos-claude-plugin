@@ -674,3 +674,26 @@ test('a window inside fifteen minutes of the tap still opens after a clock set b
   assert.equal(windows.take('chat', 'assistant', 5 * TEACH_WINDOW_MS), null, 'still refused as a write from before the tap')
   assert.deepEqual(windows.take('chat', 'assistant', 10 * TEACH_WINDOW_MS + 1), { by: 'owner' })
 })
+
+for (const now of [NaN, Infinity, -Infinity]) {
+  test(`a tap with a time that is not a finite number opens no window: ${now}`, () => {
+    const windows = api().createTeachWindows()
+    windows.noteTap({ ...tap, now })
+    assert.equal(windows.take('chat', 'assistant', 101), null)
+  })
+}
+
+for (const [name, folder, stamp, now] of [
+  ['a folder name that is not a skill name', 'Bad_Name', { origin: 'taught', ident: '1:2' }, 1],
+  ['a folder name that climbs out', '../outside', { origin: 'taught', ident: '1:2' }, 1],
+  ['an origin this build does not know', 'foo', { origin: 'invented', ident: '1:2' }, 1],
+  ['an empty identity', 'foo', { origin: 'taught', ident: '' }, 1],
+  ['a time that is not a finite number', 'foo', { origin: 'taught', ident: '1:2' }, NaN],
+] as const) {
+  test(`a stamp with ${name} writes nothing`, () => {
+    const { stampOrigin } = api()
+    const w = world()
+    stampOrigin(w.file, folder, stamp as never, now)
+    assert.deepEqual(readdirSync(w.root).sort(), ['agent'], 'no marks file and no temp file')
+  })
+}

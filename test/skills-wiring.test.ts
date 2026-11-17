@@ -18,6 +18,9 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
+import ts from 'typescript'
+import { closingTeachWindows, createTeachWindows, noteTeachTap } from '../lib/skill-origins.ts'
+import { createTurnChatTracker } from '../lib/turn-chat.ts'
 
 const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
@@ -156,4 +159,40 @@ test('the share ops (row 6) get the same agent folder and post progress on the s
   assert.ok(install.includes('platform: process.platform'))
   assert.ok(install.includes('progress,'))
   assert.match(built, /postProgress: \(rpcId, body\) =>\n\s*bgosPost\(`integrations\/skills-rpc\/\$\{encodeURIComponent\(rpcId\)\}\/progress`, body\)/)
+})
+
+function tapWrapper(scope: Record<string, unknown>) {
+  const start = server.indexOf('function privateTapCardNoting(')
+  const end = server.indexOf('\n}\n', start) + 3
+  assert.ok(start > 0 && end > start)
+  const js = ts.transpileModule(server.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+  return new Function(...Object.keys(scope), `${js}\nreturn privateTapCardNoting`)(...Object.values(scope)) as (input: Record<string, unknown>) => unknown
+}
+
+const ownApprove = { tracker: {}, lane: 'stream', ownerUserId: 'owner', chatId: 'chat', messageId: 5, tapperUserId: 'owner', humanPrincipal: true, answeredAt: null, receivedAt: 0, callbackData: 'teach_approve', customText: undefined, posted: true, content: 'tap' }
+
+test('privateTapCardNoting, run as server.ts has it: the owner\'s Approve opens its window and the card is privateTapCard\'s', () => {
+  const teachWindows = createTeachWindows()
+  const turnChat = closingTeachWindows(createTurnChatTracker(), teachWindows, 'assistant')
+  const cards: unknown[] = []
+  const wrapper = tapWrapper({ noteTeachTap, teachWindows, turnChat, ASSISTANT_ID: 'assistant', privateTapCard: (input: unknown) => { cards.push(input); return 'card' }, log: () => {} })
+  assert.equal(wrapper(ownApprove), 'card')
+  assert.deepEqual(cards, [ownApprove], 'privateTapCard gets the tap as given')
+  assert.equal(turnChat.current(Date.now())?.chatId, 'chat', 'the tap is its chat\'s delivery')
+  assert.ok(teachWindows.take('chat', 'assistant', Date.now() + 1), 'the window opened, for this assistant')
+  wrapper(ownApprove)
+  wrapper({ ...ownApprove, tapperUserId: 'teammate', callbackData: 'yes' })
+  assert.equal(teachWindows.take('chat', 'assistant', Date.now() + 1), null, 'a teammate\'s tap closed it')
+  for (const change of [{ humanPrincipal: 'true' }, { customText: 'words' }, { posted: false }, { tapperUserId: 'teammate' }]) {
+    const windows = createTeachWindows()
+    tapWrapper({ noteTeachTap, teachWindows: windows, turnChat, ASSISTANT_ID: 'assistant', privateTapCard: () => 'card', log: () => {} })({ ...ownApprove, ...change })
+    assert.equal(windows.take('chat', 'assistant', Date.now() + 1), null, JSON.stringify(change))
+  }
+})
+
+test('privateTapCardNoting still returns the card when the teach code throws', () => {
+  const lines: string[] = []
+  const wrapper = tapWrapper({ noteTeachTap: () => { throw new Error('broken') }, teachWindows: {}, turnChat: {}, ASSISTANT_ID: 'assistant', privateTapCard: () => 'card', log: (msg: string) => { lines.push(msg) } })
+  assert.equal(wrapper(ownApprove), 'card')
+  assert.deepEqual(lines, ['skills: origin unavailable'])
 })
