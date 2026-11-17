@@ -390,7 +390,8 @@ const WRITES_NO_FILE = new Set(['Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSe
   'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Skill'])
 /** This plugin's own MCP tools write no file, but boards_download, which saves one. */
 const OWN_NO_FILE = new Set<string>(OWN_MCP_TOOLS.filter((name) => name !== 'boards_download'))
-const OWN_TOOL = /^mcp__(?:.*_)?bgos__(.+)$/
+/** This plugin's MCP server by its exact names: `bgos` (the server's own name) and `plugin_hoai_bgos` (as the hoai plugin loads it). */
+const OWN_TOOL = /^mcp__(?:bgos|plugin_hoai_bgos)__(.+)$/
 
 function writesNoFile(toolName: string): boolean {
   const own = OWN_TOOL.exec(toolName)
