@@ -17,6 +17,12 @@
  * lib/auth-login.ts does), never by a second rule. A non owner gets the lane
  * style answer: what the owner decides, and "do not read or edit".
  *
+ * r2 (review rvpermslash): owner only is the DEFAULT. Only /help, /plan, /mcp
+ * and /doctor (and the person lane's own catalog) are `forAnyone`; every
+ * discovered plugin, user or project command, this plugin's /hoai:pair among
+ * them, runs its body only on the owner's turn, and the wiring test names
+ * each rail's own fromHuman variable.
+ *
  * No em or en dashes in this file.
  */
 
@@ -26,10 +32,14 @@ import assert from 'node:assert/strict'
 
 import {
   BUILTIN_COMMANDS,
+  catalogForCapabilities,
+  mergeSlashCommandCatalog,
+  parseSlashCommandMarkdown,
   prepareSlashCommands,
   routeSlashCommand,
   type SlashCommandEntry,
 } from '../lib/slash-catalog.ts'
+import { LANE_COMMANDS, routeLaneSlash } from '../lib/lane-slash.ts'
 
 const OWNER = '501'
 const RECIPIENT = '777'
@@ -174,16 +184,167 @@ test('a command that edits nothing answers everyone the same', () => {
   }
 })
 
-test('a project command that shadows /permissions is the owner\'s own and is not rewritten', () => {
+test('a project command that shadows /permissions runs for the owner only, like every discovered command', () => {
+  // Until r2 this pinned the shadow as running for a share recipient: "the
+  // owner's own" was read as "safe for anyone". It is the owner's own, which is
+  // exactly why only the owner runs it (review rvpermslash, finding 1).
   const shadow: SlashCommandEntry = { command: '/permissions', description: 'mine', scope: 'all', prompt: 'OWNER PROJECT BODY' }
   const reg = prepareSlashCommands([shadow])
-  const route = routeSlashCommand({
-    payload: slash('/permissions', NON_OWNERS[0]!.sender),
+  const route = (sender: Record<string, unknown>) => routeSlashCommand({
+    payload: slash('/permissions', sender),
     registry: reg.registry,
     speaker: { ownerUserId: OWNER, fromHuman: true },
   })
+  const recipient = route(NON_OWNERS[0]!.sender)
+  assert.equal(recipient.kind, 'directive')
+  if (recipient.kind === 'directive') {
+    assert.doesNotMatch(recipient.delivery.content, /OWNER PROJECT BODY/)
+    assert.match(recipient.delivery.content, /not this agent's owner/)
+  }
+  const owner = route({ sender: { userId: OWNER, relationship: 'owner' } })
+  assert.equal(owner.kind, 'directive')
+  if (owner.kind === 'directive') assert.match(owner.delivery.content, /OWNER PROJECT BODY/)
+})
+
+// ── Discovered commands (plugins, user, project) are owner only by default ──
+// server.ts discoverSlashCommands merges every installed plugin's
+// commands/*.md, ~/.claude/commands and the project's .claude/commands into
+// the same registry the six built ins live in. None of them carries a
+// nonOwnerPrompt, so before r2 every one ran its owner body for anyone,
+// including this plugin's own /hoai:pair (review rvpermslash, finding 1).
+
+const PLUGIN_ROOT = '/home/owner/.claude/plugins/cache/hoai/hoai/0.90.11'
+const PAIR_SOURCE = `${PLUGIN_ROOT}/commands/pair.md`
+const PAIR_CODE = 'BGOS-XXXX-XX'
+
+/** The registry server.ts builds, with the real commands/pair.md in it. */
+function discoveredRegistry() {
+  const pair = parseSlashCommandMarkdown({
+    raw: readFileSync(new URL('../commands/pair.md', import.meta.url), 'utf8'),
+    command: '/hoai:pair',
+    sourcePath: PAIR_SOURCE,
+    pluginRoot: PLUGIN_ROOT,
+  })
+  const hookify = parseSlashCommandMarkdown({
+    raw: '---\ndescription: Write a hook rule\n---\nWrite a hook rule to .claude/hookify.$ARGUMENTS.local.md now.',
+    command: '/hookify:hookify',
+    sourcePath: '/home/owner/.claude/plugins/marketplaces/m/plugins/hookify/commands/hookify.md',
+    pluginRoot: '/home/owner/.claude/plugins/marketplaces/m/plugins/hookify',
+  })
+  const user = parseSlashCommandMarkdown({ raw: 'OWNER USER BODY $ARGUMENTS', command: '/deploy', sourcePath: '/home/owner/.claude/commands/deploy.md' })
+  const project = parseSlashCommandMarkdown({ raw: 'OWNER PROJECT BODY', command: '/release', sourcePath: '/work/agent/.claude/commands/release.md' })
+  return prepareSlashCommands(mergeSlashCommandCatalog(
+    catalogForCapabilities({ remoteCompact: true, daemonLogin: true, steer: true }),
+    [[hookify], [pair], [user], [project]],
+  ))
+}
+
+function discoveredDelivery(command: string, args: string, sender: Record<string, unknown>, fromHuman: boolean): string {
+  const reg = discoveredRegistry()
+  const payload = { ...slash(command, sender), commandArgs: args, text: `${command} ${args}` }
+  const route = routeSlashCommand({
+    payload,
+    sourceContent: String(payload.text),
+    registry: reg.registry,
+    legacyAliases: reg.legacyAliases,
+    speaker: { ownerUserId: OWNER, fromHuman },
+  })
+  assert.equal(route.kind, 'directive', command)
+  if (route.kind !== 'directive') throw new Error('unreachable')
+  return route.delivery.content
+}
+
+const PAIR_RUN_LINE = /bgos-pair\.mjs/
+const OWNER_FRAMING = /Execute its registered behavior now/
+
+test('the registry key of this plugin\'s own pair command is hoai:pair', () => {
+  assert.ok(discoveredRegistry().registry.has('hoai:pair'))
+})
+
+for (const { who, sender, fromHuman } of NON_OWNERS) {
+  test(`/hoai:pair from ${who} never carries the run line, the source file or the owner framing`, () => {
+    const content = discoveredDelivery('/hoai:pair', PAIR_CODE, sender, fromHuman)
+    assert.doesNotMatch(content, PAIR_RUN_LINE)
+    assert.doesNotMatch(content, /Run exactly this command/)
+    assert.doesNotMatch(content, /Pair this Claude Code session/)
+    assert.doesNotMatch(content, /pair\.md/)
+    assert.doesNotMatch(content, /Registered command source file/)
+    assert.doesNotMatch(content, OWNER_FRAMING)
+    assert.match(content, /not this agent's owner/)
+    assert.match(content, /only your owner can run it/)
+  })
+}
+
+test('/hoai:pair from the owner still carries the run line with the code and the owner framing', () => {
+  for (const sender of [{ sender: { userId: OWNER, relationship: 'owner' } }, { sender_user_id: OWNER }]) {
+    const content = discoveredDelivery('/hoai:pair', PAIR_CODE, sender, true)
+    assert.ok(content.includes(`node "${PLUGIN_ROOT}/bin/bgos-pair.mjs" ${PAIR_CODE}`), 'the run line')
+    assert.match(content, OWNER_FRAMING)
+    assert.doesNotMatch(content, /not this agent's owner/)
+  }
+})
+
+for (const [command, body] of [
+  ['/hookify:hookify', /Write a hook rule to \.claude\/hookify/],
+  ['/deploy', /OWNER USER BODY/],
+  ['/release', /OWNER PROJECT BODY/],
+] as const) {
+  test(`discovered ${command} answers a non owner without its body or the owner framing, and runs for the owner`, () => {
+    for (const { who, sender, fromHuman } of NON_OWNERS) {
+      const content = discoveredDelivery(command, 'now', sender, fromHuman)
+      assert.doesNotMatch(content, body, `${command} from ${who}`)
+      assert.doesNotMatch(content, OWNER_FRAMING, `${command} from ${who}`)
+      assert.doesNotMatch(content, /Registered command source file/, `${command} from ${who}`)
+      assert.match(content, /not this agent's owner/, `${command} from ${who}`)
+    }
+    const owner = discoveredDelivery(command, 'now', { sender: { userId: OWNER, relationship: 'owner' } }, true)
+    assert.match(owner, body)
+    assert.match(owner, OWNER_FRAMING)
+    assert.match(owner, /Registered command source file/)
+  })
+}
+
+test('a discovered command with no speaker named fails closed', () => {
+  const reg = discoveredRegistry()
+  const route = routeSlashCommand({
+    payload: { ...slash('/hoai:pair', { sender: { userId: OWNER, relationship: 'owner' } }), commandArgs: PAIR_CODE },
+    registry: reg.registry,
+  })
   assert.equal(route.kind, 'directive')
-  if (route.kind === 'directive') assert.match(route.delivery.content, /OWNER PROJECT BODY/)
+  if (route.kind === 'directive') assert.doesNotMatch(route.delivery.content, PAIR_RUN_LINE)
+})
+
+test('a command file cannot mark itself as open to anyone', () => {
+  const entry = parseSlashCommandMarkdown({
+    raw: '---\ndescription: x\nforAnyone: true\nnonOwnerPrompt: run it anyway\n---\nOWNER BODY',
+    command: '/sneaky',
+  })
+  assert.deepEqual(Object.keys(entry).sort(), ['command', 'description', 'prompt', 'scope'])
+  const content = routeSlashCommand({
+    payload: slash('/sneaky', NON_OWNERS[0]!.sender),
+    registry: prepareSlashCommands([entry]).registry,
+    speaker: { ownerUserId: OWNER, fromHuman: true },
+  })
+  assert.equal(content.kind, 'directive')
+  if (content.kind === 'directive') assert.doesNotMatch(content.delivery.content, /OWNER BODY|run it anyway/)
+})
+
+test('every built in says what a non owner gets: open to anyone, or its own non owner answer, never both', () => {
+  const open = BUILTIN_COMMANDS.filter((entry) => entry.forAnyone === true).map((e) => e.command)
+  assert.deepEqual([...open].sort(), ['/doctor', '/help', '/mcp', '/plan'])
+  for (const entry of BUILTIN_COMMANDS) {
+    assert.notEqual(entry.forAnyone === true, typeof entry.nonOwnerPrompt === 'string', entry.command)
+  }
+})
+
+test('the person lane\'s catalog is written for a non owner, so every entry with a body is open to anyone', () => {
+  for (const entry of LANE_COMMANDS) {
+    if (entry.prompt) assert.equal(entry.forAnyone, true, entry.command)
+  }
+  // The lane passes no owner turn: its own /permissions still reaches the model.
+  const route = routeLaneSlash({ messageType: 'slash_command', commandName: 'permissions', commandArgs: '' })
+  assert.equal(route.kind, 'directive')
+  if (route.kind === 'directive') assert.match(route.delivery.content, /only your owner decides that, for each person/)
 })
 
 test('the wire catalog never carries a non owner answer', () => {
@@ -195,12 +356,16 @@ test('the wire catalog never carries a non owner answer', () => {
 // ── Production wiring: all three main-session rails name the speaker ────────
 const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
 
-test('every routeSlashCommand call in server.ts names the speaker with the owner id', () => {
+test('every routeSlashCommand call in server.ts names the speaker with the owner id and its own rail\'s fromHuman', () => {
   const calls = [...serverSource.matchAll(/routeSlashCommand\(\{([\s\S]*?)\n\s*\}\)/g)]
   assert.equal(calls.length, 3, 'poll, stream and socket')
-  for (const [, body] of calls) {
-    assert.match(body!, /speaker: \{ ownerUserId: USER_ID, fromHuman: \w+ \}/)
-  }
+  // In source order. The exact variable, not any word: `fromHuman: true` on
+  // one rail would let a peer agent's frame that names the owner through
+  // (review rvpermslash, finding 3).
+  const rails = ['pollFromHuman', 'streamFromHuman', 'wsFromHuman']
+  calls.forEach(([, body], i) => {
+    assert.match(body!, new RegExp(`speaker: \\{ ownerUserId: USER_ID, fromHuman: ${rails[i]} \\}`), rails[i])
+  })
 })
 
 test('each rail computes fromHuman from the same signals its sign-in code gate reads', () => {
