@@ -79,7 +79,7 @@ function bundle(files: Array<{ path: string; content: string }>, extra: Record<s
 function inst(
   w: World,
   payload: Record<string, unknown>,
-  opts: { agentDir?: string | null; platform?: NodeJS.Platform; rename?: (a: string, b: string) => void; fs?: IdentFs; onStage?: (stage: string) => void } = {},
+  opts: { agentDir?: string | null; platform?: NodeJS.Platform; rename?: (a: string, b: string) => void; fs?: IdentFs; onStage?: (stage: string) => void; onInstalled?: (folder: string) => void } = {},
 ) {
   const stages: string[] = []
   return installBundle({
@@ -98,6 +98,7 @@ function inst(
     },
     ...(opts.rename ? { rename: opts.rename } : {}),
     ...(opts.fs ? { fs: opts.fs } : {}),
+    onInstalled: opts.onInstalled,
   }).then((answer) => ({ answer, stages }))
 }
 
@@ -583,6 +584,42 @@ const FILES = [
   { path: 'SKILL.md', content: SKILL },
   { path: 'reference/terms.md', content: 'Terms.\n' },
 ]
+
+test('onInstalled runs once with the real destination, never on a disk replay', async () => {
+  const w = world()
+  const payload = bundle([{ path: 'SKILL.md', content: SKILL }])
+  const calls: string[] = []
+  const onInstalled = (folder: string) => {
+    assert.equal(readFileSync(join(folder, 'SKILL.md'), 'utf8'), SKILL)
+    calls.push(folder)
+  }
+  assert.equal((await inst(w, payload, { onInstalled })).answer.ok, true)
+  assert.deepEqual(calls, [join(w.agent, '.claude', 'skills', 'notes')])
+  calls.length = 0
+  assert.equal((await inst(w, payload, { onInstalled })).answer.ok, true)
+  assert.deepEqual(calls, [])
+})
+
+test('onInstalled is not called on validation, scope, conflict or final move failure', async () => {
+  const w = world()
+  const payload = bundle([{ path: 'SKILL.md', content: SKILL }])
+  const calls: string[] = []
+  const onInstalled = (folder: string) => { calls.push(folder) }
+  assert.equal((await inst(w, { ...payload, sha256: '0'.repeat(64) }, { onInstalled })).answer.ok, false)
+  assert.equal((await inst(w, payload, { agentDir: null, onInstalled })).answer.ok, false)
+  assert.equal((await inst(w, payload, { rename: () => { throw new Error('move failed') }, onInstalled })).answer.ok, false)
+  agentSkill(w, 'notes', { 'SKILL.md': SKILL + '\nChanged.\n' })
+  assert.equal((await inst(w, payload, { onInstalled })).answer.ok, false)
+  assert.deepEqual(calls, [])
+})
+
+test('a throwing onInstalled callback does not fail a completed install', async () => {
+  const w = world()
+  let calls = 0
+  const result = await inst(w, bundle([{ path: 'SKILL.md', content: SKILL }]), { onInstalled: () => { calls++; throw new Error('stamp failed') } })
+  assert.equal(result.answer.ok, true)
+  assert.equal(calls, 1)
+})
 
 test('install writes the bundle into the agent skills folder, through a temp folder, with progress', async () => {
   const w = world()

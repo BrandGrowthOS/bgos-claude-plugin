@@ -231,6 +231,8 @@ test('the actual admitted hook handler refreshes selected goals and clears them 
       privateTurns: { end: () => {} }, hookTurn: {}, applyHookEventToTurn: () => ({ next: {}, effects: [] }),
       sessionWakePending: () => null, sessionWakeAtMs: null,
       hookLineAt: null, hookLineStartedAt: null, runHookEffects: () => {}, agentStatePublisher: { tick: () => {} }, publishBrowserPrivateTurn: () => {},
+      // A tool hook line also goes to the teach window (lib/skill-origins.ts noteSkillToolUse).
+      noteSkillToolUse: () => false, SKILLS_AGENT_DIR: null, SKILL_ORIGINS_FILE: '', teachWindows: {}, turnChat: { current: () => null }, ASSISTANT_ID: 'assistant', log: () => {},
     })
   }
   handle('PreToolUse')
