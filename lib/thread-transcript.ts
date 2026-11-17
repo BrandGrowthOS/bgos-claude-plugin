@@ -80,7 +80,7 @@ export async function findActiveGoalRow(path: string, chunkBytes: number = CHUNK
  * Every line of the file, last first, with its byte range, until `onLine`
  * answers true. Linear in the file's size at any chunk size: the part of a
  * line that runs over several chunks is kept as a list of pieces and joined
- * once, when the line is complete (0.91.0; joining the growing piece on every
+ * once, when the line is complete (0.90.5; joining the growing piece on every
  * chunk made a 270 KB line read one byte at a time take over a minute).
  */
 async function scanLinesBackwards(
@@ -138,7 +138,7 @@ async function copyRange(src: FileHandle, dst: FileHandle, from: number, to: num
 /**
  * Write `path` again with one row replaced, through a temporary file renamed
  * over it. The bytes around the row are copied CHUNK_BYTES at a time whatever
- * chunk the search used (0.91.0): the search's chunk size is there to test
+ * chunk the search used (0.90.5): the search's chunk size is there to test
  * line boundaries, and a copy one byte at a time made a test of a 270 KB line
  * take over a minute.
  */

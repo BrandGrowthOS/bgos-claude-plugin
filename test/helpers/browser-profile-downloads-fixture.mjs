@@ -25,6 +25,8 @@ export async function downloadFixture(options = {}) {
   // One fake native file owner serializes its own stop/cancel/delete removals.
   // Concurrent Windows unlink calls can otherwise produce EPERM, unlike the
   // single Chromium download owner being modeled; errors still propagate.
+  // A test that removes a download's file itself while the fixture may too
+  // goes through this queue (nativeRemove on the fixture), never a bare unlink.
   const nativeRemovals = new Map()
   const nativeRemove = file => { const task = (nativeRemovals.get(file) || Promise.resolve()).then(async () => { for (const item of [file, file + '.crdownload']) await fs.unlink(item).catch(error => { if (error.code !== 'ENOENT') throw error }) }); nativeRemovals.set(file, task); return task }
   if (!options.unbound) await manager.bind({ context, stopBrowser: async () => { state.stopCalls++; for (const item of downloads) { await nativeRemove(item.file); item.failure.resolve('browser stopped') }; return state.stop ? state.stop() : true } })
@@ -37,7 +39,7 @@ export async function downloadFixture(options = {}) {
     const row = { value, failure, file }; downloads.push(row); if (autoFinish) failure.resolve(null); return row
   }
   async function cleanup() { for (const row of downloads) row.failure.resolve('fixture cleanup'); await manager.dispose().catch(() => {}); await fs.rm(root, { recursive: true, force: true }) }
-  return { root, manager, authority, state, context, page, pages, launch, download, cleanup, filesystem }
+  return { root, manager, authority, state, context, page, pages, launch, download, cleanup, filesystem, nativeRemove }
 }
 export async function downloadArtifacts(fixture) {
   const directory = path.join(fixture.root, 'generated-artifacts'); await fs.mkdir(directory, { mode: 0o700 })
