@@ -75,13 +75,13 @@ test('this plugin carries exactly the fixture rule ids and words, in order', () 
  * and PINNED_RULES_DIGEST. Change these only together with a fixture copied
  * afresh from the backend.
  *
- * 0.87.5 (board row a633fb9c): this copy's example paths name /Users/you and
+ * 0.87.5: this copy's example paths name /Users/you and
  * /home/you instead of our own home folders, so these three literals moved
  * here first. The BGOS backend copy and its spec must take the same bytes and
  * literals; until then the two repos differ only in those example paths.
  */
 const PINNED_FIXTURE_DIGEST = 'e7f331150d318b37e7aa1fe887e25bc3ac78fa0b8de503fd4e61d201dcde4b3d'
-const PINNED_CARD_FIXTURE_DIGEST = '87efa65cfcfbd2f24e8a991d1229d5ab53461eb8aeb4619b045590d3ebebd920'
+const PINNED_CARD_FIXTURE_DIGEST = 'd2b7689dc23e23340a70481c5c1f543d718c246db383863709708c2f625f7c63'
 const PINNED_RULES_DIGEST = 'f92093a8f99e6d472ddc5b5834d044cb628cb54727795247b2189c8f6d5c75e9'
 /**
  * sha256 of lib/hard-floor-fixture.ts's BYTES, equal to the backend spec's
@@ -89,7 +89,7 @@ const PINNED_RULES_DIGEST = 'f92093a8f99e6d472ddc5b5834d044cb628cb54727795247b21
  * above let a comment, a type or the header drift in one copy while both
  * suites stay green; this does not.
  */
-const PINNED_FIXTURE_FILE_SHA256 = 'a57b08dee483ab15895f9594d3c9154b5e328e57c121dcd84d8de4573770f033'
+const PINNED_FIXTURE_FILE_SHA256 = '3b3317dc3daff8cde04cad6030189df1c763c2db5e8eb764bb3c3451bbe52e15'
 
 test('pins the fixture data and the rules against the file AND a literal here (regenerate BOTH repos together)', () => {
   const fixture = sha256(JSON.stringify(HARD_FLOOR_FIXTURE))
@@ -111,6 +111,39 @@ test('pins the fixture FILE BYTES, so a comment or a type changed in this copy a
     PINNED_FIXTURE_FILE_SHA256,
     'this copy is not byte identical to the one the literal was taken from: copy the backend file afresh',
   )
+})
+
+test('names no owner home folder and carries no planning tag, in either shared fixture', () => {
+  // The two fixtures are copied byte for byte from the BGOS backend, whose
+  // spec runs the same check. The owner's name is spelled in parts so this
+  // file is no hit for a plain search either.
+  const owner = ['k', 'c'].join('')
+  const forbidden: RegExp[] = [
+    new RegExp(`/(home|Users)/${owner}(?![A-Za-z0-9_])`),
+    new RegExp(`Users\\\\+${owner}(?=\\\\)`),
+    new RegExp(`\\b${owner}@`),
+    new RegExp(`\\b${owner}-server\\b`),
+    new RegExp(['fit', 'echo'].join(''), 'i'),
+    new RegExp(['kar', 'im'].join(''), 'i'),
+    /\bslice \d/i,
+    /\bpick \d/i,
+    /\bphase \d/i,
+    /\bstage \d/i,
+    /\bwave [a-z]\d*\b/i,
+    /\bP\d\b/,
+    /\bC-\d+\b/,
+    new RegExp(`\\b${['parity', 'item'].join(' ')}\\b`, 'i'),
+    new RegExp(`\\b${['board', 'row'].join(' ')}\\b`, 'i'),
+    /\bpart \d+\b/i,
+    /\bsection \d/i,
+  ]
+  for (const file of ['hard-floor-fixture.ts', 'hard-floor-lane-fixture.ts']) {
+    const lines = readFileSync(new URL(`../lib/${file}`, import.meta.url), 'utf8').split('\n')
+    const hits = lines
+      .map((text, i) => ({ line: i + 1, text }))
+      .filter(({ text }) => forbidden.some((re) => re.test(text)))
+    assert.deepEqual(hits, [], `${file} names a home folder or carries a planning tag`)
+  }
 })
 
 test('.gitattributes keeps the fixture at LF on a Windows checkout', () => {
@@ -210,7 +243,7 @@ test('the corpus is well formed: unique names, every rule caught, every kind has
     assert.ok(ofKind.some((c) => c.ruleId !== null), `${kind}: a case that must match`)
     assert.ok(ofKind.some((c) => c.ruleId === null), `${kind}: a case that must not`)
   }
-  // The live probe's own frames are in it verbatim (map part 24, D1 and C2).
+  // The live probe's own frames are in it verbatim.
   assert.ok(names.includes('request_bash_rm_rf_verbatim'))
   assert.ok(names.includes('request_bash_force_push_verbatim'))
   // And the one harmless call the probe's subagents made on their own.

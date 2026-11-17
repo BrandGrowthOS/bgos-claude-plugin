@@ -10,6 +10,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.4 (2026-11-17)
+
+**fix(floor): the shared Always ask fixtures use neutral words.** The two fixtures copied from the BGOS backend (`lib/hard-floor-fixture.ts`, `lib/hard-floor-lane-fixture.ts`) give their example email as `owner@example.com` and carry no internal planning tags; the floor core comments and tests use plain words too. The data digests and file sha256 literals are re-pinned, and the pin test now fails when either fixture names an owner home folder, the owner email or a planning tag. No rule changes what it matches.
+
 ## 0.90.3 (2026-11-17)
 
 **fix(pending restart): a checkout held bad wins over a good staged answer (#384).** When one checkout is marked bad and a good update is staged, the agent no longer restarts into the bad checkout. Red first test for the two checkout case.

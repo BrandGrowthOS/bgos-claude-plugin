@@ -1,8 +1,8 @@
 /**
- * Cross-repo hard floor fixture, rules_version 3 (P2 stage 6, C-19; version
- * 2 adds adds_skill_or_plugin, DSH parity item 10, 2026-10-02; version 3 adds
- * the channel's own `email_send` to acts_on_owners_behalf, outgoing email
- * modes, "Always ask stops a send", Data 2026-10-13, and lets the plugin tell
+ * Cross-repo hard floor fixture, rules_version 3 (version 2 adds
+ * adds_skill_or_plugin, 2026-10-02; version 3 adds the channel's own
+ * `email_send` to acts_on_owners_behalf, outgoing email modes, "Always ask
+ * stops a send", 2026-10-13, and lets the plugin tell
  * a server whose list holds it from one whose list predates it).
  *
  * THE ANTI-DRIFT GUARD, on the secret-scan pattern. The floor list ("Always
@@ -48,12 +48,12 @@
  * sha256 literal in BOTH specs, and bump the rules version on both sides when
  * what a rule matches changes after a release has shipped it.
  *
- * The cases quote real inputs where there are real inputs: the part 24 live
+ * The cases quote real inputs where there are real inputs: a live
  * probe's Claude Code input previews, the subagent housekeeping the CLI runs
  * through the same hook (`git status --short`, `true`), and the Codex
  * daemon's command shapes. Where the two first copies disagreed (a quoted
  * mention of `rm -rf`, a file two folders down `~/.config`, a `Read` of
- * `.env`), the case follows spec section 4.2: a mention is not the action,
+ * `.env`), the case follows the spec: a mention is not the action,
  * a home settings file is directly in home or directly in a dot folder of
  * it, and only a write is a change.
  */
@@ -1939,9 +1939,9 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
     writer: "claude_relay",
     relay: {
       toolName: "mcp__gmail__send_email",
-      inputPreview: '{ "to": "kc@example.com", "subject": "Hi" }',
+      inputPreview: '{ "to": "owner@example.com", "subject": "Hi" }',
     },
-    tool: 'mcp__gmail__send_email { "to": "kc@example.com", "subject": "Hi" }',
+    tool: 'mcp__gmail__send_email { "to": "owner@example.com", "subject": "Hi" }',
     ruleId: "acts_on_owners_behalf",
   },
   {
@@ -1956,9 +1956,9 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
     writer: "claude_relay",
     relay: {
       toolName: "mcp__gmail__search_threads",
-      inputPreview: '{ "q": "from:kc" }',
+      inputPreview: '{ "q": "from:owner" }',
     },
-    tool: 'mcp__gmail__search_threads { "q": "from:kc" }',
+    tool: 'mcp__gmail__search_threads { "q": "from:owner" }',
     ruleId: null,
   },
   {
@@ -2179,9 +2179,9 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
     writer: "claude_relay",
     relay: {
       toolName: "mcp__bgos__email_send",
-      inputPreview: '{ "text": "Hi Dana, Kc picks the Harbor room.", "email_id": "3b9f0d6e-6a51-4f0f-8a2b-5d7c1e2f9a40" }',
+      inputPreview: '{ "text": "Hi Dana, Sam picks the Harbor room.", "email_id": "3b9f0d6e-6a51-4f0f-8a2b-5d7c1e2f9a40" }',
     },
-    tool: 'mcp__bgos__email_send {"email_id":"3b9f0d6e-6a51-4f0f-8a2b-5d7c1e2f9a40","text":"Hi Dana, Kc picks the Harbor room."}',
+    tool: 'mcp__bgos__email_send {"email_id":"3b9f0d6e-6a51-4f0f-8a2b-5d7c1e2f9a40","text":"Hi Dana, Sam picks the Harbor room."}',
     ruleId: "acts_on_owners_behalf",
   },
 ];
@@ -2192,7 +2192,7 @@ export const HARD_FLOOR_FIXTURE_DIGEST =
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
-  "87efa65cfcfbd2f24e8a991d1229d5ab53461eb8aeb4619b045590d3ebebd920";
+  "d2b7689dc23e23340a70481c5c1f543d718c246db383863709708c2f625f7c63";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE_RULES). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_RULES_DIGEST =
