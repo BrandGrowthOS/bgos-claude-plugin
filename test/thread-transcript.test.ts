@@ -103,7 +103,9 @@ test('a large transcript is searched and copied without holding it in memory', (
 /**
  * The bytes the search copies in memory (every Buffer.concat and Buffer.from it
  * makes) while it finds the goal under one long last line, read 1 byte at a time.
- * Work, not wall time: a slow runner cannot make this pass or fail.
+ * Work, not wall time: a slow runner cannot make this pass or fail. It sees
+ * only those two calls: a rewrite that copies with buf.copy or
+ * Uint8Array.set needs the spy widened.
  */
 async function bytesCopiedBySearch(dir: string, lineLength: number): Promise<number> {
   const path = join(dir, `long-${lineLength}.jsonl`)
