@@ -175,7 +175,7 @@ test('gaps after #284, gap 1: every tool result of this daemon carries the ask_w
   // One builder for the event and the note: the lane check and the private tap wrapping are the event's.
   const content = fnBody('function askWithdrawnContent(', 2000)
   assert.match(content, /ownerAnnounceRefused\(\{ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership\.isOthers\(ask\.chatId\) \}\)/)
-  assert.match(content, /privateTapCard\(/)
+  assert.match(content, /privateTapCardNoting\(/)
   assert.match(fnBody('function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: AskWithdrawnOpts): Promise<void> {', 2500), /askWithdrawnContent\(ask, withdrawn, opts\)/)
 })
 
