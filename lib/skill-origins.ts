@@ -65,8 +65,16 @@ function ownPersonTap(t: Omit<TeachTap, 'chatId' | 'assistantId' | 'now'>): bool
     t.tapperUserId === t.ownerUserId
 }
 
-export function createTeachWindows() {
-  const windows = new Map<string, { by: string; at: number }>()
+/**
+ * The teach windows of this daemon life, in memory. Each one keeps the tap's wall clock time (`at`, to refuse a write
+ * from before the tap) and a monotonic reading (`since`), so a clock set back never keeps a window open past
+ * TEACH_WINDOW_MS from the tap. `monotonic` is for tests.
+ */
+export function createTeachWindows(opts: { monotonic?: () => number } = {}) {
+  const monotonic = opts.monotonic ?? (() => performance.now())
+  const windows = new Map<string, { by: string; at: number; since: number }>()
+  const expired = (window: { at: number; since: number }, now: number): boolean =>
+    now - window.at > TEACH_WINDOW_MS || monotonic() - window.since > TEACH_WINDOW_MS
   return {
     noteTap(t: TeachTap): void {
       try {
@@ -75,9 +83,9 @@ export function createTeachWindows() {
           typeof t.callbackData !== 'string' ||
           unescapeAgentButtonValue(t.callbackData) !== TEACH_APPROVE) return
         for (const [open, window] of windows) {
-          if (t.now - window.at > TEACH_WINDOW_MS) windows.delete(open)
+          if (expired(window, t.now)) windows.delete(open)
         }
-        windows.set(key, { by: String(t.tapperUserId), at: t.now })
+        windows.set(key, { by: String(t.tapperUserId), at: t.now, since: monotonic() })
       } catch { failed() }
     },
     /** A delivery in this chat that is not the owner's own tap: the window no longer means what the owner approved. */
@@ -92,10 +100,11 @@ export function createTeachWindows() {
         const key = windowKey(chatId, assistantId)
         if (key === null) return null
         const window = windows.get(key)
-        // A write from before the tap (or a clock set back) is not what the owner approved: it leaves the window.
+        // A write from before the tap (or a clock set back) is not what the owner approved: it leaves the window,
+        // which still ends TEACH_WINDOW_MS after the tap on the monotonic clock.
         if (!window || !Number.isFinite(now) || now < window.at) return null
         windows.delete(key)
-        if (now - window.at > TEACH_WINDOW_MS) return null
+        if (expired(window, now)) return null
         return { by: window.by }
       } catch { failed(); return null }
     },

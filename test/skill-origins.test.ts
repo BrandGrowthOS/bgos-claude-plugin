@@ -629,3 +629,23 @@ test('a tap is noted as its chat\'s delivery with its message, and adds no deliv
   assert.deepEqual(turnChat.current(101), { chatId: 'chat', messageId: null, at: 100, kind: 'user' })
   assert.deepEqual(windows.take('chat', 'assistant', 101), { by: 'owner' }, 'the owner\'s own tap note keeps its window')
 })
+
+test('a clock set back never keeps a window open past fifteen minutes from the tap', () => {
+  const { createTeachWindows, TEACH_WINDOW_MS } = api()
+  let elapsed = 0
+  const windows = createTeachWindows({ monotonic: () => elapsed })
+  windows.noteTap({ ...tap, now: 10 * TEACH_WINDOW_MS })
+  elapsed = TEACH_WINDOW_MS + 1
+  assert.equal(windows.take('chat', 'assistant', 5 * TEACH_WINDOW_MS), null, 'the wall clock went back five windows')
+  assert.equal(windows.take('chat', 'assistant', 10 * TEACH_WINDOW_MS + 1), null, 'and the window is gone')
+})
+
+test('a window inside fifteen minutes of the tap still opens after a clock set back and forward', () => {
+  const { createTeachWindows, TEACH_WINDOW_MS } = api()
+  let elapsed = 0
+  const windows = createTeachWindows({ monotonic: () => elapsed })
+  windows.noteTap({ ...tap, now: 10 * TEACH_WINDOW_MS })
+  elapsed = TEACH_WINDOW_MS
+  assert.equal(windows.take('chat', 'assistant', 5 * TEACH_WINDOW_MS), null, 'still refused as a write from before the tap')
+  assert.deepEqual(windows.take('chat', 'assistant', 10 * TEACH_WINDOW_MS + 1), { by: 'owner' })
+})
