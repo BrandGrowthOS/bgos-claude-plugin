@@ -42,6 +42,7 @@ import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
 import { voiceQuietCard } from '../lib/quiet-turn.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 import { VoiceRpcHandler, type VoiceRpcDeps, type VoiceRpcFrame } from '../lib/voice-rpc.ts'
+import { createCardDeliveries, createTeachWindows } from '../lib/skill-origins.ts'
 
 const OWNER = 'user_owner'
 const T0 = Date.parse('2026-10-13T04:30:00.000Z')
@@ -450,7 +451,7 @@ test('every channel card the daemon pushes passes privateTurns.rawCard; a raw on
   const f = fixture(t, { now: Date.now() })
   const pushed: unknown[] = []
   const mcp = { notification: async (n: unknown) => { pushed.push(n) } }
-  execute(source.slice(start, end) + '}) as typeof mcp.notification', { mcp, privateTurns: f.tracker, groupNotificationStep: () => null })
+  execute(source.slice(start, end) + '}) as typeof mcp.notification', { mcp, privateTurns: f.tracker, groupNotificationStep: () => null, teachCards: createCardDeliveries(createTeachWindows()) })
   const card = f.consultCard(live())
   f.submit(card)
   await mcp.notification({ method: 'notifications/claude/channel', params: { content: card, meta: {} } })

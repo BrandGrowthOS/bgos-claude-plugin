@@ -29,6 +29,7 @@ import { createTurnChatTracker } from '../../lib/turn-chat.ts'
 import * as floorState from '../../lib/floor-state.mjs'
 import { daemonFloorFolders, floorKey, markFloorAttached } from '../../lib/floor-state.mjs'
 import * as privateTurn from '../../lib/private-turn.mjs'
+import { createCardDeliveries, createTeachWindows } from '../../lib/skill-origins.ts'
 import {
   PRIVATE_TURN_REFUSAL,
   createFireLedger,
@@ -252,7 +253,7 @@ export function agentHost(t: any) {
     // these tests pin what the tracker does with a card that DOES reach a turn (a card let in after its five minutes).
     // The hold itself is tested over the real tracker in test/quiet-turn-threats.test.ts.
     const quietTurns = createQuietTurns({ trusted: () => null, deliveryOf: () => null, ownerUserId: OWNER, enabled: () => false })
-    const notification = new Function('mcp', 'groupNotificationStep', 'privateTurns', 'holdChannelCardsDuringGrantedRun', 'scheduleGrantRuns', 'log', 'holdChannelCardsDuringQuietTurn', 'quietTurns', notificationJs)(mcp, () => null, life.tracker, holdChannelCardsDuringGrantedRun, createScheduleGrantRuns(), () => {}, holdChannelCardsDuringQuietTurn, quietTurns)
+    const notification = new Function('mcp', 'groupNotificationStep', 'privateTurns', 'holdChannelCardsDuringGrantedRun', 'scheduleGrantRuns', 'log', 'holdChannelCardsDuringQuietTurn', 'quietTurns', 'teachCards', notificationJs)(mcp, () => null, life.tracker, holdChannelCardsDuringGrantedRun, createScheduleGrantRuns(), () => {}, holdChannelCardsDuringQuietTurn, quietTurns, createCardDeliveries(createTeachWindows()))
     return notification({ method: 'notifications/claude/channel', params: { content, meta } })
   }
   const payloadOf = (event: string, extra: Record<string, unknown> = {}) =>
