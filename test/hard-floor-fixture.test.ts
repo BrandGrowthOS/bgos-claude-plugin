@@ -81,7 +81,7 @@ test('this plugin carries exactly the fixture rule ids and words, in order', () 
  * here first. The BGOS backend copy and its spec must take the same bytes and
  * literals; until then the two repos differ only in those example paths.
  */
-const PINNED_FIXTURE_DIGEST = 'd368cdbed0684a547050be2f0538c39c7ffca886fbb2d23375c397e1d1dfbe98'
+const PINNED_FIXTURE_DIGEST = '51e5758e708c9b8709bc130bcca5a6aa2760685a9a89933589a24c6dcc1daad3'
 const PINNED_CARD_FIXTURE_DIGEST = '854ceb97cc68bbe28be7f87b81e2c4238a87e1dc8942212d7804f52f8ce05bd6'
 const PINNED_RULES_DIGEST = '1129586f99287d66f67a3154eff4614c47d8a5799f057a10f9a766fb379b98c5'
 /**
@@ -90,7 +90,7 @@ const PINNED_RULES_DIGEST = '1129586f99287d66f67a3154eff4614c47d8a5799f057a10f9a
  * above let a comment, a type or the header drift in one copy while both
  * suites stay green; this does not.
  */
-const PINNED_FIXTURE_FILE_SHA256 = '78f06617a7c6f439b37b96f127dbfcb7dc26446c2ad9b74e3f8cc6785f1f4384'
+const PINNED_FIXTURE_FILE_SHA256 = '28c341f6d59845dd3f8e7402dbbb1f8746d98790f39cd61873d5dadd5b61864d'
 
 test('pins the fixture data and the rules against the file AND a literal here (regenerate BOTH repos together)', () => {
   const fixture = sha256(JSON.stringify(HARD_FLOOR_FIXTURE))

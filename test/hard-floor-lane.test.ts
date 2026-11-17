@@ -19,6 +19,7 @@ import { join } from 'node:path'
 
 import { HARD_FLOOR_LANE_FIXTURE, HARD_FLOOR_LANE_FIXTURE_RULES_VERSION } from '../lib/hard-floor-lane-fixture.ts'
 import { classifyLaneFloor, classifyLaneToolCall, HARD_FLOOR_LANE_RULES_VERSION, HARD_FLOOR_OWNER_RULES_VERSION } from '../lib/hard-floor-lane.mjs'
+import * as laneCore from '../lib/hard-floor-lane.mjs'
 import { decideLaneFloor, HOOK_LANE_USER_ID_RE, laneFromArgv } from '../bin/hoai-lane-floor-hook.mjs'
 import { LANE_USER_ID_RE } from '../lib/lane-core.mjs'
 
@@ -66,6 +67,16 @@ function denied(out: string): boolean {
   const parsed = JSON.parse(out)
   return parsed.hookSpecificOutput?.hookEventName === 'PreToolUse' && parsed.hookSpecificOutput?.permissionDecision === 'deny'
 }
+
+test('the lane hook DENIES a call whose read stopped at the nesting limit (the fix round, I3)', () => {
+  // `eval` five deep: the owner list's read stopped at its nesting limit and
+  // said nothing, so a lane let the delete through.
+  const read = (command: string) =>
+    decideLaneFloor(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }), 'user_ana', laneCore.readLaneToolCall)
+  assert.ok(denied(read('eval eval eval eval eval rm -rf ~')))
+  assert.equal(read('eval eval eval eval echo hi'), '')
+  assert.equal(read('ls'), '')
+})
 
 test('the lane hook DENIES a secret read, another person\'s lane, a v3 action', () => {
   assert.ok(denied(hook('Read', { file_path: '/Users/kc/.ssh/id_ed25519' })))

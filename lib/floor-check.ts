@@ -185,6 +185,8 @@ export function planFloorRequest(input: {
   inputPreview: string | undefined
   record: FloorRecord | null
   previewMatch: HardFloorMatch | null
+  /** The preview's read stopped at the list's nesting limit (readPermissionRequest). */
+  previewStoppedEarly?: boolean
 }): FloorPlan {
   const { record } = input
   if (record) {
@@ -212,6 +214,16 @@ export function planFloorRequest(input: {
       action: 'ask_elided',
       reason:
         'the command was cut in the middle by the CLI and no floor record names it, so what was cut cannot be checked',
+    }
+  }
+  if (FLOOR_SHELL_TOOLS.includes(input.toolName) && input.previewStoppedEarly === true) {
+    // The same question for a preview the list could not read to its end
+    // (`eval` five deep, the fix round's review, I3): the hook asked, no
+    // record names a kind, and auto approve would answer allow.
+    return {
+      action: 'ask_elided',
+      reason:
+        'the command nests deeper than the floor reads and no floor record names it, so its innermost part cannot be checked',
     }
   }
   return { action: 'none' }

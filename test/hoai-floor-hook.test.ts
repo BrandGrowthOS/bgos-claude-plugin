@@ -5,9 +5,12 @@
  * having no floor at all:
  *   - it only ever ASKS: never `deny`, never exit 2, whatever it is fed (a
  *     deny is a stop the owner cannot override from the phone, part 24 D2);
- *   - it FAILS OPEN: bad JSON, a classifier that throws, a core that will not
+ *   - it FAILS OPEN on what it cannot read: bad JSON, a core that will not
  *     load, a stdin that never ends, all print nothing and exit 0, because a
  *     floor that failed closed would stop every shell call of every install;
+ *   - but a CALL IT READ AND COULD NOT CHECK ASKS, never silent: a classifier
+ *     that throws, one that runs past the budget, a shell command too long to
+ *     check in full (in a session a HOAI daemon is attached to, as any ask);
  *   - it keeps a hard BUDGET under two seconds, inside the manifest's 3 s.
  * And the contract itself: for every case of the shared fixture that a hook
  * can see, the ask line with the rule's words on a match and nothing
@@ -29,6 +32,9 @@ import { PassThrough, Readable } from 'node:stream'
 import * as core from '../lib/hard-floor-core.mjs'
 import {
   FLOOR_HOOK_BUDGET_MS,
+  FLOOR_HOOK_INLINE_MAX,
+  FLOOR_HOOK_TOO_LONG_WORDS,
+  FLOOR_HOOK_UNCHECKED_WORDS,
   decideFloorHook,
   floorAskOutput,
   isEntryPoint,
@@ -110,6 +116,10 @@ test('every fixture case a hook can see: the ask on a match, nothing otherwise',
     if (rule) {
       asked += 1
       assert.equal(out, floorAskOutput(rule.words), c.name)
+    } else if (c.input.kind === 'command' && c.input.command.length > core.HARD_FLOOR_MAX_TEXT) {
+      // Past the size limit the list names nothing; the hook asks anyway.
+      asked += 1
+      assert.equal(out, floorAskOutput(FLOOR_HOOK_TOO_LONG_WORDS), c.name)
     } else {
       silent += 1
       assert.equal(out, '', c.name)
@@ -175,13 +185,29 @@ test('fails open: junk, the wrong event, and a missing input print nothing', () 
   }
 })
 
-test('fails open: a classifier that throws, or answers nonsense, prints nothing', () => {
+test('a classifier that throws asks, never silent: the call was read and could not be checked', () => {
+  // The review's case (hf27 C1): a bracket class whose range ran backwards
+  // made the real classifier throw, and the hook used to print nothing, so a
+  // force push with `[z-a]` after it got no question at all.
   const throwing = {
     classifyToolCallLead: () => {
-      throw new Error('boom')
+      throw new SyntaxError('Invalid regular expression')
     },
   }
-  assert.equal(decideFloorHook(JSON.stringify(D1_PAYLOAD), throwing), '')
+  assert.equal(typeof FLOOR_HOOK_UNCHECKED_WORDS, 'string')
+  assert.ok(FLOOR_HOOK_UNCHECKED_WORDS.length > 0)
+  assert.equal(decideFloorHook(JSON.stringify(D1_PAYLOAD), throwing), floorAskOutput(FLOOR_HOOK_UNCHECKED_WORDS))
+  assert.equal(
+    decideFloorHook(hookInput('mcp__x__lookup', { q: 'a' }), throwing),
+    floorAskOutput(FLOOR_HOOK_UNCHECKED_WORDS),
+    'any tool the hook sees, not only a shell',
+  )
+  // And the real classifier no longer throws on that command: it names the push.
+  const push = decideFloorHook(hookInput('Bash', { command: 'git push --force origin main [z-a]' }), core)
+  assert.equal(push, floorAskOutput(core.HARD_FLOOR_RULES.find((r) => r.id === 'force_push')!.words))
+})
+
+test('fails open: a classifier that answers nonsense prints nothing', () => {
   for (const nonsense of [{}, { words: '' }, { words: 42 }, 'deleting', true]) {
     assert.equal(
       decideFloorHook(JSON.stringify(D1_PAYLOAD), { classifyToolCallLead: () => nonsense as never }),
@@ -278,6 +304,214 @@ test('main: the ask leaves a floor record for the relay, with what the hook saw 
   }
 })
 
+test('main: a classifier that throws asks only when attached, and leaves no record that names a kind', async () => {
+  const throwing = async () => ({
+    classifyToolCallLead: () => {
+      throw new SyntaxError('Invalid regular expression')
+    },
+  })
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    const out = await main({ stdin: stdinOf(JSON.stringify(D1_PAYLOAD)), env: {}, stateRoot: root, loadCore: throwing, write: async () => {} })
+    assert.equal(out, floorAskOutput(FLOOR_HOOK_UNCHECKED_WORDS))
+    assert.deepEqual(recordsIn(root, D1_PAYLOAD.cwd), [])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+  const other = attachedRoot('/somewhere/else')
+  try {
+    const out = await main({ stdin: stdinOf(JSON.stringify(D1_PAYLOAD)), env: {}, stateRoot: other, loadCore: throwing, write: async () => {} })
+    assert.equal(out, '', 'no HOAI daemon attached to this session: nothing, as for a listed action')
+  } finally {
+    rmSync(other, { recursive: true, force: true })
+  }
+})
+
+test('a shell command too long to check in full asks, never silent (the size limit fails safe)', () => {
+  const max = core.HARD_FLOOR_MAX_TEXT
+  assert.equal(typeof FLOOR_HOOK_TOO_LONG_WORDS, 'string')
+  assert.ok(FLOOR_HOOK_TOO_LONG_WORDS.length > 0)
+  const pad = 'x'.repeat(max)
+  const asked = floorAskOutput(FLOOR_HOOK_TOO_LONG_WORDS)
+  // The second reviewer's case (X1): a comment line of a megabyte, then a
+  // key read the list never reaches. It used to print nothing.
+  assert.equal(decideFloorHook(hookInput('Bash', { command: `#${pad}\ncat ~/.ssh/id_rsa` }), core), asked)
+  assert.equal(decideFloorHook(hookInput('PowerShell', { command: `#${pad}\nGet-Date` }), core), asked)
+  // A listed action inside the part read still names its own kind.
+  assert.equal(decideFloorHook(hookInput('Bash', { command: `rm -rf a ${pad}` }), core), floorAskOutput(DELETE_WORDS))
+  // Exactly at the limit the command is read whole: nothing listed, nothing asked.
+  assert.equal(decideFloorHook(hookInput('Bash', { command: 'x'.repeat(max) }), core), '')
+  // Only a shell command is cut: an edit tool's content is never read, so it is not asked about.
+  assert.equal(decideFloorHook(hookInput('Write', { file_path: '/w/a.txt', content: `${pad}x` }), core), '')
+  // An unlisted MCP tool with a huge input is read by its name only.
+  assert.equal(decideFloorHook(hookInput('mcp__x__lookup', { command: `${pad}x` }), core), '')
+})
+
+test('main: a command too long to check asks only when attached, and leaves no record that names a kind', async () => {
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    const command = `#${'x'.repeat(core.HARD_FLOOR_MAX_TEXT)}\ncat ~/.ssh/id_rsa`
+    const payload = { ...D1_PAYLOAD, tool_input: { command, description: 'Long' } }
+    const out = await main({ stdin: stdinOf(JSON.stringify(payload)), env: {}, stateRoot: root, write: async () => {} })
+    assert.equal(out, floorAskOutput(FLOOR_HOOK_TOO_LONG_WORDS))
+    // No kind was read, so no record claims one: the relay sees a cut
+    // preview with no record and asks the server (planFloorRequest ask_elided).
+    assert.deepEqual(recordsIn(root, D1_PAYLOAD.cwd), [])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+  const other = attachedRoot('/somewhere/else')
+  try {
+    const command = `#${'x'.repeat(core.HARD_FLOOR_MAX_TEXT)}\necho done`
+    const payload = { ...D1_PAYLOAD, tool_input: { command } }
+    const out = await main({ stdin: stdinOf(JSON.stringify(payload)), env: {}, stateRoot: other, write: async () => {} })
+    assert.equal(out, '', 'no HOAI daemon attached to this session: nothing, as for a listed action')
+  } finally {
+    rmSync(other, { recursive: true, force: true })
+  }
+})
+
+test('main: a long command the list reads slowly still answers inside the budget, and asks', async () => {
+  // Even read in step with its length, a megabyte of some shapes (a line of
+  // `$[]` each) takes the list two seconds or more, past the budget and near
+  // the CLI's own kill, and a timer cannot stop a read in the hook's own
+  // thread. A shell command longer than FLOOR_HOOK_INLINE_MAX is read on
+  // another thread, which the budget can stop: out of time, the hook asks.
+  assert.ok(FLOOR_HOOK_INLINE_MAX > 0 && FLOOR_HOOK_INLINE_MAX < core.HARD_FLOOR_MAX_TEXT)
+  const command = '$[]\n'.repeat(Math.floor(core.HARD_FLOOR_MAX_TEXT / 4) - 1)
+  const payload = { ...D1_PAYLOAD, tool_input: { command } }
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    const started = performance.now()
+    const out = await main({ stdin: stdinOf(JSON.stringify(payload)), env: {}, stateRoot: root, budgetMs: 400, write: async () => {} })
+    const took = performance.now() - started
+    assert.equal(out, floorAskOutput(FLOOR_HOOK_UNCHECKED_WORDS))
+    assert.ok(took < 400 + 600, `answered after ${took.toFixed(0)} ms`)
+    assert.deepEqual(recordsIn(root, D1_PAYLOAD.cwd), [])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('main: a long command read on another thread still names its kind and leaves its record', async () => {
+  // 300,000 characters of file names, then the delete: read whole, off the
+  // hook's thread, inside the budget, exactly as it would be read inline.
+  const command = `ls ${'f '.repeat(150_000)}; rm -rf ~/work`
+  assert.ok(command.length > FLOOR_HOOK_INLINE_MAX)
+  const payload = { ...D1_PAYLOAD, tool_input: { command, description: 'Long' } }
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    const out = await main({ stdin: stdinOf(JSON.stringify(payload)), env: {}, stateRoot: root, write: async () => {} })
+    assert.equal(out, floorAskOutput(DELETE_WORDS))
+    assert.equal(out, decideFloorHook(JSON.stringify(payload), core), 'the same answer as read inline')
+    const records = recordsIn(root, D1_PAYLOAD.cwd)
+    assert.equal(records.length, 1)
+    assert.equal(records[0].ruleId, 'recursive_delete')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('main: a shell command past a few KiB is read on another thread, so a slow read is stopped in time', async () => {
+  // Some shapes read slowly far under 64 KiB (the fix round's review: a 65 KB
+  // `cd` before many reads took 6 s inline, past the CLI's 3 s kill, and the
+  // hook printed nothing). Above FLOOR_HOOK_INLINE_MAX, a few KiB, a shell
+  // command is read on the thread the budget can stop; out of time, it asks.
+  assert.ok(FLOOR_HOOK_INLINE_MAX <= 4 * 1024, `read inline up to ${FLOOR_HOOK_INLINE_MAX} characters`)
+  const sent: number[] = []
+  const offThread = async (_name: unknown, input: unknown) => {
+    sent.push(String((input as { command?: unknown }).command ?? '').length)
+    return { late: true }
+  }
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    const long = { ...D1_PAYLOAD, tool_input: { command: `ls ${'f '.repeat(2600)}` } }
+    const out = await main({ stdin: stdinOf(JSON.stringify(long)), env: {}, stateRoot: root, offThread, write: async () => {} })
+    assert.equal(out, floorAskOutput(FLOOR_HOOK_UNCHECKED_WORDS))
+    assert.equal(sent.length, 1, 'a 5 KB command went to the other thread')
+    // An ordinary command stays on the hook's own thread, and stays quiet.
+    const short = { ...D1_PAYLOAD, tool_input: { command: 'ls -la' } }
+    assert.equal(await main({ stdin: stdinOf(JSON.stringify(short)), env: {}, stateRoot: root, offThread, write: async () => {} }), '')
+    assert.equal(sent.length, 1)
+    assert.deepEqual(recordsIn(root, D1_PAYLOAD.cwd), [])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a read that stops at the nesting limit asks, never silent, and names no kind', async () => {
+  // `eval` five deep: the read stopped at its nesting limit and said
+  // nothing, so the hook asked nothing (the fix round's review, I3).
+  const deep = hookInput('Bash', { command: 'eval eval eval eval eval rm -rf ~' })
+  assert.equal(decideFloorHook(deep, core), floorAskOutput(FLOOR_HOOK_UNCHECKED_WORDS))
+  assert.equal(decideFloorHook(hookInput('Bash', { command: 'eval eval eval eval echo hi' }), core), '')
+  // Through main, read inline and read on the other thread: the ask, no record.
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    for (const command of ['eval eval eval eval eval rm -rf ~', `ls ${'f '.repeat(3000)}; eval eval eval eval eval rm -rf ~`]) {
+      const payload = { ...D1_PAYLOAD, tool_input: { command } }
+      const out = await main({ stdin: stdinOf(JSON.stringify(payload)), env: {}, stateRoot: root, write: async () => {} })
+      assert.equal(out, floorAskOutput(FLOOR_HOOK_UNCHECKED_WORDS), `${command.length} characters`)
+    }
+    assert.deepEqual(recordsIn(root, D1_PAYLOAD.cwd), [])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('main: a classifier that runs past the budget asks, never silent', async () => {
+  // A timer cannot stop a classifier that runs in the hook's own thread, so
+  // the hook looks at the clock when it returns: past the budget, a call it
+  // found nothing in was not checked in time, and it asks.
+  const slow = async () => ({
+    classifyToolCallLead: () => {
+      const until = performance.now() + 450
+      while (performance.now() < until) {
+        /* a classifier still working */
+      }
+      return null
+    },
+  })
+  const quiet = { ...D1_PAYLOAD, tool_input: { command: 'echo quiet' } }
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    const out = await main({ stdin: stdinOf(JSON.stringify(quiet)), env: {}, stateRoot: root, loadCore: slow, budgetMs: 300, write: async () => {} })
+    assert.equal(out, floorAskOutput(FLOOR_HOOK_UNCHECKED_WORDS))
+    assert.deepEqual(recordsIn(root, D1_PAYLOAD.cwd), [])
+    // Inside the budget the same answer is nothing.
+    const inTime = await main({ stdin: stdinOf(JSON.stringify(quiet)), env: {}, stateRoot: root, loadCore: slow, budgetMs: 1500, write: async () => {} })
+    assert.equal(inTime, '')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('main: says the answer is known before it writes, so the hard stop cannot cut a late ask', async () => {
+  // The entry point's hard stop (the budget plus 300 ms) is a timer, so it
+  // fires as soon as a late classifier returns, and could end the process
+  // before the ask is written. main says when the answer is known; the entry
+  // point stops that timer then.
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    const order: string[] = []
+    const out = await main({
+      stdin: stdinOf(JSON.stringify(D1_PAYLOAD)),
+      env: {},
+      stateRoot: root,
+      onDecided: (answer: string) => {
+        order.push(`decided ${answer === '' ? 'nothing' : 'ask'}`)
+      },
+      write: async () => {
+        order.push('write')
+      },
+    })
+    assert.equal(out, floorAskOutput(DELETE_WORDS))
+    assert.deepEqual(order, ['decided ask', 'write'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('main: a record that cannot be written still asks', async () => {
   const root = attachedRoot(D1_PAYLOAD.cwd)
   try {
@@ -313,7 +547,7 @@ test('main: stdin is read as bytes, so a multi byte path is not garbled', async 
 const failOpenRuns: Array<[string, Parameters<typeof main>[0]]> = [
   ['bad JSON on stdin', { stdin: stdinOf('{{{') }],
   [
-    'a classifier that throws',
+    'a classifier that throws, with no daemon attached',
     {
       stdin: stdinOf(JSON.stringify(D1_PAYLOAD)),
       loadCore: async () => ({

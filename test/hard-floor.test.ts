@@ -233,7 +233,12 @@ const GROWTH_BOUND = 30
  * near zero time cannot blow the ratio up. The long one is read up to three
  * times and stops at its first read under the bound.
  */
-function growth(build: (n: number) => string, n: number): { ratio: number; small: number; long: number } {
+function growth(
+  build: (n: number) => string,
+  n: number,
+  times = 10,
+  bound = GROWTH_BOUND,
+): { ratio: number; small: number; long: number } {
   const readTime = (command: string): number => {
     const started = performance.now()
     core.classifyFloorAll({ kind: 'command', command })
@@ -242,9 +247,9 @@ function growth(build: (n: number) => string, n: number): { ratio: number; small
   const small = build(n)
   readTime(small)
   const base = Math.max(Math.min(readTime(small), readTime(small), readTime(small)), 5)
-  const long = build(10 * n)
+  const long = build(times * n)
   let best = Infinity
-  for (let i = 0; i < 3 && best / base >= GROWTH_BOUND; i++) best = Math.min(best, readTime(long))
+  for (let i = 0; i < 3 && best / base >= bound; i++) best = Math.min(best, readTime(long))
   return { ratio: best / base, small: base, long: best }
 }
 
@@ -272,6 +277,112 @@ test('a substitution where a program may go is told from a heredoc owner at once
   const measured = growth(heredocs, 4000)
   t.diagnostic(growthWords(measured))
   assert.ok(measured.ratio < GROWTH_BOUND, growthWords(measured))
+})
+
+test('an old style arithmetic left open on each line stops at its line end, however many lines', { timeout: 180_000 }, (t) => {
+  // A `$[` with no `]` used to look for one to the end of the whole text on
+  // every line: the lines times the text (the review: 1.2 MB in 8.8 s, far
+  // past the hook's budget). It now stops at its line end. Twenty times the
+  // lines take about twenty times as long when the read keeps pace; the
+  // search to the end measured 54 to 78 times. Its own bound, 40, sits
+  // between the two, as 30 does for ten times above.
+  const lines = (n: number) => '$[\n'.repeat(n)
+  const measured = growth(lines, 15000, 20, 40)
+  t.diagnostic(growthWords(measured).replace('ten times', 'twenty times'))
+  assert.ok(measured.ratio < 40, growthWords(measured).replace('ten times', 'twenty times'))
+})
+
+// ── The fix round's review (hf28): what read too slowly or stopped early ────
+
+test('a long cd before many reads is read in step with its length, the folder judged once', { timeout: 120_000 }, (t) => {
+  // A relative `<` read after a `cd` was judged under the whole cd folder,
+  // so the folder was read again for every read (the review: 64 KB of plain
+  // folders took 6 s, past the CLI's 3 s, and the hook printed nothing).
+  const joins = (n: number) => 'cd ' + 'a/'.repeat(n) + '; ' + 'cat <x;'.repeat(n) + ' rm -rf ~'
+  const measured = growth(joins, 300)
+  t.diagnostic(growthWords(measured))
+  assert.ok(measured.ratio < GROWTH_BOUND, growthWords(measured))
+})
+
+test('a class written backwards costs about what one written forwards does', { timeout: 120_000 }, (t) => {
+  // A backwards class (`[z-a]`) was compiled again, and failed again, for
+  // every name it was matched against, and each failure built an exception:
+  // the review's 6.5 KB `cd [z-a]/...` command took 4.7 s, and 63 KB of
+  // `cat [z-a]...` took 1.8 s. The same shapes written forwards are the
+  // measure, so a busy machine slows both alike.
+  const bestRead = (command: string): number => {
+    core.classifyFloorAll({ kind: 'command', command })
+    let best = Infinity
+    for (let i = 0; i < 3; i++) {
+      const started = performance.now()
+      core.classifyFloorAll({ kind: 'command', command })
+      best = Math.min(best, performance.now() - started)
+    }
+    return Math.max(best, 5)
+  }
+  const shapes = [
+    (cls: string) => ('cat ' + cls.repeat(25) + ';').repeat(500),
+    (cls: string) => 'cd ' + (cls + '/').repeat(500) + '; ' + 'cat <x;'.repeat(500) + ' rm -rf ~',
+  ]
+  for (const shape of shapes) {
+    const forwards = bestRead(shape('[a-z]'))
+    const backwards = bestRead(shape('[z-a]'))
+    const words = `backwards ${backwards.toFixed(0)} ms, forwards ${forwards.toFixed(0)} ms`
+    t.diagnostic(words)
+    assert.ok(backwards / forwards < 3, words)
+  }
+})
+
+test('a read that stops at the nesting limit says so, and the hook and the server can ask', () => {
+  // `eval` five deep reads past the nesting limit: the read stopped there and
+  // said nothing, so nothing asked (the review's I3). It now says it stopped
+  // early, which the hook, the relay and the server each read as unchecked.
+  const deep = core.readToolCall('Bash', { command: 'eval eval eval eval eval rm -rf ~' })
+  assert.equal(deep.lead, null)
+  assert.equal(deep.stoppedEarly, true)
+  const four = core.readToolCall('Bash', { command: 'eval eval eval eval rm -rf ~' })
+  assert.equal(four.lead?.ruleId, 'recursive_delete')
+  assert.equal(four.stoppedEarly, false)
+  for (const command of ['ls', 'git status', "bash -c 'echo hi'", 'eval eval eval eval echo hi', 'git commit -m "$(cat <<\'EOF\'\nfix\nEOF\n)"']) {
+    assert.equal(core.readToolCall('Bash', { command }).stoppedEarly, false, command)
+  }
+  // A key file five deep is still named: its name is in the words each
+  // reading sees, so the stop changes nothing for it but adds the flag.
+  const key = core.classifyFloorRead({ kind: 'command', command: 'eval eval eval eval eval cat ~/.ssh/id_rsa' })
+  assert.deepEqual(key.matches.map((m: { ruleId: string }) => m.ruleId), ['uses_secret_key'])
+  assert.equal(key.stoppedEarly, true)
+  assert.equal(core.classifyFloorRead({ kind: 'command', command: 'ls' }).stoppedEarly, false)
+  const preview = JSON.stringify({ command: 'eval eval eval eval eval rm -rf ~' })
+  assert.equal(core.readPermissionRequest('Bash', preview).stoppedEarly, true)
+  assert.equal(core.readPermissionRequest('Bash', JSON.stringify({ command: 'ls' })).stoppedEarly, false)
+})
+
+// The second review: a script is read again at each nesting level, and more
+// than once there, so a 4 KB command of nested shells read for 1.8 s. These
+// build the shapes it measured, with harmless words inside.
+const nestShells = (inner: string, wrap: (s: string) => string, times: number) => {
+  let s = inner
+  for (let i = 0; i < times; i++) s = wrap(s)
+  return s
+}
+
+test('a nested script is not read again at the same depth, so a plain one stays quiet', () => {
+  const command = nestShells('echo hi\n'.repeat(100), (s) => `sh -c "$(${s})" x$(b)`, 3)
+  const read = core.classifyFloorRead({ kind: 'command', command })
+  assert.deepEqual(read.matches, [])
+  assert.equal(read.stoppedEarly, false)
+})
+
+test('a read that lexes past its budget stops early, says so, and stays fast', () => {
+  const inner = 'a `\n' + 'echo $[1]\n'.repeat(400)
+  const command = nestShells(nestShells(inner, (s) => `sh -c "$(${s})" x$(b) > "$(a)"`, 2), (s) => `sudo sh -c "$(${s})" x$(b)`, 1)
+  assert.ok(command.length < 4096, String(command.length))
+  const started = performance.now()
+  const read = core.readToolCall('Bash', { command })
+  const elapsed = performance.now() - started
+  assert.equal(read.stoppedEarly, true)
+  // Half the hook's 1500 ms budget: before the bound this read took 1.8 s.
+  assert.ok(elapsed < 750, `read in ${Math.round(elapsed)} ms`)
 })
 
 test('a here string that many readings of one command share is scanned for a key once', () => {
@@ -399,6 +510,17 @@ test('a command past the size limit is read up to the limit, and not beyond', ()
   const pad = 'x'.repeat(HARD_FLOOR_MAX_TEXT)
   assert.equal(classifyCommand(`rm -rf a ${pad}`), 'recursive_delete')
   assert.equal(classifyCommand(`echo ${pad} && rm -rf a`), null)
+})
+
+test('a request preview is read up to the limit too: a command past its first megabyte is not reached', () => {
+  // The same limit as the server's (the fix round, X1), so the two lists name
+  // the same kinds for one preview; the server's floor check holds a preview
+  // past the limit as a cut one.
+  const far = JSON.stringify({ description: 'x'.repeat(HARD_FLOOR_MAX_TEXT), command: 'rm -rf ~/work' })
+  assert.deepEqual(core.classifyFloorAll({ kind: 'request', toolName: 'Bash', inputPreview: far }), [])
+  const near = JSON.stringify({ description: 'x', command: 'rm -rf ~/work' })
+  const read = core.classifyFloorAll({ kind: 'request', toolName: 'Bash', inputPreview: near })
+  assert.deepEqual(read.map((m: { ruleId: string }) => m.ruleId), ['recursive_delete'])
 })
 
 test('paths: separators, long path prefixes and case do not change the answer', () => {

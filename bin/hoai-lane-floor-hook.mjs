@@ -62,7 +62,9 @@ export function laneFromArgv(argv) {
  * @param {string} text the hook's stdin
  * @param {string | null} userId
  * @param {((toolName: string, toolInput: unknown, ctx: { actorUserId: string }) => unknown) | null} classify
- *   lib/hard-floor-lane.mjs classifyLaneToolCall, or null when it could not be loaded
+ *   lib/hard-floor-lane.mjs readLaneToolCall (its match and whether the read
+ *   stopped early) or classifyLaneToolCall (the match alone), or null when it
+ *   could not be loaded
  */
 export function decideLaneFloor(text, userId, classify) {
   if (typeof classify !== 'function') return laneFloorDeny('This lane\'s floor could not load its rules, so it refuses every action.')
@@ -77,11 +79,20 @@ export function decideLaneFloor(text, userId, classify) {
     return laneFloorDeny('This lane\'s floor could not read the action, so it refuses it.')
   }
   let match
+  let stoppedEarly = false
   try {
-    match = classify(payload.tool_name, payload.tool_input, { actorUserId: userId })
+    const read = classify(payload.tool_name, payload.tool_input, { actorUserId: userId })
+    // readLaneToolCall answers `{ match, stoppedEarly }`; classifyLaneToolCall the match alone.
+    if (read && typeof read === 'object' && 'stoppedEarly' in read) {
+      match = read.match
+      stoppedEarly = read.stoppedEarly === true
+    } else match = read
   } catch {
     return laneFloorDeny('This lane\'s floor could not judge the action, so it refuses it.')
   }
+  // A read that stopped at the list's nesting limit (`eval` five deep, the
+  // fix round's review, I3) did not judge what lies past it: refused.
+  if (!match && stoppedEarly) return laneFloorDeny('This lane\'s floor could not read the action to its end, so it refuses it.')
   if (!match) return ''
   return laneFloorDeny(`Not on this computer from a shared lane: ${match.words}.`)
 }
@@ -105,7 +116,8 @@ export async function main(argv = process.argv.slice(2)) {
   }, LANE_FLOOR_HOOK_BUDGET_MS)
   let classify = null
   try {
-    classify = (await import('../lib/hard-floor-lane.mjs')).classifyLaneToolCall
+    const lane = await import('../lib/hard-floor-lane.mjs')
+    classify = lane.readLaneToolCall ?? lane.classifyLaneToolCall
   } catch { /* decideLaneFloor denies without its rules */ }
   let out
   try {

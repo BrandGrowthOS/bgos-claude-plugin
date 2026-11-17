@@ -42,12 +42,25 @@
  * 1. IT ONLY EVER ASKS. It never prints `deny` and never exits 2. A deny is a
  *    hard stop the owner cannot override from the phone (part 24, run D2);
  *    the floor is a question for the owner, not a wall.
- * 2. IT FAILS OPEN. Bad JSON, an empty stdin, a classifier that throws, a core
- *    that will not load, or a budget that runs out all end the same way:
+ * 2. IT FAILS OPEN ON WHAT IT CANNOT READ, AND ASKS ON WHAT IT READ AND COULD
+ *    NOT CHECK. Bad JSON, an empty stdin, a core that will not load, or a
+ *    budget that runs out before the call is read all end the same way:
  *    nothing on stdout and exit code 0, so the call runs as it would have
- *    without this hook. A floor hook that failed closed would stop every
- *    shell call of every install, including the many whose owner never turned
- *    the switch on.
+ *    without this hook. A floor hook that failed closed there would stop
+ *    every shell call of every install, including the many whose owner never
+ *    turned the switch on. But a call it did read is never let through
+ *    unchecked (the fix round, hf28): a classifier that throws, or that
+ *    has not answered by the budget, asks (FLOOR_HOOK_UNCHECKED_WORDS), and so
+ *    does a shell command longer than the list reads (the core's
+ *    HARD_FLOOR_MAX_TEXT, FLOOR_HOOK_TOO_LONG_WORDS), unless the part it read
+ *    already names a kind, and so does a call whose read stopped at the
+ *    list's nesting limit (`eval` five deep, the core's readToolCall). A
+ *    shell command longer than FLOOR_HOOK_INLINE_MAX is read on a worker
+ *    thread the budget can stop, since a timer cannot stop a read in this
+ *    one. Those asks leave no floor record,
+ *    since no kind was read: the relay finds a cut preview with no record and
+ *    asks the server (planFloorRequest ask_elided), where the owner's switch
+ *    decides. Like every ask, only in a session a HOAI daemon is attached to.
  * 3. IT HAS A HARD BUDGET UNDER TWO SECONDS (FLOOR_HOOK_BUDGET_MS), inside the
  *    manifest's 3 second timeout, so the CLI never has to kill it and a stuck
  *    stdin cannot hold a tool call.
@@ -72,6 +85,57 @@ export const FLOOR_HOOK_BUDGET_MS = 1500
 
 /** A Write can carry a whole file; past this the payload is not read (open). */
 export const FLOOR_HOOK_STDIN_MAX_BYTES = 16 * 1024 * 1024
+
+/**
+ * A shell command longer than this is read on a worker thread. The list reads
+ * up to its own limit (the core's HARD_FLOOR_MAX_TEXT, a megabyte), and even
+ * read in step with its length a megabyte of some shapes (a line of `$[]`
+ * each, a group each) takes it one to three seconds: past the budget, near
+ * the CLI's own kill, and a timer cannot stop a read in the hook's thread.
+ * A worker can be stopped: a read it has not finished by the budget asks
+ * (FLOOR_HOOK_UNCHECKED_WORDS). It was 64 KiB, and the fix round's review
+ * found shapes that took 6 s inline under it, so the CLI killed the hook and
+ * nothing asked. Under 4 KiB a nested shape still read for 1.8 s, because a
+ * script was read again at each level (the second review); the core now
+ * reads a text once per depth and lexes at most eight times its length plus
+ * 16 KB, then stops and says so (the hook asks), so the slowest shape
+ * measured under 4 KiB reads in tens of milliseconds. Ordinary commands stay
+ * on this thread, and a worker costs its start (tens of milliseconds) only
+ * for a longer command.
+ */
+export const FLOOR_HOOK_INLINE_MAX = 4 * 1024
+
+/** What a reading off the hook's thread can answer: the match (or null) and whether it stopped early, a throw, or nothing in time. */
+const CORE_URL = new URL('../lib/hard-floor-core.mjs', import.meta.url).href
+const WORKER_SOURCE = `
+const { parentPort, workerData } = require('node:worker_threads')
+import(workerData.coreUrl).then(
+  (core) => {
+    let answer
+    try {
+      const read = core.readToolCall(workerData.name, workerData.input)
+      answer = { match: read.lead ?? null, stoppedEarly: read.stoppedEarly === true }
+    } catch {
+      answer = { threw: true }
+    }
+    parentPort.postMessage(answer)
+  },
+  () => parentPort.postMessage({ threw: true }),
+)
+`
+
+/** The question for a call the hook read and could not check: its classifier threw, or answered after the budget. */
+export const FLOOR_HOOK_UNCHECKED_WORDS = 'an action the safety check could not finish checking'
+
+/** The question for a shell command longer than the hook reads. */
+export const FLOOR_HOOK_TOO_LONG_WORDS = 'a command too long to check in full'
+
+/** The shell tools whose command is read as shell text (the core's FLOOR_SHELL_TOOLS). */
+const SHELL_TOOLS = ['Bash', 'PowerShell']
+
+/** The list's own size limit, as the core says it (a megabyte when a core does not say). */
+const listReads = (core) =>
+  typeof core?.HARD_FLOOR_MAX_TEXT === 'number' && core.HARD_FLOOR_MAX_TEXT > 0 ? core.HARD_FLOOR_MAX_TEXT : 1024 * 1024
 
 const BUDGET_SPENT = Symbol('budget spent')
 
@@ -139,12 +203,23 @@ export function floorAskOutput(words) {
  * `ruleIds` and every kind's command in `evidence`, so the relay can tell the
  * server about all of them, not only the first in the list's order.
  *
+ * A CALL IT READ IS NEVER LET THROUGH UNCHECKED (rule 2): a classifier that
+ * throws, or returns after `clock.deadline`, asks with
+ * FLOOR_HOOK_UNCHECKED_WORDS, and a shell command longer than the list reads
+ * (the core's HARD_FLOOR_MAX_TEXT), when the part it read names no kind,
+ * asks with FLOOR_HOOK_TOO_LONG_WORDS, and a read that stopped at the list's
+ * nesting limit (the core's readToolCall `stoppedEarly`) asks with
+ * FLOOR_HOOK_UNCHECKED_WORDS. None of them leaves a record. A classifier that
+ * answers something that is not a match is read as no match.
+ *
  * @param {string} text the raw stdin
- * @param {{ classifyToolCallLead: (name: unknown, input: unknown) => { words: string } | null }} core
+ * @param {{ classifyToolCallLead: (name: unknown, input: unknown) => { words: string } | null,
+ *   readToolCall?: (name: unknown, input: unknown) => { lead: { words: string } | null, stoppedEarly: boolean } }} core
  * @param {{ attachedKey: (payload: any) => string | null,
  *   recordAsk: (key: string, payload: any, match: any) => unknown }} [deps]
+ * @param {{ deadline?: number, now?: () => number }} [clock] performance.now() time past which a quiet answer is late
  */
-export function decideFloorHook(text, core, deps) {
+export function decideFloorHook(text, core, deps, clock = {}) {
   try {
     const trimmed = String(text ?? '').trim()
     if (!trimmed) return ''
@@ -152,21 +227,136 @@ export function decideFloorHook(text, core, deps) {
     if (!isRecord(payload)) return ''
     const event = payload.hook_event_name
     if (event !== undefined && event !== 'PreToolUse') return ''
-    const match = core.classifyToolCallLead(payload.tool_name, payload.tool_input)
-    if (!match || typeof match.words !== 'string' || !match.words) return ''
+    const command = shellCommandOf(payload)
+    const tooLong = command !== null && command.length > listReads(core)
+    let words = ''
+    let match = null
+    let stoppedEarly = false
+    try {
+      ;({ match, stoppedEarly } = readCall(core, payload.tool_name, payload.tool_input))
+    } catch {
+      words = FLOOR_HOOK_UNCHECKED_WORDS
+    }
+    const named = !words && isRecord(match) && typeof match.words === 'string' && match.words !== ''
+    if (named) words = match.words
+    else if (!words && tooLong) words = FLOOR_HOOK_TOO_LONG_WORDS
+    else if (!words && stoppedEarly) words = FLOOR_HOOK_UNCHECKED_WORDS
+    else if (!words && typeof clock.deadline === 'number' && (clock.now ? clock.now() : performance.now()) > clock.deadline) {
+      words = FLOOR_HOOK_UNCHECKED_WORDS
+    }
+    if (!words) return ''
     if (deps) {
       const key = deps.attachedKey(payload)
       if (!key) return ''
-      try {
-        deps.recordAsk(key, payload, match)
-      } catch {
-        /* the record is the relay's aid; the ask stands without it */
+      if (named) {
+        try {
+          deps.recordAsk(key, payload, match)
+        } catch {
+          /* the record is the relay's aid; the ask stands without it */
+        }
       }
     }
-    return floorAskOutput(match.words)
+    return floorAskOutput(words)
   } catch {
     return ''
   }
+}
+
+/**
+ * The core's answer for one call: its lead, and whether the read stopped at
+ * the list's nesting limit (readToolCall), or the lead alone from a core
+ * that only has classifyToolCallLead.
+ * @param {any} core @param {unknown} name @param {unknown} input
+ * @returns {{ match: unknown, stoppedEarly: boolean }}
+ */
+function readCall(core, name, input) {
+  if (typeof core.readToolCall === 'function') {
+    const read = core.readToolCall(name, input)
+    return { match: isRecord(read) ? read.lead : null, stoppedEarly: isRecord(read) && read.stoppedEarly === true }
+  }
+  return { match: core.classifyToolCallLead(name, input), stoppedEarly: false }
+}
+
+/** A shell tool's command, or null for any other call. @param {any} payload */
+function shellCommandOf(payload) {
+  const input = payload.tool_input
+  if (!SHELL_TOOLS.includes(payload.tool_name) || !isRecord(input)) return null
+  return typeof input.command === 'string' ? input.command : null
+}
+
+/**
+ * Read one call on a worker thread, given `msLeft` to answer. Resolves
+ * `{ match, stoppedEarly }` (a match or null, and whether the read stopped
+ * at the list's nesting limit), `{ threw: true }` (the reading or the core
+ * load failed), `{ late: true }` (no answer in time; the worker is stopped),
+ * or `{ inline: true }` when no worker can be started here (the caller reads
+ * it inline, as before). Never rejects.
+ * @param {unknown} name @param {unknown} input @param {number} msLeft
+ */
+export function readOffThread(name, input, msLeft) {
+  return import('node:worker_threads').then(
+    ({ Worker }) =>
+      new Promise((resolve) => {
+        let worker = null
+        let settled = false
+        const settle = (answer) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(answer)
+          if (worker) worker.terminate().catch(() => {})
+        }
+        const timer = setTimeout(() => settle({ late: true }), Math.max(0, msLeft))
+        try {
+          worker = new Worker(WORKER_SOURCE, { eval: true, workerData: { coreUrl: CORE_URL, name, input } })
+        } catch {
+          settle({ inline: true })
+          return
+        }
+        worker.once('message', (answer) => settle(isRecord(answer) ? answer : { threw: true }))
+        worker.once('error', () => settle({ threw: true }))
+        worker.once('exit', () => settle({ threw: true }))
+      }),
+    () => ({ inline: true }),
+  )
+}
+
+/**
+ * decideFloorHook for a call already read, inside the budget: inline for
+ * most calls, and on a worker thread (`offThread`, readOffThread) for a
+ * shell command longer than FLOOR_HOOK_INLINE_MAX, whose answer then goes
+ * through decideFloorHook as if the core had given it, so the two ways
+ * decide alike: a throw or no answer in time asks (FLOOR_HOOK_UNCHECKED_WORDS).
+ * Never throws.
+ */
+async function decideInTime(text, core, deps, deadline, offThread) {
+  let call = null
+  try {
+    const payload = JSON.parse(String(text ?? '').trim())
+    const command = isRecord(payload) ? shellCommandOf(payload) : null
+    if (command !== null && command.length > FLOOR_HOOK_INLINE_MAX) call = payload
+  } catch {
+    /* decideFloorHook reads the same text and answers nothing for it */
+  }
+  if (!call || !offThread) return decideFloorHook(text, core, deps, { deadline })
+  let answer
+  try {
+    answer = await offThread(call.tool_name, call.tool_input, deadline - performance.now())
+  } catch {
+    answer = { threw: true }
+  }
+  if (isRecord(answer) && answer.inline === true) return decideFloorHook(text, core, deps, { deadline })
+  const given = {
+    HARD_FLOOR_MAX_TEXT: listReads(core),
+    classifyToolCallLead: () => {
+      throw new Error('read through readToolCall')
+    },
+    readToolCall: () => {
+      if (isRecord(answer) && 'match' in answer) return { lead: answer.match, stoppedEarly: answer.stoppedEarly === true }
+      throw new Error('not checked in time')
+    },
+  }
+  return decideFloorHook(text, given, deps)
 }
 
 /** Read the whole of a stream as BYTES, bounded, then decode UTF-8. Resolves
@@ -197,12 +387,22 @@ function writeOut(text) {
  * The hook, with every edge injectable for the tests. Resolves with what it
  * printed ('' for nothing). Never rejects.
  *
+ * The budget bounds READING the call (stdin, the core, the state files):
+ * not read by then, nothing is printed (rule 2). Once read, the call is
+ * decided inside what is left of it (decideInTime), and a reading that does
+ * not finish asks. `onDecided` hears the answer once it is known, before it
+ * is written: the entry point stops its hard stop there, so a late ask is
+ * not cut off. `offThread` reads a long shell command (readOffThread).
+ *
  * @param {{ stdin?: AsyncIterable<Buffer|string>, write?: (text: string) => Promise<void>,
  *   budgetMs?: number, loadCore?: () => Promise<any>, loadState?: () => Promise<any>,
- *   env?: Record<string, string | undefined>, stateRoot?: string, maxBytes?: number }} [opts]
+ *   env?: Record<string, string | undefined>, stateRoot?: string, maxBytes?: number,
+ *   onDecided?: (answer: string) => void,
+ *   offThread?: ((name: unknown, input: unknown, msLeft: number) => Promise<unknown>) | null }} [opts]
  */
 export async function main(opts = {}) {
   const budgetMs = opts.budgetMs ?? FLOOR_HOOK_BUDGET_MS
+  const deadline = performance.now() + budgetMs
   const write = opts.write ?? writeOut
   const loadCore = opts.loadCore ?? loadFloorCore
   const loadState = opts.loadState ?? loadFloorState
@@ -218,22 +418,33 @@ export async function main(opts = {}) {
         loadCore(),
         loadState(),
       ])
-      if (text === null) return ''
-      return decideFloorHook(
-        text,
-        core,
-        floorDeps(state, { env: opts.env ?? process.env, root: opts.stateRoot }),
-      )
+      if (text === null) return null
+      return { text, core, state }
     })()
     // A late failure of the losing side must not surface as an unhandled
     // rejection after the race is decided.
     work.catch(() => {})
-    const result = await Promise.race([work, budget])
-    out = result === BUDGET_SPENT || typeof result !== 'string' ? '' : result
+    const read = await Promise.race([work, budget])
+    clearTimeout(timer)
+    if (read !== BUDGET_SPENT && isRecord(read)) {
+      const decided = await decideInTime(
+        read.text,
+        read.core,
+        floorDeps(read.state, { env: opts.env ?? process.env, root: opts.stateRoot }),
+        deadline,
+        opts.offThread === undefined ? readOffThread : opts.offThread,
+      )
+      out = typeof decided === 'string' ? decided : ''
+    }
   } catch {
     out = ''
   } finally {
     clearTimeout(timer)
+  }
+  try {
+    opts.onDecided?.(out)
+  } catch {
+    /* the entry point's own concern; the answer stands */
   }
   if (out) {
     try {
@@ -265,9 +476,16 @@ export function isEntryPoint(argv1 = process.argv[1], moduleUrl = import.meta.ur
 
 if (isEntryPoint()) {
   // The last word on the budget: whatever main is doing, the process is gone
-  // shortly after it, with exit code 0 and nothing more on stdout.
-  const hardStop = setTimeout(() => process.exit(0), FLOOR_HOOK_BUDGET_MS + 300)
-  main().then(
+  // shortly after it, with exit code 0 and nothing more on stdout. Once the
+  // answer is known (a classifier that ran late still answers, since a timer
+  // cannot fire during its read), the stop gives the write a short time of
+  // its own instead, so a late ask is written, not cut off.
+  let hardStop = setTimeout(() => process.exit(0), FLOOR_HOOK_BUDGET_MS + 300)
+  const onDecided = () => {
+    clearTimeout(hardStop)
+    hardStop = setTimeout(() => process.exit(0), 500)
+  }
+  main({ onDecided }).then(
     () => {
       clearTimeout(hardStop)
       process.exit(0)

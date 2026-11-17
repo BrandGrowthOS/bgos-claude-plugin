@@ -2867,6 +2867,232 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     input: { kind: "command", command: "echo x{ ; rm -rf build" },
     ruleId: "recursive_delete",
   },
+  // Fix round: a bracket class whose range runs backwards (`[z-a]`) used to
+  // make the whole read throw, so no kind was named at all. Now the command
+  // keeps its kind, and a bad class reads as any one character, so a key name
+  // it stands in still asks.
+  {
+    name: "review_bad_bracket_class_keeps_the_force_push",
+    input: { kind: "command", command: "git push --force origin main [z-a]" },
+    ruleId: "force_push",
+  },
+  {
+    name: "review_bad_bracket_class_in_a_key_name_still_asks",
+    input: { kind: "command", command: "cat id_rs[z-a]" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review_bad_bracket_class_in_a_request_keeps_the_delete",
+    input: {
+      kind: "request",
+      toolName: "Bash",
+      inputPreview: '{"command":"rm -rf build [z-a]"}',
+    },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "review_bad_bracket_class_alone_reads_as_one_character_and_is_quiet",
+    input: { kind: "command", command: "ls [z-a] [Z-a]" },
+    ruleId: null,
+  },
+  // Ordinary globs that only look like a key name ask nothing. A `*` must come
+  // after the key name's first four characters (three for a four letter folder
+  // such as `.ssh`), and after `.git-` for `.git-credentials`, since `.git*` is
+  // how a repo names .gitignore and the rest. A bracket class counts as one
+  // character and a `?` as none; an extension glob keeps two of its letters.
+  {
+    name: "review_glob_git_dotfiles_listed_is_not_a_key",
+    input: { kind: "command", command: "ls -d .git*" },
+    ruleId: null,
+  },
+  {
+    name: "review_glob_git_dotfiles_pruned_by_find_is_not_a_key",
+    input: { kind: "command", command: "find . -name .git* -prune" },
+    ruleId: null,
+  },
+  {
+    name: "review_glob_git_dotfiles_left_out_of_a_zip_is_not_a_key",
+    input: { kind: "command", command: "zip -r o.zip . -x .git*" },
+    ruleId: null,
+  },
+  {
+    name: "review_glob_git_dotfiles_left_out_of_a_tar_is_not_a_key",
+    input: { kind: "command", command: "tar czf b.tgz --exclude .git* src" },
+    ruleId: null,
+  },
+  {
+    name: "review_glob_id_prefix_listed_is_not_a_key",
+    input: { kind: "command", command: "ls id_*" },
+    ruleId: null,
+  },
+  {
+    name: "review_glob_any_three_letter_extension_is_not_a_key",
+    input: { kind: "command", command: "ls *.???" },
+    ruleId: null,
+  },
+  {
+    name: "review_glob_one_letter_extension_glob_is_not_a_key",
+    input: { kind: "command", command: "ls *.p??" },
+    ruleId: null,
+  },
+  {
+    name: "review_glob_every_dotfile_is_not_a_key_folder",
+    input: { kind: "command", command: "ls -d .[!.]*" },
+    ruleId: null,
+  },
+  {
+    name: "review_glob_past_the_git_dash_still_asks",
+    input: { kind: "command", command: "cat .git-*" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review_glob_past_four_key_letters_still_asks",
+    input: { kind: "command", command: "cat id_r*" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review_glob_past_three_key_folder_letters_still_asks",
+    input: { kind: "command", command: "cat ~/.ss*/config" },
+    ruleId: "uses_secret_key",
+  },
+  // Any other key name keeps the three characters it needed before.
+  {
+    name: "review_glob_past_three_netrc_letters_still_asks",
+    input: { kind: "command", command: "cat ~/.ne*" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review_glob_past_three_aws_credentials_letters_still_asks",
+    input: { kind: "command", command: "cat ~/.aws/cre*" },
+    ruleId: "uses_secret_key",
+  },
+  // A relative read after a `cd` into an `.aws` folder is judged under it, the
+  // folder judged once for every later read (the fix round's review); a `cd`
+  // into a key folder asks on its own word.
+  {
+    name: "review_cd_into_an_aws_folder_then_a_credentials_glob_asks",
+    input: { kind: "command", command: "cd ~/.aws && cat < cred*" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review_cd_into_a_folder_globbed_as_aws_then_credentials_asks",
+    input: { kind: "command", command: "cd ~/.aw? && < credentials" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review_cd_folder_judged_once_serves_every_later_read",
+    input: { kind: "command", command: "cd a/b/c/d/.aws && cat < x && cat < y && cat < credentials" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review_cd_into_an_aws_folder_then_another_file_is_quiet",
+    input: { kind: "command", command: "cd ~/.aws && cat < config" },
+    ruleId: null,
+  },
+  {
+    name: "review_cd_into_an_ordinary_folder_then_credentials_is_quiet",
+    input: { kind: "command", command: "cd ~/work && cat < credentials" },
+    ruleId: null,
+  },
+  // The second review: the folder and each read are judged in parts, each with
+  // a separator, so a cmd caret in either is read with it gone, as the join
+  // read it; inside a backtick pair an escaped backtick or `$` runs too.
+  {
+    name: "review2_cd_into_a_caret_key_folder_then_a_read_asks",
+    input: { kind: "command", command: "cd .s^sh & more < config" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review2_cd_then_a_caret_key_name_read_asks",
+    input: { kind: "command", command: "cd keys & more < server.p^em" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review2_cd_then_an_ordinary_read_is_quiet",
+    input: { kind: "command", command: "cd src && cat < README.md" },
+    ruleId: null,
+  },
+  {
+    name: "review2_escaped_backtick_inside_backticks_is_read",
+    input: { kind: "command", command: "echo `echo \\`rm -rf build\\``" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "review2_escaped_backtick_inside_quoted_backticks_is_read",
+    input: { kind: "command", command: "echo \"`echo \\`rm -rf build\\``\"" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "review2_nested_backticks_listing_is_quiet",
+    input: { kind: "command", command: "x=`ls \\`pwd\\``; echo $x" },
+    ruleId: null,
+  },
+  // `[[` opens a test only where a command starts (first, or after `if`, `!`,
+  // `while` and the like); anywhere else it is a plain word, and a `>` after it
+  // still writes. A brace glued to a word stops at `<` and `>`, which redirect.
+  {
+    name: "review_brackets_as_a_word_keep_an_env_write",
+    input: { kind: "command", command: "echo [[ > .env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "review_brackets_as_a_word_keep_a_home_dotfile_write",
+    input: { kind: "command", command: "echo [[ >> ~/.bashrc" },
+    ruleId: "home_dotfile_write",
+  },
+  {
+    name: "review_brackets_as_a_word_keep_a_git_dir_write",
+    input: { kind: "command", command: "echo [[ > .git/config" },
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "review_glued_brace_stops_at_a_redirect",
+    input: { kind: "command", command: "echo x{>.git/hooks/pre-commit}" },
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "review_brackets_after_if_still_compare",
+    input: { kind: "command", command: "if [[ $a > .env ]]; then :; fi" },
+    ruleId: null,
+  },
+  // A heredoc word with a backslash is quoted, as one in quotes is: `<<\EOF`
+  // ends at the line EOF, so the commands after it are read, and its body is
+  // literal text, so a substitution in it does not run.
+  {
+    name: "review_backslash_heredoc_ends_and_a_later_delete_is_read",
+    input: { kind: "command", command: "cat <<\\EOF\nx\nEOF\nrm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "review_backslash_heredoc_body_is_literal",
+    input: { kind: "command", command: "cat <<E\\OF\n$(cat ~/.ssh/id_rsa)\nEOF" },
+    ruleId: null,
+  },
+  // The size limit (HARD_FLOOR_MAX_TEXT, one megabyte, the same on both
+  // sides). Inside it a long comment line hides nothing. Past it neither side
+  // reads on, so a key read pushed beyond it by a comment is named by neither
+  // list, the same on both; the plugin's floor hook asks instead (a command too
+  // long to check in full), and the relay sends the cut command to the server,
+  // which holds it with the switch on.
+  {
+    name: "size_limit_a_key_read_just_inside_the_limit_is_read",
+    input: { kind: "command", command: "#" + "x".repeat(1048000) + "\ncat ~/.ssh/id_rsa" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "size_limit_a_key_read_past_the_limit_is_read_by_neither_side",
+    input: { kind: "command", command: "#" + "x".repeat(1048576) + "\ncat ~/.ssh/id_rsa" },
+    ruleId: null,
+  },
+  {
+    name: "size_limit_a_request_past_the_limit_is_read_by_neither_side",
+    input: {
+      kind: "request",
+      toolName: "Bash",
+      inputPreview: '{"command":"#' + "x".repeat(1048576) + '\\ncat ~/.ssh/id_rsa"}',
+    },
+    ruleId: null,
+  },
   // A file delete whose files come from somewhere else: from xargs, from
   // find's exec family, or, for PowerShell's Remove-Item and its aliases,
   // from a pipe.
@@ -4433,7 +4659,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "d368cdbed0684a547050be2f0538c39c7ffca886fbb2d23375c397e1d1dfbe98";
+  "51e5758e708c9b8709bc130bcca5a6aa2760685a9a89933589a24c6dcc1daad3";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =

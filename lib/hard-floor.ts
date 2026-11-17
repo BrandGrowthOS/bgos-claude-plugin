@@ -190,6 +190,19 @@ export function classifyPermissionRequestLead(toolName: unknown, inputPreview: u
   return core.classifyPermissionRequestLead(toolName, inputPreview) as HardFloorMatch | null
 }
 
+/**
+ * The relay's whole answer: classifyPermissionRequestLead, and whether the
+ * preview's read stopped at the list's nesting limit with text still unread
+ * (`eval` five deep, the fix round's review, I3), which the relay asks the
+ * server about as a preview it could not read (planFloorRequest).
+ */
+export function readPermissionRequest(
+  toolName: unknown,
+  inputPreview: unknown,
+): { lead: HardFloorMatch | null; stoppedEarly: boolean } {
+  return core.readPermissionRequest(toolName, inputPreview) as { lead: HardFloorMatch | null; stoppedEarly: boolean }
+}
+
 /** What a permission request's preview says the tool input was. */
 export function readToolInput(toolName: unknown, inputPreview: unknown): Record<string, unknown> {
   return core.readToolInput(toolName, inputPreview) as Record<string, unknown>

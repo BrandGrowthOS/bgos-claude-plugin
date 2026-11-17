@@ -580,7 +580,7 @@ import {
   watchPermissionVerdict,
   type PermissionChoice,
 } from './lib/permission-relay.js'
-import { classifyPermissionRequestLead, isOwnSendingTool } from './lib/hard-floor.js'
+import { isOwnSendingTool, readPermissionRequest } from './lib/hard-floor.js'
 import {
   consultElidedFloor,
   consultFloor,
@@ -4237,18 +4237,21 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
   // approve off only a request the record vouches for is asked about, so a
   // floor the owner left off does not turn every hook ask into a card.
   const floorRecord = takeOwnFloorRecord(tool_name, input_preview)
+  // This channel's email_send is read with auto approve off too: its card can
+  // carry the owner's Allow only when the floor holds it (lib/floor-check.ts).
+  // Every kind the preview shows, the most dangerous first (0.88.1), and
+  // whether its read stopped at the list's nesting limit (the fix round).
+  const previewRead =
+    floorRecord === null && (AUTO_APPROVE || isOwnSendingTool(tool_name))
+      ? readPermissionRequest(tool_name, input_preview)
+      : null
   const floorPlan = planFloorRequest({
     autoApprove: AUTO_APPROVE,
     toolName: tool_name,
     inputPreview: input_preview,
     record: floorRecord,
-    // This channel's email_send is read with auto approve off too: its card can
-    // carry the owner's Allow only when the floor holds it (lib/floor-check.ts).
-    // Every kind the preview shows, the most dangerous first (0.88.1).
-    previewMatch:
-      floorRecord === null && (AUTO_APPROVE || isOwnSendingTool(tool_name))
-        ? classifyPermissionRequestLead(tool_name, input_preview)
-        : null,
+    previewMatch: previewRead?.lead ?? null,
+    previewStoppedEarly: previewRead?.stoppedEarly === true,
   })
   if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)
   if (floorPlan.action === 'ask_elided') {

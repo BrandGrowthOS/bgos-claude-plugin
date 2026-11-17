@@ -160,6 +160,18 @@ test('with no record, a cut shell preview asks the server about what was cut rat
   )
 })
 
+test('with no record, a preview whose reading stopped at the nesting limit asks the server, as a cut one does', () => {
+  // `eval` five deep: the relay's own reading stops at the nesting limit, and
+  // under auto approve the relay used to answer allow (the fix round, I3).
+  const preview = JSON.stringify({ command: 'eval eval eval eval eval rm -rf ~' })
+  const plan = (autoApprove: boolean, previewStoppedEarly: boolean) =>
+    planFloorRequest({ autoApprove, toolName: 'Bash', inputPreview: preview, record: null, previewMatch: null, previewStoppedEarly })
+  assert.equal(plan(true, true).action, 'ask_elided')
+  assert.equal(plan(true, false).action, 'none')
+  // With auto approve off the CLI asks the owner itself, exactly as for a cut preview.
+  assert.equal(plan(false, true).action, 'none')
+})
+
 test('with auto approve off, only a request the hook record vouches for is asked about', () => {
   const record = recordFrom('Bash', { command: 'rm -rf doomed' })
   assert.equal(
@@ -437,7 +449,7 @@ test('the floor is asked BEFORE the auto approve branch, from the hook record fi
   assert.ok(handler.length > 0)
   const record = handler.indexOf('const floorRecord = takeOwnFloorRecord(tool_name, input_preview)')
   const plan = handler.indexOf('const floorPlan = planFloorRequest({')
-  const classify = handler.indexOf('classifyPermissionRequestLead(tool_name, input_preview)')
+  const classify = handler.indexOf('readPermissionRequest(tool_name, input_preview)')
   const settle = handler.indexOf("if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)")
   const owner = handler.indexOf("if (floorPlan.action === 'ask_elided') {")
   const auto = handler.indexOf('if (AUTO_APPROVE) {')
@@ -446,7 +458,12 @@ test('the floor is asked BEFORE the auto approve branch, from the hook record fi
   assert.ok(settle < auto && owner < auto, 'and a match leaves before auto approve can answer it')
   // The preview is read only when there is no record (it is the lossy copy).
   // (and with auto approve off for this channel's email_send only, whose card needs the floor to hold it)
-  assert.match(handler, /floorRecord === null && \(AUTO_APPROVE \|\| isOwnSendingTool\(tool_name\)\)\s*\?\s*classifyPermissionRequestLead\(tool_name, input_preview\)\s*:\s*null/)
+  assert.match(handler, /floorRecord === null && \(AUTO_APPROVE \|\| isOwnSendingTool\(tool_name\)\)\s*\?\s*readPermissionRequest\(tool_name, input_preview\)\s*:\s*null/)
+  // Its lead is the preview's match, and a read that stopped at the list's
+  // nesting limit is passed on, so the plan asks the server (the fix round, I3).
+  assert.match(handler, /previewMatch: previewRead\?\.lead \?\? null,/)
+  assert.match(handler, /previewStoppedEarly: previewRead\?\.stoppedEarly === true,/)
+  assert.ok(classify < plan, 'the preview is read before the plan')
   assert.match(handler, /autoApprove: AUTO_APPROVE,/)
   const ownerExit = handler.slice(owner, auto)
   assert.ok(ownerExit.includes('return settleElidedFloorRequest(params)'), 'a cut preview with no record asks the server')
