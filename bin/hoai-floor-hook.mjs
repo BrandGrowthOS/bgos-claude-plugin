@@ -8,9 +8,11 @@
  *
  * Claude Code runs it before every shell, edit and MCP tool call (the matcher
  * in hooks/hooks.json), with the call as JSON on stdin. When the call is on
- * the hard floor's short list (lib/hard-floor-core.mjs: a recursive delete, a
- * force push, a change inside .git, to an .env file or to a settings file in
- * the home folder, an MCP tool that sends, posts, pays or deletes), it prints
+ * the hard floor's short list (lib/hard-floor-core.mjs, rules version 4: a
+ * recursive delete, a force push, a change inside .git, to an .env file or to
+ * a settings file in the home folder, an MCP tool that sends, posts, pays or
+ * deletes, a plugin or tool that stays installed, a file delete, admin rights,
+ * a secret key or a key file, and data sent off this computer), it prints
  *
  *   {"hookSpecificOutput":{"hookEventName":"PreToolUse",
  *     "permissionDecision":"ask","permissionDecisionReason":"<the rule's words>"}}

@@ -36,6 +36,8 @@ import {
 import {
   classifyPermissionRequest,
   classifyToolCall,
+  isOwnSendingTool,
+  readPermissionRequest,
   type HardFloorMatch,
 } from '../lib/hard-floor.ts'
 import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
@@ -441,6 +443,37 @@ const handler = SRC.slice(
 )
 const bodyOf = (signature: string, next: string) =>
   SRC.slice(SRC.indexOf(signature), SRC.indexOf(next, SRC.indexOf(signature) + signature.length))
+
+test('the relay wiring, RUN from server.ts: what the preview reads reaches the plan (round 29, review A item 9)', () => {
+  // The test below matches the wiring's source; this one runs it. The lines
+  // from the preview read to the plan are cut out of server.ts as written and
+  // run with the real reader and the real plan, so a reading the list makes
+  // (a delete inside old style arithmetic, a read stopped five deep) is shown
+  // to decide what the relay does, not only to be spelled in the file.
+  const start = handler.indexOf('const previewRead =')
+  const end = handler.indexOf("if (floorPlan.action === 'consult')")
+  assert.ok(start > 0 && end > start, 'the wiring is in the handler')
+  const run = new Function(
+    'floorRecord',
+    'AUTO_APPROVE',
+    'tool_name',
+    'input_preview',
+    'isOwnSendingTool',
+    'readPermissionRequest',
+    'planFloorRequest',
+    `${handler.slice(start, end)}\nreturn floorPlan`,
+  ) as (...args: unknown[]) => { action: string; match?: HardFloorMatch | null }
+  const plan = (command: string, autoApprove = true) =>
+    run(null, autoApprove, 'Bash', JSON.stringify({ command }), isOwnSendingTool, readPermissionRequest, planFloorRequest)
+  const arith = plan('echo $[ $(rm -rf build) ]')
+  assert.equal(arith.action, 'consult')
+  assert.equal(arith.match?.ruleId, 'recursive_delete')
+  assert.equal(plan('[[ -n $(echo X=1 > .env) ]]').match?.ruleId, 'env_file_write')
+  assert.equal(plan('eval eval eval eval eval rm -rf ~').action, 'ask_elided')
+  assert.equal(plan('ls').action, 'none')
+  // With auto approve off the preview is not read: only a record is asked about.
+  assert.equal(plan('echo $[ $(rm -rf build) ]', false).action, 'none')
+})
 
 test('the floor is asked BEFORE the auto approve branch, from the hook record first', () => {
   // The permission-relay.test.ts slice pattern. Run D3 is exactly what

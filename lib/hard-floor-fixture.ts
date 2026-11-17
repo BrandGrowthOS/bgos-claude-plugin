@@ -4344,6 +4344,89 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     ruleId: "recursive_delete",
     ruleIds: ["recursive_delete", "sends_data_off"],
   },
+  // Round 29: a command kept inside a word still runs. Old style arithmetic
+  // and a parameter's default are each one word, and a substitution or a
+  // backtick pair inside one runs; inside a bracket test a substitution's own
+  // redirects still redirect, and a redirect glued to the closing brackets
+  // still writes; an escaped backtick pair inside a backtick pair of an
+  // unquoted heredoc body runs. A bracket test after a reserved word compares,
+  // as one at the start of a command does, and a group inside a test still
+  // compares.
+  {
+    name: "review29_old_style_arithmetic_runs_its_substitution",
+    input: { kind: "command", command: "echo $[ $(rm -rf build) ]" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "review29_old_style_arithmetic_runs_its_backtick_pair",
+    input: { kind: "command", command: "echo $[ `rm -rf build` ]" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "review29_old_style_arithmetic_substitution_keeps_the_next_line",
+    input: { kind: "command", command: "echo $[ $(true) ]\nrm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "review29_parameter_default_runs_its_substitution",
+    input: { kind: "command", command: "echo ${x:-$(rm -rf build)}" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "review29_parameter_default_runs_its_backtick_pair",
+    input: { kind: "command", command: "echo ${x:-`rm -rf build`}" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "review29_request_old_style_arithmetic_runs_its_substitution",
+    input: {
+      kind: "request",
+      toolName: "Bash",
+      inputPreview: '{"command":"echo $[ $(rm -rf build) ]"}',
+    },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "review29_bracket_test_substitution_redirect_writes",
+    input: { kind: "command", command: "[[ -n $(echo X=1 > .env) ]]" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "review29_bracket_test_backtick_redirect_writes",
+    input: { kind: "command", command: "[[ -n `echo X=1 > .env` ]]" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "review29_bracket_test_substitution_reads_a_key",
+    input: { kind: "command", command: "[[ $(cat <id_rsa) ]]" },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review29_redirect_glued_to_the_closing_brackets_writes",
+    input: { kind: "command", command: "[[ a ]]>.env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "review29_heredoc_escaped_backtick_pair_in_a_backtick_pair_runs",
+    input: {
+      kind: "command",
+      command: "cat <<EOF\n`echo \\`cat id_rsa\\``\nEOF",
+    },
+    ruleId: "uses_secret_key",
+  },
+  {
+    name: "review29_bracket_test_after_a_reserved_word_is_no_read",
+    input: {
+      kind: "command",
+      command: "if [[ $v < id_rsa ]]; then echo ok; fi",
+    },
+    ruleId: null,
+  },
+  {
+    name: "review29_group_inside_a_bracket_test_still_compares",
+    input: { kind: "command", command: "[[ ( a > .env ) ]]" },
+    ruleId: null,
+  },
 ];
 
 /**
@@ -4659,7 +4742,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "51e5758e708c9b8709bc130bcca5a6aa2760685a9a89933589a24c6dcc1daad3";
+  "28f23163c2e46862cfd320a83aa843dfad191e54efb4a39c6dbe2b6769ae8600";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =

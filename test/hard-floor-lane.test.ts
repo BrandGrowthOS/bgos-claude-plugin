@@ -78,6 +78,29 @@ test('the lane hook DENIES a call whose read stopped at the nesting limit (the f
   assert.equal(read('ls'), '')
 })
 
+test('the lane hook DENIES a command longer than the list reads when nothing matched (round 29, review B item 1)', async () => {
+  // The owner list reads the first HARD_FLOOR_MAX_TEXT of a command; a
+  // delete past that cut was never read, so the lane let it through. The
+  // backend's lane route holds a preview that long (unreadTail): parity.
+  const { HARD_FLOOR_MAX_TEXT } = await import('../lib/hard-floor-core.mjs')
+  const pad = 'a'.repeat(HARD_FLOOR_MAX_TEXT)
+  const over = `echo ${pad}\nrm -rf ~`
+  const call = (toolName: string, command: string, classify: typeof classifyLaneToolCall) =>
+    decideLaneFloor(JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: { command } }), 'user_ana', classify)
+  assert.ok(over.length > HARD_FLOOR_MAX_TEXT)
+  assert.equal(laneCore.readLaneToolCall('Bash', { command: over }, { actorUserId: 'user_ana' }).stoppedEarly, true)
+  for (const classify of [laneCore.readLaneToolCall, classifyLaneToolCall] as (typeof classifyLaneToolCall)[]) {
+    assert.ok(denied(call('Bash', over, classify)), 'Bash over the limit')
+    assert.ok(denied(call('PowerShell', over, classify)), 'PowerShell over the limit')
+    // At the limit the whole command is read: an ordinary one still runs.
+    assert.equal(call('Bash', `echo ${pad}`.slice(0, HARD_FLOOR_MAX_TEXT), classify), '')
+  }
+  assert.equal(laneCore.readLaneToolCall('Bash', { command: 'ls' }, { actorUserId: 'user_ana' }).stoppedEarly, false)
+  // The hook's own limit is the core's.
+  const hookModule = await import('../bin/hoai-lane-floor-hook.mjs')
+  assert.equal(hookModule.LANE_FLOOR_MAX_TEXT, HARD_FLOOR_MAX_TEXT)
+})
+
 test('the lane hook DENIES a secret read, another person\'s lane, a v3 action', () => {
   assert.ok(denied(hook('Read', { file_path: '/Users/kc/.ssh/id_ed25519' })))
   assert.ok(denied(hook('Read', { file_path: '/Users/kc/.bgos-agent/1076/people/user_ben/work/notes.md' })))

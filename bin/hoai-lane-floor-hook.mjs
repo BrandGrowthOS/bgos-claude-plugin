@@ -8,7 +8,7 @@
  * It differs from the owner's floor hook (bin/hoai-floor-hook.mjs) in the
  * three ways a lane needs:
  *
- *   1. RULES VERSION 4 (lib/hard-floor-lane.mjs): version 3's actions plus
+ *   1. RULES VERSION 5 (lib/hard-floor-lane.mjs): version 4's actions plus
  *      any read of a secret or of another person's lane, judged here on the
  *      same bytes the backend judges (lib/hard-floor-lane-fixture.ts).
  *   2. The floor is ON whatever the owner's switch says, and a hold is a
@@ -35,6 +35,16 @@ export const HOOK_LANE_USER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
 /** The hook answers within this, or denies. */
 export const LANE_FLOOR_HOOK_BUDGET_MS = 3_000
 export const LANE_FLOOR_STDIN_MAX_BYTES = 16 * 1024 * 1024
+
+/**
+ * How much of a command the owner list reads (the core's HARD_FLOOR_MAX_TEXT,
+ * a test pins the two equal). Held here too so the hook refuses a longer
+ * command with nothing matched whichever reader it was handed.
+ */
+export const LANE_FLOOR_MAX_TEXT = 1024 * 1024
+
+/** The shell tools whose command is read as shell text (the core's FLOOR_SHELL_TOOLS). */
+const LANE_SHELL_TOOLS = ['Bash', 'PowerShell']
 
 /** The PreToolUse answer that refuses the call. */
 export function laneFloorDeny(reason) {
@@ -90,8 +100,16 @@ export function decideLaneFloor(text, userId, classify) {
   } catch {
     return laneFloorDeny('This lane\'s floor could not judge the action, so it refuses it.')
   }
-  // A read that stopped at the list's nesting limit (`eval` five deep, the
-  // fix round's review, I3) did not judge what lies past it: refused.
+  // A command longer than the list reads (round 29, review B item 1): its
+  // tail was never judged, as the backend's lane route holds it.
+  const input = payload.tool_input
+  const command = input && typeof input === 'object' ? input.command : undefined
+  if (LANE_SHELL_TOOLS.includes(payload.tool_name) && typeof command === 'string' && command.length > LANE_FLOOR_MAX_TEXT) {
+    stoppedEarly = true
+  }
+  // A read that stopped at the list's nesting limit or its budget (`eval`
+  // five deep, the fix round's review, I3), or past its length, did not judge
+  // what lies past it: refused.
   if (!match && stoppedEarly) return laneFloorDeny('This lane\'s floor could not read the action to its end, so it refuses it.')
   if (!match) return ''
   return laneFloorDeny(`Not on this computer from a shared lane: ${match.words}.`)

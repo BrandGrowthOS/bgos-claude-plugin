@@ -1,9 +1,10 @@
 /**
- * The hard floor, rules_version 1: the typed surface of the list.
+ * The hard floor, rules_version 4: the typed surface of the list.
  *
  * "Always ask before risky actions" is the owner's per agent switch, OFF by
- * default and stored on the server only. With it on, six kinds of action
- * always ask the owner, even under full access:
+ * default and stored on the server only. With it on, eleven kinds of action
+ * always ask the owner, even under full access (the last four, the top
+ * kinds, are held whatever the switch says):
  *
  *   recursive_delete       deleting a folder and everything in it
  *   force_push             force pushing, which can overwrite history
@@ -11,6 +12,11 @@
  *   env_file_write         changing an .env file
  *   home_dotfile_write     changing a settings file in your home folder
  *   acts_on_owners_behalf  sending, posting, paying or deleting on your behalf
+ *   adds_skill_or_plugin   installing a new plugin or tool that stays after this chat
+ *   file_delete            deleting a file
+ *   admin_rights           using admin rights on this computer
+ *   uses_secret_key        using a secret key or a key file
+ *   sends_data_off         sending data off this computer
  *
  * THE LIST ITSELF LIVES IN lib/hard-floor-core.mjs, and this file re-exports
  * it with types. That is deliberate and it is the whole reason there are two
