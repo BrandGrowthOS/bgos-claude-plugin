@@ -97,7 +97,7 @@ import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
-import { applyOrigins, closingTeachWindows, createTeachWindows, isHumanClick, logOriginsTo, noteSkillToolUse, noteTeachTap, originIdentOf, stampOrigin } from './lib/skill-origins.js'
+import { applyOrigins, closingTeachWindows, createCardDeliveries, createTeachWindows, isHumanClick, logOriginsTo, noteSkillToolUse, noteTeachTap, originIdentOf, stampOrigin } from './lib/skill-origins.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
@@ -11122,13 +11122,17 @@ logOriginsTo(log)
  *  whoever sent it. Fed at the three inbound sites, the two meeting sites and the six tap sites. Every delivery it
  *  notes, but the owner's own tap, closes that chat's teach window (lib/skill-origins.ts closingTeachWindows). */
 const turnChat = closingTeachWindows(createTurnChatTracker(), teachWindows, ASSISTANT_ID)
+/** Every channel card as it reaches the session closes the teach windows, but the owner's own tap card
+ *  (lib/skill-origins.ts createCardDeliveries; the card record step below and privateTapCardNoting). */
+const teachCards = createCardDeliveries(teachWindows)
 
 // A teach window opens only on the owner's own tap as a person: each site reads its click row with isHumanClick (an
 // ask answer has none, so null). Any tap that is not the owner's own closes its chat's window, and every tap is noted
 // as its chat's delivery, so the turn it starts is filed under that chat (lib/skill-origins.ts noteTeachTap).
 function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { humanPrincipal: unknown }) {
+  let own = false
   try {
-    noteTeachTap({ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat }, {
+    own = noteTeachTap({ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat }, {
       chatId: input.chatId,
       messageId: input.messageId,
       tapperUserId: input.tapperUserId,
@@ -11142,7 +11146,9 @@ function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { hu
   } catch {
     log('skills: origin unavailable')
   }
-  return privateTapCard(input)
+  const card = privateTapCard(input)
+  if (own) teachCards.ownTap(card)
+  return card
 }
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
 // The owner is named so that no turn acts as the owner once someone else reached it (board row f81a527c), and the
@@ -11236,6 +11242,8 @@ mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
   if (group?.swallow) return Promise.resolve()
   if (notification?.method === 'notifications/claude/channel') {
     const params = notification.params as { content?: unknown; meta?: unknown } | undefined
+    // At delivery, after every hold: any card but the owner's own tap card closes the teach windows.
+    teachCards.delivered(params?.content)
     if (params) params.content = privateTurns.tagRawCard(params.content ?? '')
     privateTurns.rawCard(String(params?.content ?? ''), params?.meta)
   }

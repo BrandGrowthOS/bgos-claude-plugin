@@ -95,6 +95,10 @@ export function createTeachWindows(opts: { monotonic?: () => number } = {}) {
         if (key !== null) windows.delete(key)
       } catch { failed() }
     },
+    /** A card reached the session that is not the owner's own tap: its turn may be filed under any chat. */
+    closeAll(): void {
+      windows.clear()
+    },
     take(chatId: string, assistantId: string, now: number): { by: string } | null {
       try {
         const key = windowKey(chatId, assistantId)
@@ -120,12 +124,13 @@ type TapDeliveries = { note(input: TurnChatNote): void; noteOwnTap(input: TurnCh
  * A tap reached the session (server.ts privateTapCardNoting, all six tap sites). The owner's own teach Approve opens a
  * window; any tap that is not the owner's own closes the window of its chat. The tap is also noted as its chat's
  * delivery, without text (a tap's words prove nothing about which session this daemon feeds), so the turn it starts
- * is filed under the tapped chat even when a peer message or a wake arrived just before. Never throws.
+ * is filed under the tapped chat even when a peer message or a wake arrived just before. True for the owner's own
+ * tap. Never throws.
  */
 export function noteTeachTap(
   deps: { windows: Pick<TeachWindows, 'noteTap' | 'close'>; assistantId: string; deliveries?: TapDeliveries },
   t: Omit<TeachTap, 'assistantId'>,
-): void {
+): boolean {
   try {
     const own = ownPersonTap(t)
     if (!own) deps.windows.close(t.chatId, deps.assistantId)
@@ -135,7 +140,33 @@ export function noteTeachTap(
       if (own) deps.deliveries.noteOwnTap(delivery)
       else deps.deliveries.note(delivery)
     }
-  } catch { failed() }
+    return own
+  } catch { failed(); return false }
+}
+
+/**
+ * Every channel card as it reaches the session (server.ts, the card record step, after every hold): any card but the
+ * owner's own tap card closes every teach window, whatever chat it names. A voice card, a mission notice or a card
+ * held before the tap and released after it is not the write the owner approved, and the turn it starts may be filed
+ * under the tapped chat. `ownTap` names the text of the owner's own tap card as it was built (the latest one only);
+ * that text reaching the session once keeps the window. Never throws.
+ */
+export function createCardDeliveries(windows: Pick<TeachWindows, 'closeAll'>) {
+  let ownTapCard: string | null = null
+  return {
+    ownTap(content: unknown): void {
+      ownTapCard = typeof content === 'string' ? content : null
+    },
+    delivered(content: unknown): void {
+      try {
+        if (ownTapCard !== null && content === ownTapCard) {
+          ownTapCard = null
+          return
+        }
+        windows.closeAll()
+      } catch { failed() }
+    },
+  }
 }
 
 /**

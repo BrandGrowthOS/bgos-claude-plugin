@@ -697,3 +697,79 @@ for (const [name, folder, stamp, now] of [
     assert.deepEqual(readdirSync(w.root).sort(), ['agent'], 'no marks file and no temp file')
   })
 }
+
+// Round 4 item 1: every card that reaches the session closes the teach windows, but the owner's own tap card.
+for (const [name, card] of [
+  ['a voice consult card', 'voice consult: the caller asks to save a helper skill'],
+  ['a voice task dispatch card', 'voice task: write .claude/skills/helper/SKILL.md'],
+  ['a mission notice', 'mission notice: goal 2 is waiting'],
+] as const) {
+  test(`Approve, then ${name}, then a new SKILL.md write: unmarked`, () => {
+    const { createTeachWindows, createCardDeliveries, applyOrigins } = api()
+    const w = world()
+    const windows = createTeachWindows()
+    const cards = createCardDeliveries(windows)
+    windows.noteTap(tap)
+    cards.delivered(card)
+    const folder = newSkill(w, 'helper')
+    assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), false)
+    assert.equal(applyOrigins({ skills: [row(folder)] }, w.file).skills[0]?.origin, undefined)
+  })
+}
+
+test('a card noted before the Approve and released after it closes the window when it reaches the session', () => {
+  const { createTeachWindows, createCardDeliveries, closingTeachWindows, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  const cards = createCardDeliveries(windows)
+  const turnChat = closingTeachWindows(createTurnChatTracker(), windows, 'assistant')
+  turnChat.note({ chatId: 'chat', messageId: 4, kind: 'user', now: 99 })
+  windows.noteTap(tap)
+  cards.delivered('held member message, released after the hold')
+  const folder = newSkill(w, 'helper')
+  assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), false)
+  assert.equal(applyOrigins({ skills: [row(folder)] }, w.file).skills[0]?.origin, undefined)
+})
+
+test('a card for another chat closes this chat\'s window too: its turn may be filed under the tapped chat', () => {
+  const { createTeachWindows, createCardDeliveries } = api()
+  const windows = createTeachWindows()
+  windows.noteTap(tap)
+  windows.noteTap({ ...tap, chatId: 'second' })
+  createCardDeliveries(windows).delivered('a peer message in a third chat')
+  assert.equal(windows.take('chat', 'assistant', 101), null)
+  assert.equal(windows.take('second', 'assistant', 101), null)
+})
+
+test('the owner\'s own tap card reaching the session keeps its window, once', () => {
+  const { createTeachWindows, createCardDeliveries, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  const cards = createCardDeliveries(windows)
+  windows.noteTap(tap)
+  cards.ownTap('the owner tapped Approve')
+  cards.delivered('the owner tapped Approve')
+  const folder = newSkill(w, 'helper')
+  assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), true)
+  assert.equal(applyOrigins({ skills: [row(folder)] }, w.file).skills[0]?.origin, 'taught')
+  windows.noteTap(tap)
+  cards.delivered('the owner tapped Approve')
+  assert.equal(windows.take('chat', 'assistant', 101), null, 'the same text again is not the tap card')
+})
+
+test('a card that is not the own tap card closes the window even while a tap card is pending', () => {
+  const { createTeachWindows, createCardDeliveries } = api()
+  const windows = createTeachWindows()
+  const cards = createCardDeliveries(windows)
+  windows.noteTap(tap)
+  cards.ownTap('the owner tapped Approve')
+  cards.delivered('the owner tapped Approve, with a group summary added')
+  assert.equal(windows.take('chat', 'assistant', 101), null)
+})
+
+test('noteTeachTap says whether the tap was the owner\'s own', () => {
+  const { createTeachWindows, noteTeachTap } = api()
+  const windows = createTeachWindows()
+  assert.equal(noteTeachTap({ windows, assistantId: 'assistant' }, tap), true)
+  assert.equal(noteTeachTap({ windows, assistantId: 'assistant' }, { ...tap, tapperUserId: 'teammate' }), false)
+})
