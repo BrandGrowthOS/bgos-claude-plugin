@@ -11930,11 +11930,13 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   if (event === null) return
   const receivedAt = line?.receivedAt ?? Date.now()
   // A skill write is judged by when its line was received, never by when it drains: a SKILL.md written before the
-  // owner's Approve never reads taught. Any write into the agent skills folder uses the window (lib/skill-origins.ts
-  // noteSkillToolUse).
+  // owner's Approve never reads taught. Only a Write of a SKILL.md can mark; any other write into the agent skills
+  // folder uses the window, and a tool the daemon cannot judge (a shell, any other MCP tool) closes every window at its
+  // first hook line (lib/skill-origins.ts noteSkillToolUse).
   try {
-    if (event.name === 'PostToolUse') {
+    if (event.name === 'PreToolUse' || event.name === 'PostToolUse' || event.name === 'PostToolUseFailure') {
       noteSkillToolUse({
+        event: event.name,
         toolName: payload.tool_name,
         toolInput: payload.tool_input,
         agentDir: SKILLS_AGENT_DIR,

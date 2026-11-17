@@ -520,7 +520,7 @@ function newSkill(w: ReturnType<typeof world>, name: string): string {
   return folder
 }
 
-function useOf(w: ReturnType<typeof world>, windows: Take, writtenAt: number, toolName: unknown, toolInput: unknown) {
+function useOf(w: ReturnType<typeof world>, windows: Take & { closeAll(): void }, writtenAt: number, toolName: unknown, toolInput: unknown) {
   return api().noteSkillToolUse({ toolName, toolInput, agentDir: w.agent, file: w.file, windows, chatId: 'chat', assistantId: 'assistant', writtenAt })
 }
 
@@ -550,10 +550,12 @@ for (const [toolName, toolInput] of [
 for (const [toolName, toolInput] of [
   ['Write', (w: ReturnType<typeof world>) => ({ file_path: join(w.agent, 'notes.md') })],
   ['Edit', (w: ReturnType<typeof world>) => ({ file_path: join(w.root, 'home', '.claude', 'skills', 'foo', 'SKILL.md') })],
-  ['Bash', () => ({ command: 'git status' })],
   ['Read', (w: ReturnType<typeof world>) => ({ file_path: join(w.folder, 'SKILL.md') })],
-  ['Write', () => ({})],
-  ['Bash', () => ({ command: 42 })],
+  ['Grep', () => ({ pattern: 'name', path: '.claude/skills' })],
+  ['Glob', () => ({ pattern: '.claude/skills/**' })],
+  ['TodoWrite', () => ({ todos: [] })],
+  ['mcp__bgos__reply', () => ({ text: 'Saving the skill now.' })],
+  ['mcp__plugin_hoai_bgos__reply', () => ({ text: 'Saving the skill now.' })],
 ] as const) {
   test(`${toolName} outside the agent skills folder leaves the window: ${JSON.stringify(toolInput(world())).slice(0, 60)}`, () => {
     const { createTeachWindows, applyOrigins } = api()
@@ -772,4 +774,73 @@ test('noteTeachTap says whether the tap was the owner\'s own', () => {
   const windows = createTeachWindows()
   assert.equal(noteTeachTap({ windows, assistantId: 'assistant' }, tap), true)
   assert.equal(noteTeachTap({ windows, assistantId: 'assistant' }, { ...tap, tapperUserId: 'teammate' }), false)
+})
+
+// Round 4 item 2: during an open window only a Write of a SKILL.md can mark; a tool the daemon cannot judge, or a
+// write the daemon cannot place, closes every window and marks nothing.
+function useAt(w: ReturnType<typeof world>, windows: ReturnType<ReturnType<typeof api>['createTeachWindows']>, event: string, toolName: unknown, toolInput: unknown) {
+  return api().noteSkillToolUse({ event, toolName, toolInput, agentDir: w.agent, file: w.file, windows, chatId: 'chat', assistantId: 'assistant', writtenAt: 101 })
+}
+
+for (const [label, toolName, toolInput] of [
+  ['Bash cd then a write', 'Bash', () => ({ command: "cd .claude && cat > skills/helper/SKILL.md <<'EOF'" })],
+  ['PowerShell Set-Content', 'PowerShell', () => ({ command: 'Set-Content -Path .claude\\skills\\helper\\SKILL.md -Value hi' })],
+  ['a script', 'Bash', () => ({ command: 'node make-skill.mjs' })],
+  ['Bash git status', 'Bash', () => ({ command: 'git status' })],
+  ['Bash with no command text', 'Bash', () => ({ command: 42 })],
+  ['an MCP file tool', 'mcp__filesystem__write_file', (w: ReturnType<typeof world>) => ({ path: join(w.agent, '.claude', 'skills', 'helper', 'SKILL.md'), content: 'x' })],
+  ['a tool named like ours on another server', 'mcp__other__reply', () => ({ text: 'hi' })],
+  ['our boards_download, which saves a file', 'mcp__bgos__boards_download', () => ({ rowId: 'r' })],
+  ['NotebookEdit outside a skill', 'NotebookEdit', (w: ReturnType<typeof world>) => ({ notebook_path: join(w.agent, 'notes.ipynb') })],
+  ['a helper agent', 'Agent', () => ({ prompt: 'save the skill' })],
+  ['a tool this build does not know', 'FutureWriter', () => ({ file_path: 'x' })],
+  ['a Write with no path', 'Write', () => ({})],
+] as const) {
+  for (const event of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure']) {
+    test(`${label} (${event}) closes the window and marks nothing; the next SKILL.md write stays unmarked`, () => {
+      const { createTeachWindows, applyOrigins } = api()
+      const w = world()
+      const windows = createTeachWindows()
+      windows.noteTap(tap)
+      windows.noteTap({ ...tap, chatId: 'second' })
+      assert.equal(useAt(w, windows, event, toolName, toolInput(w)), false)
+      const folder = newSkill(w, 'helper')
+      assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), false)
+      assert.equal(applyOrigins({ skills: [row(folder)] }, w.file).skills[0]?.origin, undefined)
+      assert.equal(windows.take('second', 'assistant', 102), null, 'every window closed')
+    })
+  }
+}
+
+test('a Write of a SKILL.md is judged after it ran: its PreToolUse keeps the window, its PostToolUse marks', () => {
+  const { createTeachWindows, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  windows.noteTap(tap)
+  assert.equal(useAt(w, windows, 'PreToolUse', 'Write', { file_path: join(w.folder, 'SKILL.md') }), false)
+  assert.equal(useAt(w, windows, 'PostToolUse', 'Write', { file_path: join(w.folder, 'SKILL.md') }), true)
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'taught')
+})
+
+test('a Write of a SKILL.md that failed marks nothing and uses the window', () => {
+  const { createTeachWindows, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  windows.noteTap(tap)
+  assert.equal(useAt(w, windows, 'PostToolUseFailure', 'Write', { file_path: join(w.folder, 'SKILL.md') }), false)
+  assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(w.folder, 'SKILL.md') }), false)
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
+})
+
+test('an Edit through a linked folder into the skills folder uses the window', () => {
+  const { createTeachWindows, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  windows.noteTap(tap)
+  const linked = join(w.root, 'linked')
+  linkFolder(w.folder, linked)
+  assert.equal(useAt(w, windows, 'PostToolUse', 'Edit', { file_path: join(linked, 'SKILL.md'), old_string: 'a', new_string: 'b' }), false)
+  const folder = newSkill(w, 'helper')
+  assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), false)
+  assert.equal(applyOrigins({ skills: [row(folder)] }, w.file).skills[0]?.origin, undefined)
 })

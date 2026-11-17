@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { unescapeAgentButtonValue } from './message-text.ts'
 import { SKILL_NAME_RE, type IdentFs, type SkillItem, type SkillsList } from './skills-inventory.ts'
+import { OWN_MCP_TOOLS } from './hook-events.ts'
 import type { TurnChatNote } from './turn-chat.ts'
 
 export type SkillOrigin = 'taught' | 'made' | 'installed' | 'shared' | 'repo' | 'synced'
@@ -323,35 +324,54 @@ export function stampTaughtWrite(input: {
   } catch { failed(); return false }
 }
 
-const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
-/** A shell command that names a .claude skills folder, by any path. */
-const SKILLS_IN_COMMAND = /\.claude[\\/]+skills(?![\w-])/i
+/** The file tools whose path the daemon can place: a Write of a SKILL.md is the only tool use that can mark. */
+const PATH_TOOLS = new Set(['Write', 'Edit', 'MultiEdit'])
+/** Tools that write no file. Every other tool (a shell, NotebookEdit, a helper agent, any other MCP tool, one this
+ *  build does not know) may write anywhere, so it closes every window. */
+const WRITES_NO_FILE = new Set(['Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'ToolSearch',
+  'TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'Skill'])
+/** This plugin's own MCP tools write no file, but boards_download, which saves one. */
+const OWN_NO_FILE = new Set<string>(OWN_MCP_TOOLS.filter((name) => name !== 'boards_download'))
+const OWN_TOOL = /^mcp__(?:.*_)?bgos__(.+)$/
 
-/** Inside the agent's skills folder, by the launch folder's path or its real path. Case blind on Windows. */
-function inAgentSkills(filePath: unknown, agentDir: string, platform: NodeJS.Platform): boolean {
-  if (typeof filePath !== 'string' || !filePath) return false
+function writesNoFile(toolName: string): boolean {
+  const own = OWN_TOOL.exec(toolName)
+  return own ? OWN_NO_FILE.has(own[1]!) : WRITES_NO_FILE.has(toolName)
+}
+
+/** Inside the agent's skills folder, by the launch folder's path or its real path, the target's real path included
+ *  (a linked folder). Case blind on Windows. */
+function inAgentSkills(filePath: string, agentDir: string, platform: NodeJS.Platform): boolean {
   const fold = (p: string): string => platform === 'win32' ? p.toLowerCase() : p
-  const target = fold(resolve(agentDir, filePath))
+  const lexical = resolve(agentDir, filePath)
+  const targets = [fold(lexical)]
+  for (const at of [lexical, dirname(lexical)]) {
+    try { targets.push(fold(realpathSync(at))); break } catch { /* not there: its folder, or the path alone */ }
+  }
   const roots = [resolve(agentDir)]
   try { roots.push(realpathSync(agentDir)) } catch { /* the launch path alone */ }
   return roots.some((dir) => {
     const root = fold(join(dir, '.claude', 'skills'))
-    return target === root || target.startsWith(root + sep)
+    return targets.some((target) => target === root || target.startsWith(root + sep))
   })
 }
 
 /**
- * A tool use the hook spool saw (PostToolUse), judged at `writtenAt`, the hook line's receivedAt. A Write of an agent
- * skill's SKILL.md goes to stampTaughtWrite. Any other write into the agent skills folder (Write, Edit, MultiEdit,
- * NotebookEdit, or a Bash command that names a .claude skills folder) uses the window and stamps nothing, so the
- * approval means the write the owner approved and nothing after it. Never throws.
+ * A tool use the hook spool saw (PreToolUse, PostToolUse or PostToolUseFailure), judged at `writtenAt`, the hook
+ * line's receivedAt. Fails closed: only a Write of an agent skill's SKILL.md that ran (PostToolUse) can mark, through
+ * stampTaughtWrite. Any other Write, Edit or MultiEdit into the agent skills folder uses the window and marks nothing;
+ * one outside it, or a tool that writes no file, leaves the window. Every other tool use (Bash or PowerShell whatever
+ * the command, NotebookEdit, a helper agent, any MCP tool but this plugin's own, a tool this build does not know, a
+ * file tool with no path) closes every window, at its first hook line. A blank mark is fine; a wrong one is not.
+ * Never throws.
  */
 export function noteSkillToolUse(input: {
+  event?: unknown
   toolName: unknown
   toolInput: unknown
   agentDir: string | null
   file: string
-  windows: Pick<TeachWindows, 'take'>
+  windows: Pick<TeachWindows, 'take' | 'closeAll'>
   chatId: string
   assistantId: string
   writtenAt: number
@@ -359,18 +379,27 @@ export function noteSkillToolUse(input: {
   platform?: NodeJS.Platform
 }): boolean {
   try {
-    if (!input.agentDir) return false
+    const event = input.event ?? 'PostToolUse'
+    const toolName = String(input.toolName ?? '')
     const args = input.toolInput !== null && typeof input.toolInput === 'object' ? input.toolInput as Record<string, unknown> : {}
-    const path = input.toolName === 'NotebookEdit' ? args.notebook_path : args.file_path
-    if (input.toolName === 'Write' && skillFolderOfWrite(path, input.agentDir) !== null) {
-      return stampTaughtWrite({ ...input, filePath: path })
+    const path = args.file_path
+    if (PATH_TOOLS.has(toolName) && typeof path === 'string' && path !== '') {
+      // Judged once it ran: its PreToolUse keeps the window for the write itself.
+      if (event === 'PreToolUse' || !input.agentDir) return false
+      if (event === 'PostToolUse' && toolName === 'Write' && skillFolderOfWrite(path, input.agentDir) !== null) {
+        return stampTaughtWrite({ ...input, filePath: path })
+      }
+      if (inAgentSkills(path, input.agentDir, input.platform ?? process.platform)) input.windows.take(input.chatId, input.assistantId, input.writtenAt)
+      return false
     }
-    const touches = input.toolName === 'Bash'
-      ? typeof args.command === 'string' && SKILLS_IN_COMMAND.test(args.command)
-      : FILE_TOOLS.has(String(input.toolName)) && inAgentSkills(path, input.agentDir, input.platform ?? process.platform)
-    if (touches) input.windows.take(input.chatId, input.assistantId, input.writtenAt)
+    if (!PATH_TOOLS.has(toolName) && writesNoFile(toolName)) return false
+    input.windows.closeAll()
     return false
-  } catch { failed(); return false }
+  } catch {
+    failed()
+    try { input.windows.closeAll() } catch { /* nothing more to close */ }
+    return false
+  }
 }
 
 export function originForRow(row: Pick<SkillItem, 'scope'>, stamp: OriginStamp | undefined, identNow: string | null): SkillOrigin | undefined {

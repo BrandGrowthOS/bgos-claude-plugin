@@ -74,13 +74,14 @@ test('each tap site hands the click\'s own humanPrincipal to the teach window', 
   assert.doesNotMatch(server, /clickHumanPrincipal|(?<!input)\.humanPrincipal\b|human_principal/, 'no site reads the field itself')
 })
 
-test('every PostToolUse goes to the teach window, judged by the hook line\'s receivedAt', () => {
+test('every tool hook line (PreToolUse, PostToolUse, PostToolUseFailure) goes to the teach window, judged by the hook line\'s receivedAt', () => {
   const hook = server.slice(server.indexOf('function onHookPayload('), server.indexOf('function startHookIntakeIfHolder('))
   const received = hook.indexOf('const receivedAt = line?.receivedAt ?? Date.now()')
-  const use = hook.indexOf("if (event.name === 'PostToolUse') {")
+  const use = hook.indexOf("if (event.name === 'PreToolUse' || event.name === 'PostToolUse' || event.name === 'PostToolUseFailure') {")
   assert.ok(received > 0 && use > received, 'receivedAt is read before the tool use is judged')
   const call = hook.slice(use, hook.indexOf('})', use))
   assert.match(call, /noteSkillToolUse\(\{/)
+  assert.match(call, /event: event.name/)
   assert.match(call, /toolName: payload.tool_name/)
   assert.match(call, /toolInput: payload.tool_input/)
   assert.match(call, /agentDir: SKILLS_AGENT_DIR/)
