@@ -754,7 +754,7 @@ import {
   userBusExecSync,
 } from './lib/always-on-reconcile.js'
 import { serviceNotesFrom, serviceRefusalFrom } from './lib/agent-service.mjs'
-import { installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
+import { heldBadCheckoutVersion, installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
 import {
   AGENT_STATE_FILE_NAME,
   AGENT_STATE_MAX_INTERVAL_MS,
@@ -16098,11 +16098,16 @@ function updateReadinessSnapshot(): UpdateReadiness {
 // A version the idle update latched bad on this computer (it failed an agent
 // here, which went back) reads as NO pending restart here, so the heartbeat, a click and the
 // watcher never push an agent onto it again. `latched: false` is the same
-// answer without the latch, what is staged on disk now (daemonStagedVersion).
+// answer without the latch, what is staged on disk now (daemonStagedVersion):
+// for a clone whose checkout is held bad that is the checkout's build.
 function daemonPendingRestartVersion(
   state?: ReturnType<typeof loadAutoUpdateState>,
   { latched = true }: { latched?: boolean } = {},
 ): string | null {
+  if (!latched) {
+    const held = daemonHeldBadCheckoutVersion()
+    if (held) return held
+  }
   return resolvePendingRestartVersion({
     installMethod: INSTALL_METHOD,
     runningVersion: RUNNING_VERSION,
@@ -16122,6 +16127,19 @@ function daemonPendingRestartVersion(
 // (version_held_bad, reported) rather than as nothing staged.
 function daemonStagedVersion(): string | null {
   return daemonPendingRestartVersion() ?? daemonPendingRestartVersion(undefined, { latched: false })
+}
+
+// A clone's checkout held bad (board row 10f8bc52): the latched answer is null
+// for it whatever the self updater staged, and the unlatched one would name that
+// good staged target, which a restart does not boot. What is staged on disk is
+// the checkout's build, so the controller reads that and holds on version_held_bad.
+function daemonHeldBadCheckoutVersion(): string | null {
+  return heldBadCheckoutVersion({
+    installMethod: INSTALL_METHOD,
+    runningVersion: RUNNING_VERSION,
+    readCheckoutVersion: () => readOwnVersion(RUNNING_ROOT),
+    heldBad: idleUpdateHeldBad,
+  })
 }
 
 function idleUpdateHeldBad(version: string): boolean {
@@ -20278,6 +20296,7 @@ async function main(): Promise<void> {
   } else {
   selfUpdater = await initializeSelfUpdater({
     heldBad: idleUpdateHeldBad,
+    readCheckoutVersion: () => readOwnVersion(RUNNING_ROOT),
     rootDir: import.meta.dir,
     stateFilePath: resolveAutoUpdateStatePath(cursorStore.filePath),
     env: process.env,

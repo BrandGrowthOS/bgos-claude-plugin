@@ -1949,6 +1949,7 @@ describe('updateNow (one-click update_rpc trigger)', () => {
     runner?: CommandRunner
     env?: Record<string, string | undefined>
     heldBad?: (version: string) => boolean
+    readCheckoutVersion?: () => string | null
   } = {}) {
     const rootDir = tempDir('self-update-now-root-')
     mkdirSync(join(rootDir, '.git'))
@@ -1975,6 +1976,7 @@ describe('updateNow (one-click update_rpc trigger)', () => {
         runner,
         schedule: () => setTimeout(() => {}, 60_000),
         heldBad: opts.heldBad,
+        ...(opts.readCheckoutVersion ? { readCheckoutVersion: opts.readCheckoutVersion } : {}),
       })
     return { rootDir, stateFilePath, calls, exits, drainModes, logs, build }
   }
@@ -2026,6 +2028,28 @@ describe('updateNow (one-click update_rpc trigger)', () => {
     await updater.updateNow(async () => {})
     held = true
     expect(await updater.updateNow(async () => {})).toEqual({ kind: 'no-update', latestVersion: '0.27.0', reason: 'version_held_bad' })
+  })
+
+  // Board row 10f8bc52: a clone's restart boots its checkout, not the target this updater staged. The checkout moved
+  // to a build marked bad here (a second checkout under the same HOME), so a click must not take the staged good
+  // answer to the ladder: the bad mark on the checkout wins, and the click says version_held_bad.
+  test('a staged good target is not handed to the ladder while the checkout is on a build held bad here', async () => {
+    let onDisk = '0.27.0'
+    const h = updaterHarness({ heldBad: (v) => v === '0.28.0', readCheckoutVersion: () => onDisk })
+    const updater = (await h.build())!
+    await updater.updateNow(async () => {})
+    expect(await updater.updateNow(async () => {})).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+    onDisk = '0.28.0'
+    expect(await updater.updateNow(async () => {})).toEqual({ kind: 'no-update', latestVersion: '0.28.0', reason: 'version_held_bad' })
+    onDisk = '0.28.1'
+    expect(await updater.updateNow(async () => {})).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+  })
+
+  test('without a checkout reader the staged target still goes to the ladder (#185 unchanged)', async () => {
+    const h = updaterHarness({ heldBad: (v) => v === '0.28.0' })
+    const updater = (await h.build())!
+    await updater.updateNow(async () => {})
+    expect(await updater.updateNow(async () => {})).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
   })
 
   test('BGOS_EXIT_AFTER_UPDATE is ignored on the triggered path (the ladder owns restarts)', async () => {
