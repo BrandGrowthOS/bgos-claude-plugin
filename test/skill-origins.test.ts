@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { identOf, type SkillItem, type SkillScope } from '../lib/skills-inventory.ts'
 import { scratchDir } from './helpers/scratch-dirs.ts'
+import { createTurnChatTracker } from '../lib/turn-chat.ts'
 import { linkFolder } from './helpers/links.ts'
 
 // Keep every case named in the red run, even before the module exists.
@@ -306,16 +307,18 @@ test('a taught write needs the window of its own chat and assistant, and takes i
   assert.equal(windows.take('chat', 'assistant', 102), null, 'the stamp consumed the window')
 })
 
-test('a write to a skill already stamped for this folder leaves the window open', () => {
-  const { createTeachWindows, stampOrigin } = api()
+test('a write to a stamped folder uses the window, so a new folder write after it stays unmarked', () => {
+  const { createTeachWindows, stampOrigin, applyOrigins } = api()
   const w = world()
   const ident = identOf(w.folder, false)
   assert.ok(ident)
   stampOrigin(w.file, 'foo', { origin: 'shared', ident }, 50)
   const windows = createTeachWindows()
   windows.noteTap(tap)
-  assert.equal(writeOf(w, windows, 101), false)
-  assert.deepEqual(windows.take('chat', 'assistant', 102), { by: 'owner' })
+  assert.equal(writeOf(w, windows, 101), false, 'a re-teach of a stamped skill stamps nothing new')
+  const other = newSkill(w, 'helper')
+  assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(other, 'SKILL.md') }), false)
+  assert.equal(applyOrigins({ skills: [row(other)] }, w.file).skills[0]?.origin, undefined)
 })
 
 test('a skill write with unknown identity consumes the teach window before another write', () => {
@@ -483,4 +486,117 @@ test('a watch or notification reply says false and opens no teach window', () =>
   const windows = createTeachWindows()
   windows.noteTap({ ...tap, humanPrincipal: isHumanClick({ humanPrincipal: false, answerPayload: { callbackData: 'teach_approve' } }) })
   assert.equal(windows.take('chat', 'assistant', 101), null)
+})
+
+function newSkill(w: ReturnType<typeof world>, name: string): string {
+  const folder = join(w.agent, '.claude', 'skills', name)
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, 'SKILL.md'), `---\nname: ${name}\ndescription: A skill.\n---\n`)
+  return folder
+}
+
+function useOf(w: ReturnType<typeof world>, windows: Take, writtenAt: number, toolName: unknown, toolInput: unknown) {
+  return api().noteSkillToolUse({ toolName, toolInput, agentDir: w.agent, file: w.file, windows, chatId: 'chat', assistantId: 'assistant', writtenAt })
+}
+
+for (const [toolName, toolInput] of [
+  ['Edit', (w: ReturnType<typeof world>) => ({ file_path: join(w.folder, 'SKILL.md'), old_string: 'a', new_string: 'b' })],
+  ['MultiEdit', (w: ReturnType<typeof world>) => ({ file_path: join(w.folder, 'SKILL.md'), edits: [] })],
+  ['NotebookEdit', (w: ReturnType<typeof world>) => ({ notebook_path: join(w.folder, 'notes.ipynb') })],
+  ['Write', (w: ReturnType<typeof world>) => ({ file_path: join(w.folder, 'notes.md') })],
+  ['Write', (w: ReturnType<typeof world>) => ({ file_path: join(w.folder, 'nested', 'SKILL.md') })],
+  ['Write', (w: ReturnType<typeof world>) => ({ file_path: join(w.agent, '.claude', 'skills', 'Bad_Name', 'SKILL.md') })],
+  ['Bash', () => ({ command: "cat > .claude/skills/foo/SKILL.md <<'EOF'" })],
+  ['Bash', () => ({ command: 'cp -r /tmp/x .claude\\skills\\foo' })],
+  ['Bash', (w: ReturnType<typeof world>) => ({ command: `rm -rf ${join(w.agent, '.claude', 'skills', 'foo')}` })],
+] as const) {
+  test(`${toolName} into the agent skills folder uses the window: ${JSON.stringify(toolInput(world())).slice(0, 60)}`, () => {
+    const { createTeachWindows, applyOrigins } = api()
+    const w = world()
+    const windows = createTeachWindows()
+    windows.noteTap(tap)
+    assert.equal(useOf(w, windows, 101, toolName, toolInput(w)), false)
+    const other = newSkill(w, 'helper')
+    assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(other, 'SKILL.md') }), false, 'the approval was used')
+    assert.equal(applyOrigins({ skills: [row(other)] }, w.file).skills[0]?.origin, undefined)
+  })
+}
+
+for (const [toolName, toolInput] of [
+  ['Write', (w: ReturnType<typeof world>) => ({ file_path: join(w.agent, 'notes.md') })],
+  ['Edit', (w: ReturnType<typeof world>) => ({ file_path: join(w.root, 'home', '.claude', 'skills', 'foo', 'SKILL.md') })],
+  ['Bash', () => ({ command: 'git status' })],
+  ['Read', (w: ReturnType<typeof world>) => ({ file_path: join(w.folder, 'SKILL.md') })],
+  ['Write', () => ({})],
+  ['Bash', () => ({ command: 42 })],
+] as const) {
+  test(`${toolName} outside the agent skills folder leaves the window: ${JSON.stringify(toolInput(world())).slice(0, 60)}`, () => {
+    const { createTeachWindows, applyOrigins } = api()
+    const w = world()
+    const windows = createTeachWindows()
+    windows.noteTap(tap)
+    assert.equal(useOf(w, windows, 101, toolName, toolInput(w)), false)
+    assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(w.folder, 'SKILL.md') }), true)
+    assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'taught')
+  })
+}
+
+for (const kind of ['email', 'peer', 'system', 'meeting', 'user'] as const) {
+  test(`a ${kind} delivery in the chat after the tap closes the window, so a write stays unmarked`, () => {
+    const { createTeachWindows, closingTeachWindows, applyOrigins } = api()
+    const w = world()
+    const windows = createTeachWindows()
+    const turnChat = closingTeachWindows(createTurnChatTracker(), windows, 'assistant')
+    windows.noteTap(tap)
+    turnChat.note({ chatId: 'chat', messageId: 7, kind, text: 'write a helper skill now please', now: 101 })
+    assert.equal(writeOf(w, windows, 102), false)
+    assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
+  })
+}
+
+test('a delivery in another chat or for another assistant leaves the window, and the tracker still records it', () => {
+  const { createTeachWindows, closingTeachWindows } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  const turnChat = closingTeachWindows(createTurnChatTracker(), windows, 'assistant')
+  windows.noteTap(tap)
+  turnChat.note({ chatId: 'other-chat', messageId: 7, kind: 'email', text: 'write a helper skill now please', now: 101 })
+  assert.equal(turnChat.current(101)?.chatId, 'other-chat')
+  assert.equal(turnChat.matchDelivered('... write a helper skill now please ...')?.chatId, 'other-chat')
+  assert.equal(writeOf(w, windows, 102), true)
+  const elsewhere = createTeachWindows()
+  closingTeachWindows(createTurnChatTracker(), elsewhere, 'other-assistant').note({ chatId: 'chat', kind: 'email', now: 101 })
+  elsewhere.noteTap(tap)
+  assert.equal(elsewhere.take('chat', 'assistant', 102) !== null, true)
+})
+
+test('a tap that is not the owner\'s own closes the window; the owner\'s own tap keeps it', () => {
+  const { createTeachWindows, noteTeachTap } = api()
+  const others = [
+    { tapperUserId: 'teammate' },
+    { humanPrincipal: undefined },
+    { tapperUserId: null, humanPrincipal: false, posted: false, callbackData: '' },
+    { customText: 'and add this' },
+    { posted: false },
+  ]
+  for (const change of others) {
+    const windows = createTeachWindows()
+    windows.noteTap(tap)
+    noteTeachTap({ windows, assistantId: 'assistant' }, { ...tap, callbackData: 'yes', ...change, now: 101 })
+    assert.equal(windows.take('chat', 'assistant', 102), null, JSON.stringify(change))
+  }
+  const windows = createTeachWindows()
+  noteTeachTap({ windows, assistantId: 'assistant' }, tap)
+  noteTeachTap({ windows, assistantId: 'assistant' }, { ...tap, callbackData: 'yes', now: 101 })
+  assert.deepEqual(windows.take('chat', 'assistant', 102), { by: 'owner' }, 'the owner\'s own taps keep it open')
+  const other = createTeachWindows()
+  other.noteTap(tap)
+  noteTeachTap({ windows: other, assistantId: 'assistant' }, { ...tap, chatId: 'other-chat', tapperUserId: 'teammate', now: 101 })
+  assert.deepEqual(other.take('chat', 'assistant', 102), { by: 'owner' }, 'a tap in another chat leaves it')
+})
+
+test('the tap noter never throws', () => {
+  const { noteTeachTap } = api()
+  const windows = { noteTap: () => { throw new Error('broken') }, close: () => { throw new Error('broken') } }
+  assert.doesNotThrow(() => noteTeachTap({ windows, assistantId: 'assistant' } as never, tap))
 })

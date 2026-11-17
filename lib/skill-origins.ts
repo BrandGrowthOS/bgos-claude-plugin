@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { unescapeAgentButtonValue } from './message-text.ts'
 import { identOf, SKILL_NAME_RE, type IdentFs, type SkillItem, type SkillsList } from './skills-inventory.ts'
+import type { TurnChatNote } from './turn-chat.ts'
 
 export type SkillOrigin = 'taught' | 'made' | 'installed' | 'shared' | 'repo' | 'synced'
 export const TEACH_APPROVE = 'teach_approve'
@@ -50,24 +51,39 @@ function windowKey(chatId: unknown, assistantId: unknown): string | null {
   return JSON.stringify([assistantId, chatId])
 }
 
+/**
+ * The owner's own tap as a person: on a button this daemon posted, the click says a person made it (humanPrincipal
+ * exactly true), no words were typed with it, and the tapper is the owner (both non-blank). A signed-in teammate is a
+ * person too, so the owner check stays.
+ */
+function ownPersonTap(t: Omit<TeachTap, 'chatId' | 'assistantId' | 'now'>): boolean {
+  return !!t.posted && t.humanPrincipal === true &&
+    !(t.customText != null && String(t.customText) !== '') &&
+    typeof t.ownerUserId === 'string' && !!t.ownerUserId.trim() &&
+    typeof t.tapperUserId === 'string' && !!t.tapperUserId.trim() &&
+    t.tapperUserId === t.ownerUserId
+}
+
 export function createTeachWindows() {
   const windows = new Map<string, { by: string; at: number }>()
   return {
     noteTap(t: TeachTap): void {
       try {
         const key = windowKey(t.chatId, t.assistantId)
-        // A tap counts only when the click says a person made it, on this daemon's own posted button.
-        if (key === null || !Number.isFinite(t.now) || !t.posted || t.humanPrincipal !== true ||
-          (t.customText != null && String(t.customText) !== '') ||
-          typeof t.ownerUserId !== 'string' || !t.ownerUserId.trim() ||
-          typeof t.tapperUserId !== 'string' || !t.tapperUserId.trim() ||
-          t.tapperUserId !== t.ownerUserId ||
+        if (key === null || !Number.isFinite(t.now) || !ownPersonTap(t) ||
           typeof t.callbackData !== 'string' ||
           unescapeAgentButtonValue(t.callbackData) !== TEACH_APPROVE) return
         for (const [open, window] of windows) {
           if (t.now - window.at > TEACH_WINDOW_MS) windows.delete(open)
         }
-        windows.set(key, { by: t.tapperUserId, at: t.now })
+        windows.set(key, { by: String(t.tapperUserId), at: t.now })
+      } catch { failed() }
+    },
+    /** A delivery in this chat that is not the owner's own tap: the window no longer means what the owner approved. */
+    close(chatId: string, assistantId: string): void {
+      try {
+        const key = windowKey(chatId, assistantId)
+        if (key !== null) windows.delete(key)
       } catch { failed() }
     },
     take(chatId: string, assistantId: string, now: number): { by: string } | null {
@@ -86,6 +102,36 @@ export function createTeachWindows() {
 }
 
 export type TeachWindows = ReturnType<typeof createTeachWindows>
+
+/**
+ * A tap reached the session (server.ts privateTapCardNoting, all six tap sites). The owner's own teach Approve opens a
+ * window; any tap that is not the owner's own closes the window of its chat. Never throws.
+ */
+export function noteTeachTap(deps: { windows: Pick<TeachWindows, 'noteTap' | 'close'>; assistantId: string }, t: Omit<TeachTap, 'assistantId'>): void {
+  try {
+    if (!ownPersonTap(t)) deps.windows.close(t.chatId, deps.assistantId)
+    deps.windows.noteTap({ ...t, assistantId: deps.assistantId })
+  } catch { failed() }
+}
+
+/**
+ * The turn chat tracker, with every delivery it notes closing that chat's teach window: an email, a peer message, a
+ * wake, a meeting or a typed message after the Approve is not the write the owner approved. `noteOwnTap` notes the
+ * owner's own tap without closing it.
+ */
+export function closingTeachWindows<T extends { note(input: TurnChatNote): void }>(
+  tracker: T, windows: Pick<TeachWindows, 'close'>, assistantId: string,
+): T & { noteOwnTap(input: TurnChatNote): void } {
+  const note = (input: TurnChatNote): void => tracker.note(input)
+  return {
+    ...tracker,
+    note(input: TurnChatNote): void {
+      try { windows.close(String(input?.chatId ?? '').trim(), assistantId) } catch { failed() }
+      note(input)
+    },
+    noteOwnTap: note,
+  }
+}
 
 type WriteFs = Pick<typeof import('node:fs'), 'lstatSync' | 'realpathSync'>
 
@@ -196,11 +242,62 @@ export function stampTaughtWrite(input: {
     const folder = skillFolderOfWrite(input.filePath, input.agentDir)
     if (!folder || !input.agentDir) return false
     const ident = identOf(join(input.agentDir, '.claude', 'skills', folder), false, input.identFs)
-    if (ident !== null && readOrigins(input.file).skills[folder]?.ident === ident) return false
+    // Any write into the skills folder uses the window, a stamped folder's or one of unknown identity included.
     const window = input.windows.take(input.chatId, input.assistantId, input.writtenAt)
     if (!window || ident === null) return false
+    if (readOrigins(input.file).skills[folder]?.ident === ident) return false
     stampOrigin(input.file, folder, { origin: 'taught', ident })
     return true
+  } catch { failed(); return false }
+}
+
+const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+/** A shell command that names a .claude skills folder, by any path. */
+const SKILLS_IN_COMMAND = /\.claude[\\/]+skills(?![\w-])/i
+
+/** Inside the agent's skills folder, by the launch folder's path or its real path. Case blind on Windows. */
+function inAgentSkills(filePath: unknown, agentDir: string, platform: NodeJS.Platform): boolean {
+  if (typeof filePath !== 'string' || !filePath) return false
+  const fold = (p: string): string => platform === 'win32' ? p.toLowerCase() : p
+  const target = fold(resolve(agentDir, filePath))
+  const roots = [resolve(agentDir)]
+  try { roots.push(realpathSync(agentDir)) } catch { /* the launch path alone */ }
+  return roots.some((dir) => {
+    const root = fold(join(dir, '.claude', 'skills'))
+    return target === root || target.startsWith(root + sep)
+  })
+}
+
+/**
+ * A tool use the hook spool saw (PostToolUse), judged at `writtenAt`, the hook line's receivedAt. A Write of an agent
+ * skill's SKILL.md goes to stampTaughtWrite. Any other write into the agent skills folder (Write, Edit, MultiEdit,
+ * NotebookEdit, or a Bash command that names a .claude skills folder) uses the window and stamps nothing, so the
+ * approval means the write the owner approved and nothing after it. Never throws.
+ */
+export function noteSkillToolUse(input: {
+  toolName: unknown
+  toolInput: unknown
+  agentDir: string | null
+  file: string
+  windows: Pick<TeachWindows, 'take'>
+  chatId: string
+  assistantId: string
+  writtenAt: number
+  identFs?: IdentFs
+  platform?: NodeJS.Platform
+}): boolean {
+  try {
+    if (!input.agentDir) return false
+    const args = input.toolInput !== null && typeof input.toolInput === 'object' ? input.toolInput as Record<string, unknown> : {}
+    const path = input.toolName === 'NotebookEdit' ? args.notebook_path : args.file_path
+    if (input.toolName === 'Write' && skillFolderOfWrite(path, input.agentDir) !== null) {
+      return stampTaughtWrite({ ...input, filePath: path })
+    }
+    const touches = input.toolName === 'Bash'
+      ? typeof args.command === 'string' && SKILLS_IN_COMMAND.test(args.command)
+      : FILE_TOOLS.has(String(input.toolName)) && inAgentSkills(path, input.agentDir, input.platform ?? process.platform)
+    if (touches) input.windows.take(input.chatId, input.assistantId, input.writtenAt)
+    return false
   } catch { failed(); return false }
 }
 

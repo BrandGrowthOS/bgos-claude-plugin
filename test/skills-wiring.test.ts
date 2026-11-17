@@ -27,6 +27,12 @@ test('origin errors are written to the daemon log', () => {
   assert.match(server, /\nconst teachWindows = createTeachWindows\(\)\nlogOriginsTo\(log\)\n/)
 })
 
+test('every delivery the turn chat tracker notes closes that chat\'s teach window', () => {
+  assert.match(server, /\nconst turnChat = closingTeachWindows\(createTurnChatTracker\(\), teachWindows, ASSISTANT_ID\)\n/)
+  assert.ok(server.indexOf('const teachWindows = createTeachWindows()') < server.indexOf('const turnChat = closingTeachWindows('))
+  assert.equal((server.match(/createTurnChatTracker\(\)/g) ?? []).length, 1, 'no second tracker skips the close')
+})
+
 test('inventory list applies origins from the sidecar beside the skills trash', () => {
   assert.match(constructionSlice(), /list: \(\) =>\s*applyOrigins\(\s*listSkills\(/)
   assert.match(constructionSlice(), /\}\),\s*SKILL_ORIGINS_FILE/)
@@ -37,9 +43,8 @@ test('all six tap delivery sites note the teach window through one wrapper', () 
   assert.equal((server.match(/\bprivateTapCard\(/g) ?? []).length, 1)
   assert.equal((server.match(/\bprivateTapCardNoting\(\{/g) ?? []).length, 6)
   const wrapper = server.slice(server.indexOf('function privateTapCardNoting('), server.indexOf('function privateTapCardNoting(') + 850)
-  assert.match(wrapper, /try\s*\{\s*teachWindows.noteTap\(/)
+  assert.match(wrapper, /try\s*\{\s*noteTeachTap\(\{ windows: teachWindows, assistantId: ASSISTANT_ID \}, \{/)
   for (const field of ['chatId', 'tapperUserId', 'ownerUserId', 'callbackData', 'customText', 'humanPrincipal', 'posted']) assert.ok(wrapper.includes(`${field}: input.${field}`), field)
-  assert.match(wrapper, /assistantId: ASSISTANT_ID/)
   assert.match(wrapper, /now: Date.now\(\)/)
   assert.match(wrapper, /return privateTapCard\(input\)/)
   assert.match(server, /function privateTapCardNoting\(input: Parameters<typeof privateTapCard>\[0\] & \{ humanPrincipal: unknown \}\)/)
@@ -66,21 +71,22 @@ test('each tap site hands the click\'s own humanPrincipal to the teach window', 
   assert.doesNotMatch(server, /clickHumanPrincipal|(?<!input)\.humanPrincipal\b|human_principal/, 'no site reads the field itself')
 })
 
-test('only a PostToolUse Write takes the current chat window, judged by the hook line\'s receivedAt', () => {
+test('every PostToolUse goes to the teach window, judged by the hook line\'s receivedAt', () => {
   const hook = server.slice(server.indexOf('function onHookPayload('), server.indexOf('function startHookIntakeIfHolder('))
   const received = hook.indexOf('const receivedAt = line?.receivedAt ?? Date.now()')
-  const write = hook.indexOf("event.name === 'PostToolUse' && payload.tool_name === 'Write'")
-  assert.ok(received > 0 && write > received, 'receivedAt is read before the skill write is judged')
-  const call = hook.slice(write, hook.indexOf('})', write))
-  assert.match(call, /stampTaughtWrite\(\{/)
-  assert.match(call, /filePath: \(payload.tool_input as \{ file_path\?: unknown \} \| undefined\)\?\.file_path/)
+  const use = hook.indexOf("if (event.name === 'PostToolUse') {")
+  assert.ok(received > 0 && use > received, 'receivedAt is read before the tool use is judged')
+  const call = hook.slice(use, hook.indexOf('})', use))
+  assert.match(call, /noteSkillToolUse\(\{/)
+  assert.match(call, /toolName: payload.tool_name/)
+  assert.match(call, /toolInput: payload.tool_input/)
   assert.match(call, /agentDir: SKILLS_AGENT_DIR/)
   assert.match(call, /file: SKILL_ORIGINS_FILE/)
   assert.match(call, /windows: teachWindows/)
   assert.match(call, /chatId: String\(turnChat.current\(Date.now\(\)\)\?\.chatId \?\? ''\)/)
   assert.match(call, /assistantId: ASSISTANT_ID/)
   assert.match(call, /writtenAt: receivedAt/)
-  assert.doesNotMatch(hook, /teachWindows.take\(/, 'the window is taken only inside stampTaughtWrite')
+  assert.doesNotMatch(hook, /teachWindows.take\(|stampTaughtWrite\(/, 'the window is taken only inside noteSkillToolUse')
 })
 
 test('install wiring stamps shared origin with destination identity and the offer', () => {

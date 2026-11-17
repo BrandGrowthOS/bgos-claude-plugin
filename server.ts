@@ -97,7 +97,7 @@ import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { identOf, listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
-import { applyOrigins, createTeachWindows, isHumanClick, logOriginsTo, stampOrigin, stampTaughtWrite } from './lib/skill-origins.js'
+import { applyOrigins, closingTeachWindows, createTeachWindows, isHumanClick, logOriginsTo, noteSkillToolUse, noteTeachTap, stampOrigin } from './lib/skill-origins.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
@@ -11116,19 +11116,19 @@ const HOOK_CARD_COALESCE_MS = 600
  */
 const HOOK_STEPS_HEARTBEAT_MS = 60_000
 
-/** The chat a hook event belongs to: the last thing delivered to this session,
- *  whoever sent it. Fed at the three inbound sites and the two meeting sites. */
-const turnChat = createTurnChatTracker()
 const teachWindows = createTeachWindows()
 logOriginsTo(log)
+/** The chat a hook event belongs to: the last thing delivered to this session,
+ *  whoever sent it. Fed at the three inbound sites and the two meeting sites. Every delivery it notes closes that
+ *  chat's teach window (lib/skill-origins.ts closingTeachWindows). */
+const turnChat = closingTeachWindows(createTurnChatTracker(), teachWindows, ASSISTANT_ID)
 
 // A teach window opens only on the owner's own tap as a person: each site reads its click row with isHumanClick (an
-// ask answer has none, so null), and noteTap also needs the owner's id (lib/skill-origins.ts).
+// ask answer has none, so null). Any tap that is not the owner's own closes its chat's window (lib/skill-origins.ts).
 function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { humanPrincipal: unknown }) {
   try {
-    teachWindows.noteTap({
+    noteTeachTap({ windows: teachWindows, assistantId: ASSISTANT_ID }, {
       chatId: input.chatId,
-      assistantId: ASSISTANT_ID,
       tapperUserId: input.tapperUserId,
       ownerUserId: input.ownerUserId,
       callbackData: input.callbackData,
@@ -11920,11 +11920,13 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   if (event === null) return
   const receivedAt = line?.receivedAt ?? Date.now()
   // A skill write is judged by when its line was received, never by when it drains: a SKILL.md written before the
-  // owner's Approve never reads taught (lib/skill-origins.ts stampTaughtWrite).
+  // owner's Approve never reads taught. Any write into the agent skills folder uses the window (lib/skill-origins.ts
+  // noteSkillToolUse).
   try {
-    if (event.name === 'PostToolUse' && payload.tool_name === 'Write') {
-      stampTaughtWrite({
-        filePath: (payload.tool_input as { file_path?: unknown } | undefined)?.file_path,
+    if (event.name === 'PostToolUse') {
+      noteSkillToolUse({
+        toolName: payload.tool_name,
+        toolInput: payload.tool_input,
         agentDir: SKILLS_AGENT_DIR,
         file: SKILL_ORIGINS_FILE,
         windows: teachWindows,
