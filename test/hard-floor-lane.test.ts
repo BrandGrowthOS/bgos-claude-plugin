@@ -1,6 +1,6 @@
 /**
  * Cross-repo anti-drift test for the LANE floor, rules version 4 (person
- * lanes, shared agents Phase 3, P3; design 7.2 item 8).
+ * lanes on shared agents).
  *
  * lib/hard-floor-lane-fixture.ts is COPIED BYTE FOR BYTE from the backend's
  * backend/src/services/hard-floor-lane-fixture.ts, whose spec pins the same
@@ -25,11 +25,11 @@ import { LANE_USER_ID_RE } from '../lib/lane-core.mjs'
 const ROOT = join(import.meta.dirname, '..')
 
 /**
- * The same literal the backend's hard-floor-lane.spec.ts pins. 0.87.5 (board row a633fb9c): this copy's
+ * The same literal the backend's hard-floor-lane.spec.ts pins. 0.87.5: this copy's
  * example paths name /Users/you instead of our own home folders, so the literal moved here first; the
  * BGOS copy and its spec must take the same bytes.
  */
-const LANE_FIXTURE_FILE_SHA256 = '42c0c761e96d53d2890dec4ba1de4c59abe6e7e35e97647db82e20e2b0f440bc'
+const LANE_FIXTURE_FILE_SHA256 = '939d5d2cc9f9ccfb9690bdfe9ce62e1ff54437db342ff5dfaf57cd69630a0147'
 
 test('version 4, one above the owner list it extends, which stays 3', () => {
   assert.equal(HARD_FLOOR_LANE_RULES_VERSION, 4)
@@ -68,16 +68,16 @@ function denied(out: string): boolean {
 }
 
 test('the lane hook DENIES a secret read, another person\'s lane, a v3 action', () => {
-  assert.ok(denied(hook('Read', { file_path: '/Users/kc/.ssh/id_ed25519' })))
-  assert.ok(denied(hook('Read', { file_path: '/Users/kc/.bgos-agent/1076/people/user_ben/work/notes.md' })))
-  assert.ok(denied(hook('Grep', { pattern: 'x', path: '/Users/kc/.bgos-plugin-state' })))
-  assert.ok(denied(hook('Write', { file_path: '/Users/kc/.bgos-agent/1076/people/user_ana/work/.env', content: 'A=1' })))
-  assert.ok(denied(hook('mcp__bgos__reply', { chat_id: '777', text: 'x', files: [{ path: '/Users/kc/.aws/credentials' }] })))
+  assert.ok(denied(hook('Read', { file_path: '/Users/you/.ssh/id_ed25519' })))
+  assert.ok(denied(hook('Read', { file_path: '/Users/you/.bgos-agent/1076/people/user_ben/work/notes.md' })))
+  assert.ok(denied(hook('Grep', { pattern: 'x', path: '/Users/you/.bgos-plugin-state' })))
+  assert.ok(denied(hook('Write', { file_path: '/Users/you/.bgos-agent/1076/people/user_ana/work/.env', content: 'A=1' })))
+  assert.ok(denied(hook('mcp__bgos__reply', { chat_id: '777', text: 'x', files: [{ path: '/Users/you/.aws/credentials' }] })))
 })
 
 test('the lane hook lets the lane\'s own work through', () => {
-  assert.equal(hook('Read', { file_path: '/Users/kc/.bgos-agent/1076/people/user_ana/work/notes.md' }), '')
-  assert.equal(hook('Write', { file_path: '/Users/kc/.bgos-agent/1076/people/user_ana/work/out.txt', content: 'hi' }), '')
+  assert.equal(hook('Read', { file_path: '/Users/you/.bgos-agent/1076/people/user_ana/work/notes.md' }), '')
+  assert.equal(hook('Write', { file_path: '/Users/you/.bgos-agent/1076/people/user_ana/work/out.txt', content: 'hi' }), '')
   assert.equal(hook('mcp__bgos__reply', { chat_id: '777', text: 'hello' }), '')
 })
 

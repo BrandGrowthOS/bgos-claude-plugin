@@ -42,9 +42,9 @@ import {
 } from '../lib/hard-floor.ts'
 import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
 
-test('the seven rules, their ids and their words, exactly as spec section 1 writes them', () => {
-  // Rules version 2 (BGOS DSH parity item 10, 2026-10-02): adds_skill_or_plugin.
-  // Rules version 3 (Data, 2026-10-13): the channel's own email_send acts on the owner's behalf.
+test('the seven rules, their ids and their words, exactly as the spec writes them', () => {
+  // Rules version 2 (2026-10-02): adds_skill_or_plugin.
+  // Rules version 3 (2026-10-13): the channel's own email_send acts on the owner's behalf.
   assert.equal(HARD_FLOOR_RULES_VERSION, 3)
   assert.deepEqual(
     HARD_FLOOR_RULES.map((r) => [r.id, r.words]),
@@ -96,7 +96,7 @@ test('rule order decides which rule a card names when two match', () => {
   // A path that is both an .env file and a home settings file is the .env rule.
   assert.equal(classifyPath('~/.env'), 'env_file_write')
   // Inside .git beats everything else a path could be.
-  assert.equal(classifyPath('/home/kc/.git/.env'), 'git_dir_write')
+  assert.equal(classifyPath('/home/you/.git/.env'), 'git_dir_write')
 })
 
 test('the shell reader: simple commands, quotes removed, a comment and a heredoc body are not commands', () => {
@@ -177,7 +177,7 @@ test('spec 4.2: a mention is not the action, and neither is a comment or a scrip
 })
 
 test('GNU long option prefixes (--r, --rec, --recur) are in the SHARED fixture now, so both readers are held to them', () => {
-  // A3 pinned these on this side only; stage 6 wave B moved them into the
+  // First pinned on this side only; a later pass moved them into the
   // byte identical fixture, where the server's spec runs them too.
   const byName = new Map(HARD_FLOOR_FIXTURE.map((c) => [c.name, c]))
   for (const [name, command, ruleId] of [
@@ -255,7 +255,7 @@ test('a command past the size limit is read up to the limit, and not beyond', ()
 
 test('paths: separators, long path prefixes and case do not change the answer', () => {
   assert.equal(classifyPath('C:/work/repo/.GIT/config'), 'git_dir_write')
-  assert.equal(classifyPath('\\\\?\\C:\\Users\\kc\\.gitconfig'), 'home_dotfile_write')
+  assert.equal(classifyPath('\\\\?\\C:\\Users\\you\\.gitconfig'), 'home_dotfile_write')
   assert.equal(classifyPath('/work//repo///.env'), 'env_file_write')
   assert.equal(classifyPath('/work/repo/.ENV.Local'), 'env_file_write')
   assert.equal(classifyPath(''), null)
@@ -264,7 +264,7 @@ test('paths: separators, long path prefixes and case do not change the answer', 
   // Climbing out of the home folder is not a file in it.
   assert.equal(classifyPath('~/../etc/hosts'), null)
   // The home folder itself is not a file.
-  assert.equal(classifyPath('/home/kc'), null)
+  assert.equal(classifyPath('/home/you'), null)
   assert.equal(classifyPath('~'), null)
 })
 
@@ -292,7 +292,7 @@ test('tool names: the words, the own channel exemption by EXACT name, and nothin
   assert.equal(classifyToolName('mcp__x__publish_post'), 'acts_on_owners_behalf')
 })
 
-test("tool names: the Agent Browser's own server is left to its own gate, by EXACT name (the stage 6 backend review)", () => {
+test("tool names: the Agent Browser's own server is left to its own gate, by EXACT name (a backend review)", () => {
   assert.deepEqual([...HOAI_AGENT_BROWSER_SERVERS], ['hoai-browser', 'plugin_hoai_hoai-browser', 'plugin_hoaiq_hoai-browser'])
   for (const name of [
     'mcp__hoai-browser__browser_cookie_delete',
@@ -307,7 +307,7 @@ test("tool names: the Agent Browser's own server is left to its own gate, by EXA
   assert.equal(classifyToolName('mcp__plugin_mail_hoai-browser__delete_message'), 'acts_on_owners_behalf')
 })
 
-test('tool names: paying in the names payment tools use, a payment noun beside a verb that makes one (the stage 6 backend review)', () => {
+test('tool names: paying in the names payment tools use, a payment noun beside a verb that makes one (a backend review)', () => {
   for (const name of [
     'mcp__stripe__create_payment_intent',
     'mcp__stripe__createPayment',
@@ -331,8 +331,8 @@ test('tool names: paying in the names payment tools use, a payment noun beside a
 })
 
 /**
- * The own channel exemption is tied to the plugin's OWN manifest (P2 stage 6,
- * wave B1b Fix). HOAI_OWN_SERVERS spells the channel's server names by hand,
+ * The own channel exemption is tied to the plugin's OWN manifest.
+ * HOAI_OWN_SERVERS spells the channel's server names by hand,
  * and nothing tied them to `.claude-plugin/plugin.json`: rename the plugin
  * (`hoai`) or its channel server key (`bgos`) and the CLI names the tools
  * `mcp__plugin_<new>_<server>__reply`, which the exact list no longer
@@ -469,7 +469,7 @@ test('installing a plugin or tool that stays asks', () => {
     'claude mcp add --scope user notion https://mcp.notion.com/mcp',
     'claude mcp add-json weather \'{"type":"stdio","command":"wx"}\'',
     'claude mcp add-from-claude-desktop',
-    'C:\\Users\\kc\\.local\\bin\\claude.exe plugin install x',
+    'C:\\Users\\you\\.local\\bin\\claude.exe plugin install x',
     '/usr/local/bin/claude mcp add x -- y',
     'codex plugin add latex@openai-bundled',
     'codex mcp add docs -- npx docs-mcp',

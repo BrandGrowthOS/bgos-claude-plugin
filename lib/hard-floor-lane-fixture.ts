@@ -1,11 +1,11 @@
 /**
- * Cross-repo LANE floor fixture, rules_version 4 (person lanes, shared agents
- * Phase 3; design 2026-10-15 section 7.2 item 8).
+ * Cross-repo LANE floor fixture, rules_version 4 (person lanes on shared
+ * agents).
  *
  * The cases a person's lane floor must answer, written once. The backend's
- * classifier (src/services/hard-floor-lane.ts) runs them here from P2; the
- * Claude Code plugin's copy of this file runs them against its own lane hook
- * from P3, BYTE IDENTICAL, as hard-floor-fixture.ts already is for the
+ * classifier (src/services/hard-floor-lane.ts) runs them here; the
+ * Claude Code plugin's copy of this file runs them against its own lane hook,
+ * BYTE IDENTICAL, as hard-floor-fixture.ts already is for the
  * owner's list. Each repo pins the sha256 of its own copy in its spec, so a
  * byte changed on one side turns that side red until the pair is reconciled.
  *
