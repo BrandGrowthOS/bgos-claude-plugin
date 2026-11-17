@@ -19,6 +19,7 @@ import * as askLib from '../lib/ask-tracker.ts'
 import { AskTracker, type PendingAsk } from '../lib/ask-tracker.ts'
 import { parseLockRecord } from '../lib/pairing-lock.ts'
 import { retiredOwnNotes, tellRetiredOwnOnTick } from '../lib/ask-retired-tell.ts'
+import { isHumanClick } from '../lib/skill-origins.ts'
 
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 const START = Date.parse('2026-10-27T09:00:00Z')
@@ -209,7 +210,9 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; handedOn?: number[]; c
         await notify()
       },
     },
-    privateTapCard: (o: { content: string }) => o.content,
+    privateTapCardNoting: (o: { content: string }) => o.content,
+    // The click row reader every tap site calls; an ask answer passes none (lib/skill-origins.ts).
+    isHumanClick,
     privateTurns: {},
     tellRetiredOwnOnTick,
     retiredOwnNotes,
