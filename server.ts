@@ -95,9 +95,9 @@ import {
 import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './lib/memory.js'
 import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
-import { identOf, listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
+import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
-import { applyOrigins, closingTeachWindows, createTeachWindows, isHumanClick, logOriginsTo, noteSkillToolUse, noteTeachTap, stampOrigin } from './lib/skill-origins.js'
+import { applyOrigins, closingTeachWindows, createTeachWindows, isHumanClick, logOriginsTo, noteSkillToolUse, noteTeachTap, originIdentOf, stampOrigin } from './lib/skill-origins.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
@@ -16947,7 +16947,7 @@ const skillsRpc = new SkillsRpcHandler({
         payload,
         progress,
         onInstalled: (dest) => {
-          const ident = identOf(dest, false)
+          const ident = originIdentOf(dest)
           if (ident !== null) stampOrigin(SKILL_ORIGINS_FILE, pathBasename(dest), {
             origin: 'shared',
             ident,

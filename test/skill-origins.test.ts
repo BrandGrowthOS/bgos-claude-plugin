@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { identOf, type SkillItem, type SkillScope } from '../lib/skills-inventory.ts'
+import type { SkillItem, SkillScope } from '../lib/skills-inventory.ts'
 import { scratchDir } from './helpers/scratch-dirs.ts'
 import { createTurnChatTracker } from '../lib/turn-chat.ts'
 import { linkFolder } from './helpers/links.ts'
@@ -213,7 +213,7 @@ test('stamps survive a fresh read outside the skill folder without changing its 
   const { stampOrigin, readOrigins, applyOrigins } = api()
   const w = world()
   const before = readFileSync(join(w.folder, 'SKILL.md'))
-  const ident = identOf(w.folder, false)
+  const ident = api().originIdentOf(w.folder)
   assert.ok(ident)
   stampOrigin(w.file, 'foo', { origin: 'shared', ident, offerId: 'offer' }, 123)
   stampOrigin(w.file, 'second', { origin: 'taught', ident }, 124)
@@ -229,18 +229,43 @@ test('stamps survive a fresh read outside the skill folder without changing its 
   assert.equal(input.skills[0]?.origin, undefined)
 })
 
-test('deleting and recreating a folder invalidates its stamp', () => {
-  const { stampOrigin, applyOrigins } = api()
+test('deleting and recreating a folder invalidates its stamp', async () => {
+  const { stampOrigin, applyOrigins, originIdentOf } = api()
   const w = world()
-  const ident = identOf(w.folder, false)
+  const ident = originIdentOf(w.folder)
   assert.ok(ident)
   stampOrigin(w.file, 'foo', { origin: 'taught', ident }, 123)
   unlinkSync(join(w.folder, 'SKILL.md'))
   rmdirSync(w.folder)
-  mkdirSync(join(w.root, 'occupy-released-folder-number'))
+  // Made again a moment later, as by hand: past the filesystem's clock tick, so its birth time is its own.
+  await new Promise((done) => setTimeout(done, 50))
   mkdirSync(w.folder)
-  assert.notEqual(identOf(w.folder, false), ident)
+  assert.notEqual(originIdentOf(w.folder), ident)
   assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
+})
+
+function bornFs(born: bigint | undefined) {
+  const stat = { dev: 1n, ino: 2n, ...(born === undefined ? {} : { birthtimeNs: born }) }
+  return { statSync: () => { throw new Error('must not follow') }, lstatSync: () => stat }
+}
+
+test('a folder made again with a reused file number but a new birth time loses its stamp', () => {
+  const { stampOrigin, applyOrigins, originIdentOf } = api()
+  const w = world()
+  const ident = originIdentOf(w.folder, bornFs(1000n))
+  assert.equal(ident, '1:2:1000')
+  stampOrigin(w.file, 'foo', { origin: 'taught', ident: ident! }, 123)
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file, bornFs(1000n)).skills[0]?.origin, 'taught', 'control: the same folder')
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file, bornFs(2000n)).skills[0]?.origin, undefined, 'ext4: same dev:ino, new birth')
+})
+
+test('folder identity without a birth time is the file number alone', () => {
+  const { originIdentOf } = api()
+  assert.equal(originIdentOf('x', bornFs(undefined)), '1:2')
+  assert.equal(originIdentOf('x', bornFs(0n)), '1:2', 'a zero birth time is none')
+  assert.equal(originIdentOf('x', { statSync: () => { throw new Error('no') }, lstatSync: () => ({ dev: 0n, ino: 2n }) }), null)
+  assert.equal(originIdentOf('x', { statSync: () => { throw new Error('no') }, lstatSync: () => ({ dev: 1n, ino: 0n }) }), null)
+  assert.equal(originIdentOf('x', { statSync: () => { throw new Error('no') }, lstatSync: () => { throw new Error('gone') } }), null)
 })
 
 test('missing and corrupt stamps and hand copied agent skills have no origin', () => {
@@ -310,7 +335,7 @@ test('a taught write needs the window of its own chat and assistant, and takes i
 test('a write to a stamped folder uses the window, so a new folder write after it stays unmarked', () => {
   const { createTeachWindows, stampOrigin, applyOrigins } = api()
   const w = world()
-  const ident = identOf(w.folder, false)
+  const ident = api().originIdentOf(w.folder)
   assert.ok(ident)
   stampOrigin(w.file, 'foo', { origin: 'shared', ident }, 50)
   const windows = createTeachWindows()

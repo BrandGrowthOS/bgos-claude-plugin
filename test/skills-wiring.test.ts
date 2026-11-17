@@ -92,7 +92,7 @@ test('every PostToolUse goes to the teach window, judged by the hook line\'s rec
 test('install wiring stamps shared origin with destination identity and the offer', () => {
   const built = constructionSlice()
   assert.match(built, /onInstalled: \(dest\) =>/)
-  assert.match(built, /identOf\(dest, false\)/)
+  assert.match(built, /const ident = originIdentOf\(dest\)/)
   assert.match(built, /stampOrigin\(SKILL_ORIGINS_FILE, pathBasename\(dest\),/)
   assert.match(built, /origin: 'shared'/)
   assert.match(built, /offerId: typeof payload.offerId === 'string' \? payload.offerId : undefined/)

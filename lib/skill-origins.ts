@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { unescapeAgentButtonValue } from './message-text.ts'
-import { identOf, SKILL_NAME_RE, type IdentFs, type SkillItem, type SkillsList } from './skills-inventory.ts'
+import { SKILL_NAME_RE, type IdentFs, type SkillItem, type SkillsList } from './skills-inventory.ts'
 import type { TurnChatNote } from './turn-chat.ts'
 
 export type SkillOrigin = 'taught' | 'made' | 'installed' | 'shared' | 'repo' | 'synced'
@@ -181,6 +181,23 @@ export function skillFolderOfWrite(filePath: unknown, agentDir: string | null, f
   } catch { failed(); return null }
 }
 
+const known = (v: unknown): boolean => v !== undefined && v !== null && String(v) !== '0'
+
+/**
+ * A skill folder's identity for its mark, never following a link: its file number (dev:ino) and, where the filesystem
+ * keeps one, its birth time in nanoseconds. A folder deleted and made again gets a new identity even where the file
+ * number comes back (ext4), as long as it is made again after the filesystem's clock tick; on a filesystem with no
+ * birth time a reused file number keeps the mark. Null when either number is unknown. Never throws.
+ */
+export function originIdentOf(path: string, fs: IdentFs = { statSync, lstatSync }): string | null {
+  try {
+    const st = fs.lstatSync(path, { bigint: true }) as { dev?: unknown; ino?: unknown; birthtimeNs?: unknown }
+    if (!known(st.dev) || !known(st.ino)) return null
+    const base = `${String(st.dev)}:${String(st.ino)}`
+    return known(st.birthtimeNs) ? `${base}:${String(st.birthtimeNs)}` : base
+  } catch { return null }
+}
+
 export type OriginStamp = { origin: SkillOrigin; at: number; ident: string; offerId?: string }
 export type Origins = { v: 1; skills: Record<string, OriginStamp> }
 const empty = (): Origins => ({ v: 1, skills: {} })
@@ -265,7 +282,7 @@ export function stampTaughtWrite(input: {
   try {
     const folder = skillFolderOfWrite(input.filePath, input.agentDir)
     if (!folder || !input.agentDir) return false
-    const ident = identOf(join(input.agentDir, '.claude', 'skills', folder), false, input.identFs)
+    const ident = originIdentOf(join(input.agentDir, '.claude', 'skills', folder), input.identFs)
     // Any write into the skills folder uses the window, a stamped folder's or one of unknown identity included.
     const window = input.windows.take(input.chatId, input.assistantId, input.writtenAt)
     if (!window || ident === null) return false
@@ -340,7 +357,7 @@ export function applyOrigins(list: SkillsList, file: string, fs?: IdentFs): Skil
     const stamps = readOrigins(file)
     return { ...list, skills: list.skills.map((row) => {
       const path = row.path.startsWith('~/') || row.path.startsWith('~\\') ? join(homedir(), row.path.slice(2)) : row.path
-      const origin = originForRow(row, stamps.skills[basename(path)], row.scope === 'agent' ? identOf(path, false, fs) : null)
+      const origin = originForRow(row, stamps.skills[basename(path)], row.scope === 'agent' ? originIdentOf(path, fs) : null)
       return origin === undefined ? row : { ...row, origin }
     }) }
   } catch { failed(); return list }
