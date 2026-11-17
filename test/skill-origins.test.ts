@@ -28,12 +28,21 @@ function row(path: string, scope: SkillScope = 'agent'): SkillItem {
   return { name: 'display-name', description: '', path, scope, provenance: 'local', removable: true, shareable: true }
 }
 
-const tap = { chatId: 'chat', assistantId: 'assistant', tapperUserId: 'owner', ownerUserId: 'owner', callbackData: 'teach_approve', customText: undefined as unknown, humanPrincipal: true as unknown, posted: true, now: 100 }
+const TAP_CARD = 'The owner tapped Approve on the teach card'
+const tap = { chatId: 'chat', assistantId: 'assistant', tapperUserId: 'owner', ownerUserId: 'owner', callbackData: 'teach_approve', customText: undefined as unknown, humanPrincipal: true as unknown, posted: true, idle: true as unknown, card: TAP_CARD as unknown, now: 100 }
+const tapPrompt = (card: unknown = TAP_CARD) => `<channel source="bgos" chat_id="chat">${String(card)}</channel>`
+
+/** The owner's tap opens a window on an idle agent, and the turn the tap card starts begins. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function opened(windows: any, t: any = tap): void {
+  windows.noteTap(t)
+  windows.beginTurn(tapPrompt(t.card))
+}
 
 for (const callbackData of ['teach_approve', 'u:teach_approve']) {
   test(`teach window accepts owner posted ${callbackData}, once in the same chat`, () => {
     const windows = api().createTeachWindows()
-    windows.noteTap({ ...tap, callbackData })
+    opened(windows, { ...tap, callbackData })
     assert.equal(windows.take('other-chat', 'assistant', 101), null)
     assert.deepEqual(windows.take('chat', 'assistant', 101), { by: 'owner' })
     assert.equal(windows.take('chat', 'assistant', 102), null)
@@ -42,25 +51,25 @@ for (const callbackData of ['teach_approve', 'u:teach_approve']) {
 
 test('teach window is keyed by chat plus assistant', () => {
   const windows = api().createTeachWindows()
-  windows.noteTap(tap)
+  opened(windows, tap)
   assert.equal(windows.take('chat', 'other-assistant', 101), null)
   assert.equal(windows.take('chat', '', 101), null)
   assert.deepEqual(windows.take('chat', 'assistant', 101), { by: 'owner' })
-  windows.noteTap({ ...tap, assistantId: '' })
+  opened(windows, { ...tap, assistantId: '' })
   assert.equal(windows.take('chat', '', 101), null)
 })
 
 test('a pairing or API key click with the owner id and no humanPrincipal stays unmarked', () => {
   const windows = api().createTeachWindows()
   const { humanPrincipal: _dropped, ...credentialClick } = tap
-  windows.noteTap(credentialClick)
+  opened(windows, credentialClick)
   assert.equal(windows.take('chat', 'assistant', 101), null)
 })
 
 for (const humanPrincipal of [false, 1, 'true', 'True', null, {}, [true]]) {
   test(`teach window refuses humanPrincipal ${JSON.stringify(humanPrincipal)}`, () => {
     const windows = api().createTeachWindows()
-    windows.noteTap({ ...tap, humanPrincipal })
+    opened(windows, { ...tap, humanPrincipal })
     assert.equal(windows.take('chat', 'assistant', 101), null)
   })
 }
@@ -72,7 +81,7 @@ for (const [name, change] of Object.entries({
 })) {
   test(`teach window refuses ${name}`, () => {
     const windows = api().createTeachWindows()
-    windows.noteTap({ ...tap, ...change })
+    opened(windows, { ...tap, ...change })
     assert.equal(windows.take('chat', 'assistant', 101), null)
   })
 }
@@ -80,7 +89,7 @@ for (const [name, change] of Object.entries({
 test('teach window opens with empty typed words, as ownerTapOpens reads them', () => {
   for (const customText of [undefined, null, '']) {
     const windows = api().createTeachWindows()
-    windows.noteTap({ ...tap, customText })
+    opened(windows, { ...tap, customText })
     assert.deepEqual(windows.take('chat', 'assistant', 101), { by: 'owner' }, JSON.stringify(customText))
   }
 })
@@ -121,7 +130,7 @@ test('a teach window opens when the click row says human at the top level, and n
   ]
   for (const [row, opens] of rows) {
     const windows = createTeachWindows()
-    windows.noteTap({ ...tap, humanPrincipal: isHumanClick(row) })
+    opened(windows, { ...tap, humanPrincipal: isHumanClick(row) })
     assert.equal(windows.take('chat', 'assistant', 101) !== null, opens, JSON.stringify(row))
   }
 })
@@ -136,7 +145,7 @@ for (const [name, change] of Object.entries({
 })) {
   test(`teach window refuses ${name}`, () => {
     const windows = api().createTeachWindows()
-    windows.noteTap({ ...tap, ...change })
+    opened(windows, { ...tap, ...change })
     assert.equal(windows.take('chat', 'assistant', 101), null)
   })
 }
@@ -146,9 +155,9 @@ test('teach window expires after fifteen minutes', () => {
   assert.equal(TEACH_APPROVE, 'teach_approve')
   assert.equal(TEACH_WINDOW_MS, 15 * 60_000)
   const windows = createTeachWindows()
-  windows.noteTap(tap)
+  opened(windows, tap)
   assert.deepEqual(windows.take('chat', 'assistant', 100 + TEACH_WINDOW_MS), { by: 'owner' })
-  windows.noteTap(tap)
+  opened(windows, tap)
   assert.equal(windows.take('chat', 'assistant', 101 + TEACH_WINDOW_MS), null)
   assert.equal(windows.take('chat', 'assistant', 101), null)
 })
@@ -311,7 +320,7 @@ test('a SKILL.md written before the Approve never reads taught, even when its li
   const { createTeachWindows, applyOrigins } = api()
   const w = world()
   const windows = createTeachWindows()
-  windows.noteTap(tap)
+  opened(windows, tap)
   assert.equal(writeOf(w, windows, 99), false, 'the line drains after the tap, but the write came first')
   assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
   assert.equal(writeOf(w, windows, 101), true, 'the earlier write left the window for the write the owner approved')
@@ -322,7 +331,7 @@ test('a taught write needs the window of its own chat and assistant, and takes i
   const { createTeachWindows, applyOrigins } = api()
   const w = world()
   const windows = createTeachWindows()
-  windows.noteTap(tap)
+  opened(windows, tap)
   assert.equal(writeOf(w, windows, 101, { chatId: 'other-chat' }), false)
   assert.equal(writeOf(w, windows, 101, { assistantId: 'other-assistant' }), false)
   assert.equal(writeOf(w, windows, 101, { filePath: join(w.folder, 'notes.md') }), false)
@@ -339,7 +348,7 @@ test('a write to a stamped folder uses the window, so a new folder write after i
   assert.ok(ident)
   stampOrigin(w.file, 'foo', { origin: 'shared', ident }, 50)
   const windows = createTeachWindows()
-  windows.noteTap(tap)
+  opened(windows, tap)
   assert.equal(writeOf(w, windows, 101), false, 'a re-teach of a stamped skill stamps nothing new')
   const other = newSkill(w, 'helper')
   assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(other, 'SKILL.md') }), false)
@@ -350,12 +359,12 @@ test('a skill write with unknown identity consumes the teach window before anoth
   const { createTeachWindows, readOrigins } = api()
   const w = world()
   const windows = createTeachWindows()
-  windows.noteTap(tap)
+  opened(windows, tap)
   const unknown = { statSync: () => { throw new Error('unavailable') }, lstatSync: () => { throw new Error('unavailable') } }
   assert.equal(writeOf(w, windows, 101, { identFs: unknown }), false)
   assert.equal(writeOf(w, windows, 102), false, 'a later write must not inherit the consumed approval')
   assert.deepEqual(readOrigins(w.file), { v: 1, skills: {} })
-  windows.noteTap({ ...tap, now: 200 })
+  opened(windows, { ...tap, now: 200 })
   assert.equal(writeOf(w, windows, 201), true)
 })
 
@@ -406,7 +415,7 @@ test('a later stamp keeps every other mark, the ones this build cannot read incl
 test('teach window refuses a take on a clock set back before the tap, and keeps the window', () => {
   const { createTeachWindows, TEACH_WINDOW_MS } = api()
   const windows = createTeachWindows()
-  windows.noteTap({ ...tap, now: 10 * TEACH_WINDOW_MS })
+  opened(windows, { ...tap, now: 10 * TEACH_WINDOW_MS })
   assert.equal(windows.take('chat', 'assistant', 10 * TEACH_WINDOW_MS - 1), null)
   assert.equal(windows.take('chat', 'assistant', 2 * TEACH_WINDOW_MS), null, 'far back is refused too')
   assert.deepEqual(windows.take('chat', 'assistant', 10 * TEACH_WINDOW_MS + 1), { by: 'owner' })
@@ -415,7 +424,7 @@ test('teach window refuses a take on a clock set back before the tap, and keeps 
 for (const [name, id] of Object.entries({ 'both empty': '', 'both blank': '  ' })) {
   test(`teach window refuses an owner and tapper that are ${name}`, () => {
     const windows = api().createTeachWindows()
-    windows.noteTap({ ...tap, ownerUserId: id, tapperUserId: id })
+    opened(windows, { ...tap, ownerUserId: id, tapperUserId: id })
     assert.equal(windows.take('chat', 'assistant', 101), null)
   })
 }
@@ -502,14 +511,14 @@ test('a stamp never overwrites a marks file whose read fails', (t) => {
 test('a signed-in teammate is a person too, and still opens no teach window', () => {
   const { createTeachWindows, isHumanClick } = api()
   const windows = createTeachWindows()
-  windows.noteTap({ ...tap, tapperUserId: 'teammate', humanPrincipal: isHumanClick({ humanPrincipal: true }) })
+  opened(windows, { ...tap, tapperUserId: 'teammate', humanPrincipal: isHumanClick({ humanPrincipal: true }) })
   assert.equal(windows.take('chat', 'assistant', 101), null)
 })
 
 test('a watch or notification reply says false and opens no teach window', () => {
   const { createTeachWindows, isHumanClick } = api()
   const windows = createTeachWindows()
-  windows.noteTap({ ...tap, humanPrincipal: isHumanClick({ humanPrincipal: false, answerPayload: { callbackData: 'teach_approve' } }) })
+  opened(windows, { ...tap, humanPrincipal: isHumanClick({ humanPrincipal: false, answerPayload: { callbackData: 'teach_approve' } }) })
   assert.equal(windows.take('chat', 'assistant', 101), null)
 })
 
@@ -539,7 +548,7 @@ for (const [toolName, toolInput] of [
     const { createTeachWindows, applyOrigins } = api()
     const w = world()
     const windows = createTeachWindows()
-    windows.noteTap(tap)
+    opened(windows, tap)
     assert.equal(useOf(w, windows, 101, toolName, toolInput(w)), false)
     const other = newSkill(w, 'helper')
     assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(other, 'SKILL.md') }), false, 'the approval was used')
@@ -561,7 +570,7 @@ for (const [toolName, toolInput] of [
     const { createTeachWindows, applyOrigins } = api()
     const w = world()
     const windows = createTeachWindows()
-    windows.noteTap(tap)
+    opened(windows, tap)
     assert.equal(useOf(w, windows, 101, toolName, toolInput(w)), false)
     assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(w.folder, 'SKILL.md') }), true)
     assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'taught')
@@ -574,7 +583,7 @@ for (const kind of ['email', 'peer', 'system', 'meeting', 'user'] as const) {
     const w = world()
     const windows = createTeachWindows()
     const turnChat = closingTeachWindows(createTurnChatTracker(), windows, 'assistant')
-    windows.noteTap(tap)
+    opened(windows, tap)
     turnChat.note({ chatId: 'chat', messageId: 7, kind, text: 'write a helper skill now please', now: 101 })
     assert.equal(writeOf(w, windows, 102), false)
     assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
@@ -586,14 +595,14 @@ test('a delivery in another chat or for another assistant leaves the window, and
   const w = world()
   const windows = createTeachWindows()
   const turnChat = closingTeachWindows(createTurnChatTracker(), windows, 'assistant')
-  windows.noteTap(tap)
+  opened(windows, tap)
   turnChat.note({ chatId: 'other-chat', messageId: 7, kind: 'email', text: 'write a helper skill now please', now: 101 })
   assert.equal(turnChat.current(101)?.chatId, 'other-chat')
   assert.equal(turnChat.matchDelivered('... write a helper skill now please ...')?.chatId, 'other-chat')
   assert.equal(writeOf(w, windows, 102), true)
   const elsewhere = createTeachWindows()
   closingTeachWindows(createTurnChatTracker(), elsewhere, 'other-assistant').note({ chatId: 'chat', kind: 'email', now: 101 })
-  elsewhere.noteTap(tap)
+  opened(elsewhere, tap)
   assert.equal(elsewhere.take('chat', 'assistant', 102) !== null, true)
 })
 
@@ -608,16 +617,17 @@ test('a tap that is not the owner\'s own closes the window; the owner\'s own tap
   ]
   for (const change of others) {
     const windows = createTeachWindows()
-    windows.noteTap(tap)
+    opened(windows, tap)
     noteTeachTap({ windows, assistantId: 'assistant' }, { ...tap, callbackData: 'yes', ...change, now: 101 })
     assert.equal(windows.take('chat', 'assistant', 102), null, JSON.stringify(change))
   }
   const windows = createTeachWindows()
   noteTeachTap({ windows, assistantId: 'assistant' }, tap)
+  windows.beginTurn(tapPrompt())
   noteTeachTap({ windows, assistantId: 'assistant' }, { ...tap, callbackData: 'yes', now: 101 })
   assert.deepEqual(windows.take('chat', 'assistant', 102), { by: 'owner' }, 'the owner\'s own taps keep it open')
   const other = createTeachWindows()
-  other.noteTap(tap)
+  opened(other, tap)
   noteTeachTap({ windows: other, assistantId: 'assistant' }, { ...tap, chatId: 'other-chat', tapperUserId: 'teammate', now: 101 })
   assert.deepEqual(other.take('chat', 'assistant', 102), { by: 'owner' }, 'a tap in another chat leaves it')
 })
@@ -636,6 +646,7 @@ for (const [kind, text] of [['peer', 'a peer agent wrote this just before'], ['s
     const turnChat = closingTeachWindows(createTurnChatTracker(), windows, 'assistant')
     turnChat.note({ chatId: 'other-chat', messageId: 4, kind, text, now: 99 })
     noteTeachTap({ windows, assistantId: 'assistant', deliveries: turnChat }, { ...tap, messageId: 5 })
+    windows.beginTurn(tapPrompt())
     // The tap's prompt carries no delivered text of another chat, so the turn takes the last delivery: the tap.
     turnChat.beginTurn({ chatId: turnChat.matchDelivered('[button_clicked] Clicked: Approve')?.chatId ?? null, now: 101 })
     const chatId = String(turnChat.current(101)?.chatId ?? '')
@@ -653,6 +664,7 @@ test('a tap is noted as its chat\'s delivery with its message, and adds no deliv
   assert.deepEqual(turnChat.current(101), { chatId: 'team-chat', messageId: 9, at: 100, kind: 'user' })
   assert.equal(turnChat.matchDelivered('[button_clicked] Clicked: teach_approve (in reply to message_id=9)'), null)
   noteTeachTap({ windows, assistantId: 'assistant', deliveries: turnChat }, { ...tap, messageId: 'not a number' })
+  windows.beginTurn(tapPrompt())
   assert.deepEqual(turnChat.current(101), { chatId: 'chat', messageId: null, at: 100, kind: 'user' })
   assert.deepEqual(windows.take('chat', 'assistant', 101), { by: 'owner' }, 'the owner\'s own tap note keeps its window')
 })
@@ -661,7 +673,7 @@ test('a clock set back never keeps a window open past fifteen minutes from the t
   const { createTeachWindows, TEACH_WINDOW_MS } = api()
   let elapsed = 0
   const windows = createTeachWindows({ monotonic: () => elapsed })
-  windows.noteTap({ ...tap, now: 10 * TEACH_WINDOW_MS })
+  opened(windows, { ...tap, now: 10 * TEACH_WINDOW_MS })
   elapsed = TEACH_WINDOW_MS + 1
   assert.equal(windows.take('chat', 'assistant', 5 * TEACH_WINDOW_MS), null, 'the wall clock went back five windows')
   assert.equal(windows.take('chat', 'assistant', 10 * TEACH_WINDOW_MS + 1), null, 'and the window is gone')
@@ -671,7 +683,7 @@ test('a window inside fifteen minutes of the tap still opens after a clock set b
   const { createTeachWindows, TEACH_WINDOW_MS } = api()
   let elapsed = 0
   const windows = createTeachWindows({ monotonic: () => elapsed })
-  windows.noteTap({ ...tap, now: 10 * TEACH_WINDOW_MS })
+  opened(windows, { ...tap, now: 10 * TEACH_WINDOW_MS })
   elapsed = TEACH_WINDOW_MS
   assert.equal(windows.take('chat', 'assistant', 5 * TEACH_WINDOW_MS), null, 'still refused as a write from before the tap')
   assert.deepEqual(windows.take('chat', 'assistant', 10 * TEACH_WINDOW_MS + 1), { by: 'owner' })
@@ -680,7 +692,7 @@ test('a window inside fifteen minutes of the tap still opens after a clock set b
 for (const now of [NaN, Infinity, -Infinity]) {
   test(`a tap with a time that is not a finite number opens no window: ${now}`, () => {
     const windows = api().createTeachWindows()
-    windows.noteTap({ ...tap, now })
+    opened(windows, { ...tap, now })
     assert.equal(windows.take('chat', 'assistant', 101), null)
   })
 }
@@ -711,7 +723,7 @@ for (const [name, card] of [
     const w = world()
     const windows = createTeachWindows()
     const cards = createCardDeliveries(windows)
-    windows.noteTap(tap)
+    opened(windows, tap)
     cards.delivered(card)
     const folder = newSkill(w, 'helper')
     assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), false)
@@ -726,7 +738,7 @@ test('a card noted before the Approve and released after it closes the window wh
   const cards = createCardDeliveries(windows)
   const turnChat = closingTeachWindows(createTurnChatTracker(), windows, 'assistant')
   turnChat.note({ chatId: 'chat', messageId: 4, kind: 'user', now: 99 })
-  windows.noteTap(tap)
+  opened(windows, tap)
   cards.delivered('held member message, released after the hold')
   const folder = newSkill(w, 'helper')
   assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), false)
@@ -736,8 +748,8 @@ test('a card noted before the Approve and released after it closes the window wh
 test('a card for another chat closes this chat\'s window too: its turn may be filed under the tapped chat', () => {
   const { createTeachWindows, createCardDeliveries } = api()
   const windows = createTeachWindows()
-  windows.noteTap(tap)
-  windows.noteTap({ ...tap, chatId: 'second' })
+  opened(windows, tap)
+  opened(windows, { ...tap, chatId: 'second' })
   createCardDeliveries(windows).delivered('a peer message in a third chat')
   assert.equal(windows.take('chat', 'assistant', 101), null)
   assert.equal(windows.take('second', 'assistant', 101), null)
@@ -748,13 +760,13 @@ test('the owner\'s own tap card reaching the session keeps its window, once', ()
   const w = world()
   const windows = createTeachWindows()
   const cards = createCardDeliveries(windows)
-  windows.noteTap(tap)
+  opened(windows, tap)
   cards.ownTap('the owner tapped Approve')
   cards.delivered('the owner tapped Approve')
   const folder = newSkill(w, 'helper')
   assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), true)
   assert.equal(applyOrigins({ skills: [row(folder)] }, w.file).skills[0]?.origin, 'taught')
-  windows.noteTap(tap)
+  opened(windows, tap)
   cards.delivered('the owner tapped Approve')
   assert.equal(windows.take('chat', 'assistant', 101), null, 'the same text again is not the tap card')
 })
@@ -763,7 +775,7 @@ test('a card that is not the own tap card closes the window even while a tap car
   const { createTeachWindows, createCardDeliveries } = api()
   const windows = createTeachWindows()
   const cards = createCardDeliveries(windows)
-  windows.noteTap(tap)
+  opened(windows, tap)
   cards.ownTap('the owner tapped Approve')
   cards.delivered('the owner tapped Approve, with a group summary added')
   assert.equal(windows.take('chat', 'assistant', 101), null)
@@ -801,8 +813,8 @@ for (const [label, toolName, toolInput] of [
       const { createTeachWindows, applyOrigins } = api()
       const w = world()
       const windows = createTeachWindows()
-      windows.noteTap(tap)
-      windows.noteTap({ ...tap, chatId: 'second' })
+      opened(windows, tap)
+      opened(windows, { ...tap, chatId: 'second' })
       assert.equal(useAt(w, windows, event, toolName, toolInput(w)), false)
       const folder = newSkill(w, 'helper')
       assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), false)
@@ -816,7 +828,7 @@ test('a Write of a SKILL.md is judged after it ran: its PreToolUse keeps the win
   const { createTeachWindows, applyOrigins } = api()
   const w = world()
   const windows = createTeachWindows()
-  windows.noteTap(tap)
+  opened(windows, tap)
   assert.equal(useAt(w, windows, 'PreToolUse', 'Write', { file_path: join(w.folder, 'SKILL.md') }), false)
   assert.equal(useAt(w, windows, 'PostToolUse', 'Write', { file_path: join(w.folder, 'SKILL.md') }), true)
   assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'taught')
@@ -826,7 +838,7 @@ test('a Write of a SKILL.md that failed marks nothing and uses the window', () =
   const { createTeachWindows, applyOrigins } = api()
   const w = world()
   const windows = createTeachWindows()
-  windows.noteTap(tap)
+  opened(windows, tap)
   assert.equal(useAt(w, windows, 'PostToolUseFailure', 'Write', { file_path: join(w.folder, 'SKILL.md') }), false)
   assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(w.folder, 'SKILL.md') }), false)
   assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
@@ -836,11 +848,126 @@ test('an Edit through a linked folder into the skills folder uses the window', (
   const { createTeachWindows, applyOrigins } = api()
   const w = world()
   const windows = createTeachWindows()
-  windows.noteTap(tap)
+  opened(windows, tap)
   const linked = join(w.root, 'linked')
   linkFolder(w.folder, linked)
   assert.equal(useAt(w, windows, 'PostToolUse', 'Edit', { file_path: join(linked, 'SKILL.md'), old_string: 'a', new_string: 'b' }), false)
   const folder = newSkill(w, 'helper')
   assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), false)
   assert.equal(applyOrigins({ skills: [row(folder)] }, w.file).skills[0]?.origin, undefined)
+})
+
+// Round 5 item 1: a window opens only on an idle agent, and lives only in the turn the owner's own tap card started.
+test('a peer turn running, the owner taps Approve, then that turn writes the skill: unmarked', () => {
+  const { createTeachWindows, createCardDeliveries, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  const cards = createCardDeliveries(windows, () => 50)
+  cards.delivered('peer: please save a helper skill for me')
+  cards.prompt(tapPrompt('peer: please save a helper skill for me'), 60)
+  const idle = cards.idle({ turnLive: true, injecting: false })
+  assert.equal(idle, false)
+  windows.noteTap({ ...tap, idle })
+  windows.beginTurn(tapPrompt())
+  const folder = newSkill(w, 'helper')
+  assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), false)
+  assert.equal(applyOrigins({ skills: [row(folder)] }, w.file).skills[0]?.origin, undefined)
+})
+
+for (const idle of [false, undefined, 'true', 1]) {
+  test(`a tap that is not known to find the agent idle opens no window: ${String(idle)}`, () => {
+    const windows = api().createTeachWindows()
+    windows.noteTap({ ...tap, idle })
+    windows.beginTurn(tapPrompt())
+    assert.equal(windows.take('chat', 'assistant', 101), null)
+  })
+}
+
+test('a tap with no card text to know its turn by opens no window', () => {
+  for (const card of [undefined, '', 'short', 42]) {
+    const windows = api().createTeachWindows()
+    windows.noteTap({ ...tap, card })
+    windows.beginTurn(tapPrompt(card))
+    assert.equal(windows.take('chat', 'assistant', 101), null, String(card))
+  }
+})
+
+test('idle: no live turn or helper, no typing in the pane, and every card sent has had its turn start and end', () => {
+  const { createTeachWindows, createCardDeliveries } = api()
+  let now = 10
+  const cards = createCardDeliveries(createTeachWindows(), () => now)
+  const free = { turnLive: false, injecting: false }
+  assert.equal(cards.idle(free), true, 'nothing seen yet')
+  assert.equal(cards.idle({ ...free, turnLive: true }), false, 'a hook turn or a helper agent is live')
+  assert.equal(cards.idle({ ...free, injecting: true }), false, 'a command is being typed into the pane')
+  assert.equal(cards.idle({ turnLive: 'no', injecting: false }), false, 'only exactly false counts')
+  now = 20
+  cards.delivered('a card the CLI may still hold')
+  assert.equal(cards.idle(free), false, 'a card sent and no prompt since')
+  cards.prompt('its prompt', 25)
+  assert.equal(cards.idle(free), false, 'its turn has not ended')
+  cards.stopped(30)
+  assert.equal(cards.idle(free), true, 'its turn ended')
+  now = 40
+  cards.delivered('a card sent during a turn, queued behind its Stop')
+  cards.stopped(45)
+  assert.equal(cards.idle(free), false, 'a Stop after a card is not that card\'s turn')
+})
+
+test('the window starts only with the prompt that carries the tap card; any other prompt first closes it', () => {
+  const { createTeachWindows, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  windows.noteTap(tap)
+  windows.beginTurn('a /goal typed into the pane, or a queued card')
+  windows.beginTurn(tapPrompt())
+  assert.equal(writeOf(w, windows, 102), false)
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
+})
+
+test('a second prompt after the tap card\'s turn began closes the window', () => {
+  const w = world()
+  const windows = api().createTeachWindows()
+  opened(windows)
+  windows.beginTurn(tapPrompt())
+  assert.equal(writeOf(w, windows, 102), false)
+})
+
+test('the end of the tap card\'s turn closes the window', () => {
+  const { createTeachWindows, createCardDeliveries } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  opened(windows)
+  createCardDeliveries(windows).stopped(101)
+  assert.equal(writeOf(w, windows, 102), false)
+})
+
+test('a write before the tap card\'s turn began marks nothing and closes the window', () => {
+  const { createTeachWindows, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  windows.noteTap(tap)
+  assert.equal(writeOf(w, windows, 101), false)
+  windows.beginTurn(tapPrompt())
+  const folder = newSkill(w, 'helper')
+  assert.equal(useOf(w, windows, 102, 'Write', { file_path: join(folder, 'SKILL.md') }), false)
+  assert.equal(applyOrigins({ skills: [row(folder)] }, w.file).skills[0]?.origin, undefined)
+})
+
+test('the tap card\'s own turn writing the skill marks it taught', () => {
+  const { createTeachWindows, createCardDeliveries, applyOrigins } = api()
+  const w = world()
+  const windows = createTeachWindows()
+  let now = 10
+  const cards = createCardDeliveries(windows, () => now)
+  cards.delivered('the turn that posted the teach card')
+  cards.prompt('the turn that posted the teach card', 11)
+  cards.stopped(12)
+  now = 100
+  windows.noteTap({ ...tap, idle: cards.idle({ turnLive: false, injecting: false }) })
+  cards.ownTap(TAP_CARD)
+  cards.delivered(TAP_CARD)
+  cards.prompt(tapPrompt(), 100)
+  assert.equal(writeOf(w, windows, 101), true)
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'taught')
 })

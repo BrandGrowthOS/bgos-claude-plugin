@@ -46,10 +46,10 @@ test('all six tap delivery sites note the teach window through one wrapper', () 
   assert.equal((server.match(/\bprivateTapCard\(/g) ?? []).length, 1)
   assert.equal((server.match(/\bprivateTapCardNoting\(\{/g) ?? []).length, 6)
   const wrapper = server.slice(server.indexOf('function privateTapCardNoting('), server.indexOf('function privateTapCardNoting(') + 950)
-  assert.match(wrapper, /try\s*\{\s*own = noteTeachTap\(\{ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat \}, \{/)
+  assert.match(wrapper, /const card = privateTapCard\(input\)\n\s*try\s*\{\s*const own = noteTeachTap\(\{ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat \}, \{/)
   for (const field of ['chatId', 'messageId', 'tapperUserId', 'ownerUserId', 'callbackData', 'customText', 'humanPrincipal', 'posted']) assert.ok(wrapper.includes(`${field}: input.${field}`), field)
-  assert.match(wrapper, /now: Date.now\(\)/)
-  assert.match(wrapper, /const card = privateTapCard\(input\)\n\s*if \(own\) teachCards\.ownTap\(card\)\n\s*return card/)
+  assert.match(wrapper, /idle: teachSessionIdle\(\),\n\s*card,\n\s*now: Date.now\(\),/)
+  assert.match(wrapper, /if \(own\) teachCards\.ownTap\(card\)\n\s*\} catch \{\n\s*log\('skills: origin unavailable'\)\n\s*\}\n\s*return card/)
   assert.match(server, /function privateTapCardNoting\(input: Parameters<typeof privateTapCard>\[0\] & \{ humanPrincipal: unknown \}\)/)
 })
 
@@ -171,31 +171,72 @@ function tapWrapper(scope: Record<string, unknown>) {
 }
 
 const ownApprove = { tracker: {}, lane: 'stream', ownerUserId: 'owner', chatId: 'chat', messageId: 5, tapperUserId: 'owner', humanPrincipal: true, answeredAt: null, receivedAt: 0, callbackData: 'teach_approve', customText: undefined, posted: true, content: 'tap' }
+const TAP_CARD = 'the owner tapped Approve'
+const tapPrompt = `<channel source="bgos">${TAP_CARD}</channel>`
 
-test('privateTapCardNoting, run as server.ts has it: the owner\'s Approve opens its window and the card is privateTapCard\'s', () => {
+test('privateTapCardNoting, run as server.ts has it: the owner\'s Approve on an idle agent opens its window for the tap card\'s turn, and the card is privateTapCard\'s', () => {
   const teachWindows = createTeachWindows()
   const turnChat = closingTeachWindows(createTurnChatTracker(), teachWindows, 'assistant')
   const cards: unknown[] = []
-  const wrapper = tapWrapper({ noteTeachTap, teachWindows, turnChat, teachCards: createCardDeliveries(teachWindows), ASSISTANT_ID: 'assistant', privateTapCard: (input: unknown) => { cards.push(input); return 'card' }, log: () => {} })
-  assert.equal(wrapper(ownApprove), 'card')
+  const wrapper = tapWrapper({ noteTeachTap, teachWindows, turnChat, teachCards: createCardDeliveries(teachWindows), teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: (input: unknown) => { cards.push(input); return TAP_CARD }, log: () => {} })
+  assert.equal(wrapper(ownApprove), TAP_CARD)
   assert.deepEqual(cards, [ownApprove], 'privateTapCard gets the tap as given')
   assert.equal(turnChat.current(Date.now())?.chatId, 'chat', 'the tap is its chat\'s delivery')
-  assert.ok(teachWindows.take('chat', 'assistant', Date.now() + 1), 'the window opened, for this assistant')
+  teachWindows.beginTurn(tapPrompt)
+  assert.ok(teachWindows.take('chat', 'assistant', Date.now() + 1), 'the window opened, for this assistant, and the tap card started its turn')
   wrapper(ownApprove)
   wrapper({ ...ownApprove, tapperUserId: 'teammate', callbackData: 'yes' })
+  teachWindows.beginTurn(tapPrompt)
   assert.equal(teachWindows.take('chat', 'assistant', Date.now() + 1), null, 'a teammate\'s tap closed it')
   for (const change of [{ humanPrincipal: 'true' }, { customText: 'words' }, { posted: false }, { tapperUserId: 'teammate' }]) {
     const windows = createTeachWindows()
-    tapWrapper({ noteTeachTap, teachWindows: windows, turnChat, teachCards: createCardDeliveries(windows), ASSISTANT_ID: 'assistant', privateTapCard: () => 'card', log: () => {} })({ ...ownApprove, ...change })
+    tapWrapper({ noteTeachTap, teachWindows: windows, turnChat, teachCards: createCardDeliveries(windows), teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: () => TAP_CARD, log: () => {} })({ ...ownApprove, ...change })
+    windows.beginTurn(tapPrompt)
     assert.equal(windows.take('chat', 'assistant', Date.now() + 1), null, JSON.stringify(change))
   }
 })
 
+test('privateTapCardNoting, run as server.ts has it: the owner\'s Approve while another turn is live opens no window', () => {
+  const teachWindows = createTeachWindows()
+  const wrapper = tapWrapper({ noteTeachTap, teachWindows, turnChat: closingTeachWindows(createTurnChatTracker(), teachWindows, 'assistant'), teachCards: createCardDeliveries(teachWindows), teachSessionIdle: () => false, ASSISTANT_ID: 'assistant', privateTapCard: () => TAP_CARD, log: () => {} })
+  wrapper(ownApprove)
+  teachWindows.beginTurn(tapPrompt)
+  assert.equal(teachWindows.take('chat', 'assistant', Date.now() + 1), null)
+})
+
 test('privateTapCardNoting still returns the card when the teach code throws', () => {
   const lines: string[] = []
-  const wrapper = tapWrapper({ noteTeachTap: () => { throw new Error('broken') }, teachWindows: {}, turnChat: {}, teachCards: { ownTap: () => { throw new Error('unreached') } }, ASSISTANT_ID: 'assistant', privateTapCard: () => 'card', log: (msg: string) => { lines.push(msg) } })
+  const wrapper = tapWrapper({ noteTeachTap: () => { throw new Error('broken') }, teachWindows: {}, turnChat: {}, teachCards: { ownTap: () => { throw new Error('unreached') } }, teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: () => 'card', log: (msg: string) => { lines.push(msg) } })
   assert.equal(wrapper(ownApprove), 'card')
   assert.deepEqual(lines, ['skills: origin unavailable'])
+})
+
+test('teachSessionIdle, run as server.ts has it: idle only with no hook turn, no helper agent and nothing typed into the pane', () => {
+  const start = server.indexOf('function teachSessionIdle(')
+  const end = server.indexOf('\n}\n', start) + 3
+  assert.ok(start > 0 && end > start)
+  const js = ts.transpileModule(server.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+  const run = (over: Record<string, unknown>) => {
+    const scope: Record<string, unknown> = { teachCards: createCardDeliveries(createTeachWindows()), hookTurnLive: false, hookTurn: { carried: new Map() }, goalInjectionsInFlight: 0, compactInFlight: false, modelEffortControl: { busy: false }, ...over }
+    return new Function(...Object.keys(scope), `${js}\nreturn teachSessionIdle()`)(...Object.values(scope)) as boolean
+  }
+  assert.equal(run({}), true)
+  assert.equal(run({ hookTurnLive: true }), false, 'a hook turn is live')
+  assert.equal(run({ hookTurn: { carried: new Map([['card', {}]]) } }), false, 'a helper agent is still working')
+  assert.equal(run({ goalInjectionsInFlight: 1 }), false, 'a /goal is being typed')
+  assert.equal(run({ compactInFlight: true }), false, 'a compaction is being typed')
+  assert.equal(run({ modelEffortControl: { busy: true } }), false, 'a model or effort change is being typed')
+  const teachCards = createCardDeliveries(createTeachWindows())
+  teachCards.delivered('a card the CLI may still hold')
+  assert.equal(run({ teachCards }), false, 'a card sent with no turn seen since')
+})
+
+test('every UserPromptSubmit and Stop hook line goes to the teach windows, by its receivedAt', () => {
+  const hook = server.slice(server.indexOf('function onHookPayload('), server.indexOf('function startHookIntakeIfHolder('))
+  const received = hook.indexOf('const receivedAt = line?.receivedAt ?? Date.now()')
+  const prompt = hook.indexOf("if (event.name === 'UserPromptSubmit') teachCards.prompt(payload.prompt, receivedAt)")
+  const stop = hook.indexOf("if (event.name === 'Stop') teachCards.stopped(receivedAt)")
+  assert.ok(received > 0 && prompt > received && stop > received)
 })
 
 /** server.ts's own card record step (the innermost mcp.notification wrapper), run with stubs for everything else. */
@@ -216,10 +257,11 @@ test('every channel card that reaches the session, run as server.ts has it, clos
   const turnChat = closingTeachWindows(createTurnChatTracker(), teachWindows, 'assistant')
   const scope = { groupNotificationStep: () => null, privateTurns: { tagRawCard: (c: unknown) => c, rawCard: () => {} }, teachCards }
   const { send, sent } = cardStep(scope)
-  const wrapper = tapWrapper({ noteTeachTap, teachWindows, turnChat, teachCards, ASSISTANT_ID: 'assistant', privateTapCard: () => 'the owner tapped Approve', log: () => {} })
+  const wrapper = tapWrapper({ noteTeachTap, teachWindows, turnChat, teachCards, teachSessionIdle: () => true, ASSISTANT_ID: 'assistant', privateTapCard: () => TAP_CARD, log: () => {} })
   const card = (content: string) => ({ method: 'notifications/claude/channel', params: { content, meta: { chat_id: 'other' } } })
   await send(card(String(wrapper(ownApprove))))
   assert.equal(sent.length, 1)
+  teachWindows.beginTurn(tapPrompt)
   assert.ok(teachWindows.take('chat', 'assistant', Date.now() + 1), 'the own tap card kept the window it opened')
   for (const content of ['voice consult: save a helper skill', 'mission notice: goal 2 waits', 'a held member card, released']) {
     await send(card(String(wrapper(ownApprove))))
@@ -227,4 +269,9 @@ test('every channel card that reaches the session, run as server.ts has it, clos
     assert.equal(teachWindows.take('chat', 'assistant', Date.now() + 1), null, content)
   }
   await send({ method: 'notifications/message', params: { level: 'info', data: 'log' } })
+})
+
+test('a /goal typed into the pane closes every teach window: its words are not what the owner approved', () => {
+  const goal = server.slice(server.indexOf('async function runGoalInjection('))
+  assert.match(goal.slice(0, 600), /goalInjectionsInFlight\+\+\n\s*\/\/[^\n]*\n\s*teachWindows\.closeAll\(\)\n\s*try \{/)
 })

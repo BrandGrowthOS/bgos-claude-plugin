@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path'
 import { unescapeAgentButtonValue } from './message-text.ts'
 import { SKILL_NAME_RE, type IdentFs, type SkillItem, type SkillsList } from './skills-inventory.ts'
 import { OWN_MCP_TOOLS } from './hook-events.ts'
-import type { TurnChatNote } from './turn-chat.ts'
+import { deliveredNeedle, promptCarriesDelivered, type TurnChatNote } from './turn-chat.ts'
 
 export type SkillOrigin = 'taught' | 'made' | 'installed' | 'shared' | 'repo' | 'synced'
 export const TEACH_APPROVE = 'teach_approve'
@@ -33,6 +33,10 @@ type TeachTap = {
   /** The click's own humanPrincipal, raw: only exactly true says a person tapped. */
   humanPrincipal?: unknown
   posted: unknown
+  /** Exactly true when no turn could overlap the window: createCardDeliveries' idle, read as the tap card goes out. */
+  idle?: unknown
+  /** The tap card's text as built: the prompt that carries it starts the turn the window lives in. */
+  card?: unknown
   now: number
 }
 
@@ -58,6 +62,13 @@ function windowKey(chatId: unknown, assistantId: unknown): string | null {
  * exactly true), no words were typed with it, and the tapper is the owner (both non-blank). A signed-in teammate is a
  * person too, so the owner check stays.
  */
+/** The owner's own teach Approve as a person: what noteTap opens a window for, when the agent is idle. */
+export function teachTapOpens(t: Omit<TeachTap, 'chatId' | 'assistantId' | 'now'>): boolean {
+  try {
+    return ownPersonTap(t) && typeof t.callbackData === 'string' && unescapeAgentButtonValue(t.callbackData) === TEACH_APPROVE
+  } catch { failed(); return false }
+}
+
 function ownPersonTap(t: Omit<TeachTap, 'chatId' | 'assistantId' | 'now'>): boolean {
   return !!t.posted && t.humanPrincipal === true &&
     !(t.customText != null && String(t.customText) !== '') &&
@@ -67,26 +78,27 @@ function ownPersonTap(t: Omit<TeachTap, 'chatId' | 'assistantId' | 'now'>): bool
 }
 
 /**
- * The teach windows of this daemon life, in memory. Each one keeps the tap's wall clock time (`at`, to refuse a write
- * from before the tap) and a monotonic reading (`since`), so a clock set back never keeps a window open past
- * TEACH_WINDOW_MS from the tap. `monotonic` is for tests.
+ * The teach windows of this daemon life, in memory. A window opens only on an idle agent (no turn that anyone else
+ * started could overlap it), and it lives only in the one turn the owner's tap card starts: the next prompt must carry
+ * that card, any other prompt or that turn's end closes it, and a write before that prompt marks nothing. Each one
+ * keeps the tap's wall clock time (`at`, to refuse a write from before the tap) and a monotonic reading (`since`), so
+ * a clock set back never keeps a window open past TEACH_WINDOW_MS from the tap. `monotonic` is for tests.
  */
 export function createTeachWindows(opts: { monotonic?: () => number } = {}) {
   const monotonic = opts.monotonic ?? (() => performance.now())
-  const windows = new Map<string, { by: string; at: number; since: number }>()
+  const windows = new Map<string, { by: string; at: number; since: number; needle: string | null; started: boolean }>()
   const expired = (window: { at: number; since: number }, now: number): boolean =>
     now - window.at > TEACH_WINDOW_MS || monotonic() - window.since > TEACH_WINDOW_MS
   return {
     noteTap(t: TeachTap): void {
       try {
         const key = windowKey(t.chatId, t.assistantId)
-        if (key === null || !Number.isFinite(t.now) || !ownPersonTap(t) ||
-          typeof t.callbackData !== 'string' ||
-          unescapeAgentButtonValue(t.callbackData) !== TEACH_APPROVE) return
+        const needle = typeof t.card === 'string' ? deliveredNeedle(t.card) : null
+        if (key === null || !Number.isFinite(t.now) || t.idle !== true || !teachTapOpens(t)) return
         for (const [open, window] of windows) {
           if (expired(window, t.now)) windows.delete(open)
         }
-        windows.set(key, { by: String(t.tapperUserId), at: t.now, since: monotonic() })
+        windows.set(key, { by: String(t.tapperUserId), at: t.now, since: monotonic(), needle, started: false })
       } catch { failed() }
     },
     /** A delivery in this chat that is not the owner's own tap: the window no longer means what the owner approved. */
@@ -100,6 +112,20 @@ export function createTeachWindows(opts: { monotonic?: () => number } = {}) {
     closeAll(): void {
       windows.clear()
     },
+    /**
+     * A turn began (a UserPromptSubmit hook line). A window waiting for its tap card's turn starts when the prompt
+     * carries that card; every other window closes: a prompt that does not carry the tap card, or a second prompt, is
+     * not the turn the owner approved.
+     */
+    beginTurn(prompt: unknown): void {
+      try {
+        for (const [key, window] of windows) {
+          // A tap card too short to know its prompt by (or none) never starts.
+          if (!window.started && window.needle !== null && promptCarriesDelivered(prompt, window.needle)) window.started = true
+          else windows.delete(key)
+        }
+      } catch { failed(); windows.clear() }
+    },
     take(chatId: string, assistantId: string, now: number): { by: string } | null {
       try {
         const key = windowKey(chatId, assistantId)
@@ -109,6 +135,8 @@ export function createTeachWindows(opts: { monotonic?: () => number } = {}) {
         // which still ends TEACH_WINDOW_MS after the tap on the monotonic clock.
         if (!window || !Number.isFinite(now) || now < window.at) return null
         windows.delete(key)
+        // A write before the tap card's turn began is not that turn's.
+        if (!window.started) return null
         if (expired(window, now)) return null
         return { by: window.by }
       } catch { failed(); return null }
@@ -150,22 +178,50 @@ export function noteTeachTap(
  * owner's own tap card closes every teach window, whatever chat it names. A voice card, a mission notice or a card
  * held before the tap and released after it is not the write the owner approved, and the turn it starts may be filed
  * under the tapped chat. `ownTap` names the text of the owner's own tap card as it was built (the latest one only);
- * that text reaching the session once keeps the window. Never throws.
+ * that text reaching the session once keeps the window.
+ *
+ * It also keeps when the last card went out, and when the last turn began (`prompt`, a UserPromptSubmit line's
+ * receivedAt) and ended (`stopped`, a Stop line's): `idle` says no turn could overlap a window opened now. No hook
+ * turn or helper agent is live, nothing is being typed into the pane, and every card sent has had a turn begin after
+ * it and that turn has ended. A card the CLI still holds, queued behind a Stop, starts a turn no one has seen begin.
+ * Never throws.
  */
-export function createCardDeliveries(windows: Pick<TeachWindows, 'closeAll'>) {
+export function createCardDeliveries(windows: Pick<TeachWindows, 'closeAll' | 'beginTurn'>, now: () => number = Date.now) {
   let ownTapCard: string | null = null
+  let cardAt = -Infinity
+  let promptAt = -Infinity
+  let stopAt = -Infinity
+  const at = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? value : now()
   return {
     ownTap(content: unknown): void {
       ownTapCard = typeof content === 'string' ? content : null
     },
     delivered(content: unknown): void {
       try {
+        cardAt = now()
         if (ownTapCard !== null && content === ownTapCard) {
           ownTapCard = null
           return
         }
         windows.closeAll()
+      } catch { failed(); try { windows.closeAll() } catch { /* nothing more to close */ } }
+    },
+    prompt(text: unknown, receivedAt?: unknown): void {
+      try {
+        promptAt = at(receivedAt)
+        windows.beginTurn(text)
+      } catch { failed(); try { windows.closeAll() } catch { /* nothing more to close */ } }
+    },
+    stopped(receivedAt?: unknown): void {
+      try {
+        stopAt = at(receivedAt)
+        windows.closeAll()
       } catch { failed() }
+    },
+    idle(session: { turnLive: unknown; injecting: unknown }): boolean {
+      try {
+        return session.turnLive === false && session.injecting === false && promptAt >= cardAt && stopAt >= promptAt
+      } catch { failed(); return false }
     },
   }
 }

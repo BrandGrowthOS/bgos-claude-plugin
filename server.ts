@@ -11130,9 +11130,9 @@ const teachCards = createCardDeliveries(teachWindows)
 // ask answer has none, so null). Any tap that is not the owner's own closes its chat's window, and every tap is noted
 // as its chat's delivery, so the turn it starts is filed under that chat (lib/skill-origins.ts noteTeachTap).
 function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { humanPrincipal: unknown }) {
-  let own = false
+  const card = privateTapCard(input)
   try {
-    own = noteTeachTap({ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat }, {
+    const own = noteTeachTap({ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat }, {
       chatId: input.chatId,
       messageId: input.messageId,
       tapperUserId: input.tapperUserId,
@@ -11141,14 +11141,24 @@ function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { hu
       customText: input.customText,
       humanPrincipal: input.humanPrincipal,
       posted: input.posted,
+      idle: teachSessionIdle(),
+      card,
       now: Date.now(),
     })
+    if (own) teachCards.ownTap(card)
   } catch {
     log('skills: origin unavailable')
   }
-  const card = privateTapCard(input)
-  if (own) teachCards.ownTap(card)
   return card
+}
+
+/** No turn could overlap a teach window opened now (lib/skill-origins.ts createCardDeliveries idle): no hook turn and
+ *  no helper agent is live, nothing is being typed into the pane, and every card sent has had its turn begin and end. */
+function teachSessionIdle(): boolean {
+  return teachCards.idle({
+    turnLive: hookTurnLive || hookTurn.carried.size > 0,
+    injecting: goalInjectionsInFlight > 0 || compactInFlight || modelEffortControl.busy,
+  })
 }
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
 // The owner is named so that no turn acts as the owner once someone else reached it (board row f81a527c), and the
@@ -11934,6 +11944,10 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   // folder uses the window, and a tool the daemon cannot judge (a shell, any other MCP tool) closes every window at its
   // first hook line (lib/skill-origins.ts noteSkillToolUse).
   try {
+    // A teach window lives only in the turn its tap card starts: that prompt starts it, any other prompt or a Stop
+    // closes it (lib/skill-origins.ts createTeachWindows beginTurn).
+    if (event.name === 'UserPromptSubmit') teachCards.prompt(payload.prompt, receivedAt)
+    if (event.name === 'Stop') teachCards.stopped(receivedAt)
     if (event.name === 'PreToolUse' || event.name === 'PostToolUse' || event.name === 'PostToolUseFailure') {
       noteSkillToolUse({
         event: event.name,
@@ -14661,6 +14675,8 @@ async function runGoalInjection(steps: InjectionStep[], label: string): Promise<
   // Counted so a /steer does not press Escape between the typed text and its
   // Enter (lib/steer.ts SteerGate).
   goalInjectionsInFlight++
+  // Typed words a teach Approve did not cover: no write after them reads taught (lib/skill-origins.ts).
+  teachWindows.closeAll()
   try {
     // A model or effort change holds the composer until it is confirmed.
     if (modelEffortControl.busy) await modelEffortControl.whenIdle()
