@@ -96,7 +96,7 @@ test('host normal and emergency stop cannot claim clean while installer cleanup 
 })
 
 /** The profile directory a frame lands in, exactly as the host derives it. */
-function profileDirForFrame(frame: Record<string, unknown>, assistantId = 900): string {
+function profileDirForFrame(frame: Record<string, unknown>, assistantId = 700): string {
   const principal = readFramePrincipal(frame)
   assert.ok(principal.ok, `the frame's principal is readable: ${JSON.stringify(frame)}`)
   return browserPathsFor({ agentRoot: ROOT, assistantId, principal: principal.principal }).profileDir
@@ -157,14 +157,14 @@ test('PROFILE ISOLATION: the frame path launches one browser per principal, and 
   const { pool, launched } = fakePool()
   const relay = relayOver(pool)
   const nav = (id: number) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: 'https://example.com' } } })
-  const alice = await relay.relay({ clientId: 'c1', assistantId: 900, principal: 'user-user_2Alice', message: nav(1) })
-  const bob = await relay.relay({ clientId: 'c1', assistantId: 900, principal: 'user-user_2Bob', message: nav(2) })
-  const owner = await relay.relay({ clientId: 'c1', assistantId: 900, message: nav(3) })
-  const aliceAgain = await relay.relay({ clientId: 'c1', assistantId: 900, principal: 'user-user_2Alice', message: nav(4) })
+  const alice = await relay.relay({ clientId: 'c1', assistantId: 700, principal: 'user-user_2Alice', message: nav(1) })
+  const bob = await relay.relay({ clientId: 'c1', assistantId: 700, principal: 'user-user_2Bob', message: nav(2) })
+  const owner = await relay.relay({ clientId: 'c1', assistantId: 700, message: nav(3) })
+  const aliceAgain = await relay.relay({ clientId: 'c1', assistantId: 700, principal: 'user-user_2Alice', message: nav(4) })
   for (const answer of [alice, bob, owner, aliceAgain]) assert.equal(answer.ok, true, JSON.stringify(answer))
   assert.equal(launched.length, 3, `three principals, three browsers: ${launched.join(', ')}`)
   assert.equal(new Set(launched).size, 3, 'each principal got its own profile directory')
-  assert.equal(launched[2], join(ROOT, '900', 'browser', OWNER_PRINCIPAL), 'a frame with no principal is the owner')
+  assert.equal(launched[2], join(ROOT, '700', 'browser', OWNER_PRINCIPAL), 'a frame with no principal is the owner')
   assert.match(textOf(alice), new RegExp(escapeRe(launched[0])))
   assert.match(textOf(aliceAgain), new RegExp(escapeRe(launched[0])), "Alice's second call ran in Alice's browser")
   assert.match(textOf(bob), new RegExp(escapeRe(launched[1])), "Bob's call ran in Bob's browser")
@@ -172,25 +172,25 @@ test('PROFILE ISOLATION: the frame path launches one browser per principal, and 
 })
 
 test('the profile directory: ~/.bgos-agent/<assistantId>/browser/<principal>, owner when absent', () => {
-  assert.equal(profileDirForFrame({}), join(ROOT, '900', 'browser', 'owner'))
-  assert.equal(profileDirForFrame({ principal: undefined }), join(ROOT, '900', 'browser', 'owner'))
+  assert.equal(profileDirForFrame({}), join(ROOT, '700', 'browser', 'owner'))
+  assert.equal(profileDirForFrame({ principal: undefined }), join(ROOT, '700', 'browser', 'owner'))
   // An explicit "owner" IS the fallback value, so it is the same directory.
-  assert.equal(profileDirForFrame({ principal: 'owner' }), join(ROOT, '900', 'browser', 'owner'))
-  assert.equal(profileDirForFrame({ principal: 'user-42' }), join(ROOT, '900', 'browser', 'user-42'))
+  assert.equal(profileDirForFrame({ principal: 'owner' }), join(ROOT, '700', 'browser', 'owner'))
+  assert.equal(profileDirForFrame({ principal: 'user-42' }), join(ROOT, '700', 'browser', 'user-42'))
   // Today's value is user-<clerkUserId>; Clerk ids carry upper case, so the
   // name is lower cased for reading and made unique by the digest.
   assert.match(basename(profileDirForFrame({ principal: 'user-user_2NNEqL2nrIRdJ194ndJqAHwEfxC' })), /^user-user_2nneql2nrirdj1\.[0-9a-f]{32}$/)
   // The same principal is the same directory every time, and another agent's
   // browser for the same person is another directory.
   assert.equal(profileDirForFrame({ principal: 'user-x' }), profileDirForFrame({ principal: 'user-x' }))
-  assert.notEqual(profileDirForFrame({ principal: 'user-x' }, 900), profileDirForFrame({ principal: 'user-x' }, 901))
+  assert.notEqual(profileDirForFrame({ principal: 'user-x' }, 700), profileDirForFrame({ principal: 'user-x' }, 701))
 })
 
 test('a principal can never name a directory outside the agent browser folder', () => {
   const hostile = ['..', '.', '../..', '../../etc', '/etc/passwd', 'a\\..\\b', 'C:\\Windows', '\u0000', 'nul', 'COM1', 'con.txt', ' ', '\n', '~', '%2e%2e']
   for (const p of hostile) {
     const dir = profileDirForFrame({ principal: p })
-    assert.equal(dirname(dir), join(ROOT, '900', 'browser'), `${JSON.stringify(p)} stays directly under browser/`)
+    assert.equal(dirname(dir), join(ROOT, '700', 'browser'), `${JSON.stringify(p)} stays directly under browser/`)
     const name = basename(dir)
     assert.ok(name !== '.' && name !== '..' && !name.includes('/') && !name.includes('\\'), `${JSON.stringify(p)} gave ${name}`)
     assert.ok(!/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/.test(name), `${JSON.stringify(p)} gave a Windows device name ${name}`)
@@ -212,7 +212,7 @@ test('readFramePrincipal: absent is the owner, a present value is used exactly, 
 test('a frame whose principal cannot be read is refused and launches nothing', async () => {
   const { pool, launched } = fakePool()
   const relay = relayOver(pool)
-  const answer = await relay.relay({ clientId: 'c1', assistantId: 900, principal: null, message: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: 'https://x.test' } } } })
+  const answer = await relay.relay({ clientId: 'c1', assistantId: 700, principal: null, message: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: 'https://x.test' } } } })
   assert.equal(answer.ok, false)
   assert.equal(answer.error.code, 'bad_frame')
   assert.equal(launched.length, 0, 'no browser, least of all the owner one')
@@ -224,18 +224,18 @@ test('a frame whose principal cannot be read is refused and launches nothing', a
 test('relay: initialize, ping, tools/list and a notification, as the desktop answers them', async () => {
   const { pool } = fakePool()
   const relay = relayOver(pool)
-  const init = await relay.relay({ clientId: 'c1', assistantId: 900, message: { jsonrpc: '2.0', id: 'i', method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'shim', version: '1' } } } })
+  const init = await relay.relay({ clientId: 'c1', assistantId: 700, message: { jsonrpc: '2.0', id: 'i', method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'shim', version: '1' } } } })
   assert.equal(init.ok, true)
   assert.equal(init.message.id, 'i')
   assert.equal(init.message.result.protocolVersion, '2025-06-18')
   assert.deepEqual(init.message.result.capabilities, { tools: {} })
   assert.equal(init.message.result.serverInfo.name, 'hoai-agent-browser')
   assert.match(init.message.result.instructions, /your own browser host on test-box/)
-  const note = await relay.relay({ clientId: 'c1', assistantId: 900, message: { jsonrpc: '2.0', method: 'notifications/initialized' } })
+  const note = await relay.relay({ clientId: 'c1', assistantId: 700, message: { jsonrpc: '2.0', method: 'notifications/initialized' } })
   assert.deepEqual(note, { ok: true, message: {} })
-  const ping = await relay.relay({ clientId: 'c1', assistantId: 900, message: { jsonrpc: '2.0', id: 2, method: 'ping' } })
+  const ping = await relay.relay({ clientId: 'c1', assistantId: 700, message: { jsonrpc: '2.0', id: 2, method: 'ping' } })
   assert.deepEqual(ping.message.result, {})
-  const list = await relay.relay({ clientId: 'c1', assistantId: 900, message: { jsonrpc: '2.0', id: 3, method: 'tools/list' } })
+  const list = await relay.relay({ clientId: 'c1', assistantId: 700, message: { jsonrpc: '2.0', id: 3, method: 'tools/list' } })
   assert.deepEqual(
     list.message.result.tools.map((t: any) => t.name),
     ['hoai_browser_open_session', 'hoai_browser_close_session', 'hoai_browser_status', 'hoai_browser_wait_gate', 'browser_navigate'],
@@ -247,16 +247,16 @@ test('relay: a clientId stays bound to its assistant, and malformed frames are r
   const { pool } = fakePool()
   const relay = relayOver(pool)
   const msg = { jsonrpc: '2.0', id: 1, method: 'ping' }
-  assert.equal((await relay.relay({ clientId: 'c1', assistantId: 900, message: msg })).ok, true)
-  const other = await relay.relay({ clientId: 'c1', assistantId: 901, message: msg })
+  assert.equal((await relay.relay({ clientId: 'c1', assistantId: 700, message: msg })).ok, true)
+  const other = await relay.relay({ clientId: 'c1', assistantId: 701, message: msg })
   assert.equal(other.ok, false)
   assert.match(other.error.message, /another agent/)
   for (const bad of [
-    { assistantId: 900, message: msg },
+    { assistantId: 700, message: msg },
     { clientId: 'c2', message: msg },
-    { clientId: 'c2', assistantId: 900 },
-    { clientId: 'c2', assistantId: 900, message: { jsonrpc: '1.0', id: 1, method: 'ping' } },
-    { clientId: 'c2', assistantId: 900, message: { jsonrpc: '2.0', id: 1 } },
+    { clientId: 'c2', assistantId: 700 },
+    { clientId: 'c2', assistantId: 700, message: { jsonrpc: '1.0', id: 1, method: 'ping' } },
+    { clientId: 'c2', assistantId: 700, message: { jsonrpc: '2.0', id: 1 } },
   ]) {
     const answer = await relay.relay(bad)
     assert.equal(answer.ok, false, JSON.stringify(bad))
@@ -269,7 +269,7 @@ test('relay: session tools answer for this host, unknown and never-exposed tools
   const { pool, calls } = fakePool()
   const relay = relayOver(pool)
   const call = async (name: string, args: Record<string, unknown> = {}, principal = 'user-a') =>
-    (await relay.relay({ clientId: 'c1', assistantId: 900, principal, message: { jsonrpc: '2.0', id: name + Math.random(), method: 'tools/call', params: { name, arguments: args } } })).message.result
+    (await relay.relay({ clientId: 'c1', assistantId: 700, principal, message: { jsonrpc: '2.0', id: name + Math.random(), method: 'tools/call', params: { name, arguments: args } } })).message.result
   assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_status') } }), /No browser session is open/)
   assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_open_session', { purpose: 'Check the seat map', profile: 'preview' }) } }), /open on test-box.*discarded at close/s)
   assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_status') } }), /Purpose: Check the seat map/)
@@ -299,7 +299,7 @@ test('relay: no installed browser is a clear tool error, not a crash', async () 
     },
   })
   const relay = relayOver(pool)
-  const answer = await relay.relay({ clientId: 'c1', assistantId: 900, message: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: 'https://x.test' } } } })
+  const answer = await relay.relay({ clientId: 'c1', assistantId: 700, message: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: 'https://x.test' } } } })
   assert.equal(answer.ok, true, 'the call is answered, as a tool error the agent reads')
   assert.equal(answer.message.result.isError, true)
   assert.match(answer.message.result.content[0].text, /browser_not_installed: No installed Chrome or Chromium was found on this machine/)
@@ -309,20 +309,20 @@ test('relay: no installed browser is a clear tool error, not a crash', async () 
 // ── 3. The wire to the backend ───────────────────────────────────────────────
 
 test('handshake: the token rides in the query, role, agents and label in the auth', () => {
-  const opts = handshakeOptions({ token: 'tok', assistantIds: [900, 901] }, 'kc-server')
-  assert.deepEqual(opts, { query: { pairingToken: 'tok' }, auth: { role: 'browser_host', agents: [900, 901], deviceLabel: 'kc-server', features: ['saved_sites'] } })
+  const opts = handshakeOptions({ token: 'tok', assistantIds: [700, 701] }, 'test-host')
+  assert.deepEqual(opts, { query: { pairingToken: 'tok' }, auth: { role: 'browser_host', agents: [700, 701], deviceLabel: 'test-host', features: ['saved_sites'] } })
   assert.equal(BROWSER_HOST_ROLE, 'browser_host')
 })
 
 test('readPairings: one entry per pairing, listing only that pairing agents, never a token in a reason', () => {
   const files: Record<string, unknown> = {
-    'credentials.json': { backendUrl: 'https://api.test/api/v1', pairingToken: 'tokA', pairingId: 39, assistantId: 900 },
-    'credentials-900.json': { backendUrl: 'https://api.test/api/v1', pairingToken: 'tokA', pairingId: 39, assistantId: 900, pairedAt: '2026-09-01T00:00:00Z' },
-    'credentials-905.json': { backendUrl: 'https://api.test/api/v1', pairingToken: 'tokA', pairingId: 39, assistantId: 905, pairedAt: '2026-09-01T00:00:00Z' },
-    'credentials-901.json': { backendUrl: 'https://api.test/api/v1/', pairingToken: 'tokB', pairingId: 68, assistantId: 901 },
-    'credentials-902.json': { backendUrl: 'https://api.test', pairingToken: 'tokOld', pairingId: 70, assistantId: 902, pairedAt: '2026-08-01T00:00:00Z' },
-    'credentials-903.json': { backendUrl: 'https://api.test', pairingToken: 'tokNew', pairingId: 70, assistantId: 903, pairedAt: '2026-09-10T00:00:00Z' },
-    'credentials-904.json': { backendUrl: 'https://api.test', pairingToken: 'secret-tok', pairingId: 71, assistantId: 999 },
+    'credentials.json': { backendUrl: 'https://api.test/api/v1', pairingToken: 'tokA', pairingId: 39, assistantId: 700 },
+    'credentials-700.json': { backendUrl: 'https://api.test/api/v1', pairingToken: 'tokA', pairingId: 39, assistantId: 700, pairedAt: '2026-09-01T00:00:00Z' },
+    'credentials-705.json': { backendUrl: 'https://api.test/api/v1', pairingToken: 'tokA', pairingId: 39, assistantId: 705, pairedAt: '2026-09-01T00:00:00Z' },
+    'credentials-701.json': { backendUrl: 'https://api.test/api/v1/', pairingToken: 'tokB', pairingId: 68, assistantId: 701 },
+    'credentials-702.json': { backendUrl: 'https://api.test', pairingToken: 'tokOld', pairingId: 70, assistantId: 702, pairedAt: '2026-08-01T00:00:00Z' },
+    'credentials-703.json': { backendUrl: 'https://api.test', pairingToken: 'tokNew', pairingId: 70, assistantId: 703, pairedAt: '2026-09-10T00:00:00Z' },
+    'credentials-704.json': { backendUrl: 'https://api.test', pairingToken: 'secret-tok', pairingId: 71, assistantId: 999 },
     'credentials-906.json': { backendUrl: 'https://api.test', pairingId: 72, assistantId: 906 },
     'credentials-907.json.lock': {},
     'notes.txt': {},
@@ -337,19 +337,19 @@ test('readPairings: one entry per pairing, listing only that pairing agents, nev
   const { pairings, skipped } = read()
   const byId = new Map(pairings.map((p: any) => [p.pairingId, p]))
   assert.deepEqual([...byId.keys()].sort((a: any, b: any) => a - b), [39, 68, 70])
-  assert.deepEqual(byId.get(39).assistantIds, [900, 905], 'the legacy file and the per-agent file are one agent')
-  assert.deepEqual(byId.get(68).assistantIds, [901])
+  assert.deepEqual(byId.get(39).assistantIds, [700, 705], 'the legacy file and the per-agent file are one agent')
+  assert.deepEqual(byId.get(68).assistantIds, [701])
   assert.equal(byId.get(68).backendUrl, 'https://api.test')
   assert.equal(byId.get(70).token, 'tokNew', 'a rotation leftover loses to the newest pairing')
   assert.equal(byId.get(70).staleTokens, 1)
-  assert.deepEqual(skipped.map((s: any) => s.file).sort(), ['credentials-904.json', 'credentials-906.json'])
+  assert.deepEqual(skipped.map((s: any) => s.file).sort(), ['credentials-704.json', 'credentials-906.json'])
   assert.ok(!JSON.stringify(skipped).includes('secret-tok'), 'no token in a skip reason')
-  assert.deepEqual(read(new Set([905])).pairings.map((p: any) => p.assistantIds), [[905]], 'HOAI_BROWSER_HOST_AGENTS narrows the list')
+  assert.deepEqual(read(new Set([705])).pairings.map((p: any) => p.assistantIds), [[705]], 'HOAI_BROWSER_HOST_AGENTS narrows the list')
 })
 
 test('the host opens one socket per pairing, each listing only its own agents, and answers on the socket the frame came in on', { timeout: 60_000 }, async () => {
-  const relayA = await startFakeRelay({ token: 'tokA', admissible: [900, 905] })
-  const relayB = await startFakeRelay({ token: 'tokB', admissible: [901] })
+  const relayA = await startFakeRelay({ token: 'tokA', admissible: [700, 705] })
+  const relayB = await startFakeRelay({ token: 'tokB', admissible: [701] })
   // macOS: os.tmpdir() is /var/folders/..., and /var is a symlink to /private/var,
   // so a path built from it is an ALIAS. agent-browser-vault's secureProfileDir
   // deliberately refuses an alias (`realpathSync(absolute) !== absolute` throws
@@ -361,11 +361,11 @@ test('the host opens one socket per pairing, each listing only its own agents, a
   // production check exactly as strict: ~/.bgos-agent, the real profile root,
   // has no symlink in its chain.
   const root = realpathSync(scratchDir('bh-host-'))
-  writeFileSync(join(root, 'credentials-900.json'), JSON.stringify({ backendUrl: relayA.backendUrl, pairingToken: 'tokA', pairingId: 39, assistantId: 900 }))
-  writeFileSync(join(root, 'credentials-905.json'), JSON.stringify({ backendUrl: relayA.backendUrl, pairingToken: 'tokA', pairingId: 39, assistantId: 905 }))
-  writeFileSync(join(root, 'credentials-901.json'), JSON.stringify({ backendUrl: relayB.backendUrl, pairingToken: 'tokB', pairingId: 68, assistantId: 901 }))
+  writeFileSync(join(root, 'credentials-700.json'), JSON.stringify({ backendUrl: relayA.backendUrl, pairingToken: 'tokA', pairingId: 39, assistantId: 700 }))
+  writeFileSync(join(root, 'credentials-705.json'), JSON.stringify({ backendUrl: relayA.backendUrl, pairingToken: 'tokA', pairingId: 39, assistantId: 705 }))
+  writeFileSync(join(root, 'credentials-701.json'), JSON.stringify({ backendUrl: relayB.backendUrl, pairingToken: 'tokB', pairingId: 68, assistantId: 701 }))
   const { factory, launched } = fakeEngines()
-  const host = new BrowserHost({ agentRoot: root, env: {}, deviceLabel: 'kc-server', browserTools: [navigateTool()], createEngine: factory, rescanMs: 60_000 }).start()
+  const host = new BrowserHost({ agentRoot: root, env: {}, deviceLabel: 'test-host', browserTools: [navigateTool()], createEngine: factory, rescanMs: 60_000 }).start()
   // The owner answers, because this case is about SOCKETS and pairings, not
   // permissions. Without it the browser_navigate below raises a real gate
   // that nobody answers and the case waits out the whole 60 second park:
@@ -379,13 +379,13 @@ test('the host opens one socket per pairing, each listing only its own agents, a
     assert.equal(relayB.handshakes.length, 1)
     assert.match(String(relayA.handshakes[0].auth.deviceBootId), /^[a-f0-9-]{36}$/)
     assert.match(String(relayB.handshakes[0].auth.deviceBootId), /^[a-f0-9-]{36}$/)
-    assert.deepEqual(relayA.handshakes[0].auth, { role: 'browser_host', agents: [900, 905], deviceLabel: 'kc-server', features: ['saved_sites'], deviceBootId: relayA.handshakes[0].auth.deviceBootId })
-    assert.deepEqual(relayB.handshakes[0].auth, { role: 'browser_host', agents: [901], deviceLabel: 'kc-server', features: ['saved_sites'], deviceBootId: relayB.handshakes[0].auth.deviceBootId })
+    assert.deepEqual(relayA.handshakes[0].auth, { role: 'browser_host', agents: [700, 705], deviceLabel: 'test-host', features: ['saved_sites'], deviceBootId: relayA.handshakes[0].auth.deviceBootId })
+    assert.deepEqual(relayB.handshakes[0].auth, { role: 'browser_host', agents: [701], deviceLabel: 'test-host', features: ['saved_sites'], deviceBootId: relayB.handshakes[0].auth.deviceBootId })
     assert.equal(relayA.handshakes[0].query.pairingToken, 'tokA')
     assert.equal(relayB.handshakes[0].query.pairingToken, 'tokB')
 
     const { frame, post } = await relayA.rpc(sockA, {
-      assistantId: 905,
+      assistantId: 705,
       clientId: 'shim-1',
       principal: 'user-user_2Alice',
       message: { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: 'https://example.com' } } },
@@ -397,15 +397,15 @@ test('the host opens one socket per pairing, each listing only its own agents, a
     assert.equal(post.body.ok, true)
     assert.equal(post.body.message.id, 7)
     assert.equal(relayA.postsFor(String(frame.rpcId)).length, 1, 'posted once')
-    assert.equal(launched[0], join(root, '905', 'browser', principalDirName('user-user_2Alice')))
+    assert.equal(launched[0], join(root, '705', 'browser', principalDirName('user-user_2Alice')))
 
     // A notification is never posted: the backend settled it on send.
-    const note = await relayA.rpc(sockA, { assistantId: 900, clientId: 'shim-1b', message: { jsonrpc: '2.0', method: 'notifications/initialized' } }, 1_500)
+    const note = await relayA.rpc(sockA, { assistantId: 700, clientId: 'shim-1b', message: { jsonrpc: '2.0', method: 'notifications/initialized' } }, 1_500)
     assert.equal(note.post, null)
     assert.equal(relayA.postsFor(String(note.frame.rpcId)).length, 0)
 
     // A frame for an agent this pairing does not serve is answered, refused.
-    const stray = await relayB.rpc(sockB, { assistantId: 900, clientId: 'shim-2', message: { jsonrpc: '2.0', id: 1, method: 'ping' } })
+    const stray = await relayB.rpc(sockB, { assistantId: 700, clientId: 'shim-2', message: { jsonrpc: '2.0', id: 1, method: 'ping' } })
     assert.ok(stray.post)
     assert.equal(stray.post.body.ok, false)
     assert.equal(stray.post.body.error.code, 'bad_frame')
@@ -421,7 +421,7 @@ test('a socket the backend refuses is retried on a backoff, not dropped for good
   const relay = await startFakeRelay({ token: 'tok', admissible: [] })
   const { pool } = fakePool()
   const conn = new PairingConnection({
-    pairing: { key: 'k', pairingId: 1, backendUrl: relay.url, token: 'tok', assistantIds: [900] },
+    pairing: { key: 'k', pairingId: 1, backendUrl: relay.url, token: 'tok', assistantIds: [700] },
     deviceLabel: 'box',
     relay: relayOver(pool),
     retryMinMs: 50,
@@ -450,7 +450,7 @@ test('relay: ids 1 and "1" in flight together each get their own answer', async 
   const { factory } = fakeEngines({ callDelayMs: 50 })
   const relay = relayOver(new BrowserPool({ agentRoot: ROOT, createEngine: factory }))
   const call = (id: unknown) =>
-    relay.relay({ clientId: 'c1', assistantId: 900, principal: 'user-a', message: { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: `https://x.test/${typeof id}` } } } })
+    relay.relay({ clientId: 'c1', assistantId: 700, principal: 'user-a', message: { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: `https://x.test/${typeof id}` } } } })
   const [numeric, text] = await Promise.all([call(1), call('1')])
   assert.equal(numeric.ok, true)
   assert.equal(text.ok, true)
@@ -462,7 +462,7 @@ test('relay: ids 1 and "1" in flight together each get their own answer', async 
 test('the pool: stopping during a launch waits for it and stops the browser it started', async () => {
   const { factory, stops } = fakeEngines({ startDelayMs: 100 })
   const pool = new BrowserPool({ agentRoot: ROOT, createEngine: factory })
-  const acquiring = pool.acquire({ assistantId: 900, principal: 'user-a' }).catch(() => null)
+  const acquiring = pool.acquire({ assistantId: 700, principal: 'user-a' }).catch(() => null)
   await new Promise((r) => setTimeout(r, 10))
   await pool.stopAll()
   await acquiring
@@ -479,7 +479,7 @@ test('postResult: a 5xx or a network failure is retried, a 4xx is final', { time
       if (next === 'throw') throw new Error('ECONNRESET')
       return { ok: next >= 200 && next < 300, status: next } as Response
     }
-    const conn = new PairingConnection({ pairing: { key: 'k', pairingId: 1, backendUrl: 'https://api.test', token: 'tok', assistantIds: [900] }, deviceLabel: 'box', relay: null as any, fetchImpl: fetchImpl as any })
+    const conn = new PairingConnection({ pairing: { key: 'k', pairingId: 1, backendUrl: 'https://api.test', token: 'tok', assistantIds: [700] }, deviceLabel: 'box', relay: null as any, fetchImpl: fetchImpl as any })
     const result = await conn.postResult('rpc-1', { socketId: 's', ok: true, message: {} })
     return { result, calls: seen.length }
   }
@@ -496,7 +496,7 @@ test('the answer names the socket the frame ARRIVED on, even when the socket rec
   const gate = new Promise<void>((r) => (release = r))
   const relay = { relay: async () => (await gate, { ok: true, message: { jsonrpc: '2.0', id: 1, result: {} } }) }
   const conn = new PairingConnection({
-    pairing: { key: 'k', pairingId: 1, backendUrl: 'https://api.test', token: 'tok', assistantIds: [900] },
+    pairing: { key: 'k', pairingId: 1, backendUrl: 'https://api.test', token: 'tok', assistantIds: [700] },
     deviceLabel: 'box',
     relay: relay as any,
     io: (() => socket) as any,
@@ -505,7 +505,7 @@ test('the answer names the socket the frame ARRIVED on, even when the socket rec
       return { ok: true, status: 200 }
     }) as any,
   }).start()
-  socket.emit('browser_rpc', { rpcId: 'r1', clientId: 'c', assistantId: 900, message: { jsonrpc: '2.0', id: 1, method: 'ping' } })
+  socket.emit('browser_rpc', { rpcId: 'r1', clientId: 'c', assistantId: 700, message: { jsonrpc: '2.0', id: 1, method: 'ping' } })
   socket.id = 'socket-after-reconnect'
   release()
   await new Promise((r) => setTimeout(r, 20))
@@ -549,22 +549,22 @@ test('Chrome is launched with the allow-listed environment only (the list itself
 })
 
 test('scoping: a daemon-started host serves its own pairing and agent, never another pairing on the machine', () => {
-  const scope = scopeFromEnv({ HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tokA', HOAI_BROWSER_HOST_BACKEND_URL: 'https://api.test/api/v1', HOAI_BROWSER_HOST_ASSISTANT_ID: '905', HOAI_BROWSER_HOST_PARENT_PID: '123' })
-  assert.deepEqual(scope, { token: 'tokA', backendUrl: 'https://api.test', assistantId: 905, parentPid: 123 })
+  const scope = scopeFromEnv({ HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tokA', HOAI_BROWSER_HOST_BACKEND_URL: 'https://api.test/api/v1', HOAI_BROWSER_HOST_ASSISTANT_ID: '705', HOAI_BROWSER_HOST_PARENT_PID: '123' })
+  assert.deepEqual(scope, { token: 'tokA', backendUrl: 'https://api.test', assistantId: 705, parentPid: 123 })
   assert.equal(scopeFromEnv({}), null, 'run by hand: every pairing')
   const onDisk = [
-    { key: 'a', pairingId: 39, backendUrl: 'https://api.test', token: 'tokA', staleTokens: 0, assistantIds: [900] },
-    { key: 'b', pairingId: 68, backendUrl: 'https://api.test', token: 'tokB', staleTokens: 0, assistantIds: [901] },
+    { key: 'a', pairingId: 39, backendUrl: 'https://api.test', token: 'tokA', staleTokens: 0, assistantIds: [700] },
+    { key: 'b', pairingId: 68, backendUrl: 'https://api.test', token: 'tokB', staleTokens: 0, assistantIds: [701] },
   ]
   const scoped = scopePairings(onDisk, scope)
   assert.equal(scoped.length, 1)
   assert.equal(scoped[0].token, 'tokA')
-  assert.deepEqual(scoped[0].assistantIds, [900, 905], 'its pairing agents on disk plus its own')
+  assert.deepEqual(scoped[0].assistantIds, [700, 705], 'its pairing agents on disk plus its own')
   assert.deepEqual(scopePairings(onDisk, null), onDisk)
   const envOnly = scopePairings([onDisk[1]], scope)
   assert.equal(envOnly.length, 1, 'a daemon paired through its environment, with no file on disk')
   assert.equal(envOnly[0].token, 'tokA')
-  assert.deepEqual(envOnly[0].assistantIds, [905])
+  assert.deepEqual(envOnly[0].assistantIds, [705])
   assert.deepEqual(scopePairings([onDisk[1]], { ...scope, assistantId: null }), [], 'nothing to serve without its agent')
 })
 
@@ -770,7 +770,7 @@ test('the host process stays up with no live socket: no credentials yet, or refu
   // Refused by the gateway: it waits out its backoff instead of exiting.
   const relay = await startFakeRelay({ token: 'tok-refused', admissible: [] })
   const refusedHome = realpathSync(scratchDir('bh-refused-'))
-  const refused = daemonStarted({ HOME: refusedHome, USERPROFILE: refusedHome, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-refused', HOAI_BROWSER_HOST_BACKEND_URL: relay.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '900' })
+  const refused = daemonStarted({ HOME: refusedHome, USERPROFILE: refusedHome, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-refused', HOAI_BROWSER_HOST_BACKEND_URL: relay.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '700' })
   try {
     const deadline = Date.now() + 20_000
     while (!relay.handshakes.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
@@ -799,20 +799,20 @@ test('the host process stays up with no live socket: no credentials yet, or refu
 
 test('a daemon-started host connects only its daemon pairing, even with another pairing on disk', { timeout: 60_000, skip: nodeOnPath ? false : 'node is not on PATH' }, async () => {
   if (!nodeOnPath) return
-  const mine = await startFakeRelay({ token: 'tok-mine', admissible: [900, 905] })
-  const other = await startFakeRelay({ token: 'tok-other', admissible: [901] })
+  const mine = await startFakeRelay({ token: 'tok-mine', admissible: [700, 705] })
+  const other = await startFakeRelay({ token: 'tok-other', admissible: [701] })
   const home = realpathSync(scratchDir('bh-scope-'))
   const agentRoot = join(home, '.bgos-agent')
   mkdirSync(agentRoot, { recursive: true })
-  writeFileSync(join(agentRoot, 'credentials-900.json'), JSON.stringify({ backendUrl: mine.backendUrl, pairingToken: 'tok-mine', pairingId: 1, assistantId: 900 }))
-  writeFileSync(join(agentRoot, 'credentials-901.json'), JSON.stringify({ backendUrl: other.backendUrl, pairingToken: 'tok-other', pairingId: 2, assistantId: 901 }))
+  writeFileSync(join(agentRoot, 'credentials-700.json'), JSON.stringify({ backendUrl: mine.backendUrl, pairingToken: 'tok-mine', pairingId: 1, assistantId: 700 }))
+  writeFileSync(join(agentRoot, 'credentials-701.json'), JSON.stringify({ backendUrl: other.backendUrl, pairingToken: 'tok-other', pairingId: 2, assistantId: 701 }))
   const host = spawn('node', [HOST_BIN], {
-    env: { ...process.env, HOME: home, USERPROFILE: home, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-mine', HOAI_BROWSER_HOST_BACKEND_URL: mine.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '905' },
+    env: { ...process.env, HOME: home, USERPROFILE: home, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-mine', HOAI_BROWSER_HOST_BACKEND_URL: mine.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '705' },
     stdio: 'ignore',
   })
   try {
     await mine.waitForHost(30_000)
-    assert.deepEqual(mine.handshakes[0].auth.agents, [900, 905], 'its pairing agent on disk, and its own')
+    assert.deepEqual(mine.handshakes[0].auth.agents, [700, 705], 'its pairing agent on disk, and its own')
     await new Promise((r) => setTimeout(r, 2_000))
     assert.equal(other.handshakes.length, 0, 'the other pairing on this machine is left to its own daemon')
   } finally {
@@ -834,11 +834,11 @@ test(
   async () => {
     if (e2eSkip) return // bun ignores the skip option; this is the same skip
     const site = await startCookieSite()
-    const relay = await startFakeRelay({ token: 'tok-e2e', admissible: [900] })
+    const relay = await startFakeRelay({ token: 'tok-e2e', admissible: [700] })
     const home = realpathSync(scratchDir('bh-e2e-'))
     const agentRoot = join(home, '.bgos-agent')
     mkdirSync(agentRoot, { recursive: true, mode: 0o700 })
-    writeFileSync(join(agentRoot, 'credentials-900.json'), JSON.stringify({ backendUrl: relay.backendUrl, pairingToken: 'tok-e2e', pairingId: 5, assistantId: 900 }))
+    writeFileSync(join(agentRoot, 'credentials-700.json'), JSON.stringify({ backendUrl: relay.backendUrl, pairingToken: 'tok-e2e', pairingId: 5, assistantId: 700 }))
     const logs: string[] = []
     // On Windows the temp home must be a whole profile, not just a folder: Chrome reads its default
     // data directory through USERPROFILE, and with USERPROFILE at a folder that has no
@@ -863,11 +863,11 @@ test(
     try {
       const sock = await relay.waitForHost(30_000)
       assert.match(String(relay.handshakes[0].auth.deviceBootId), /^[a-f0-9-]{36}$/)
-      assert.deepEqual(relay.handshakes[0].auth, { role: 'browser_host', agents: [900], deviceLabel: relay.handshakes[0].auth.deviceLabel, features: ['saved_sites'], deviceBootId: relay.handshakes[0].auth.deviceBootId })
+      assert.deepEqual(relay.handshakes[0].auth, { role: 'browser_host', agents: [700], deviceLabel: relay.handshakes[0].auth.deviceLabel, features: ['saved_sites'], deviceBootId: relay.handshakes[0].auth.deviceBootId })
       assert.equal(relay.handshakes[0].query.pairingToken, 'tok-e2e')
       let id = 0
       const rpc = async (principal: string | undefined, message: Record<string, unknown>) => {
-        const req = { assistantId: 900, clientId: 'shim-e2e', message, ...(principal === undefined ? {} : { principal }) }
+        const req = { assistantId: 700, clientId: 'shim-e2e', message, ...(principal === undefined ? {} : { principal }) }
         const { post } = await relay.rpc(sock, req, 90_000)
         assert.ok(post, `answered and accepted: ${JSON.stringify(message).slice(0, 120)}\n${logs.join('')}`)
         assert.equal(post.status, 200)
@@ -921,7 +921,7 @@ test(
       // profiles, which is also the only coverage that the host READS that
       // file at all.
       for (const principal of ['user-user_2Alice', 'user-user_2Bob', 'owner', GROUP]) {
-        const dir = browserPathsFor({ agentRoot, assistantId: 900, principal }).profileDir
+        const dir = browserPathsFor({ agentRoot, assistantId: 700, principal }).profileDir
         mkdirSync(dir, { recursive: true, mode: 0o700 })
         writeFileSync(join(dir, 'agent-browser.settings.json'), JSON.stringify({ v: 1, allowEvaluate: true }))
       }
@@ -959,7 +959,7 @@ test(
       // off entirely, which is exactly the hole the cards are here to close.
       assert.ok(relay.gateCards.length >= 1, 'the host must have ASKED the owner before its first visit to a new origin')
       const first = relay.gateCards[0]!
-      assert.equal(first.assistantId, 900, 'the card names the agent whose browser it is')
+      assert.equal(first.assistantId, 700, 'the card names the agent whose browser it is')
       assert.equal(first.kind, 'navigate', 'a first visit to an origin is a navigate gate')
       assert.equal(first.origin ?? null, null, 'a card for another person\'s browsing names no site of theirs')
       assert.equal(JSON.stringify(first).includes(new URL(site.url).host), false, 'in any field')
@@ -989,7 +989,7 @@ test(
       // leaked across profiles would show up as fewer cards than profiles.
       assert.equal(new Set(relay.gateCards.map((c) => String(c.gateId))).size, relay.gateCards.length, 'every card carries its own gate id')
 
-      const browserDir = join(agentRoot, '900', 'browser')
+      const browserDir = join(agentRoot, '700', 'browser')
       const profiles = readdirSync(browserDir).sort()
       assert.deepEqual(profiles, ['owner', principalDirName('user-user_2Alice'), principalDirName('user-user_2Bob'), principalDirName(GROUP)].sort())
       for (const p of profiles) assert.equal(existsSync(join(browserDir, p, 'Local State')), false, `${p} must not hold a native Chrome profile`)
