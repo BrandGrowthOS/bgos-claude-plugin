@@ -10,6 +10,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.5 (2026-11-17)
+
+**fix(windows tests): three plugin tests that failed now and then on Windows CI.** The thread transcript search (`lib/thread-transcript.ts`) is linear in the file at any chunk size: the part of a line that runs over several chunks is kept as pieces and joined once, where it was joined again on every chunk, and the copy around the goal row is made 1 MiB at a time whatever chunk the search used. The result is byte for byte the same (the string rule still decides), and the 270 KB "very long line" case went from 123 s to 8 s here, where CI's 120 s limit cut it off on slower runners. The browser profile's first Windows permission step (`lib/agent-browser-vault.mjs`) may take 30 s, since the first PowerShell of a process can be a cold start; once one has answered, a later step keeps the 10 s limit. A test of failed downloads deletes its file through the fixture's own queue, so it no longer races the fixture's delete of the same file (EPERM on Windows). Guard: new cases in `test/thread-transcript.test.ts` (work counted, not time) and `test/agent-browser-vault-process.test.ts` (a fake slow start), each red on 0.90.3's code first.
+
 ## 0.90.3 (2026-11-17)
 
 **fix(pending restart): a checkout held bad wins over a good staged answer (#384).** When one checkout is marked bad and a good update is staged, the agent no longer restarts into the bad checkout. Red first test for the two checkout case.
