@@ -12,6 +12,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.4 (2026-11-17)
+
+**feat(skills): a skill list names where each skill came from (#385).** Taught, shared, installed, repo or synced, when known. Taught needs a signed in person's own tap on a teach Approve, read from the click row the server writes; on a server that does not send it, nothing is marked.
+
 ## 0.90.3 (2026-11-17)
 
 **fix(pending restart): a checkout held bad wins over a good staged answer (#384).** When one checkout is marked bad and a good update is staged, the agent no longer restarts into the bad checkout. Red first test for the two checkout case.
