@@ -11119,8 +11119,8 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
 const teachWindows = createTeachWindows()
 logOriginsTo(log)
 /** The chat a hook event belongs to: the last thing delivered to this session,
- *  whoever sent it. Fed at the three inbound sites and the two meeting sites. Every delivery it notes closes that
- *  chat's teach window (lib/skill-origins.ts closingTeachWindows). */
+ *  whoever sent it. Fed at the three inbound sites, the two meeting sites and the six tap sites. Every delivery it
+ *  notes, but the owner's own tap, closes that chat's teach window (lib/skill-origins.ts closingTeachWindows). */
 const turnChat = closingTeachWindows(createTurnChatTracker(), teachWindows, ASSISTANT_ID)
 
 // A teach window opens only on the owner's own tap as a person: each site reads its click row with isHumanClick (an
