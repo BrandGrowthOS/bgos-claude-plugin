@@ -7,6 +7,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, openSync, writeSync, closeSync } from 'node:fs'
+import { open } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -97,6 +98,81 @@ test('a large transcript is searched and copied without holding it in memory', (
     }
     // The string rule needs several times the file (about 4.5 times, measured); this needs about a chunk.
     assert.ok(peak - before < 100 * 1024 * 1024, `memory grew ${Math.round((peak - before) / 1048576)} MB`)
+  }))
+
+/**
+ * The bytes the search copies in memory (every Buffer.concat and Buffer.from it
+ * makes) while it finds the goal under one long last line, read 1 byte at a time.
+ * Work, not wall time: a slow runner cannot make this pass or fail. It sees
+ * only those two calls: a rewrite that copies with buf.copy or
+ * Uint8Array.set needs the spy widened.
+ */
+async function bytesCopiedBySearch(dir: string, lineLength: number): Promise<number> {
+  const path = join(dir, `long-${lineLength}.jsonl`)
+  const head = `${goal({ met: false })}\n`
+  writeFileSync(path, `${head}${row('z'.repeat(lineLength))}\n`)
+  const { concat, from } = Buffer
+  let copied = 0
+  Buffer.concat = ((...args: Parameters<typeof concat>) => {
+    const out = concat(...args)
+    copied += out.length
+    return out
+  }) as typeof concat
+  Buffer.from = ((...args: unknown[]) => {
+    const out = (from as (...a: unknown[]) => Buffer)(...args)
+    copied += out.length
+    return out
+  }) as typeof from
+  try {
+    const edit = await findActiveGoalRow(path, 1)
+    assert.ok(edit)
+    assert.equal(edit.start, 0)
+    assert.equal(edit.end, Buffer.byteLength(head) - 1)
+  } finally {
+    Buffer.concat = concat
+    Buffer.from = from
+  }
+  return copied
+}
+
+test('the search costs in proportion to the line: a line 10 times longer copies about 10 times the bytes, not 100 times', () =>
+  withDir(async (dir) => {
+    const short = await bytesCopiedBySearch(dir, 2_000)
+    const long = await bytesCopiedBySearch(dir, 20_000)
+    // Joining the growing line again for every chunk read made this 100 times (2,000 squared against 20,000 squared).
+    assert.ok(long / short < 20, `a 10 times longer line copied ${(long / short).toFixed(1)} times the bytes (${short} then ${long})`)
+    // And in absolute terms: a few copies of the file, not the line's length times itself.
+    assert.ok(long < 4 * 20_100, `a 20,000 byte line copied ${long} bytes`)
+  }))
+
+test('clearing the goal copies the bytes around it in as few writes at search chunk 1 as at the default chunk', () =>
+  withDir(async (dir) => {
+    const text = [row('a'.repeat(20_000)), goal({ met: false }), row('b'.repeat(20_000))].join('\n') + '\n'
+    const probe = await open(join(dir, 'probe'), 'w')
+    const handle = Object.getPrototypeOf(probe) as { write: (...args: unknown[]) => Promise<unknown> }
+    await probe.close()
+    const { write } = handle
+    let writes = 0
+    handle.write = function (this: unknown, ...args: unknown[]) {
+      writes++
+      return write.apply(this, args)
+    }
+    const writesAt = async (chunk?: number) => {
+      const path = join(dir, `fork-${chunk ?? 'default'}.jsonl`)
+      writeFileSync(path, text)
+      writes = 0
+      assert.equal(await clearActiveGoal(path, chunk), true)
+      assert.equal(readFileSync(path, 'utf8'), threadLaneTranscript(text))
+      return writes
+    }
+    try {
+      const atDefault = await writesAt()
+      const atOne = await writesAt(1)
+      // A copy one search chunk at a time wrote each of the 40,000 bytes around the row on its own.
+      assert.equal(atOne, atDefault, `${atOne} writes at search chunk 1, ${atDefault} at the default chunk`)
+    } finally {
+      handle.write = write
+    }
   }))
 
 test('findActiveGoalRow names the exact bytes of the active goal row', () =>
