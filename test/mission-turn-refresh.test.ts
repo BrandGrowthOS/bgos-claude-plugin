@@ -45,6 +45,8 @@ function daemon(read: (path: string) => Promise<any>, overrides: any = {}) {
     ASSISTANT_ID: '7', FLOOR_KEYS: [], FLOOR_STATE_ROOT: '', lockHeld: true,
     turnChat: { deliveredRecently: (chatId: string) => chatId === '12' },
     bgosGetCachedOn304: read, writeMissionTurnJson: () => {}, log: () => {},
+    // rememberMissionSelfWrite also tells the working tracker (held marks end on a tick).
+    missionWorking: { noteMission: () => {} },
     ...overrides,
   }
   return new Function(...Object.keys(deps), block + `

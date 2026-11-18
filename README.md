@@ -989,6 +989,17 @@ Helper tool activity counts for the parent session. A helper ending does not
 clear other workers' goals; the parent session's Stop clears all its selections.
 A single tool running silently for 15 minutes reaches the same idle threshold.
 
+Work that outlives the turn, such as workers the agent started in the
+background, takes a held mark: `set_goal_working` with `held: true` (120
+minutes) or `held_minutes` (1 to 240). `Stop`, `SessionEnd`, a new prompt and
+the 15 minute idle rule leave a held mark on. The daemon sweep refreshes it
+every 10 minutes, and it ends when its hold runs out, when the agent sends
+`working: false`, or when the goal is ticked or cancelled or its mission
+closes. Calling again restarts the hold; a call without a hold makes the mark
+an ordinary one again. A daemon with no hook intake has no sweep, so there it
+sends an ordinary mark and says it cannot hold it. Stand-down still clears
+held marks.
+
 The existing asynchronous forwarder writes only the hook spool, and the daemon
 uses the original acting-user scope for HTTP. No credentials are added to hook
 files or logs. Background failures never block a tool call, failed clears are
