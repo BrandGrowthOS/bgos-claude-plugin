@@ -13359,6 +13359,9 @@ async function pollChat(chatId: string): Promise<void> {
         senderType: pollSenderType,
         agentOrigin: pollAgentOrigin,
       })
+      // A person wrote it: the sign-in code gate and the owner only slash
+      // commands (routeSlashCommand's speaker) read this one value.
+      const pollFromHuman = !isPollAgent && pollSenderType !== 'system'
 
       // The owner's sign-in code, when one is awaited (lib/auth-login.ts).
       // Here, before the permission parse, the meeting card and every log
@@ -13368,7 +13371,7 @@ async function pollChat(chatId: string): Promise<void> {
         messageId: msg.message.id,
         payload: msg.message,
         text,
-        fromHuman: !isPollAgent && pollSenderType !== 'system',
+        fromHuman: pollFromHuman,
         via: 'poll',
       })) continue
 
@@ -13414,7 +13417,7 @@ async function pollChat(chatId: string): Promise<void> {
             messageId: msg.message.id,
             payload: latestPrepared.raw,
             text: latestPrepared.text,
-            fromHuman: !isPollAgent && pollSenderType !== 'system',
+            fromHuman: pollFromHuman,
             via: 'poll',
           })) continue
         }
@@ -13537,6 +13540,8 @@ async function pollChat(chatId: string): Promise<void> {
         sourceContent: originalContent,
         registry: registeredSlashCommands,
         legacyAliases: registeredSlashCommandAliases,
+        // Owner only commands (/permissions, /hooks, ...) edit nothing for anyone else.
+        speaker: { ownerUserId: USER_ID, fromHuman: pollFromHuman },
       })
 
       // Remote /compact is handled by the daemon and never forwarded to the
@@ -17412,13 +17417,16 @@ async function forwardStreamInbound(
     return
   }
   view = prepared ?? view
+  // A person wrote it (the strict reading, an unknown kind is not one): the
+  // edited sign-in code gate and the owner only slash commands read it.
+  const streamFromHuman = !isSystem && !view.agentOrigin && view.senderKind === 'user'
   if (view.text !== textBeforePreparation) {
     if (consumedAsLoginCode({
       chatId,
       messageId: view.messageId,
       payload: view.raw,
       text: view.text,
-      fromHuman: !isSystem && !view.agentOrigin && view.senderKind === 'user',
+      fromHuman: streamFromHuman,
       via: 'stream',
     })) return
   }
@@ -17476,6 +17484,8 @@ async function forwardStreamInbound(
       sourceContent: originalContent,
       registry: registeredSlashCommands,
       legacyAliases: registeredSlashCommandAliases,
+      // Owner only commands (/permissions, /hooks, ...) edit nothing for anyone else.
+      speaker: { ownerUserId: USER_ID, fromHuman: streamFromHuman },
     })
     if (slashRoute.kind === 'compact') {
       // A replayed /compact targets a session state that no longer exists;
@@ -19153,6 +19163,9 @@ function connectWebsocket(): void {
       const wsTurnState = wsTurnStateRaw == null
         ? undefined
         : String(wsTurnStateRaw)
+      // A person wrote it: the sign-in code gate and the owner only slash
+      // commands (routeSlashCommand's speaker) read this one value.
+      const wsFromHuman = !wsAgentOrigin && !wsRoomAgent && wsSenderType !== 'agent' && wsSenderType !== 'system'
       // The owner's sign-in code (see the poll site), before the sender is
       // noted, the turn is recorded or anything is logged or forwarded.
       if (consumedAsLoginCode({
@@ -19160,7 +19173,7 @@ function connectWebsocket(): void {
         messageId,
         payload,
         text,
-        fromHuman: !wsAgentOrigin && !wsRoomAgent && wsSenderType !== 'agent' && wsSenderType !== 'system',
+        fromHuman: wsFromHuman,
         via: 'ws',
       })) return
       const wsSenderUserId = wsRoomAgent ? roomAgentUserId(wsRoomAgent) : senderUserIdOf(payload)
@@ -19256,6 +19269,8 @@ function connectWebsocket(): void {
         sourceContent: originalContent,
         registry: registeredSlashCommands,
         legacyAliases: registeredSlashCommandAliases,
+        // Owner only commands (/permissions, /hooks, ...) edit nothing for anyone else.
+        speaker: { ownerUserId: USER_ID, fromHuman: wsFromHuman },
       })
       // Remote /compact is daemon handled and never forwarded to the model.
       // This check precedes the empty content guard, matching the poll path.
