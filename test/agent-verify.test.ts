@@ -76,18 +76,25 @@ test('parseLiveMarker mirrors lib/boot-hello.ts (both fields, one field, junk)',
   assert.equal(parseLiveMarker(null), null)
 })
 
-test('liveMarkerProves: lastLiveAt strictly after the restart proves; equal or older does not; mtime only when lastLiveAt is unparseable', () => {
-  const newer = JSON.stringify({ lastLiveAt: new Date(T0 + 5000).toISOString() })
-  const older = JSON.stringify({ lastLiveAt: new Date(T0 - 5000).toISOString() })
-  const same = JSON.stringify({ lastLiveAt: new Date(T0).toISOString() })
+// Review of #396, round 5 (Astra): an old daemon's reply with no boot stamp
+// passed, and so did a torn marker judged by its modified time; one such
+// false witness kept a bad build. Proof now needs a whole marker stamped
+// with a boot after the restart (every build since 2026-08-25 writes one).
+test('liveMarkerProves: a whole marker, booted after the restart, with lastLiveAt strictly after it; nothing else proves', () => {
+  const boot = new Date(T0 + 1000).toISOString()
+  const newer = JSON.stringify({ lastLiveAt: new Date(T0 + 5000).toISOString(), bootedAt: boot })
+  const older = JSON.stringify({ lastLiveAt: new Date(T0 - 5000).toISOString(), bootedAt: boot })
+  const same = JSON.stringify({ lastLiveAt: new Date(T0).toISOString(), bootedAt: boot })
   assert.deepEqual(liveMarkerProves({ raw: newer, mtimeMs: 0, restartedAtMs: T0 }), { proven: true, via: 'lastLiveAt', lastLiveAt: new Date(T0 + 5000).toISOString() })
   assert.deepEqual(liveMarkerProves({ raw: older, mtimeMs: T0 + 99_999, restartedAtMs: T0 }), { proven: false, via: null, lastLiveAt: new Date(T0 - 5000).toISOString() })
   assert.equal(liveMarkerProves({ raw: same, mtimeMs: T0 + 1, restartedAtMs: T0 }).proven, false, 'a parseable but stale lastLiveAt is never rescued by mtime')
-  // Unparseable lastLiveAt: the mtime is the secondary evidence.
-  const junkTime = JSON.stringify({ lastLiveAt: 'yesterday' })
-  assert.deepEqual(liveMarkerProves({ raw: junkTime, mtimeMs: T0 + 1, restartedAtMs: T0 }), { proven: true, via: 'mtime', lastLiveAt: 'yesterday' })
-  assert.equal(liveMarkerProves({ raw: junkTime, mtimeMs: T0, restartedAtMs: T0 }).proven, false)
-  assert.deepEqual(liveMarkerProves({ raw: 'not json', mtimeMs: T0 + 1, restartedAtMs: T0 }), { proven: true, via: 'mtime', lastLiveAt: null })
+  // A torn or junk marker is never rescued by its modified time.
+  const junkTime = JSON.stringify({ lastLiveAt: 'yesterday', bootedAt: boot })
+  assert.deepEqual(liveMarkerProves({ raw: junkTime, mtimeMs: T0 + 1, restartedAtMs: T0 }), { proven: false, via: null, lastLiveAt: 'yesterday' })
+  assert.deepEqual(liveMarkerProves({ raw: 'not json', mtimeMs: T0 + 1, restartedAtMs: T0 }), { proven: false, via: null, lastLiveAt: null })
+  // No boot stamp, however fresh: not proof.
+  const unstamped = JSON.stringify({ lastLiveAt: new Date(T0 + 5000).toISOString() })
+  assert.equal(liveMarkerProves({ raw: unstamped, mtimeMs: T0 + 5000, restartedAtMs: T0 }).proven, false)
   assert.deepEqual(liveMarkerProves({ raw: null, mtimeMs: null, restartedAtMs: T0 }), { proven: false, via: null, lastLiveAt: null })
 })
 
@@ -95,7 +102,7 @@ test('verifyAgent: writes the probe immediately, polls every 3s, succeeds when l
   const fs = memoryFs()
   const clock = fakeClock(T0, (nowMs, tick) => {
     // The daemon answers the probe on the 4th tick: first tool call -> marker.
-    if (tick === 4) fs.writeFile(MARKER, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString() }))
+    if (tick === 4) fs.writeFile(MARKER, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(T0 + 1000).toISOString() }))
   })
   const result = await verifyAgent(agentRow(), { restartedAtMs: T0, fs, now: clock.now, sleep: clock.sleep })
   assert.equal(result.ok, true, result.message)
@@ -144,19 +151,17 @@ test('verifyAgent: no marker at all times out too (never a false positive on abs
   assert.equal(result.evidence.mtimeMs, null)
 })
 
-test('verifyAgent: mtime is accepted only for an unparseable lastLiveAt', async () => {
+test('verifyAgent: a marker whose lastLiveAt cannot be read is not proof, whatever its modified time', async () => {
   const fs = memoryFs({ [MARKER]: '{"lastLiveAt":"soon"}' })
   fs.touch(MARKER, T0 + 500)
   const clock = fakeClock(T0)
-  const result = await verifyAgent(agentRow(), { restartedAtMs: T0, fs, now: clock.now, sleep: clock.sleep })
-  assert.equal(result.ok, true)
-  assert.equal(result.evidence.via, 'mtime')
-  assert.equal(result.evidence.mtimeMs, T0 + 500)
-  assert.equal(clock.sleeps.length, 0)
+  const result = await verifyAgent(agentRow(), { restartedAtMs: T0, fs, now: clock.now, sleep: clock.sleep, timeoutMs: 9000, pollMs: 3000 })
+  assert.equal(result.ok, false)
+  assert.equal(result.evidence.via, null)
 })
 
 test('verifyAgent: requestProbe:false never touches the probe file (a fresh pairing proves itself with the boot hello)', async () => {
-  const fs = memoryFs({ [MARKER]: JSON.stringify({ lastLiveAt: new Date(T0 + 1).toISOString() }) })
+  const fs = memoryFs({ [MARKER]: JSON.stringify({ lastLiveAt: new Date(T0 + 1).toISOString(), bootedAt: new Date(T0 + 1).toISOString() }) })
   const clock = fakeClock(T0)
   const result = await verifyAgent(agentRow(), { restartedAtMs: T0, fs, now: clock.now, sleep: clock.sleep, requestProbe: false })
   assert.equal(result.ok, true)
@@ -170,20 +175,20 @@ test('verifyAgent: a probe write failure is logged, not fatal (the boot hello or
   }
   const logs: string[] = []
   const clock = fakeClock(T0, (nowMs, tick) => {
-    if (tick === 1) fs.files.set(MARKER, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString() }))
+    if (tick === 1) fs.files.set(MARKER, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
   })
   const result = await verifyAgent(agentRow(), { restartedAtMs: T0, fs, now: clock.now, sleep: clock.sleep, log: (l: string) => logs.push(l) })
   assert.equal(result.ok, true)
   assert.equal(logs.some((l) => l.includes('probe write failed') && l.includes('EACCES')), true)
 })
 
-test('liveMarkerProves: a marker whose writer booted BEFORE the restart is never proof, however fresh its lastLiveAt; a later boot is; no bootedAt keeps the old rule', () => {
+test('liveMarkerProves: a marker whose writer booted BEFORE the restart is never proof, however fresh its lastLiveAt; a later boot is; no bootedAt is not proof', () => {
   const stale = JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(T0 + 4000).toISOString(), bootedAt: new Date(T0 - 3_600_000).toISOString() })
   assert.deepEqual(liveMarkerProves({ raw: stale, mtimeMs: T0 + 4000, restartedAtMs: T0 }), { proven: false, via: null, lastLiveAt: new Date(T0 + 4000).toISOString() })
   const fresh = JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(T0 + 4000).toISOString(), bootedAt: new Date(T0 + 2000).toISOString() })
   assert.deepEqual(liveMarkerProves({ raw: fresh, mtimeMs: 0, restartedAtMs: T0 }), { proven: true, via: 'lastLiveAt', lastLiveAt: new Date(T0 + 4000).toISOString() })
   const legacy = JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(T0 + 4000).toISOString() })
-  assert.equal(liveMarkerProves({ raw: legacy, mtimeMs: 0, restartedAtMs: T0 }).proven, true)
+  assert.equal(liveMarkerProves({ raw: legacy, mtimeMs: 0, restartedAtMs: T0 }).proven, false, 'no boot stamp is no proof (round 5)')
   assert.deepEqual(parseLiveMarker(stale), { firstLiveAt: 'x', lastLiveAt: new Date(T0 + 4000).toISOString(), bootedAt: new Date(T0 - 3_600_000).toISOString() })
 })
 

@@ -2547,6 +2547,32 @@ test('the immediate rollback also restarts the excused agent that went before, o
 
 test('a restart that timed out may still be starting the rejected build: it is restarted on the restored one too', async () => {
   let first912 = true
+  let settle!: () => void
+  const { run, restarts } = trackedRun(
+    {
+      failVerify: new Set(['918']),
+      timeoutsMs: { network: 2_000, list: 1_000, restart: 20 },
+      restartAgent: async (agent: { assistantId: string }) => {
+        if (agent.assistantId === '912' && first912) {
+          first912 = false
+          // It finishes, late (round 6: a retry waits for it to settle).
+          return new Promise((resolve) => (settle = () => resolve({ ok: true, how: 'marker' })))
+        }
+        if (agent.assistantId === '918') setTimeout(() => settle(), 0)
+        return { ok: true, how: 'marker' }
+      },
+    } as never,
+    [],
+  )
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.deepEqual(restarts, ['912@0.38.3', '918@0.38.3', '918@0.38.1', '912@0.38.1'])
+})
+
+// Round 6 (both reviewers): a restart that timed out was never settled
+// before its retry, so the first call could still act after the retry.
+test('a timed out restart that never settles is not retried on top of itself; the agent is named as left on the rejected build', async () => {
+  let first912 = true
   const { run, restarts } = trackedRun(
     {
       failVerify: new Set(['918']),
@@ -2563,7 +2589,64 @@ test('a restart that timed out may still be starting the rejected build: it is r
   )
   const result = await executePlan(run.plan, run.deps)
   assert.equal(result.rolledBack, true)
-  assert.deepEqual(restarts, ['912@0.38.3', '918@0.38.3', '918@0.38.1', '912@0.38.1'])
+  assert.deepEqual(restarts, ['912@0.38.3', '918@0.38.3', '918@0.38.1'])
+  const retry = result.steps.find((step: { id: string }) => step.id.endsWith('.912.retry'))
+  assert.equal(retry?.state, 'failed')
+  assert.equal(retry?.message, 'previous_restart_unsettled')
+  assert.deepEqual((result as { notRestored?: string[] }).notRestored, ['912'])
+})
+
+test('a timed out restart that settles late is retried after it settled', async () => {
+  let first912 = true
+  let settle!: () => void
+  const events: string[] = []
+  const { run, restarts } = trackedRun(
+    {
+      failVerify: new Set(['918']),
+      timeoutsMs: { network: 2_000, list: 1_000, restart: 20 },
+      restartAgent: async (agent: { assistantId: string }) => {
+        if (agent.assistantId === '912' && first912) {
+          first912 = false
+          return new Promise((resolve) => {
+            settle = () => {
+              events.push('first 912 settled')
+              resolve({ ok: true, how: 'marker' })
+            }
+          })
+        }
+        events.push(`restart ${agent.assistantId}`)
+        if (agent.assistantId === '918') setTimeout(() => settle(), 0)
+        return { ok: true, how: 'marker' }
+      },
+    } as never,
+    [],
+  )
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.ok(restarts.includes('912@0.38.1'), restarts.join(','))
+  assert.ok(events.indexOf('first 912 settled') < events.lastIndexOf('restart 912'), events.join(','))
+  assert.deepEqual((result as { notRestored?: string[] }).notRestored ?? [], [])
+})
+
+// Round 6 (Opus): an agent whose retry was refused stays on the rejected
+// build, and only its own row said so.
+test('a refused retry names the agent in the run result', async () => {
+  let calls912 = 0
+  const { run } = trackedRun(
+    {
+      failVerify: new Set(['918']),
+      restartAgent: async (agent: { assistantId: string }) => {
+        if (agent.assistantId === '912') calls912 += 1
+        return agent.assistantId === '912' && calls912 > 1
+          ? { ok: false, how: 'keepalive', message: 'keepalive_unverified_now' }
+          : { ok: true, how: 'marker' }
+      },
+    } as never,
+    [],
+  )
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.deepEqual((result as { notRestored?: string[] }).notRestored, ['912'])
 })
 
 test('a restore at the end of the run that fails retries nobody, and the run is not called rolled back', async () => {

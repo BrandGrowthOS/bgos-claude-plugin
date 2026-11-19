@@ -463,7 +463,7 @@ test('runWatcher reconcile: ack, job, planning, per-step progress, marker + reci
   clock.onSleep((_ms, nowMs) => {
     for (const id of ['912', '7']) {
       const probe = `${HOME}/.bgos-agent/${id}/probe-requested.json`
-      if (fs.files.has(probe)) fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString() }))
+      if (fs.files.has(probe)) fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
     }
   })
   const cliCalls: string[][] = []
@@ -539,7 +539,7 @@ test('runWatcher reconcile: targets filter the fleet (only the named agent resta
   const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'restart_only', targets: [{ pairingId: 1, assistantId: '912' }, { pairingId: 9, assistantId: '999' }] } } })
   const clock = fakeClock()
   clock.onSleep((_ms, nowMs) => {
-    if (fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/912/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString() }))
+    if (fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/912/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
   })
   let planned: any = null
   const plan = (state: any) => {
@@ -612,7 +612,7 @@ test('runWatcher reconcile: the executor is given the question to ask BEFORE an 
   const clock = fakeClock()
   // Only 7 answers a probe; 912 never does and has no marker at all.
   clock.onSleep((_ms, nowMs) => {
-    if (fs.files.has(`${HOME}/.bgos-agent/7/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/7/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString() }))
+    if (fs.files.has(`${HOME}/.bgos-agent/7/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/7/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
   })
   let answers: any = null
   let reread: any = null
@@ -670,7 +670,7 @@ test('runWatcher reconcile: a verify failure rolls back, names the step, posts s
   const clock = fakeClock()
   // Only 7 answers the probe; 912 stays deaf.
   clock.onSleep((_ms, nowMs) => {
-    if (fs.files.has(`${HOME}/.bgos-agent/7/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/7/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString() }))
+    if (fs.files.has(`${HOME}/.bgos-agent/7/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/7/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
   })
   const { deps, logs } = baseDeps(fs, backend, clock, { modules: stubModules({ plan: updatePlan }), verifyTimeoutMs: 9000 })
   assert.equal(await runWatcher(deps as any), 0)
@@ -705,7 +705,7 @@ test('runWatcher reconcile: a stale watcher bundle is staged, swapped and the pr
     const clock = fakeClock()
     clock.onSleep((_ms, nowMs) => {
       for (const id of ['912', '7']) {
-        if (fs.files.has(`${HOME}/.bgos-agent/${id}/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString() }))
+        if (fs.files.has(`${HOME}/.bgos-agent/${id}/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
       }
     })
     let observations = 0
@@ -768,7 +768,7 @@ test('runWatcher create_agent: folder, preseed, pair (exact argv, cwd = folder),
   const clock = fakeClock()
   clock.onSleep((_ms, nowMs) => {
     // The boot hello proves the new pairing live.
-    if (fs.exists(`${HOME}/.bgos-agent/55/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/55/channel-live.json`, JSON.stringify({ firstLiveAt: new Date(nowMs).toISOString(), lastLiveAt: new Date(nowMs).toISOString() }))
+    if (fs.exists(`${HOME}/.bgos-agent/55/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/55/channel-live.json`, JSON.stringify({ firstLiveAt: new Date(nowMs).toISOString(), lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
   })
   const execCalls: Array<{ file: string; args: string[]; opts: any }> = []
   const exec = async (file: string, args: readonly string[], opts: any) => {
@@ -907,7 +907,7 @@ async function createAgentRun(opts: {
   const backend = fakeBackend({ frames: [{ rpcId: 'c1', op: 'create_agent' }], jobs: { c1: { op: 'create_agent', pairCode: PAIR_CODE, folderName: 'wolf', assistantId: '55' } }, keepAlive: opts.keepAlive })
   const clock = fakeClock()
   clock.onSleep((_ms, nowMs) => {
-    if (fs.exists(`${HOME}/.bgos-agent/55/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/55/channel-live.json`, JSON.stringify({ firstLiveAt: new Date(nowMs).toISOString(), lastLiveAt: new Date(nowMs).toISOString() }))
+    if (fs.exists(`${HOME}/.bgos-agent/55/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/55/channel-live.json`, JSON.stringify({ firstLiveAt: new Date(nowMs).toISOString(), lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
   })
   const execCalls: Array<{ file: string; args: string[]; opts: any }> = []
   const exec = async (file: string, args: readonly string[], execOpts: any) => {
@@ -1368,7 +1368,7 @@ test('a job that succeeded keeps its own outcome even when the watcher cannot re
     if (fs.files.has(probe)) {
       fs.writeFile(
         `${HOME}/.bgos-plugin-state/912/channel-live.json`,
-        JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString() }),
+        JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }),
       )
     }
   })
@@ -1680,11 +1680,114 @@ for (const after of ['relaunched', 'reused'] as const) {
     if (after === 'reused') {
       assert.ok(restartLines.some((l) => l.includes('no signal sent')), restartLines.join('\n'))
       assert.equal(restartLines.filter((l) => l.includes(': ok ')).length, 1, restartLines.join('\n'))
+      // Round 5 (Opus): the job's own report names the refused restart.
+      const terminal = backend.progress('job-k2').at(-1)!
+      assert.equal(terminal.steps.find((step: any) => step.id === 's2-restart_agent:7')!.message, 'restart_failed:keepalive_unverified_now')
     } else {
       assert.equal(restartLines.filter((l) => l.includes(': ok ')).length, 2, restartLines.join('\n'))
     }
   })
 }
+
+// Round 5 (Astra): on a Mac claude runs under tmux, not under its keepalive
+// script, so the claude is known by its folder or by the agent's own state
+// file, and its owner must be the watcher's user. No case read those three
+// inputs: dropping any of them from the fresh check kept every test green.
+function keepaliveOnlyRun(opts: { cwd?: string | null; owner?: number; agentState?: boolean; restarts?: number; relaunchLate?: boolean }) {
+  const marker = `${HOME}/.bgos-agent/7/keepalive.json`
+  // The process's own uid: the job's inventory (observeMachine) reads with it too.
+  const UID = process.getuid?.() ?? 0
+  const fs = machineFs({
+    [marker]: JSON.stringify({ kind: 'keepalive', pid: 4242, claudePid: 5151, capabilities: ['relaunch'] }),
+  })
+  manifestFor(fs)
+  if (opts.agentState) {
+    fs.writeFile(
+      `${HOME}/.bgos-plugin-state/7/agent-state.json`,
+      JSON.stringify({ schemaVersion: 1, assistantId: '7', pid: 8888, claudePid: 5151, runningVersion: '0.90.0', pendingRestartVersion: null, turnInFlight: false, pendingMessages: 0, pendingPermissions: 0, activeOperations: 0, lastActivityAt: new Date(T0 - 60_000).toISOString(), sessionId: null, updatedAt: new Date(T0).toISOString(), turnSignal: 'hooks' }),
+    )
+  }
+  const backend = fakeBackend({
+    frames: [{ rpcId: 'job-mac', op: 'restart_only' }],
+    jobs: { 'job-mac': { op: 'restart_only', intent: 'restart_only', targets: [{ pairingId: 2, assistantId: '7' }] } },
+  })
+  const steps = Array.from({ length: opts.restarts ?? 1 }, (_, i) => ({ id: `s${i + 1}-restart_agent:7`, kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' }))
+  const plan = () => ({ verdict: 'plan', targetVersion: null, steps })
+  const owner = opts.owner ?? UID
+  let script = 4242
+  let claude = 5151
+  const kills: Array<[number, string]> = []
+  const clock = fakeClock()
+  let relaunchAt: number | null = null
+  clock.onSleep((_ms, nowMs) => {
+    // The new keepalive script writes its marker a few seconds after its claude is up.
+    if (relaunchAt !== null && nowMs >= relaunchAt) {
+      fs.writeFile(marker, JSON.stringify({ kind: 'keepalive', pid: script, claudePid: claude, capabilities: ['relaunch'] }))
+      relaunchAt = null
+    }
+  })
+  const { deps, logs } = baseDeps(fs, backend, clock, {
+    modules: stubModules({ plan }),
+    uid: UID,
+    pidAlive: (pid: number) => pid === script || pid === claude || pid === 8888 || pid === 999,
+    execSync: (file: string, args: string[]) =>
+      file === 'ps' && args[1] === 'comm='
+        ? { code: 0, stdout: 'claude\n' }
+        : file === 'ps' && args[0] === '-A'
+          ? { code: 0, stdout: `${script} 1 ${UID} 01:00:00\n999 1 ${UID} 02:00:00\n${claude} 999 ${owner} 10:00\n` }
+          : file === 'readlink' && opts.cwd != null && args[0] === `/proc/${claude}/cwd`
+            ? { code: 0, stdout: `${opts.cwd}\n` }
+            : { code: 1, stdout: '' },
+    kill: (pid: number, signal: string) => {
+      kills.push([pid, signal])
+      // launchd starts a new script, which starts a new claude; its marker
+      // lands later (relaunchLate) or at once.
+      script += 101
+      claude += 1010
+      // Late: after the 10 s stagger between restarts (the script's marker
+      // lands up to 5 s after its claude, and launchd's relaunch takes time).
+      if (opts.relaunchLate) relaunchAt = clock.now() + 16_000
+      else fs.writeFile(marker, JSON.stringify({ kind: 'keepalive', pid: script, claudePid: claude, capabilities: ['relaunch'] }))
+    },
+    keepAliveSweep: async () => ({ enabled: false, agents: [] }),
+  })
+  return { deps, kills, backend, logs }
+}
+
+test('runWatcher: a claude under tmux, known by its own folder, is signalled; another folder is not', async () => {
+  const mine = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old` })
+  await runWatcher(mine.deps as any)
+  assert.deepEqual(mine.kills, [[5151, 'SIGTERM']])
+  const other = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/someone-else` })
+  await runWatcher(other.deps as any)
+  // Not this agent's claude: never signalled (the restart takes another tier).
+  assert.deepEqual(other.kills, [])
+})
+
+test("runWatcher: a claude in the agent's folder but owned by another user is never signalled", async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, owner: 999 })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(run.kills, [])
+})
+
+test("runWatcher: a claude named by the agent's own fresh state file is signalled", async (t) => {
+  // The job's first inventory read takes the real clock (Date.now) and the
+  // fresh check the injected one; in production they are the same clock.
+  t.mock.timers.enable({ apis: ['Date'], now: T0 })
+  const run = keepaliveOnlyRun({ agentState: true })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(run.kills, [[5151, 'SIGTERM']])
+})
+
+// Round 5 (Opus): after a restart the keepalive script exits and launchd
+// starts a new one, which writes its marker seconds after its claude is up.
+// The second restart waits for that marker (bounded) instead of failing.
+test('runWatcher: a second restart waits for the relaunched keepalive to declare its new claude, then signals it', async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, restarts: 2, relaunchLate: true })
+  // The relaunched claude runs in the same folder.
+  await runWatcher(run.deps as any)
+  assert.deepEqual(run.kills, [[5151, 'SIGTERM'], [6161, 'SIGTERM']])
+})
 
 test('runWatcher: the first heartbeat after a restart carries the keep-alive states the previous process persisted', async () => {
   const fs = machineFs()

@@ -236,7 +236,7 @@ function rig(fs: MemoryFs, backend: ReturnType<typeof fakeBackend>, clock: Retur
 function daemonAnswersProbe(fs: MemoryFs, clock: ReturnType<typeof fakeClock>) {
   clock.onSleep((_ms, nowMs) => {
     if (fs.files.has(`${STATE_DIR}/probe-requested.json`)) {
-      fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString() }))
+      fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
     }
   })
 }
@@ -960,7 +960,7 @@ test('finding 1: a wedged claude that does not end for the launcher is ended (SI
   // The relaunched session answers the probe once the old claude is gone.
   clock.onSleep((_ms, nowMs) => {
     if (!live.has(5912) && fs.files.has(`${STATE_DIR}/probe-requested.json`)) {
-      fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString() }))
+      fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
     }
   })
   const run = rig(fs, backend, clock, PS_912, {
@@ -1218,7 +1218,7 @@ test('item 5: a frozen claude is woken and ended, and when the launcher does not
   // Only a session started by the second step answers the probe.
   clock.onSleep((_ms, nowMs) => {
     if (run.spawns.length > 0 && fs.files.has(`${STATE_DIR}/probe-requested.json`)) {
-      fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString() }))
+      fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
     }
   })
   await runWatcher(run.deps as any)
