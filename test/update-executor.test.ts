@@ -2272,15 +2272,16 @@ test('clone: with no registrar injected, the default runs the NEW checkout\'s bi
 type LiveBefore = { live: boolean | null; detail: string }
 
 /** Two agents on a marketplace update; 912 never answers its verify. */
-function deafAgentRun(before: (id: string) => LiveBefore | Promise<LiveBefore>, over: Partial<Deps> = {}) {
+function deafAgentRun(
+  before: (id: string) => LiveBefore | Promise<LiveBefore>,
+  over: Partial<Deps> = {},
+  ids: string[] = ['912', '918'],
+) {
   const world = memWorld()
-  const plan = seededUpdate(world, { agents: [agentState('912'), agentState('918')] })
+  const plan = seededUpdate(world, { agents: ids.map((id) => agentState(id)) })
   const asked: Array<{ id: string; cliCallsSoFar: number }> = []
   const made = memDeps(world, realisticScript(world, '0.38.3'), {
-    agents: [
-      { assistantId: '912', cwd: '/home/kc/hoai-agents/912' },
-      { assistantId: '918', cwd: '/home/kc/hoai-agents/918' },
-    ],
+    agents: ids.map((id) => ({ assistantId: id, cwd: `/home/kc/hoai-agents/${id}` })),
     verifyAgent: async (agent) =>
       agent.assistantId === '912' ? { ok: false, message: 'no channel-live marker newer than restart' } : { ok: true, evidence: 'marker' },
     proveLiveBefore: async (agent: { assistantId: string }) => {
@@ -2474,16 +2475,53 @@ test('the witness whose restart fails first, then the excused agent: the same, r
   assert.equal(run.world.installedVersion(), '0.38.1')
 })
 
+// Round 4 (Astra, checked by Ares): the end of run restore restarted only the
+// first excused agent; a second one stayed on the rejected build. Every agent
+// restarted onto the new build is restarted on the restored one, with one
+// verify each. And the excused step reads the reason the summary gives.
+test('two excused agents and a witness whose restart fails: after the restore both excused agents are restarted and verified on the restored version', async () => {
+  const holder: { world?: ReturnType<typeof memWorld> } = {}
+  const restarts: string[] = []
+  const verifies: string[] = []
+  const deaf = new Set(['912', '915'])
+  const run = deafAgentRun(
+    (id) => (deaf.has(id) ? { live: false, detail: 'no_answer_in_20000ms;never_live' } : { live: true, detail: 'answered' }),
+    {
+      restartAgent: async (agent: { assistantId: string }) => {
+        restarts.push(`${agent.assistantId}@${holder.world?.installedVersion()}`)
+        return agent.assistantId === '918' ? { ok: false, how: 'marker', message: 'marker write failed' } : { ok: true, how: 'marker' }
+      },
+      verifyAgent: async (agent: { assistantId: string }) => {
+        verifies.push(`${agent.assistantId}@${holder.world?.installedVersion()}`)
+        return deaf.has(agent.assistantId) ? { ok: false, message: 'no channel-live marker newer than restart' } : { ok: true, evidence: 'marker' }
+      },
+    } as Partial<Deps>,
+    ['912', '915', '918'],
+  )
+  holder.world = run.world
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.equal(run.world.installedVersion(), '0.38.1')
+  assert.deepEqual(restarts, ['912@0.38.3', '915@0.38.3', '918@0.38.3', '912@0.38.1', '915@0.38.1'])
+  assert.deepEqual(verifies, ['912@0.38.3', '915@0.38.3', '912@0.38.1', '915@0.38.1'])
+  assert.equal(result.failedStep?.message, 'agent_deaf_after_update')
+  assert.equal(stepById(result, String(result.failedStep?.id)).message, result.failedStep?.message, 'the checklist says what the summary says')
+})
+
 // Round 3 (Astra): the reread at a failed verify must not take a marker the
 // NEW boot wrote after the verify gave up for a late answer to the question
 // asked before the update. Only a marker from the old session counts there.
+// Round 4 (Astra): each read is proven alone. The reply exists only before
+// 912's restart (or only after it), so dropping the other read cannot pass.
 test('a late answer seen only at the read before the restart gives the rollback back', async () => {
-  let reads = 0
+  let restarted = false
   const run = deafAgentRun(deafBeforeFor('912'), {
-    readLastLiveAt: async () => {
-      reads += 1
-      return reads === 1 ? { lastLiveAt: '2999-01-01T00:00:00.000Z', bootedAt: '2000-01-01T00:00:00.000Z' } : null
+    restartAgent: async (agent: { assistantId: string }) => {
+      if (agent.assistantId === '912') restarted = true
+      return { ok: true, how: 'marker' }
     },
+    readLastLiveAt: async () =>
+      restarted ? null : { lastLiveAt: '2999-01-01T00:00:00.000Z', bootedAt: '2000-01-01T00:00:00.000Z' },
   } as Partial<Deps>)
   const result = await executePlan(run.plan, run.deps)
   assert.equal(result.rolledBack, true)
@@ -2491,12 +2529,14 @@ test('a late answer seen only at the read before the restart gives the rollback 
 })
 
 test('a late answer seen only at the failed verify, from the OLD session, gives the rollback back', async () => {
-  let reads = 0
+  let restarted = false
   const run = deafAgentRun(deafBeforeFor('912'), {
-    readLastLiveAt: async () => {
-      reads += 1
-      return reads === 1 ? null : { lastLiveAt: '2999-01-01T00:00:00.000Z', bootedAt: '2000-01-01T00:00:00.000Z' }
+    restartAgent: async (agent: { assistantId: string }) => {
+      if (agent.assistantId === '912') restarted = true
+      return { ok: true, how: 'marker' }
     },
+    readLastLiveAt: async () =>
+      restarted ? { lastLiveAt: '2999-01-01T00:00:00.000Z', bootedAt: '2000-01-01T00:00:00.000Z' } : null,
   } as Partial<Deps>)
   const result = await executePlan(run.plan, run.deps)
   assert.equal(result.rolledBack, true)
