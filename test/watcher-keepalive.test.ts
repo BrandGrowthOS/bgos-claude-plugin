@@ -505,7 +505,7 @@ test('installProductSupervisor (shared by the sweep and create_agent): win32 reg
   const { calls, exec } = rec
   const fs = memoryFs()
   const host = rec.useTaskHost(fs)
-  const base = { assistantId: '55', home: 'C:\\Users\\user', env: { PATH: 'C:\\Windows' }, fs, exec, nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: 'C:\\root', cwd: 'C:\\Users\\user\\hoai-agents\\wolf' }
+  const base = { assistantId: '55', home: 'C:\\Users\\user', env: { PATH: 'C:\\Windows' }, fs, exec, nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: 'C:\\root', cwd: 'C:\\Users\\user\\hoai-agents\\agent-c' }
   // `run` is how the sweep keeps the watcher online through the install: the win32 install goes
   // through it once, as the posix one does.
   let wrapped = 0
@@ -1554,7 +1554,7 @@ test('gates: once 3 attempts at a target are spent the row is failed attempts_ex
 
 // -- Windows ----------------------------------------------------------------------------------------
 
-const WCWD = 'C:\\Users\\user\\hoai-agents\\ava'
+const WCWD = 'C:\\Users\\user\\hoai-agents\\agent-a'
 const WROOT = 'C:\\Users\\user\\.claude\\plugins\\cache\\hoai\\hoai\\0.62.1'
 const WSTATE = 'C:\\Users\\user\\.bgos-agent\\912'
 
@@ -2324,10 +2324,10 @@ test('board row 69337efa (win32): the gates still bound a crash loop (1 start pe
 
 test('board row 69337efa (win32): one start per sweep: two agents that crashed together are started one sweep apart', async () => {
   const fs = crashedMachine()
-  const second = crashedMachine({}, { id: '913', cwd: 'C:\\Users\\user\\hoai-agents\\guru', pin: '8c1f0000-0000-4000-8000-000000000913' })
+  const second = crashedMachine({}, { id: '913', cwd: 'C:\\Users\\user\\hoai-agents\\agent-b', pin: '8c1f0000-0000-4000-8000-000000000913' })
   for (const [path, text] of second.files) if (!fs.files.has(path)) fs.writeFile(path, text)
-  fs.touch(transcriptPathFor({ configDir: `${WHOME}\\.claude`, cwd: 'C:\\Users\\user\\hoai-agents\\guru', sessionId: '8c1f0000-0000-4000-8000-000000000913' }), T0 - 1 * MIN)
-  fs.dirs.add('C:\\Users\\user\\hoai-agents\\guru')
+  fs.touch(transcriptPathFor({ configDir: `${WHOME}\\.claude`, cwd: 'C:\\Users\\user\\hoai-agents\\agent-b', sessionId: '8c1f0000-0000-4000-8000-000000000913' }), T0 - 1 * MIN)
+  fs.dirs.add('C:\\Users\\user\\hoai-agents\\agent-b')
   const clock = fakeClock()
   const rec = recorder({ win32Ps: listed() })
   const fetchKeepAlive = consent({ enabled: true, enabledAt: 'e', assistantIds: [912, 913] }).fetchKeepAlive
