@@ -1560,6 +1560,40 @@ test('runWatcher: the first heartbeat after a restart carries the watched findin
   assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: false, agents: [], watched: [{ id: '913', state: 'failed', reason: WATCHED_913.reason, since }] })
 })
 
+test('runWatcher: a computer with more than 64 agents sends 64 ids, its kept and watched agents among them, and says so in the log once', async () => {
+  // The server takes at most 64 ids (heartbeat.dto.ts) and refuses the WHOLE heartbeat above that.
+  const extra: Record<string, string> = {}
+  for (let id = 1000; id <= 1062; id++) extra[`${HOME}/.bgos-agent/credentials-${id}.json`] = JSON.stringify({ pairingToken: `agent-secret-${id}`, backendUrl: 'x' })
+  const fs = machineFs(extra)
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const kept = { id: '1062', state: 'supervised', reason: 'canonical', since: 'x' }
+  const watched = { ...WATCHED_913, id: '1061' }
+  const { deps, logs } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => ({ enabled: true, source: 'live', agents: [kept], watched: [watched] }),
+    limitPass: async () => ({ agents: [] }),
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.equal(beats.length, 2)
+  // 65 agents on this computer: 7, 912 and 1000 to 1062.
+  assert.equal((beats[0]!.body.env.agents as string[]).length, 64)
+  const second = beats[1]!.body.env.agents as string[]
+  assert.equal(second.length, 64)
+  assert.ok(second.includes('1062'), 'the kept agent')
+  assert.ok(second.includes('1061'), 'the watched agent')
+  assert.equal(second.includes('1060'), false, 'the last of the others is the one left out')
+  assert.deepEqual(second, [...second].sort((a, b) => Number(a) - Number(b)))
+  assert.equal(logs.filter((l) => l.includes('65 agents')).length, 1)
+})
+
 test('runWatcher: a successful poll records lastPollOkAt (the crash-loop rule); a failed one does not; it survives a restart', async () => {
   const fs = machineFs()
   manifestFor(fs)

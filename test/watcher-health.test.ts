@@ -36,6 +36,7 @@ import {
   crashLoopVerdict,
   crashPath,
   healthHome,
+  heartbeatAgentIds,
   readBoots,
   recordBoot,
   runGuarded,
@@ -337,4 +338,19 @@ test('loadWatcherModules loads the whole closure, lifecycle modules included (so
   assert.equal(typeof m.service.readWatcherCredentials, 'function')
   assert.equal(typeof m.inventory.listAgents, 'function')
   assert.equal(typeof m.installMethod.pluginRootFromScriptPath, 'function')
+})
+
+test('heartbeatAgentIds: at most 64 ids, the kept and watched agents first (the server refuses a heartbeat with more)', () => {
+  const ids = Array.from({ length: 65 }, (_, i) => String(i + 1))
+  const sent = heartbeatAgentIds(ids, ['65', '64'])
+  assert.equal(sent.length, 64)
+  assert.ok(sent.includes('65') && sent.includes('64'), 'the ones named first stay')
+  assert.equal(sent.includes('63'), false, 'the last of the others is the one left out')
+  assert.deepEqual(sent, [...sent].sort((a, b) => Number(a) - Number(b)), 'ascending, as the inventory lists them')
+  // An id the inventory does not list is never added.
+  assert.equal(heartbeatAgentIds(ids, ['999']).includes('999'), false)
+  // At or under the bound the list is exactly what it was.
+  const sixtyFour = ids.slice(0, 64)
+  assert.deepEqual(heartbeatAgentIds(sixtyFour, ['1']), sixtyFour)
+  assert.deepEqual(heartbeatAgentIds([], ['1']), [])
 })
