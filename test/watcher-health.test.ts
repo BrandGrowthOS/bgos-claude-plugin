@@ -111,7 +111,7 @@ test('buildWatcherHealth: ok, degraded after a recent fatal or 3+ boots in the h
   assert.equal(buildWatcherHealth({ boots: [], crash: null, now: T0, status: 'crash_loop' }).status, 'crash_loop')
 })
 
-test('buildWatcherHealth (board row 5adccd1e): the deaf agents the sweep only watches ride their OWN list beside the cleared ones, never inside it', () => {
+test('buildWatcherHealth: the deaf agents the sweep only watches ride their OWN list beside the cleared ones, never inside it', () => {
   const cleared = [{ id: '7', state: 'supervised', reason: 'canonical', since: 'x' }, { id: '912', state: 'waiting_idle', reason: 'background_job', since: 'x' }]
   const watched = [{ id: '300', state: 'failed', reason: 'no-channel-heartbeat: channel silent (not_cleared)', since: 'y' }, { id: '913', state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since: 'y' }]
   // `agents` is exactly the cleared list: every app already installed draws a row under the keep-alive

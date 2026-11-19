@@ -1489,11 +1489,11 @@ test('runWatcher: a limit pass that throws is logged and the loop goes on pollin
   assert.ok(backend.calls.some((c) => c.path.includes('/machine-rpc/pending')))
 })
 
-// -- deafwatch for every agent (board row 5adccd1e): a deaf agent the sweep only watches is reported, never acted on.
+// -- deafwatch for every agent: a deaf agent the sweep only watches is reported, never acted on.
 
 const WATCHED_913 = { id: '913', state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since: 'y' }
 
-test('runWatcher (board row 5adccd1e): a deaf agent the sweep only watches rides the NEXT heartbeat in its own list, never among the cleared ones, and is never handed to the limit watch', async () => {
+test('runWatcher: a deaf agent the sweep only watches rides the NEXT heartbeat in its own list, never among the cleared ones, and is never handed to the limit watch', async () => {
   const fs = machineFs()
   manifestFor(fs)
   const clock = fakeClock()
@@ -1524,7 +1524,7 @@ test('runWatcher (board row 5adccd1e): a deaf agent the sweep only watches rides
   for (const ids of passes) assert.deepEqual(ids, ['912'])
 })
 
-test('runWatcher (board row 5adccd1e): with the switch off a watched deaf agent still rides the heartbeat, in its own list', async () => {
+test('runWatcher: with the switch off a watched deaf agent still rides the heartbeat, in its own list', async () => {
   const fs = machineFs()
   manifestFor(fs)
   const clock = fakeClock()
@@ -1545,7 +1545,7 @@ test('runWatcher (board row 5adccd1e): with the switch off a watched deaf agent 
   // The sweep that follows has nothing watched: the list leaves the block again.
 })
 
-test('runWatcher (board row 5adccd1e): the first heartbeat after a restart carries the watched findings the previous process persisted', async () => {
+test('runWatcher: the first heartbeat after a restart carries the watched findings the previous process persisted', async () => {
   const fs = machineFs()
   manifestFor(fs)
   const since = new Date(T0 - 60_000).toISOString()

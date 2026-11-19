@@ -1062,7 +1062,7 @@ test('decideDeafExplained (deafwatch review F2): only a claude-login-expired sta
   }
 })
 
-// -- deafwatch for every agent (board row 5adccd1e): an agent that is not cleared is looked at, never acted on ----
+// -- deafwatch for every agent: an agent that is not cleared is looked at, never acted on ----
 
 const WATCH_NOW = Date.parse('2026-11-19T10:00:00Z')
 const WATCH_MIN = 60_000
@@ -1078,7 +1078,7 @@ const watchReported = () => ({
   deafSeenAt: watchIso(WATCH_NOW - WATCH_MIN),
 })
 
-test('decideWatchedDeaf (board row 5adccd1e): a deaf agent that is not cleared is reported only once a run of looks has lasted the confirmation, named not_cleared, and found once', () => {
+test('decideWatchedDeaf: a deaf agent that is not cleared is reported only once a run of looks has lasted the confirmation, named not_cleared, and found once', () => {
   assert.equal(NOT_CLEARED_HOLD, 'not_cleared', 'the word decideSupervise already uses for an agent the backend did not clear')
   // A first look starts a run of looks. It is stamped and nothing is reported.
   const first = decideWatchedDeaf({ prev: null, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW })

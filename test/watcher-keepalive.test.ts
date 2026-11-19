@@ -59,11 +59,11 @@ const GURU = `${HOME}/hoai-agents/guru`
 // The HOME ids the per-agent service names carry (board row d6198bb6): watcherHomeId in
 // lib/watcher-service.mjs, the first 8 hex of sha256 of the canonical HOME, computed once and
 // pinned here so a change to that hashing fails by name. '/Users/kc' (darwin, linux) -> 5156882f;
-// 'C:\Users\kc' (win32, hashed as c:\users\kc) -> 66ede649.
+// 'C:\Users\user' (win32, hashed as c:\users\user) -> f46cb28a.
 const HID = '5156882f'
-const WHID = '66ede649'
+const WHID = 'f46cb28a'
 /** The Windows HOME the win32 tests run in (its id is WHID). */
-const WHOME = 'C:\\Users\\kc'
+const WHOME = 'C:\\Users\\user'
 
 /**
  * Every test here is bounded. node:test's default timeout is INFINITE, so a
@@ -203,7 +203,7 @@ function channelFilesAt(root: string, sep = '/'): Record<string, string> {
 const HOAI_CORE_KEEP_ALIVE_TEXT = "export const RUN_KEEP_ALIVE_FLAGS = Object.freeze(['--keep-alive'])\n"
 
 /**
- * The Windows agents whose logon task this HOME (C:\Users\kc) has registered in the default
+ * The Windows agents whose logon task this HOME (C:\Users\user) has registered in the default
  * win32 world (`recorder()`'s `win32Task: 'own'`): agent 912, and agent 913 of the "two crashed
  * together" test. Each is seeded exactly as lib/agent-task-win32.mjs registers it from this HOME
  * (board row d6198bb6): the name carrying WHID, the description naming the HOME, the action
@@ -409,7 +409,7 @@ test('disabled: the switch off means NO act at all (no install, no restart, no k
   const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive: consent({ enabled: false, enabledAt: null, assistantIds: [912] }).fetchKeepAlive })
   const report = await runKeepAliveSweep(ctx as any)
   assert.deepEqual(report, { enabled: false, source: 'live', agents: [], showAgentWindows: false })
-  // Board row 5adccd1e: every agent is looked at for a deaf channel, switch on or off. That look reads the
+  // Every agent is looked at for a deaf channel, switch on or off. That look reads the
   // process table once and touches nothing; the list the answer carried is not acted on while off.
   assert.deepEqual(rec.calls.map((c) => c.file), ['ps'])
   assert.deepEqual(rec.kills, [])
@@ -424,7 +424,7 @@ test('consent: a failed fetch with no cache is OFF; with a cache younger than 24
   const down = consent(null, false, 0)
   const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive: down.fetchKeepAlive })
   assert.deepEqual(await runKeepAliveSweep(ctx as any), { enabled: false, source: 'none', agents: [], showAgentWindows: false })
-  // Nothing but the deaf watch's read only process listing (board row 5adccd1e).
+  // Nothing but the deaf watch's read only process listing.
   assert.deepEqual(rec.calls.filter((c) => c.file !== 'ps'), [])
   // A 404 (backend not deployed yet) is the same: off, unless a fresh cache exists.
   fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'] }, T0 - 23 * 60 * MIN))
@@ -505,7 +505,7 @@ test('installProductSupervisor (shared by the sweep and create_agent): win32 reg
   const { calls, exec } = rec
   const fs = memoryFs()
   const host = rec.useTaskHost(fs)
-  const base = { assistantId: '55', home: 'C:\\Users\\kc', env: { PATH: 'C:\\Windows' }, fs, exec, nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: 'C:\\root', cwd: 'C:\\Users\\kc\\hoai-agents\\wolf' }
+  const base = { assistantId: '55', home: 'C:\\Users\\user', env: { PATH: 'C:\\Windows' }, fs, exec, nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: 'C:\\root', cwd: 'C:\\Users\\user\\hoai-agents\\wolf' }
   // `run` is how the sweep keeps the watcher online through the install: the win32 install goes
   // through it once, as the posix one does.
   let wrapped = 0
@@ -525,15 +525,15 @@ test('installProductSupervisor (shared by the sweep and create_agent): win32 reg
   for (const c of calls) assert.equal(c.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, `${actionOf(c)} is bounded`)
   assert.equal(wrapped, 1, 'the win32 install (start) runs inside run, once')
   // The one task now registered is this HOME's, started: its name carries WHID, its description
-  // names C:\Users\kc, its action runs that HOME's launcher. The result names it for the sweep's record.
+  // names C:\Users\user, its action runs that HOME's launcher. The result names it for the sweep's record.
   assert.deepEqual([...host.tasks], [
-    [`HOAI Agent 55 home-${WHID}`, { description: 'HOAI agent 55, installed from home=C:\\Users\\kc', action: 'wscript.exe //B "C:\\Users\\kc\\.bgos-agent\\55\\run-agent.vbs"', state: 'Running' }],
+    [`HOAI Agent 55 home-${WHID}`, { description: 'HOAI agent 55, installed from home=C:\\Users\\user', action: 'wscript.exe //B "C:\\Users\\user\\.bgos-agent\\55\\run-agent.vbs"', state: 'Running' }],
   ])
   // (The cast: installProductSupervisor's JSDoc @returns is { ok, message } only, which is the type
   // tsc gives `started`; its win32 branch returns installAgentTask's result, whose @returns does
   // list taskName.)
   assert.equal((started as { taskName?: string }).taskName, `HOAI Agent 55 home-${WHID}`)
-  assert.match(fs.files.get('C:\\Users\\kc\\.bgos-agent\\55\\run-agent.vbs')!, /--keep-alive", 0, True\)\r\n$/)
+  assert.match(fs.files.get('C:\\Users\\user\\.bgos-agent\\55\\run-agent.vbs')!, /--keep-alive", 0, True\)\r\n$/)
   calls.length = 0
   wrapped = 0
   const registered = await installProductSupervisor({ ...base, platform: 'win32', start: false, run } as any)
@@ -1554,9 +1554,9 @@ test('gates: once 3 attempts at a target are spent the row is failed attempts_ex
 
 // -- Windows ----------------------------------------------------------------------------------------
 
-const WCWD = 'C:\\Users\\kc\\hoai-agents\\ava'
-const WROOT = 'C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.62.1'
-const WSTATE = 'C:\\Users\\kc\\.bgos-agent\\912'
+const WCWD = 'C:\\Users\\user\\hoai-agents\\ava'
+const WROOT = 'C:\\Users\\user\\.claude\\plugins\\cache\\hoai\\hoai\\0.62.1'
+const WSTATE = 'C:\\Users\\user\\.bgos-agent\\912'
 
 /** The hoai-core.mjs text a --keep-alive launcher carries (bin/hoai-core.mjs RUN_KEEP_ALIVE_FLAGS); an older one never mentions it. */
 const HOAI_CORE_KEEP_ALIVE = "export const RUN_KEEP_ALIVE_FLAGS = Object.freeze(['--keep-alive'])\n"
@@ -1595,7 +1595,7 @@ function windowsCtx(fs: MemoryFs, rec: ReturnType<typeof recorder>, extraIn: Rec
 const notListing = (c: { file: string; args: string[] }) => c.file !== 'powershell.exe' || !c.args.includes('-Command')
 /** What acts on the task: neither the process listing nor the read-only read back (the task script's probe, probe-legacy). */
 const acting = (c: { file: string; args: string[] }) => notListing(c) && !readOnlyProbe(c)
-/** This HOME's task name for agent 912 (board row d6198bb6; WHID is the id of C:\Users\kc). */
+/** This HOME's task name for agent 912 (WHID is the id of C:\Users\user). */
 const WTASK = `HOAI Agent 912 home-${WHID}`
 
 test('win32: a cleared agent with no supervisor gets the HOAI Agent <id> logon task (files + Register-ScheduledTask), started when it is not running', async () => {
@@ -1616,7 +1616,7 @@ test('win32: a cleared agent with no supervisor gets the HOAI Agent <id> logon t
 })
 
 test('win32: the task is registered but NOT started while the agent may be running by hand (fresh state); never a second session', async () => {
-  const fs = windowsMachine({ ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0) })
+  const fs = windowsMachine({ ['C:\\Users\\user\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0) })
   const rec = recorder({ win32Task: 'absent' })
   await runKeepAliveSweep(windowsCtx(fs, rec) as any)
   assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [['powershell.exe', 'probe'], ['powershell.exe', 'probe-legacy'], ['powershell.exe', 'install']])
@@ -1899,11 +1899,11 @@ test('win32: an update at an idle moment with the launcher dead (a schtasks /Run
   const pending = windowsMachine({
     ...old,
     [`${WSTATE}\\run-agent.vbs`]: stale,
-    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0),
+    ['C:\\Users\\user\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0),
   })
   const listing = JSON.stringify([
     { ProcessId: 4100, ParentProcessId: 1, CreationDate: T0 - 120 * MIN, CommandLine: 'cmd.exe' },
-    { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --x' },
+    { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: '"C:\\Users\\user\\.local\\bin\\claude.exe" --x' },
     { ProcessId: 4912, ParentProcessId: 5912, CreationDate: T0 - 120 * MIN, CommandLine: 'node server.ts' },
   ])
   const pendingRec = recorder({ win32Ps: listing })
@@ -1918,11 +1918,11 @@ test('win32: an update at an idle moment with the launcher dead (a schtasks /Run
 function winListing(withJob = false) {
   return JSON.stringify([
     { ProcessId: 4100, ParentProcessId: 1, CreationDate: T0 - 120 * MIN, CommandLine: 'C:\\Windows\\System32\\cmd.exe' },
-    { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000001' },
+    { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: '"C:\\Users\\user\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000001' },
     { ProcessId: 6000, ParentProcessId: 5912, CreationDate: T0 - 120 * MIN, CommandLine: 'node C:\\x\\bin\\bgos-launch.mjs C:\\x\\server.ts' },
     { ProcessId: 4912, ParentProcessId: 6000, CreationDate: T0 - 120 * MIN, CommandLine: 'bun C:\\x\\server.ts' },
     ...(withJob
-      ? [{ ProcessId: 7100, ParentProcessId: 5912, CreationDate: T0 - 5 * MIN, CommandLine: 'C:\\Program Files\\Git\\bin\\bash.exe -c source C:\\Users\\kc\\.claude\\shell-snapshots\\snapshot-bash-1.sh && python monitor.py' }]
+      ? [{ ProcessId: 7100, ParentProcessId: 5912, CreationDate: T0 - 5 * MIN, CommandLine: 'C:\\Program Files\\Git\\bin\\bash.exe -c source C:\\Users\\user\\.claude\\shell-snapshots\\snapshot-bash-1.sh && python monitor.py' }]
       : []),
   ])
 }
@@ -1932,14 +1932,14 @@ test('F2 (win32): with claudePid null (the daemon has no ps there) the claude ab
     [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
     [`${WSTATE}\\supervisor-generation`]: '2\n',
     [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
-    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
+    ['C:\\Users\\user\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
   }
   const alive = (pid: number) => [777, 4912, 5912].includes(pid)
   const idle = windowsMachine(files)
   const rec = recorder({ win32Ps: winListing(false) })
   const clock = fakeClock()
   clock.onSleep((_ms, at) => {
-    if (idle.files.has(`${WSTATE}\\probe-requested.json`)) idle.writeFile('C:\\Users\\kc\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+    if (idle.files.has(`${WSTATE}\\probe-requested.json`)) idle.writeFile('C:\\Users\\user\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
   })
   const report = await runKeepAliveSweep(windowsCtx(idle, rec, { now: clock.now, sleep: clock.sleep, pidAlive: alive }) as any)
   assert.equal(idle.files.get(`${WSTATE}\\restart-requested.json`), '{}', 'the live launcher restarts claude in place')
@@ -1957,7 +1957,7 @@ test('F4 (win32): an update for an agent whose launcher died but whose claude st
   const fs = windowsMachine({
     [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
     [`${WSTATE}\\supervisor-generation`]: '2\n',
-    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0),
+    ['C:\\Users\\user\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0),
   })
   const rec = recorder({ win32Ps: winListing(false) })
   const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: (pid: number) => [4912, 5912].includes(pid) }) as any)
@@ -1976,14 +1976,14 @@ test('review 3 F3 (win32): a session_without_launcher wait carries no pending ev
   const fs = windowsMachine({
     [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
     [`${WSTATE}\\supervisor-generation`]: '2\n',
-    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0),
+    ['C:\\Users\\user\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0),
   })
   const clock = fakeClock()
   const alive = (pid: number) => [4912, 5912].includes(pid)
   const first = await runKeepAliveSweep(windowsCtx(fs, recorder({ win32Ps: winListing(false) }), { now: clock.now, sleep: clock.sleep, pidAlive: alive }) as any)
   assert.deepEqual(first.agents, [{ id: '912', state: 'waiting_idle', reason: 'session_without_launcher', since: new Date(T0).toISOString() }])
   clock.advance(25 * 60 * MIN)
-  fs.writeFile('C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json', stateBody('912', clock.now()))
+  fs.writeFile('C:\\Users\\user\\.bgos-plugin-state\\912\\agent-state.json', stateBody('912', clock.now()))
   const rec = recorder({ win32Ps: winListing(false) })
   const later = await runKeepAliveSweep(windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: alive }) as any)
   assert.equal(rec.calls.some((c) => c.file === 'schtasks.exe'), false)
@@ -1992,7 +1992,7 @@ test('review 3 F3 (win32): a session_without_launcher wait carries no pending ev
 })
 
 test('F4 (win32): a daemon too old to publish state but holding the pairing lock (a person\'s plain claude) is running: the task is registered, never started beside it', async () => {
-  const lock = { ['C:\\Users\\kc\\.bgos-agent\\credentials-912.json.lock']: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 3_000 }) }
+  const lock = { ['C:\\Users\\user\\.bgos-agent\\credentials-912.json.lock']: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 3_000 }) }
   // No task yet: registered for the next logon, not started.
   const fresh = windowsMachine(lock)
   const rec = recorder({ win32Ps: winListing(false), win32Task: 'absent' })
@@ -2014,8 +2014,8 @@ test('F4 (win32): a daemon too old to publish state but holding the pairing lock
 
 const PIN = '8c1f0000-0000-4000-8000-000000000912'
 const OTHER_PIN = '8c1f0000-0000-4000-8000-000000000077'
-const WPLUGIN_STATE = 'C:\\Users\\kc\\.bgos-plugin-state\\912'
-const WLOCK = 'C:\\Users\\kc\\.bgos-agent\\credentials-912.json.lock'
+const WPLUGIN_STATE = 'C:\\Users\\user\\.bgos-plugin-state\\912'
+const WLOCK = 'C:\\Users\\user\\.bgos-agent\\credentials-912.json.lock'
 const WNODE = 'C:\\Program Files\\nodejs\\node.exe'
 
 /**
@@ -2028,7 +2028,7 @@ function taskScript0692(id: string) {
     `# HOAI Agent ${id}: logon task that keeps this agent running (generated by lib/agent-task-win32.mjs).`,
     'param([Parameter(Mandatory = $true)][ValidateSet("install", "run", "uninstall", "status")][string]$Action)',
     `$name = 'HOAI Agent ${id}'`,
-    `$vbs = 'C:\\Users\\kc\\.bgos-agent\\${id}\\run-agent.vbs'`,
+    `$vbs = 'C:\\Users\\user\\.bgos-agent\\${id}\\run-agent.vbs'`,
     'function Register-Task {',
     '  $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B `"$vbs`""',
     '  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME',
@@ -2075,7 +2075,7 @@ function crashedMachine(extra: Record<string, string> = {}, opts: { activityAt?:
   const id = opts.id ?? '912'
   const cwd = opts.cwd ?? WCWD
   const pin = opts.pin ?? PIN
-  const state = `C:\\Users\\kc\\.bgos-agent\\${id}`
+  const state = `C:\\Users\\user\\.bgos-agent\\${id}`
   const activityAt = opts.activityAt ?? T0 - 1 * MIN
   const spec = agentTaskSpec({ assistantId: id, home: WHOME, nodePath: WNODE, pluginRoot: WROOT, cwd })
   const fs = windowsMachine({
@@ -2090,7 +2090,7 @@ function crashedMachine(extra: Record<string, string> = {}, opts: { activityAt?:
     [`${state}\\supervisor-generation`]: '2\n',
     [`${state}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
     [`${state}\\session-id`]: `${pin}\n`,
-    [`C:\\Users\\kc\\.bgos-plugin-state\\${id}\\agent-state.json`]: stateBody(id, activityAt + 10_000, { lastActivityAt: new Date(activityAt).toISOString(), sessionId: pin, claudePid: null, runningVersion: '0.62.1' }),
+    [`C:\\Users\\user\\.bgos-plugin-state\\${id}\\agent-state.json`]: stateBody(id, activityAt + 10_000, { lastActivityAt: new Date(activityAt).toISOString(), sessionId: pin, claudePid: null, runningVersion: '0.62.1' }),
     [`${WHOME}\\.bgos-agent\\credentials-${id}.json.lock`]: JSON.stringify({ pid: Number(`4${id}`), heartbeatAt: activityAt + 5_000 }),
     ...extra,
   })
@@ -2105,8 +2105,8 @@ function crashedMachine(extra: Record<string, string> = {}, opts: { activityAt?:
 const AFTER_CRASH: Array<Record<string, unknown>> = [
   { ProcessId: 4, ParentProcessId: 0, CreationDate: null, CommandLine: null },
   { ProcessId: 4100, ParentProcessId: 1, CreationDate: T0 - 600 * MIN, CommandLine: 'C:\\Windows\\explorer.exe' },
-  { ProcessId: 3100, ParentProcessId: 4100, CreationDate: T0 - 300 * MIN, CommandLine: `"${WNODE}" C:\\Users\\kc\\.bgos-agent\\watcher\\bundle\\watcher.mjs` },
-  { ProcessId: 8100, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: `"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume ${OTHER_PIN}` },
+  { ProcessId: 3100, ParentProcessId: 4100, CreationDate: T0 - 300 * MIN, CommandLine: `"${WNODE}" C:\\Users\\user\\.bgos-agent\\watcher\\bundle\\watcher.mjs` },
+  { ProcessId: 8100, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: `"C:\\Users\\user\\.local\\bin\\claude.exe" --resume ${OTHER_PIN}` },
   { ProcessId: 8200, ParentProcessId: 8100, CreationDate: T0 - 120 * MIN, CommandLine: 'bun C:\\x\\server.ts' },
 ]
 const listed = (extra: Array<Record<string, unknown>> = []) => JSON.stringify([...AFTER_CRASH, ...extra])
@@ -2165,7 +2165,7 @@ test('board row 69337efa (win32): a crashed agent (launcher dead, lock holder de
   ])
   const host = upgradedRec.useTaskHost(upgraded)
   assert.equal(host.tasks.has('HOAI Agent 912'), false, 'the old task is retired')
-  assert.deepEqual(host.tasks.get(WTASK), { description: 'HOAI agent 912, installed from home=C:\\Users\\kc', action: `wscript.exe //B "${WSTATE}\\run-agent.vbs"`, state: 'Running' })
+  assert.deepEqual(host.tasks.get(WTASK), { description: 'HOAI agent 912, installed from home=C:\\Users\\user', action: `wscript.exe //B "${WSTATE}\\run-agent.vbs"`, state: 'Running' })
   assert.deepEqual(upgradedReport.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
   assert.equal(JSON.parse(upgraded.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskName, WTASK, 'renamed: the check is not repeated')
   // The same writes as in the 'own' world (the check's script, launcher and stamp, the start's
@@ -2177,7 +2177,7 @@ test('board row 69337efa (win32): a crashed agent (launcher dead, lock holder de
 })
 
 test('board row 69337efa (win32): a live claude carrying the agent\'s pinned session id still blocks the start (its daemon dead, recent activity or none)', async () => {
-  const own = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 30 * MIN, CommandLine: `"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume ${PIN} --dangerously-load-development-channels server:hoai` }]
+  const own = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 30 * MIN, CommandLine: `"C:\\Users\\user\\.local\\bin\\claude.exe" --resume ${PIN} --dangerously-load-development-channels server:hoai` }]
   for (const activityAt of [T0 - 1 * MIN, T0 - 40 * MIN]) {
     const fs = crashedMachine({}, { activityAt })
     const rec = recorder({ win32Ps: listed(own) })
@@ -2199,7 +2199,7 @@ test('board row 69337efa (win32): a live claude carrying the agent\'s pinned ses
 test('board row 69337efa (win32): a live pairing lock holder still blocks the start (F4), and so does a hung one whose claude still runs; a reused pid does not', async () => {
   // A plain claude (no pin on its command line) whose daemon holds the lock: a person's own session.
   const session = [
-    { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 30 * MIN, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe"' },
+    { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 30 * MIN, CommandLine: '"C:\\Users\\user\\.local\\bin\\claude.exe"' },
     { ProcessId: 6000, ParentProcessId: 5912, CreationDate: T0 - 29 * MIN, CommandLine: 'node C:\\x\\bin\\bgos-launch.mjs C:\\x\\server.ts' },
     { ProcessId: 4912, ParentProcessId: 6000, CreationDate: T0 - 29 * MIN, CommandLine: 'bun C:\\x\\server.ts' },
   ]
@@ -2234,7 +2234,7 @@ test('board row 69337efa (win32): a live pairing lock holder still blocks the st
 test('board row 69337efa (win32): an update for an agent whose launcher died waits (session_without_launcher) for a claude its last state named, though its daemon is gone: never a schtasks /Run beside it', async () => {
   // The daemon died (pid 4912 gone) but claude 5912, which its last state named, still runs: started before
   // the installed version landed, so an update is pending, and the agent has been quiet for 40 minutes.
-  const own = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe"' }]
+  const own = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: '"C:\\Users\\user\\.local\\bin\\claude.exe"' }]
   const fs = crashedMachine({ [`${WPLUGIN_STATE}\\agent-state.json`]: stateBody('912', T0 - 40 * MIN + 10_000, { lastActivityAt: new Date(T0 - 40 * MIN).toISOString(), sessionId: PIN, claudePid: 5912, runningVersion: '0.62.0' }) }, { activityAt: T0 - 40 * MIN })
   const rec = recorder({ win32Ps: listed(own) })
   const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn(own) }) as any)
@@ -2249,7 +2249,7 @@ test('board row 69337efa (win32): an agent whose folder holds the claude install
   const fs = crashedMachine({}, { cwd: WHOME })
   const rec = recorder({ win32Ps: listed() })
   const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn() }) as any)
-  assert.deepEqual(starts(rec), [`/Run /TN ${WTASK}`], 'C:\\Users\\kc\\.local\\bin\\claude.exe is not a claude run in C:\\Users\\kc')
+  assert.deepEqual(starts(rec), [`/Run /TN ${WTASK}`], 'C:\\Users\\user\\.local\\bin\\claude.exe is not a claude run in C:\\Users\\user')
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
 })
 
@@ -2324,10 +2324,10 @@ test('board row 69337efa (win32): the gates still bound a crash loop (1 start pe
 
 test('board row 69337efa (win32): one start per sweep: two agents that crashed together are started one sweep apart', async () => {
   const fs = crashedMachine()
-  const second = crashedMachine({}, { id: '913', cwd: 'C:\\Users\\kc\\hoai-agents\\guru', pin: '8c1f0000-0000-4000-8000-000000000913' })
+  const second = crashedMachine({}, { id: '913', cwd: 'C:\\Users\\user\\hoai-agents\\guru', pin: '8c1f0000-0000-4000-8000-000000000913' })
   for (const [path, text] of second.files) if (!fs.files.has(path)) fs.writeFile(path, text)
-  fs.touch(transcriptPathFor({ configDir: `${WHOME}\\.claude`, cwd: 'C:\\Users\\kc\\hoai-agents\\guru', sessionId: '8c1f0000-0000-4000-8000-000000000913' }), T0 - 1 * MIN)
-  fs.dirs.add('C:\\Users\\kc\\hoai-agents\\guru')
+  fs.touch(transcriptPathFor({ configDir: `${WHOME}\\.claude`, cwd: 'C:\\Users\\user\\hoai-agents\\guru', sessionId: '8c1f0000-0000-4000-8000-000000000913' }), T0 - 1 * MIN)
+  fs.dirs.add('C:\\Users\\user\\hoai-agents\\guru')
   const clock = fakeClock()
   const rec = recorder({ win32Ps: listed() })
   const fetchKeepAlive = consent({ enabled: true, enabledAt: 'e', assistantIds: [912, 913] }).fetchKeepAlive
@@ -2551,7 +2551,7 @@ function freshStartMachine(ageMs: number, landedAgoMs: number) {
 function freshStartListing(ageMs: number) {
   return JSON.stringify([
     { ProcessId: 777, ParentProcessId: 1, CreationDate: T0 - 120 * MIN, CommandLine: `"C:\\Program Files\\nodejs\\node.exe" ${WROOT}\\bin\\hoai-core.mjs --keep-alive` },
-    { ProcessId: 5912, ParentProcessId: 777, CreationDate: T0 - ageMs, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000001' },
+    { ProcessId: 5912, ParentProcessId: 777, CreationDate: T0 - ageMs, CommandLine: '"C:\\Users\\user\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000001' },
     { ProcessId: 4912, ParentProcessId: 5912, CreationDate: T0 - ageMs + 500, CommandLine: 'bun C:\\x\\server.ts' },
   ])
 }
@@ -2566,14 +2566,14 @@ test('win32: a session the launcher started 9 s ago is never restarted by the sw
   const old = freshStartMachine(120 * MIN, 30 * MIN)
   const clock = fakeClock()
   clock.onSleep((_ms, at) => {
-    if (old.files.has(`${WSTATE}\\probe-requested.json`)) old.writeFile('C:\\Users\\kc\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+    if (old.files.has(`${WSTATE}\\probe-requested.json`)) old.writeFile('C:\\Users\\user\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
   })
   await runKeepAliveSweep(windowsCtx(old, recorder({ win32Ps: freshStartListing(120 * MIN) }), { pidAlive: alive, now: clock.now, sleep: clock.sleep }) as any)
   assert.equal(old.files.get(`${WSTATE}\\restart-requested.json`), '{}')
 })
 
 test('fresh start (agent 909, 2026-10-12): a restart judged on the session before a relaunch is never written onto the session after it', async () => {
-  const statePath = 'C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json'
+  const statePath = 'C:\\Users\\user\\.bgos-plugin-state\\912\\agent-state.json'
   const fs = windowsMachine({
     [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
     [`${WSTATE}\\supervisor-generation`]: '2\n',
@@ -2602,7 +2602,7 @@ test('fresh start (agent 909, 2026-10-12): a restart judged on the session befor
         code: 0,
         stdout: JSON.stringify([
           { ProcessId: 4100, ParentProcessId: 1, CreationDate: T0 - 120 * MIN, CommandLine: 'C:\\Windows\\System32\\cmd.exe' },
-          { ProcessId: 6912, ParentProcessId: 4100, CreationDate: T0 + 1_100, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000001' },
+          { ProcessId: 6912, ParentProcessId: 4100, CreationDate: T0 + 1_100, CommandLine: '"C:\\Users\\user\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000001' },
           { ProcessId: 6001, ParentProcessId: 6912, CreationDate: T0 + 1_200, CommandLine: 'node C:\\x\\bin\\bgos-launch.mjs C:\\x\\server.ts' },
           { ProcessId: 4913, ParentProcessId: 6001, CreationDate: T0 + 1_300, CommandLine: 'bun C:\\x\\server.ts' },
         ]),
@@ -2626,7 +2626,7 @@ test('a restart marker already on disk (a person\'s, or one the takeover still o
     [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
     [`${WSTATE}\\supervisor-generation`]: '2\n',
     [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
-    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
+    ['C:\\Users\\user\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
     [`${WSTATE}\\restart-requested.json`]: mark,
   })
   // Written 20 s ago: a pending request the launcher or the takeover is about to act on.
@@ -2641,13 +2641,13 @@ test('a marker stranded longer than anyone takes to act on it does not block the
     [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
     [`${WSTATE}\\supervisor-generation`]: '2\n',
     [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
-    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
+    ['C:\\Users\\user\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
     [`${WSTATE}\\restart-requested.json`]: '{"left":"by an exhausted launcher"}',
   })
   fs.touch(`${WSTATE}\\restart-requested.json`, T0 - 10 * MIN)
   const clock = fakeClock()
   clock.onSleep((_ms, at) => {
-    if (fs.files.has(`${WSTATE}\\probe-requested.json`)) fs.writeFile('C:\\Users\\kc\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+    if (fs.files.has(`${WSTATE}\\probe-requested.json`)) fs.writeFile('C:\\Users\\user\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
   })
   const report = await runKeepAliveSweep(windowsCtx(fs, recorder({ win32Ps: winListing(false) }), { now: clock.now, sleep: clock.sleep, pidAlive: (pid: number) => [777, 4912, 5912].includes(pid) }) as any)
   assert.equal(fs.files.get(`${WSTATE}\\restart-requested.json`), '{}')
@@ -2921,7 +2921,7 @@ test('deafwatch: a daemon that runs but whose beacon went stale (channel silent)
 })
 
 test('deafwatch (win32, Ares): the launcher\'s hoai-core.mjs and the MCP launcher removed, claude up on its pin for 11 h with no daemon: failed no-channel-heartbeat naming the files, never a task start beside it', async () => {
-  const own = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 11 * 60 * MIN, CommandLine: `"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume ${PIN} --dangerously-load-development-channels server:hoai` }]
+  const own = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 11 * 60 * MIN, CommandLine: `"C:\\Users\\user\\.local\\bin\\claude.exe" --resume ${PIN} --dangerously-load-development-channels server:hoai` }]
   const fs = crashedMachine({}, { activityAt: T0 - 11 * 60 * MIN })
   for (const rel of ['bin\\bgos-launch.mjs', 'bin\\hoai-core.mjs', 'bin\\hoai-browser-launch.mjs', 'bin\\hoai-browser-mcp.mjs']) fs.rm(`${WROOT}\\${rel}`)
   const rec = recorder({ win32Ps: listed(own) })
@@ -3087,7 +3087,7 @@ test('deafwatch review F4 (K4): a plugin file that cannot be read is not named m
   assert.deepEqual(missingChannelFiles({ pluginRoot: root, fs }), ['bin/bgos-launch.mjs'])
 })
 
-// -- deafwatch for every agent (board row 5adccd1e) -----------------------------------------------
+// -- deafwatch for every agent -----------------------------------------------
 //
 // A retest on a Windows computer: four agents, the keep-alive list named only one of them (an agent on its own service),
 // and the channel process of a launcher-live agent was stopped while its claude and its launcher kept
@@ -3166,7 +3166,7 @@ function retestPs() {
 }
 const retestAlive = (pid: number) => [47, 57, 4300, 5300, 3913, 5913].includes(pid)
 
-test('deafwatch for every agent (board row 5adccd1e, red first): the retest scene. Only one agent is cleared, and the launcher-live agent whose channel process stopped is noticed, logged once and reported, with nothing touched', async () => {
+test('deafwatch for every agent: the retest scene. Only one agent is cleared, and the launcher-live agent whose channel process stopped is noticed, logged once and reported, with nothing touched', async () => {
   const clock = fakeClock()
   const fs = retestScene()
   const before = agentWrites(fs).sort()
@@ -3458,12 +3458,12 @@ test('deafwatch for every agent (win32, the retest itself): a launcher-live agen
     // Its hoai launcher (3912) and its claude on the pin (5912) run; the channel process under claude is gone.
     const own = [
       { ProcessId: 3912, ParentProcessId: 4100, CreationDate: T0 - 300 * MIN, CommandLine: `"${WNODE}" ${WROOT}\\bin\\hoai-core.mjs` },
-      { ProcessId: 5912, ParentProcessId: 3912, CreationDate: which === 'started 3 h ago' ? T0 - 180 * MIN : null, CommandLine: `"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume ${PIN} --dangerously-load-development-channels server:hoai` },
+      { ProcessId: 5912, ParentProcessId: 3912, CreationDate: which === 'started 3 h ago' ? T0 - 180 * MIN : null, CommandLine: `"C:\\Users\\user\\.local\\bin\\claude.exe" --resume ${PIN} --dangerously-load-development-channels server:hoai` },
     ]
     const fs = windowsMachine({
       [`${WSTATE}\\session-id`]: `${PIN}\n`,
       [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 3912, capabilities: ['relaunch'], startedAt: 'x' }),
-      'C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json': stateBody('912', T0 - 11 * 60 * MIN, { sessionId: PIN, claudePid: null, runningVersion: '0.62.1' }),
+      'C:\\Users\\user\\.bgos-plugin-state\\912\\agent-state.json': stateBody('912', T0 - 11 * 60 * MIN, { sessionId: PIN, claudePid: null, runningVersion: '0.62.1' }),
     })
     const before = new Map(fs.files)
     const rec = recorder({ win32Ps: listed(own) })
