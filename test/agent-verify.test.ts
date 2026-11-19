@@ -15,7 +15,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { PROBE_REWRITE_MS, liveMarkerProves, parseLiveMarker, verifyAgent } from '../lib/agent-verify.mjs'
+import {
+  LIVE_BEFORE_STALE_MS,
+  LIVE_BEFORE_TIMEOUT_MS,
+  PROBE_REWRITE_MS,
+  liveMarkerProves,
+  parseLiveMarker,
+  proveLiveBefore,
+  verifyAgent,
+} from '../lib/agent-verify.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 
 const MARKER = '/home/kc/.bgos-plugin-state/912/channel-live.json'
@@ -224,4 +232,120 @@ test('verifyAgent: a clock that never reaches the deadline still ends the wait (
   assert.equal(result.ok, false)
   assert.equal(result.message, 'agent_deaf_after_restart')
   assert.equal(sleeps, 11, 'one lap per poll the timeout allows, plus one')
+})
+
+// -- Before an update: does this agent hear the channel NOW? ---------------------------------
+//
+// An update restarts every agent and verifies each one; a deaf agent rolls the
+// whole computer back to the old version. That is right only when the update
+// made it deaf. On 17 Nov 2026 an agent that had been deaf for days (Bug board
+// rows 66450e01 and 367b861a) rolled a good install back twice. So before an
+// update mutates anything, the watcher asks each agent the same question the
+// verify asks afterwards, and the answer has three values:
+//   true   it answered the probe now;
+//   false  it did not answer, and its marker shows no sign of life either
+//          (absent, or older than LIVE_BEFORE_STALE_MS): deaf before;
+//   null   it did not answer but acted on the channel recently: it may be in
+//          the middle of a long turn, so the update can still be blamed.
+
+const iso = (ms: number) => new Date(ms).toISOString()
+const liveMarker = (lastLiveAtMs: number, bootedAtMs?: number) =>
+  JSON.stringify({
+    firstLiveAt: iso(lastLiveAtMs),
+    lastLiveAt: iso(lastLiveAtMs),
+    ...(bootedAtMs === undefined ? {} : { bootedAt: iso(bootedAtMs) }),
+  })
+
+test('proveLiveBefore: an agent that answers the probe is live, as soon as it answers', async () => {
+  const fs = memoryFs()
+  // The daemon booted days ago: the verify's bootedAt rule must NOT apply here.
+  fs.writeFile(MARKER, liveMarker(T0 - 3 * 86_400_000, T0 - 3 * 86_400_000))
+  const clock = fakeClock(T0, (nowMs, tick) => {
+    if (tick === 2) fs.writeFile(MARKER, liveMarker(nowMs, T0 - 3 * 86_400_000))
+  })
+  const out = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep })
+  assert.equal(out.live, true)
+  assert.equal(clock.sleeps.length, 2, 'it stopped waiting the moment the marker moved')
+  assert.ok(fs.files.has(PROBE), 'a probe was asked for')
+})
+
+test('proveLiveBefore: it asks with the same probe file the verify uses, at once', async () => {
+  const fs = memoryFs()
+  const clock = fakeClock(T0)
+  await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000 })
+  const probe = JSON.parse(String(fs.readFile(PROBE)))
+  assert.equal(probe.by, 'hoai-watcher')
+  assert.equal(probe.requestedAt, iso(T0))
+})
+
+test('proveLiveBefore: no answer and no marker at all is deaf before the update', async () => {
+  const fs = memoryFs()
+  const clock = fakeClock(T0)
+  const out = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep })
+  assert.equal(out.live, false)
+  assert.match(out.detail, /^no_answer_in_\d+ms;never_live$/)
+  assert.ok(clock.now() - T0 >= LIVE_BEFORE_TIMEOUT_MS, 'it waited the whole window before saying so')
+  assert.ok(clock.now() - T0 < LIVE_BEFORE_TIMEOUT_MS + 10_000, 'and not much longer')
+})
+
+test('proveLiveBefore: no answer and a marker last moved days ago is deaf before the update (the 17 Nov case)', async () => {
+  const fs = memoryFs()
+  fs.writeFile(MARKER, liveMarker(T0 - 8 * 86_400_000, T0 - 9 * 86_400_000))
+  const clock = fakeClock(T0)
+  const out = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep })
+  assert.equal(out.live, false)
+  assert.match(out.detail, /^no_answer_in_\d+ms;last_live_/)
+})
+
+test('proveLiveBefore: no answer but it acted on the channel recently is UNKNOWN, never "deaf": it may be in a long turn', async () => {
+  const fs = memoryFs()
+  fs.writeFile(MARKER, liveMarker(T0 - 40 * 60_000))
+  const clock = fakeClock(T0)
+  const out = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep })
+  assert.equal(out.live, null)
+  // The edge: exactly the stale window is still "recent"; one ms older is not.
+  for (const [age, expected] of [
+    [LIVE_BEFORE_STALE_MS, null],
+    [LIVE_BEFORE_STALE_MS + 1, false],
+  ] as const) {
+    const edgeFs = memoryFs()
+    edgeFs.writeFile(MARKER, liveMarker(T0 - age))
+    const edgeClock = fakeClock(T0)
+    const edge = await proveLiveBefore(agentRow(), { fs: edgeFs, now: edgeClock.now, sleep: edgeClock.sleep, timeoutMs: 3_000 })
+    assert.equal(edge.live, expected, `age ${age}`)
+  }
+})
+
+test('proveLiveBefore: a marker that moved BEFORE the question is not an answer, however close', async () => {
+  const fs = memoryFs()
+  fs.writeFile(MARKER, liveMarker(T0 - 1))
+  const clock = fakeClock(T0)
+  const out = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 6_000 })
+  assert.equal(out.live, null, 'recent, so unknown; but not "answered"')
+})
+
+test('proveLiveBefore: junk in the marker is no sign of life; an agent with no marker path cannot be judged', async () => {
+  const fs = memoryFs()
+  fs.writeFile(MARKER, 'junk')
+  const clock = fakeClock(T0)
+  const junk = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000 })
+  assert.equal(junk.live, false)
+  const noPath = await proveLiveBefore({ ...agentRow(), liveMarkerPath: '' }, { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000 })
+  assert.equal(noPath.live, null)
+  assert.equal(noPath.detail, 'no_marker_path')
+})
+
+test('proveLiveBefore: a clock that never reaches the deadline still ends the wait', async () => {
+  const fs = memoryFs()
+  let laps = 0
+  const out = await proveLiveBefore(agentRow(), {
+    fs,
+    now: () => T0,
+    sleep: async () => {
+      laps += 1
+      if (laps > 10_000) throw new Error('never ended')
+    },
+  })
+  assert.equal(out.live, false)
+  assert.ok(laps < 100)
 })

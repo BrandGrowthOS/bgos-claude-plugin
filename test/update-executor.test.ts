@@ -2257,3 +2257,124 @@ test('clone: with no registrar injected, the default runs the NEW checkout\'s bi
   assert.match(JSON.stringify(settings.hooks.UserPromptSubmit), /hoai-private-turn-hook\.mjs/)
   assert.doesNotMatch(JSON.stringify(settings.hooks), /hoai-floor-hook\.mjs/)
 })
+
+// -- An agent that was deaf BEFORE the update never rolls the computer back ----------------------
+//
+// Bug board rows 66450e01 and 367b861a (17 Nov 2026): an agent that had been
+// deaf for days failed its verify after a good install, the whole computer was
+// rolled back, and the same agent then failed again on the old version
+// (agent_deaf_after_rollback). The planner's guard reads `running`, which only
+// says the agent has a supervisor. So the executor asks each agent whose
+// verify can roll back the same question BEFORE anything is installed
+// (deps.proveLiveBefore, lib/agent-verify.mjs), and a deaf answer there takes
+// the rollback away from that one agent. Unknown stays as it was.
+
+type LiveBefore = { live: boolean | null; detail: string }
+
+/** Two agents on a marketplace update; 912 never answers its verify. */
+function deafAgentRun(before: (id: string) => LiveBefore | Promise<LiveBefore>, over: Partial<Deps> = {}) {
+  const world = memWorld()
+  const plan = seededUpdate(world, { agents: [agentState('912'), agentState('918')] })
+  const asked: Array<{ id: string; cliCallsSoFar: number }> = []
+  const made = memDeps(world, realisticScript(world, '0.38.3'), {
+    agents: [
+      { assistantId: '912', cwd: '/home/kc/hoai-agents/912' },
+      { assistantId: '918', cwd: '/home/kc/hoai-agents/918' },
+    ],
+    verifyAgent: async (agent) =>
+      agent.assistantId === '912' ? { ok: false, message: 'no channel-live marker newer than restart' } : { ok: true, evidence: 'marker' },
+    proveLiveBefore: async (agent: { assistantId: string }) => {
+      asked.push({ id: agent.assistantId, cliCallsSoFar: made.calls.length })
+      return before(agent.assistantId)
+    },
+    ...over,
+  } as Partial<Deps>)
+  return { world, plan, asked, ...made }
+}
+
+test('an agent that was deaf BEFORE the update fails its verify without rolling the computer back: the install stays and the others go on', async () => {
+  const run = deafAgentRun((id) => (id === '912' ? { live: false, detail: 'no_answer_in_20000ms;never_live' } : { live: true, detail: 'answered' }))
+  const result = await executePlan(run.plan, run.deps)
+  assert.deepEqual(stepView(result.steps).slice(4), [
+    's05-restart_agent-912:ok:restarted',
+    's06-verify_agent-912:failed:agent_deaf_after_restart',
+    's07-restart_agent-918:ok:restarted',
+    's08-verify_agent-918:ok:live',
+  ])
+  assert.equal(result.rolledBack, false)
+  assert.equal(result.steps.filter((s) => s.kind === 'rollback').length, 0)
+  assert.equal(result.installedVersion, '0.38.3')
+  assert.equal(run.world.installedVersion(), '0.38.3', 'the good install is kept')
+  assert.deepEqual(run.restarts.map((r) => r.id), ['912', '918'], 'no second restart of the deaf agent on a restored version')
+  // The run still says one agent does not answer, and why the update is not blamed.
+  assert.equal(result.verdict, 'failed')
+  assert.deepEqual(result.failedStep, { id: 's06-verify_agent-912', kind: 'verify_agent', target: '912', message: 'agent_deaf_after_restart' })
+  const detail = stepById(result, 's06-verify_agent-912').detail ?? ''
+  assert.ok(detail.includes('deaf_before_update'), detail)
+  assert.ok(detail.includes('no_answer_in_20000ms;never_live'), detail)
+})
+
+test('an agent that answered before the update and is deaf after it rolls the computer back, as before', async () => {
+  const run = deafAgentRun(() => ({ live: true, detail: 'answered' }))
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.equal(result.verdict, 'rolled_back')
+  assert.equal(result.failedStep?.message, 'agent_deaf_after_update')
+  assert.equal(run.world.installedVersion(), '0.38.1')
+})
+
+test('when the question before the update has no answer either way (unknown, a throw, a hang), the update is blamed as before', async () => {
+  for (const before of [
+    () => ({ live: null, detail: 'no_answer_in_20000ms;recently_live_x' }),
+    () => {
+      throw new Error('marker unreadable')
+    },
+    () => new Promise<LiveBefore>(() => {}),
+    () => ({ live: 'no' as unknown as boolean, detail: 'junk' }),
+    () => undefined as unknown as LiveBefore,
+  ]) {
+    const run = deafAgentRun(before as (id: string) => LiveBefore, { liveBeforeTimeoutMs: 40 } as Partial<Deps>)
+    const result = await executePlan(run.plan, run.deps)
+    assert.equal(result.rolledBack, true, String(before))
+    assert.equal(result.failedStep?.message, 'agent_deaf_after_update')
+  }
+})
+
+test('the question is asked once per agent, before anything is installed', async () => {
+  const run = deafAgentRun(() => ({ live: true, detail: 'answered' }))
+  await executePlan(run.plan, run.deps)
+  assert.deepEqual(run.asked.map((a) => a.id).sort(), ['912', '918'])
+  assert.deepEqual(run.asked.map((a) => a.cliCallsSoFar), [0, 0], 'before the first claude call of the run')
+})
+
+test('nobody is asked when no verify of the plan can roll back (a restart only run installs nothing)', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  world.seedInstalled('0.38.3')
+  const plan = planMachine(
+    updateState(world, {
+      intent: 'restart_only',
+      runningVersion: '0.38.3',
+      installed: { present: true, version: '0.38.3', installPath: world.installPathFor('0.38.3') },
+    }),
+  )
+  assert.ok(plan.steps.some((s: { kind: string }) => s.kind === 'verify_agent'))
+  let asked = 0
+  const { deps } = memDeps(world, realisticScript(world, '0.38.3'), {
+    proveLiveBefore: async () => {
+      asked += 1
+      return { live: false, detail: 'x' }
+    },
+  } as Partial<Deps>)
+  await executePlan(plan, deps)
+  assert.equal(asked, 0)
+})
+
+test('a deaf answer before the update never softens a verify that could not roll back anyway, and never touches a live agent', async () => {
+  // 918 was deaf before and answers after: its verify is simply ok.
+  const run = deafAgentRun((id) => (id === '918' ? { live: false, detail: 'no_answer_in_20000ms;never_live' } : { live: true, detail: 'answered' }))
+  const result = await executePlan(run.plan, run.deps)
+  // 912 answered before and is deaf after: the update is blamed, 918 or not.
+  assert.equal(result.rolledBack, true)
+  assert.equal(result.failedStep?.target, '912')
+})

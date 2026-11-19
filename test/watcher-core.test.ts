@@ -601,6 +601,39 @@ test('runWatcher reconcile: the executor reads the marks the agents wrote, so a 
   assert.equal(backend.progress('j').at(-1)!.state, 'failed')
 })
 
+test('runWatcher reconcile: the executor is given the question to ask BEFORE an update, answered from each agent\'s own marker', async () => {
+  // Bug board rows 66450e01 and 367b861a: an agent already deaf must not roll
+  // a good install back. The executor asks through this dependency
+  // (update-executor.test.ts pins what it does with the answer); here the
+  // watcher's wiring is real: its file system, its clock, its inventory rows.
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'update', targets: [] } } })
+  const clock = fakeClock()
+  // Only 7 answers a probe; 912 never does and has no marker at all.
+  clock.onSleep((_ms, nowMs) => {
+    if (fs.files.has(`${HOME}/.bgos-agent/7/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/7/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString() }))
+  })
+  let answers: any = null
+  const execute = async (_plan: any, deps: any) => {
+    assert.equal(typeof deps.proveLiveBefore, 'function', 'the watcher hands the executor the question')
+    answers = {
+      live: await deps.proveLiveBefore({ assistantId: '7', cwd: null }, { timeoutMs: 9000 }),
+      deaf: await deps.proveLiveBefore({ assistantId: '912', cwd: null }, { timeoutMs: 9000 }),
+      stranger: await deps.proveLiveBefore({ assistantId: '4242', cwd: null }, { timeoutMs: 9000 }),
+    }
+    return { ok: true, verdict: 'done', failedStep: null, rolledBack: false, steps: [] }
+  }
+  const { deps, logs } = baseDeps(fs, backend, clock, { modules: stubModules({ plan: updatePlan, execute }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(answers.live, { live: true, detail: 'answered' })
+  assert.equal(answers.deaf.live, false)
+  assert.equal(answers.deaf.detail, 'no_answer_in_9000ms;never_live')
+  assert.deepEqual(answers.stranger, { live: null, detail: 'agent_not_in_inventory:4242' })
+  assert.ok(fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`), 'the deaf agent was really asked')
+  assert.ok(logs.some((line: string) => line.includes('live before 912: DEAF')), 'and the log says so')
+})
+
 test('runWatcher reconcile: a verify failure rolls back, names the step, posts scrubbed diagnostics', async () => {
   const fs = machineFs()
   manifestFor(fs)
