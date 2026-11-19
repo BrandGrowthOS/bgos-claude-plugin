@@ -11,6 +11,10 @@ import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Server } from "socket.io";
+import { appendEvent } from "../bin/hoai-hook.mjs";
+import { recordPrivateBoundary } from "../bin/hoai-private-turn-hook.mjs";
+import { SessionTranscriptBinder } from "../lib/session-binding.ts";
+import { renderChannel } from "./helpers/private-turn-host.ts";
 
 test(
   "owner daemon delivers the two senders, refuses a person stamp and explains reactions",
@@ -18,7 +22,7 @@ test(
   async () => {
     const assistantId = randomInt(1, 1000000),
       chatId = randomInt(1, 1000000);
-    const owner = randomUUID(),
+    const owner = "user_" + randomUUID(),
       member = randomUUID();
     const root = mkdtempSync(join(tmpdir(), "reaction-daemon-"));
     const home = join(root, "home"),
@@ -83,6 +87,7 @@ test(
           CLAUDE_CONFIG_DIR: join(home, ".claude"),
           CLAUDE_CODE_EXECPATH: join(root, "absent"),
           BGOS_LAUNCH_CWD: folder,
+          CLAUDE_PROJECT_DIR: folder,
           BGOS_AUTO_UPDATE: "disabled",
           HOAI_BROWSER_HOST: "off",
           BGOS_BOOT_HELLO: "off",
@@ -93,12 +98,18 @@ test(
         log += String(chunk);
       });
       const cards: { content: string; meta: Record<string, string> }[] = [];
+      const messages: typeof cards = [];
       client.fallbackNotificationHandler = async (n) => {
         if (
           n.method === "notifications/claude/channel" &&
           (n.params?.meta as Record<string, string>)?.event_type === "reaction"
         ) {
           cards.push(n.params as (typeof cards)[number]);
+        } else if (
+          n.method === "notifications/claude/channel" &&
+          String(n.params?.content).includes("Check the list.")
+        ) {
+          messages.push(n.params as (typeof cards)[number]);
         }
       };
       await client.connect(transport);
@@ -141,20 +152,73 @@ test(
           reactionId: String(id),
         });
       };
+      const session = randomUUID();
+      const project = new SessionTranscriptBinder(folder, {
+        claudeHome: join(home, ".claude"),
+      }).projectDirectory;
+      mkdirSync(project, { recursive: true });
+      const transcript = join(project, session + ".jsonl");
+      writeFileSync(transcript, "");
+      const hookEnv = {
+        BGOS_PLUGIN_STATE_DIR: join(home, ".bgos-plugin-state"),
+        CLAUDE_PROJECT_DIR: folder,
+      };
+      async function openOwnerTurn() {
+        const delivered = messages.length;
+        io.emit("inbound_message", {
+          assistantId,
+          userId: owner,
+          senderUserId: owner,
+          chatId,
+          messageId: ++id,
+          senderType: "user",
+          text: "Check the list.",
+          messageType: "standard",
+          files: [],
+          lane: "owner",
+        });
+        await until(() => messages.length > delivered);
+        const accepted = messages.at(-1)!;
+        const payload = {
+          session_id: session,
+          cwd: folder,
+          transcript_path: transcript,
+          hook_event_name: "UserPromptSubmit",
+          prompt_id: randomUUID(),
+          prompt: renderChannel(accepted.content, accepted.meta),
+        };
+        const start = log.length;
+        recordPrivateBoundary(payload, hookEnv);
+        appendEvent(payload, { env: hookEnv, startedAt: Date.now() });
+        await until(() => log.slice(start).includes("admitted its sender"));
+        const admitted = await client.callTool({
+          name: "list_schedules",
+          arguments: {},
+        });
+        assert.ok(!admitted.isError, JSON.stringify(admitted.content));
+      }
       send("person:" + member, member, "shared_recipient");
-      send("owner", owner, "owner");
-      await until(() => cards.length === 1);
-      const afterReaction = await client.callTool({
-        name: "list_schedules",
-        arguments: {},
-      });
-      assert.equal(afterReaction.isError, true);
-      assert.match(
-        JSON.stringify(afterReaction.content),
-        /current sender could not be verified.*Send a new message/,
-      );
-      send("owner", member, "room_member");
-      await until(() => cards.length >= 2);
+      for (const [actor, standing] of [
+        [owner, "owner"],
+        [member, "room_member"],
+      ]) {
+        await openOwnerTurn();
+        const previous = cards.length;
+        const start = log.length;
+        send("owner", actor, standing);
+        await until(() => cards.length > previous);
+        await pause(100);
+        assert.match(log.slice(start), /ended the private turn/);
+        const afterReaction = await client.callTool({
+          name: "list_schedules",
+          arguments: {},
+        });
+        assert.equal(afterReaction.isError, true);
+        assert.match(
+          JSON.stringify(afterReaction.content),
+          /current sender could not be verified.*Send a new message/,
+        );
+      }
       const line = '"Reader" 👍 to your message: "Ready?"';
       assert.deepEqual(
         cards.map((c) => c.content),

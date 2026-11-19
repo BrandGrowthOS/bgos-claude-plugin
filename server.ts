@@ -219,7 +219,7 @@ import { vaultHostDir } from './lib/vault-host.mjs'
 import { ensureAutoHost } from './lib/vault-host-auto.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
-import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
+import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, PRIVATE_UNTRACKED_TAG, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_OUTBOUND_FILES_PATH,
@@ -18890,10 +18890,7 @@ function connectWebsocket(): void {
     }, 'socket reaction')) return
     if (!ownerLaneVerdict(frame).deliver) return
     void trackMessageOperation(() => channelNotify(() => {
-      const marker = privateTurns.noteTap({
-        chatId: card.meta.chat_id,
-        tapperUserId: frame.reactorUserId,
-      })
+      const marker = card.meta.user_id === USER_ID ? '' : ' ' + PRIVATE_UNTRACKED_TAG
       // Keep the transport's provenance tags on the same line as this short answer.
       const content = privateTurns.tagRawCard(card.content + marker).replace(/\n/g, ' ')
       return { content, meta: card.meta }
