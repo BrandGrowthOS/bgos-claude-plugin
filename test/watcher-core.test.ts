@@ -1594,6 +1594,32 @@ test('runWatcher: a computer with more than 64 agents sends 64 ids, its kept and
   assert.equal(logs.filter((l) => l.includes('65 agents')).length, 1)
 })
 
+test('runWatcher: after a restart a watched finding comes back only while its last look is fresh; an older one waits for the first sweep', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const fresh = new Date(T0 - 60_000).toISOString()
+  const stale = new Date(T0 - 10 * 60_000).toISOString()
+  fs.writeFile(
+    `${HOME}/.bgos-agent/watcher/keepalive-state.json`,
+    JSON.stringify({
+      schemaVersion: 1,
+      enabled: false,
+      agents: {},
+      watched: {
+        // Last looked at ten minutes ago: the agent may have come back since.
+        '913': { state: 'failed', reason: WATCHED_913.reason, since: stale, deafSince: stale, deafSeenAt: stale },
+        '915': { state: 'failed', reason: WATCHED_913.reason, since: fresh, deafSince: fresh, deafSeenAt: fresh },
+        // No look time at all: it cannot say when it was last true.
+        '916': { state: 'failed', reason: 'claude-login-expired: the login failed', since: fresh },
+      },
+    }),
+  )
+  const backend = fakeBackend()
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), execSync: () => ({ code: 1, stdout: '' }), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: false, agents: [], watched: [{ id: '915', state: 'failed', reason: WATCHED_913.reason, since: fresh }] })
+})
+
 test('runWatcher: a successful poll records lastPollOkAt (the crash-loop rule); a failed one does not; it survives a restart', async () => {
   const fs = machineFs()
   manifestFor(fs)

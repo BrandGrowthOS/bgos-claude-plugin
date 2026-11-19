@@ -36,6 +36,7 @@ import {
   decideDeafConfirmed,
   decideDeafExplained,
   decideWatchedDeaf,
+  watchedFindingFresh,
   NOT_CLEARED_HOLD,
   CONSENT_UNKNOWN_HOLD,
   channelFilesOf,
@@ -1015,6 +1016,18 @@ test('decideSafeMoment (deafwatch, Ares 17:29Z): a deaf channel past its start g
   assert.deepEqual(decideSafeMoment({ ...base, stateFresh: true, state: { ...fresh, turnInFlight: false, pendingPermissions: 1 } } as any), { safe: false, reason: 'pending_permission' })
   // Quiet anyway: the usual answer.
   assert.deepEqual(decideSafeMoment({ ...base, activityMs: [now - 60 * 60_000] } as any), { safe: true, reason: 'idle' })
+})
+
+test('watchedFindingFresh: a persisted watched finding speaks for now only while its last look is within CHANNEL_DEAF_SEEN_GAP_MS', () => {
+  const now = Date.parse('2026-11-19T12:00:00.000Z')
+  const at = (ms: number) => ({ state: 'failed', deafSeenAt: new Date(ms).toISOString() })
+  assert.equal(watchedFindingFresh(at(now - 60_000), now), true)
+  assert.equal(watchedFindingFresh(at(now - CHANNEL_DEAF_SEEN_GAP_MS), now), true)
+  assert.equal(watchedFindingFresh(at(now - CHANNEL_DEAF_SEEN_GAP_MS - 1), now), false)
+  assert.equal(watchedFindingFresh(at(now + 60_000), now), false, 'a look in the future is no look')
+  assert.equal(watchedFindingFresh({ state: 'failed', since: new Date(now).toISOString() }, now), false, 'no look time: the first sweep decides')
+  assert.equal(watchedFindingFresh({ state: 'failed', deafSeenAt: 'junk' }, now), false)
+  assert.equal(watchedFindingFresh(null, now), false)
 })
 
 test('decideDeafConfirmed (deafwatch review F1): a deaf verdict is acted on only after a run of looks CHANNEL_DEAF_CONFIRM_MS long with no gap over CHANNEL_DEAF_SEEN_GAP_MS', () => {

@@ -3442,7 +3442,8 @@ test('readKeepAliveReport: the watched findings ride beside the cleared entries 
     watched: [{ id: '913', state: 'failed', reason: NOT_KEPT, since }],
   })
   const many: Record<string, unknown> = {}
-  for (let i = 1; i <= 70; i++) many[String(i)] = { state: 'failed', reason: NOT_KEPT, since }
+  // Each a deaf finding as the sweep writes it, last looked at now (a finding with no look time waits for the first sweep).
+  for (let i = 1; i <= 70; i++) many[String(i)] = { state: 'failed', reason: NOT_KEPT, since, deafSince: since, deafSeenAt: since }
   fs.writeFile(keepAliveStatePath(HOME), JSON.stringify({ schemaVersion: 1, enabled: false, agents: {}, watched: many }))
   const bounded = readKeepAliveReport({ home: HOME, fs, now: T0 })
   assert.equal(bounded.watched!.length, 64)
