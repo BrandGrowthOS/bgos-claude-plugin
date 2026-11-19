@@ -1,3 +1,5 @@
+import { cleanIdentityName } from "./agent-identity.mjs";
+
 type ReactionCard = {
   content: string;
   meta: {
@@ -5,6 +7,7 @@ type ReactionCard = {
     message_id: string;
     event_type: "reaction";
     emoji: string;
+    reaction_action?: "removed";
     user_id: string;
     sender_relationship: "owner" | "shared_recipient" | "room_member";
     sender_display_name: string;
@@ -35,14 +38,19 @@ export function reactionCard(
   const message = id(frame.messageId);
   const emoji = frame.emoji;
   if (!chat || !message || !id(frame.reactionId)) return null;
-  if (typeof emoji !== "string" || !emoji || emoji.length > 32) return null;
-  try {
-    const sequence = new RegExp("^\\p{RGI_Emoji}$", "v");
-    if (!sequence.test(emoji) && !sequence.test(emoji + "\uFE0F"))
-      return null;
-  } catch {
-    // Older runtimes can still display common single reactions.
-    if (!/^(?:👍|👎|🎉|😀|🌱|❤️?|😄|😢|🔥|🙏)$/u.test(emoji)) return null;
+  const removed = frame.removed === true;
+  if (removed) {
+    if (emoji !== "") return null;
+  } else {
+    if (typeof emoji !== "string" || !emoji || emoji.length > 32) return null;
+    try {
+      const sequence = new RegExp("^\\p{RGI_Emoji}$", "v");
+      if (!sequence.test(emoji) && !sequence.test(emoji + "\uFE0F"))
+        return null;
+    } catch {
+      // Older runtimes can still display common single reactions.
+      if (!/^(?:👍|👎|🎉|😀|🌱|❤️?|😄|😢|🔥|🙏)$/u.test(emoji)) return null;
+    }
   }
   const relationship = frame.senderRelationship;
   const user = frame.reactorUserId;
@@ -54,21 +62,44 @@ export function reactionCard(
     return null;
   if (typeof user !== "string" || !user || /[\s<>"']/u.test(user)) return null;
   const name =
-    Array.from(oneLine(frame.name)).slice(0, 40).join("") || "Someone";
+    Array.from(
+      oneLine(
+        cleanIdentityName(typeof frame.name === "string" ? frame.name : ""),
+      ),
+    )
+      .slice(0, 40)
+      .join("") || "Someone";
   const preview = Array.from(oneLine(frame.preview)).slice(0, 80).join("");
-  const quote = preview ? ': "' + preview + '"' : "";
+  const quote = preview ? ": " + JSON.stringify(preview) : "";
+  const role = {
+    owner: "your owner",
+    room_member: "a room member",
+    shared_recipient: "a share recipient",
+  }[relationship];
+  const who = role + " " + JSON.stringify(name);
   return {
-    content: name + " reacted " + emoji + " to your message" + quote,
+    content: removed
+      ? who[0].toUpperCase() + who.slice(1) + " removed their reaction"
+      : "Reaction from " + who + " " + emoji + " to your message" + quote,
     meta: {
       chat_id: chat,
       message_id: message,
       event_type: "reaction",
-      emoji,
+      emoji: removed ? "" : (emoji as string),
+      ...(removed ? { reaction_action: "removed" as const } : {}),
       user_id: user,
       sender_relationship: relationship,
       sender_display_name: name,
     },
   };
+}
+
+export function groupReactionKey(
+  reactionId: string,
+  card: ReactionCard,
+): string {
+  const key = "reaction:" + reactionId;
+  return card.meta.reaction_action === "removed" ? key + ":removed" : key;
 }
 
 export function groupReactionText(card: ReactionCard): string {

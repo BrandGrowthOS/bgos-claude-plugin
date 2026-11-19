@@ -787,7 +787,7 @@ test('a settled reaction wakes only its stamped lane and leaves the message curs
     backend.io.emit('inbound_reaction', { ...frame, lane: STAMP })
     await waitFor(() => rig.channel.some((card) => card.content.includes('Ready?')), 'the reaction in this lane')
     assert.deepEqual(rig.channel.map(({ content, messageId }) => [content, messageId]), [
-      ['Reader reacted 👍 to your message: "Ready?"', String(frame.messageId)],
+      ['Reaction from a share recipient "Reader" 👍 to your message: "Ready?"', String(frame.messageId)],
     ])
     assert.ok(!backend.acks.includes(frame.messageId))
   } finally {

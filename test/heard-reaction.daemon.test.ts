@@ -139,12 +139,14 @@ test(
       send("owner", owner, "owner");
       send("owner", member, "room_member");
       await until(() => cards.length >= 2);
-      const line = 'Reader reacted 👍 to your message: "Ready?"';
+      const line = '"Reader" 👍 to your message: "Ready?"';
       assert.deepEqual(
         cards.map((c) => c.content),
         [
-          line + " <hoai-raw-card/>",
-          line + " <hoai-untracked/> <hoai-raw-card/>",
+          "Reaction from your owner " + line + " <hoai-raw-card/>",
+          "Reaction from a room member " +
+            line +
+            " <hoai-untracked/> <hoai-raw-card/>",
         ],
       );
       assert.deepEqual(
