@@ -254,3 +254,22 @@ test("a runtime without Unicode sets can load a card and uses a single emoji fal
 test("incomplete frames do not wake the agent", () => {
   assert.equal(reactionCard({ ...frame, emoji: "" }, self), null);
 });
+
+test("a closing line gives the current count and a group can hear it after the opening line", () => {
+  const first = reactionCard(frame, self)!;
+  for (const count of [0, 1, 300]) {
+    const card = reactionCard({ ...frame, reactionCount: count }, self)!;
+    assert.ok(
+      card.content.endsWith(
+        count === 1 ? "1 person reacting." : count + " people reacting.",
+      ),
+    );
+    assert.equal(card.meta.reaction_count, String(count));
+    assert.notEqual(
+      groupReactionKey(frame.reactionId, first),
+      groupReactionKey(frame.reactionId, card),
+    );
+  }
+  for (const count of [-1, 1.5, "two", null])
+    assert.equal(reactionCard({ ...frame, reactionCount: count }, self), null);
+});
