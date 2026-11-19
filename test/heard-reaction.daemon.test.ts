@@ -79,6 +79,7 @@ test(
           TMPDIR: root,
           TMP: root,
           TEMP: root,
+          CLAUDE_PLUGIN_ROOT: resolve(import.meta.dirname, ".."),
           CLAUDE_CONFIG_DIR: join(home, ".claude"),
           CLAUDE_CODE_EXECPATH: join(root, "absent"),
           BGOS_LAUNCH_CWD: folder,
@@ -142,6 +143,16 @@ test(
       };
       send("person:" + member, member, "shared_recipient");
       send("owner", owner, "owner");
+      await until(() => cards.length === 1);
+      const afterReaction = await client.callTool({
+        name: "list_schedules",
+        arguments: {},
+      });
+      assert.equal(afterReaction.isError, true);
+      assert.match(
+        JSON.stringify(afterReaction.content),
+        /current sender could not be verified.*Send a new message/,
+      );
       send("owner", member, "room_member");
       await until(() => cards.length >= 2);
       const line = '"Reader" 👍 to your message: "Ready?"';
