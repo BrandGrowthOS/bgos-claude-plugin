@@ -1,7 +1,7 @@
 import './helpers/real-os-sentinel.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -10,6 +10,50 @@ import { handleFrame } from '../lib/watcher-core.mjs'
 import { nodeFs } from '../lib/watcher-bundle.mjs'
 import { applyHelperAccount } from '../lib/helper-account-launch.mjs'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
+
+test('a watcher reports only fresh capkeeper windows from the matching signed-in profile', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'helper-statusline-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const now = Date.now()
+  const credentials = { machineId: 'machine12345', pairingId: 9 }
+  const watcher = createAccountWatcher({ home, credentials, now: () => now, env: {}, fs: nodeFs() }, {
+    list: () => [], probe: async () => true,
+  })
+  for (const label of ['Studio', 'Work']) {
+    await watcher.run(randomUUID(), {
+      op: 'helper_accounts', requestedBy: 'owner', ...credentials, watcherPairingId: 9,
+      ownerUserId: 'fixture', targets: [], accountCommand: { action: 'add', label },
+    })
+  }
+  const ids = (await watcher.snapshot()).accounts.map((a) => a.id)
+  const dirs = ids.map((id) => join(home, '.bgos-agent', 'helper-accounts', id, 'state', 'usage'))
+  for (const dir of dirs) mkdirSync(dir, { recursive: true })
+  const shortReset = Math.floor(now / 1000) + 3600
+  const weekReset = shortReset + 86400
+  const observed = new Date(Math.floor(now / 1000) * 1000 - 30000)
+  const path = join(dirs[0], 'last-status.json')
+  const publish = (value: Record<string, unknown>) => {
+    writeFileSync(path, JSON.stringify({ rate_limits: value }))
+    utimesSync(path, observed, observed)
+  }
+  publish({ five_hour: { used_percentage: 0, resets_at: shortReset }, seven_day: { used_percentage: 86.5, resets_at: weekReset },
+    spend_limit: { used_percentage: 100 }, privateValue: 'never forward' })
+  symlinkSync(path, join(dirs[1], 'last-status.json'))
+  const [studio, work] = (await watcher.snapshot()).accounts
+  const expected = {
+    readAt: observed.toISOString(),
+    fiveHour: { used: 0, resetAt: new Date(shortReset * 1000).toISOString() },
+    week: { used: 86.5, resetAt: new Date(weekReset * 1000).toISOString() },
+  }
+  assert.deepEqual(studio.usageWindows, expected)
+  assert.equal(studio.usage, null)
+  assert.equal(work.usageWindows, undefined)
+  publish({ five_hour: { used_percentage: 101, resets_at: shortReset }, seven_day: { used_percentage: 86.5, resets_at: weekReset } })
+  assert.deepEqual((await watcher.snapshot()).accounts[0].usageWindows, { readAt: expected.readAt, week: expected.week })
+  const stale = new Date(now - 11 * 60_000)
+  utimesSync(path, stale, stale)
+  assert.equal((await watcher.snapshot()).accounts[0].usageWindows, undefined)
+})
 
 test('authenticated watcher frame returns only after the selected child resumes its pinned transcript and answers', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'account-frame-'))

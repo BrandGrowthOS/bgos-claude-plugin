@@ -68,10 +68,28 @@ test('the ordinary supervisor starts its pinned conversation using the computer 
   )
   const scriptDir = join(plugin, 'bin')
   mkdirSync(scriptDir)
+  const tap = join(home, '.claude', 'scripts', 'capkeeper-usage-tap.sh')
+  write(tap, '#!/bin/sh\nexit 0\n')
+  const statusLine = { type: 'command', command: 'bash "$HOME/.claude/scripts/capkeeper-usage-tap.sh"' }
+  write(join(home, '.claude', 'settings.json'), JSON.stringify({ statusLine, env: { privateFixture: true } }))
   const env: any = { CLAUDE_CODE_OAUTH_TOKEN: 'fixture-ambient-credential' }
   applyHelperAccount({ home, cwd, env, assistantId: '41', sessionId: pin, sessionTranscriptPath, scriptDir })
   assert.equal(env.CLAUDE_CONFIG_DIR, dest)
   assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined)
+  const settingsPath = join(dest, 'settings.json')
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+  assert.deepEqual(settings.statusLine, statusLine)
+  assert.equal(settings.env, undefined)
+  delete settings.statusLine
+  write(settingsPath, JSON.stringify(settings))
+  write(join(home, '.claude', 'settings.json'), JSON.stringify({
+    statusLine: { ...statusLine, command: statusLine.command + ' && echo private' },
+  }))
+  applyHelperAccount({ home, cwd, env, assistantId: '41', sessionId: pin, sessionTranscriptPath })
+  assert.equal(JSON.parse(readFileSync(settingsPath, 'utf8')).statusLine, undefined)
+  write(join(home, '.claude', 'settings.json'), JSON.stringify({ statusLine }))
+  settings.statusLine = { type: 'command', command: 'echo fixture' }
+  write(settingsPath, JSON.stringify(settings))
   const resumed = sessionTranscriptPath(home, cwd, pin, dest)
   assert.equal(readFileSync(resumed, 'utf8'), 'first turn\n')
   appendFileSync(resumed, 'second turn\n')
@@ -112,6 +130,7 @@ test('the ordinary supervisor starts its pinned conversation using the computer 
     },
   })
   assert.equal(exit, 0)
+  assert.deepEqual(JSON.parse(readFileSync(settingsPath, 'utf8')).statusLine, settings.statusLine)
   assert.deepEqual(
     launches.map((x) => x.dir),
     [dest],
