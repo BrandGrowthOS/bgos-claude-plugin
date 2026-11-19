@@ -35,6 +35,9 @@ import {
   channelDeafDetail,
   decideDeafConfirmed,
   decideDeafExplained,
+  decideWatchedDeaf,
+  NOT_CLEARED_HOLD,
+  CONSENT_UNKNOWN_HOLD,
   channelFilesOf,
   decideChannelDeaf,
   CREATE_LAUNCH_REASONS,
@@ -1056,5 +1059,164 @@ test('decideDeafExplained (deafwatch review F2): only a claude-login-expired sta
     { outcome: 'claude-login-expired', statusAtMs: started + 60_000, claudeStartedAtMs: null },
   ]) {
     assert.equal(decideDeafExplained(input), null, JSON.stringify(input))
+  }
+})
+
+// -- deafwatch for every agent (board row 5adccd1e): an agent that is not cleared is looked at, never acted on ----
+
+const WATCH_NOW = Date.parse('2026-11-19T10:00:00Z')
+const WATCH_MIN = 60_000
+const watchIso = (ms: number) => new Date(ms).toISOString()
+const watchDeaf = (missing: string[] | null = null, reason = 'no_channel_process') => ({ verdict: { deaf: true, reason, upMs: 20 * WATCH_MIN, beaconAgeMs: 20 * WATCH_MIN }, missing })
+const watchNot = (reason: string) => ({ verdict: { deaf: false, reason }, missing: null })
+/** A finding already reported: confirmed two minutes ago and seen every minute since. */
+const watchReported = () => ({
+  state: 'failed',
+  reason: 'no-channel-heartbeat: no live channel (not_cleared)',
+  since: watchIso(WATCH_NOW - 2 * WATCH_MIN),
+  deafSince: watchIso(WATCH_NOW - 4 * WATCH_MIN),
+  deafSeenAt: watchIso(WATCH_NOW - WATCH_MIN),
+})
+
+test('decideWatchedDeaf (board row 5adccd1e): a deaf agent that is not cleared is reported only once a run of looks has lasted the confirmation, named not_cleared, and found once', () => {
+  assert.equal(NOT_CLEARED_HOLD, 'not_cleared', 'the word decideSupervise already uses for an agent the backend did not clear')
+  // A first look starts a run of looks. It is stamped and nothing is reported.
+  const first = decideWatchedDeaf({ prev: null, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW })
+  assert.deepEqual(first, { record: { deafSince: watchIso(WATCH_NOW), deafSeenAt: watchIso(WATCH_NOW) }, found: null })
+  // One minute on the run is not long enough yet.
+  const second = decideWatchedDeaf({ prev: first.record, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW + WATCH_MIN })
+  assert.deepEqual(second, { record: { deafSince: watchIso(WATCH_NOW), deafSeenAt: watchIso(WATCH_NOW + WATCH_MIN) }, found: null })
+  // CHANNEL_DEAF_CONFIRM_MS on it is confirmed: the Helper's word leads, and the hold says why nothing was restarted.
+  const third = decideWatchedDeaf({ prev: second.record, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW + CHANNEL_DEAF_CONFIRM_MS })
+  assert.deepEqual(third, {
+    record: {
+      state: 'failed',
+      reason: 'no-channel-heartbeat: no live channel (not_cleared)',
+      since: watchIso(WATCH_NOW + CHANNEL_DEAF_CONFIRM_MS),
+      deafSince: watchIso(WATCH_NOW),
+      deafSeenAt: watchIso(WATCH_NOW + CHANNEL_DEAF_CONFIRM_MS),
+    },
+    found: 'deaf',
+  })
+  // It holds: the same `since`, and it is not found a second time (one log line per episode).
+  const fourth = decideWatchedDeaf({ prev: third.record, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW + CHANNEL_DEAF_CONFIRM_MS + WATCH_MIN })
+  assert.equal(fourth.found, null)
+  assert.equal(fourth.record!.since, third.record!.since)
+  assert.equal(fourth.record!.deafSeenAt, watchIso(WATCH_NOW + CHANNEL_DEAF_CONFIRM_MS + WATCH_MIN))
+  // A silent daemon reads `channel silent`, and a missing plugin file is named in the reason and kept on the record.
+  const silent = decideWatchedDeaf({ prev: second.record, readable: true, channel: watchDeaf(null, 'channel_silent'), explained: null, now: WATCH_NOW + CHANNEL_DEAF_CONFIRM_MS })
+  assert.equal(silent.record!.reason, 'no-channel-heartbeat: channel silent (not_cleared)')
+  const missing = decideWatchedDeaf({ prev: second.record, readable: true, channel: watchDeaf(['bin/bgos-launch.mjs']), explained: null, now: WATCH_NOW + CHANNEL_DEAF_CONFIRM_MS })
+  assert.equal(missing.record!.reason, 'no-channel-heartbeat: missing bin/bgos-launch.mjs; no live channel (not_cleared)')
+  assert.deepEqual(missing.record!.missingFiles, ['bin/bgos-launch.mjs'])
+  // The file is back and the channel still deaf: the record no longer names it.
+  const back = decideWatchedDeaf({ prev: missing.record, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW + CHANNEL_DEAF_CONFIRM_MS + WATCH_MIN })
+  assert.equal('missingFiles' in back.record!, false)
+  assert.equal(back.record!.reason, 'no-channel-heartbeat: no live channel (not_cleared)')
+  // Nothing it returns is an act: only a record and a word for the log.
+  for (const out of [first, second, third, fourth, silent, missing, back]) assert.deepEqual(Object.keys(out).sort(), ['found', 'record'])
+})
+
+test('decideWatchedDeaf: a sleep between two looks starts the confirmation over, exactly as for a cleared agent', () => {
+  const first = decideWatchedDeaf({ prev: null, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW })
+  // The next look comes after a gap over CHANNEL_DEAF_SEEN_GAP_MS (the computer slept): a new run, never confirmed by the old one.
+  const woke = decideWatchedDeaf({ prev: first.record, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW + CHANNEL_DEAF_SEEN_GAP_MS + 1 })
+  assert.deepEqual(woke, { record: { deafSince: watchIso(WATCH_NOW + CHANNEL_DEAF_SEEN_GAP_MS + 1), deafSeenAt: watchIso(WATCH_NOW + CHANNEL_DEAF_SEEN_GAP_MS + 1) }, found: null })
+})
+
+test('decideWatchedDeaf: a look that does not see the channel deaf ends the run of looks; only a live channel or a claude that is gone ends a reported finding', () => {
+  const look = { deafSince: watchIso(WATCH_NOW - WATCH_MIN), deafSeenAt: watchIso(WATCH_NOW - WATCH_MIN) }
+  const { deafSince: _since, deafSeenAt: _seen, ...standing } = watchReported()
+  const rows: Array<[string, { readable: boolean; channel: ReturnType<typeof watchNot> | null }, 'ends' | 'stands']> = [
+    ['the channel is live again', { readable: true, channel: watchNot('live') }, 'ends'],
+    ['no claude of the agent runs any more', { readable: true, channel: null }, 'ends'],
+    ['a relaunched claude still inside its start grace', { readable: true, channel: watchNot('starting') }, 'stands'],
+    ['a start time the listing did not give', { readable: true, channel: watchNot('unknown') }, 'stands'],
+    ['a live daemon that has not beaconed yet', { readable: true, channel: watchNot('no_beacon_yet') }, 'stands'],
+    ['a process listing that could not be read', { readable: false, channel: null }, 'stands'],
+  ]
+  for (const [name, seen, outcome] of rows) {
+    // A run of looks that was never confirmed leaves nothing behind, whatever ended it.
+    assert.deepEqual(decideWatchedDeaf({ prev: look, ...seen, explained: null, now: WATCH_NOW }), { record: null, found: null }, `${name}: an unconfirmed look`)
+    assert.deepEqual(decideWatchedDeaf({ prev: null, ...seen, explained: null, now: WATCH_NOW }), { record: null, found: null }, `${name}: no record`)
+    // A reported finding: kept word for word (its run of looks dropped) unless the look proves it over.
+    assert.deepEqual(decideWatchedDeaf({ prev: watchReported(), ...seen, explained: null, now: WATCH_NOW }), { record: outcome === 'ends' ? null : standing, found: null }, `${name}: a reported finding ${outcome}`)
+  }
+  // Deaf again right after such a look: the finding stands with its words and its `since` while the new run confirms, and is not found twice.
+  const again = decideWatchedDeaf({ prev: standing, readable: true, channel: watchDeaf(['bin/bgos-launch.mjs']), explained: null, now: WATCH_NOW })
+  assert.deepEqual(again, { record: { ...standing, deafSince: watchIso(WATCH_NOW), deafSeenAt: watchIso(WATCH_NOW) }, found: null })
+})
+
+test('decideWatchedDeaf: a deaf channel its launcher explains (the shared Claude login failed) is reported as the login at once, never as not kept running, and found once', () => {
+  const explained = decideDeafExplained({ outcome: 'claude-login-expired', statusAtMs: WATCH_NOW - WATCH_MIN, claudeStartedAtMs: WATCH_NOW - 10 * WATCH_MIN })!
+  const first = decideWatchedDeaf({ prev: null, readable: true, channel: watchDeaf(['bin/bgos-launch.mjs']), explained, now: WATCH_NOW })
+  assert.deepEqual(first, { record: { state: 'failed', reason: explained.reason, since: watchIso(WATCH_NOW) }, found: 'login' })
+  assert.ok(!first.record!.reason.includes('no-channel-heartbeat') && !first.record!.reason.includes(NOT_CLEARED_HOLD))
+  // The next sweep: the same finding, the same `since`, not found again.
+  assert.deepEqual(decideWatchedDeaf({ prev: first.record, readable: true, channel: watchDeaf(), explained, now: WATCH_NOW + WATCH_MIN }), { record: first.record, found: null })
+  // A deaf finding that turns out to be the login: its run of looks and its missing files leave the record, and it is found as the login.
+  const turned = decideWatchedDeaf({ prev: { ...watchReported(), missingFiles: ['bin/bgos-launch.mjs'] }, readable: true, channel: watchDeaf(), explained, now: WATCH_NOW })
+  assert.deepEqual(turned, { record: { state: 'failed', reason: explained.reason, since: watchReported().since }, found: 'login' })
+  // The login is put right and the channel is still deaf: the login words stand while the look confirms, then it is the deaf finding, found once.
+  const looking = decideWatchedDeaf({ prev: first.record, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW + WATCH_MIN })
+  assert.deepEqual(looking, { record: { ...first.record, deafSince: watchIso(WATCH_NOW + WATCH_MIN), deafSeenAt: watchIso(WATCH_NOW + WATCH_MIN) }, found: null })
+  const confirmed = decideWatchedDeaf({ prev: looking.record, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW + WATCH_MIN + CHANNEL_DEAF_CONFIRM_MS })
+  assert.equal(confirmed.found, 'deaf')
+  assert.equal(confirmed.record!.reason, 'no-channel-heartbeat: no live channel (not_cleared)')
+  assert.equal(confirmed.record!.since, first.record!.since, 'still failed, so its since holds')
+})
+
+test('decideWatchedDeaf: the hold says why nothing was restarted, and the 120 character bound never cuts it', () => {
+  const confirmable = { deafSince: watchIso(WATCH_NOW - CHANNEL_DEAF_CONFIRM_MS), deafSeenAt: watchIso(WATCH_NOW - WATCH_MIN) }
+  const reasonOf = (missing: string[] | null, hold?: string, why = 'no_channel_process') =>
+    decideWatchedDeaf({ prev: confirmable, readable: true, channel: watchDeaf(missing, why), explained: null, now: WATCH_NOW, ...(hold ? { hold } : {}) }).record!.reason as string
+  // The usual hold, and the one for a computer whose keep-alive list could not be read at all.
+  assert.equal(reasonOf(null), 'no-channel-heartbeat: no live channel (not_cleared)')
+  assert.equal(CONSENT_UNKNOWN_HOLD, 'consent_unknown')
+  assert.equal(reasonOf(null, CONSENT_UNKNOWN_HOLD), 'no-channel-heartbeat: no live channel (consent_unknown)')
+  assert.equal(reasonOf(['bin/bgos-launch.mjs'], CONSENT_UNKNOWN_HOLD, 'channel_silent'), 'no-channel-heartbeat: missing bin/bgos-launch.mjs; channel silent (consent_unknown)')
+  // While it fits, it is the same sentence a cleared agent's failure has: two files named, the rest counted.
+  assert.equal(
+    reasonOf(['.claude-plugin/plugin.json', 'bin/hoai-browser-launch.mjs', 'bin/hoai-browser-mcp.mjs']),
+    'no-channel-heartbeat: missing .claude-plugin/plugin.json, bin/hoai-browser-launch.mjs +1; no live channel (not_cleared)',
+  )
+  // Longer names than the bound holds: the file part gives way (one name, then a count), never the hold.
+  const long = ['bin/a-new-mcp-server-with-a-rather-long-file-name.mjs', '.claude-plugin/plugin.json', 'bin/hoai-browser-launch.mjs']
+  for (const hold of [NOT_CLEARED_HOLD, CONSENT_UNKNOWN_HOLD]) {
+    const text = reasonOf(long, hold)
+    assert.ok(text.length <= 120, text)
+    assert.ok(text.startsWith('no-channel-heartbeat: missing '), text)
+    assert.ok(text.endsWith(`no live channel (${hold})`), text)
+  }
+  assert.equal(reasonOf(long), 'no-channel-heartbeat: missing bin/a-new-mcp-server-with-a-rather-long-file-name.mjs +2; no live channel (not_cleared)')
+  const huge = ['x'.repeat(100), 'y'.repeat(100)]
+  assert.equal(reasonOf(huge), 'no-channel-heartbeat: missing 2 plugin files; no live channel (not_cleared)')
+  // Every pair of the files the shipped plugin names keeps its hold (the worst case fits today, and must keep fitting).
+  const shipped = channelFilesOf(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'))
+  for (const a of shipped) {
+    for (const b of shipped) {
+      if (a === b) continue
+      for (const hold of [NOT_CLEARED_HOLD, CONSENT_UNKNOWN_HOLD]) {
+        const text = reasonOf([a, b, ...shipped.filter((f) => f !== a && f !== b)], hold)
+        assert.ok(text.length <= 120 && text.endsWith(`(${hold})`), text)
+      }
+    }
+  }
+})
+
+test('decideWatchedDeaf: a note that the last look failed never rides on (the look that works ends it), and is never a finding', () => {
+  // The sweep keeps the text of a look that threw on the record so it logs it once; the next look that works drops it.
+  const failed = { lookError: 'EIO: read failed' }
+  assert.deepEqual(decideWatchedDeaf({ prev: failed, readable: true, channel: watchNot('live'), explained: null, now: WATCH_NOW }), { record: null, found: null })
+  assert.deepEqual(decideWatchedDeaf({ prev: failed, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW }), { record: { deafSince: watchIso(WATCH_NOW), deafSeenAt: watchIso(WATCH_NOW) }, found: null })
+  const standing = decideWatchedDeaf({ prev: { ...watchReported(), lookError: 'EIO: read failed' }, readable: true, channel: watchNot('starting'), explained: null, now: WATCH_NOW })
+  assert.equal('lookError' in standing.record!, false)
+  assert.equal(standing.record!.state, 'failed')
+})
+
+test('decideWatchedDeaf: junk in the record never throws and never confirms', () => {
+  for (const prev of [null, undefined, 7, 'x', [], { deafSince: 'garbage', deafSeenAt: 'garbage' }, { deafSince: watchIso(WATCH_NOW + WATCH_MIN), deafSeenAt: watchIso(WATCH_NOW + 2 * WATCH_MIN) }]) {
+    const out = decideWatchedDeaf({ prev: prev as any, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW })
+    assert.deepEqual(out, { record: { deafSince: watchIso(WATCH_NOW), deafSeenAt: watchIso(WATCH_NOW) }, found: null }, JSON.stringify(prev))
   }
 })

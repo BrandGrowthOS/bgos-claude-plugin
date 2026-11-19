@@ -1489,6 +1489,77 @@ test('runWatcher: a limit pass that throws is logged and the loop goes on pollin
   assert.ok(backend.calls.some((c) => c.path.includes('/machine-rpc/pending')))
 })
 
+// -- deafwatch for every agent (board row 5adccd1e): a deaf agent the sweep only watches is reported, never acted on.
+
+const WATCHED_913 = { id: '913', state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since: 'y' }
+
+test('runWatcher (board row 5adccd1e): a deaf agent the sweep only watches rides the NEXT heartbeat in its own list, never among the cleared ones, and is never handed to the limit watch', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const cleared = { id: '912', state: 'supervised', reason: 'canonical', since: 'x' }
+  const passes: any[] = []
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => ({ enabled: true, source: 'live', agents: [cleared], watched: [WATCHED_913] }),
+    limitPass: async (ctx: any) => {
+      passes.push(ctx.assistantIds)
+      return { agents: [] }
+    },
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.equal(beats.length, 2)
+  // The way the Helper already learns an agent's state, the heartbeat's keep-alive block, in a list of its own:
+  // `agents` stays exactly the agents the watcher keeps running.
+  assert.deepEqual(beats[1]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [cleared], watched: [WATCHED_913] })
+  // The limit watch presses a key for the agents the sweep cleared. A watched agent is not one of them.
+  assert.ok(passes.length >= 1)
+  for (const ids of passes) assert.deepEqual(ids, ['912'])
+})
+
+test('runWatcher (board row 5adccd1e): with the switch off a watched deaf agent still rides the heartbeat, in its own list', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => ({ enabled: false, source: 'live', agents: [], watched: [WATCHED_913] }),
+    limitPass: async () => ({ agents: [] }),
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.deepEqual(beats[1]!.body.env.watcherHealth.keepAlive, { enabled: false, agents: [], watched: [WATCHED_913] })
+  // The sweep that follows has nothing watched: the list leaves the block again.
+})
+
+test('runWatcher (board row 5adccd1e): the first heartbeat after a restart carries the watched findings the previous process persisted', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const since = new Date(T0 - 60_000).toISOString()
+  fs.writeFile(
+    `${HOME}/.bgos-agent/watcher/keepalive-state.json`,
+    JSON.stringify({ schemaVersion: 1, enabled: false, agents: {}, watched: { '913': { state: 'failed', reason: WATCHED_913.reason, since, deafSince: since, deafSeenAt: since }, '914': { deafSince: since, deafSeenAt: since } } }),
+  )
+  const backend = fakeBackend()
+  // The heartbeat's inventory never runs a real systemctl or ps.
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), execSync: () => ({ code: 1, stdout: '' }), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: false, agents: [], watched: [{ id: '913', state: 'failed', reason: WATCHED_913.reason, since }] })
+})
+
 test('runWatcher: a successful poll records lastPollOkAt (the crash-loop rule); a failed one does not; it survives a restart', async () => {
   const fs = machineFs()
   manifestFor(fs)

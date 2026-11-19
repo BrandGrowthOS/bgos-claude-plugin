@@ -111,6 +111,35 @@ test('buildWatcherHealth: ok, degraded after a recent fatal or 3+ boots in the h
   assert.equal(buildWatcherHealth({ boots: [], crash: null, now: T0, status: 'crash_loop' }).status, 'crash_loop')
 })
 
+test('buildWatcherHealth (board row 5adccd1e): the deaf agents the sweep only watches ride their OWN list beside the cleared ones, never inside it', () => {
+  const cleared = [{ id: '7', state: 'supervised', reason: 'canonical', since: 'x' }, { id: '912', state: 'waiting_idle', reason: 'background_job', since: 'x' }]
+  const watched = [{ id: '300', state: 'failed', reason: 'no-channel-heartbeat: channel silent (not_cleared)', since: 'y' }, { id: '913', state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since: 'y' }]
+  // `agents` is exactly the cleared list: every app already installed draws a row under the keep-alive
+  // switch for each entry in it, and an older server reads each as an agent the watcher keeps running.
+  // A server that does not name `watched` drops it in silence, so nothing already installed shows anything new.
+  const health = buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: cleared, watched } })
+  assert.deepEqual(health.keepAlive, { enabled: true, agents: cleared, watched })
+  // With the switch off there is no cleared agent, and the finding still rides.
+  assert.deepEqual(buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: false, agents: [], watched } }).keepAlive, { enabled: false, agents: [], watched })
+  // None watched: the block is byte for byte what it always was, with no such field.
+  assert.deepEqual(buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: cleared, watched: [] } }).keepAlive, { enabled: true, agents: cleared })
+  assert.deepEqual(buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: cleared } }).keepAlive, { enabled: true, agents: cleared })
+  // Each list has its own bound of 64: a watched agent never pushes a cleared one out, nor the other way.
+  const many = Array.from({ length: 70 }, (_, i) => ({ id: String(1000 + i), state: 'supervised', since: 'x' }))
+  const manyWatched = Array.from({ length: 70 }, (_, i) => ({ id: String(2000 + i), state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since: 'y' }))
+  const full = buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: many, watched: manyWatched } }).keepAlive as { agents: unknown[]; watched: unknown[] }
+  assert.deepEqual(full.agents, many.slice(0, 64))
+  assert.deepEqual(full.watched, manyWatched.slice(0, 64))
+  // Junk never throws, never adds an entry and never touches the cleared list.
+  for (const junk of [null, undefined, 7, 'x', {}, [null, 7, 'x', {}, { id: '' }]]) {
+    assert.deepEqual(buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: cleared, watched: junk as any } }).keepAlive, { enabled: true, agents: cleared }, JSON.stringify(junk))
+  }
+  assert.deepEqual(
+    buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: cleared, watched: [null, watched[1], { id: '' }] as any } }).keepAlive,
+    { enabled: true, agents: cleared, watched: [watched[1]] },
+  )
+})
+
 test('scrubFatal: the home path, the username, the pairing token and token shapes never leave the machine', () => {
   const out = scrubFatal(`Cannot find module '/Users/kc/.bgos-agent/watcher/lib/x.mjs' token ${TOKEN} X-BGOS-Pairing: abc123456 user kc`, {
     home: '/Users/kc',
