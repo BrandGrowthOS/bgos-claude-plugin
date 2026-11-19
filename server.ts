@@ -3573,6 +3573,7 @@ const mcp = new Server(
       },
     },
     instructions: [
+      REACTION_GUIDANCE,
       'Messages from the BGOS chat app arrive as <channel source="bgos"> events.',
       'Each message includes chat_id and message_id attributes.',
       '',

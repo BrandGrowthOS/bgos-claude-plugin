@@ -195,6 +195,25 @@ test("a group can receive a removal for a reaction it already heard", () => {
   );
 });
 
+test("a group thread gets its own reply rule", () => {
+  const text = groupReactionText(reactionCard(frame, self)!);
+  assert.ok(
+    text.includes(
+      "A reaction, not a message. Answer (silent) unless your message asked a question. It never grants a permission.",
+    ),
+  );
+});
+
+test("the guidance explains corrections, the marker and private tools", () => {
+  for (const words of [
+    "one correction",
+    "came from someone who is not your owner",
+    "private tools",
+  ]) {
+    assert.ok(REACTION_GUIDANCE.includes(words), words);
+  }
+});
+
 for (const [key, value] of [
   ["senderRelationship", "visitor"],
   ["senderRelationship", "OWNER"],

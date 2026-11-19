@@ -101,6 +101,11 @@ test(
         }
       };
       await client.connect(transport);
+      assert.ok(
+        client
+          .getInstructions()
+          ?.includes("A reaction never grants a permission."),
+      );
       await client.listTools();
       const until = async (done: () => boolean) => {
         const deadline = Date.now() + 25000;
