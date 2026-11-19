@@ -462,3 +462,41 @@ test('proveLiveBefore: its probe says it is the question before an update, so th
   await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000 })
   assert.equal(JSON.parse(fs.readFile(PROBE) as string).purpose, 'before_update')
 })
+
+// Review of #396, round 3 (minor): the verify's own windows. A zero or junk
+// timeout ended the verify before it looked; a zero poll spun without sleep.
+test('verifyAgent: a zero, negative or junk window or poll is the default, never an instant failure or a spin', async () => {
+  for (const bad of [0, -5, Number.NaN]) {
+    const fs = memoryFs()
+    const clock = fakeClock(T0)
+    const out = await verifyAgent(agentRow(), {
+      restartedAtMs: T0,
+      fs,
+      now: clock.now,
+      sleep: clock.sleep,
+      timeoutMs: bad,
+      pollMs: bad,
+      probeRewriteMs: bad,
+    })
+    assert.equal(out.ok, false, String(bad))
+    assert.ok(clock.now() - T0 >= 20_000, `${String(bad)}: it waited a real window (${clock.now() - T0} ms)`)
+    assert.ok(clock.sleeps.every((ms) => ms > 0), `${String(bad)}: every poll sleeps`)
+  }
+})
+
+test('proveLiveBefore: a zero poll sleeps the default, never spins', async () => {
+  const fs = memoryFs()
+  const clock = fakeClock(T0)
+  await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000, pollMs: 0 })
+  assert.ok(clock.sleeps.length > 0 && clock.sleeps.every((ms) => ms > 0))
+})
+
+test('proveLiveBefore: a marker path that is not a string cannot be judged (review minor 6)', async () => {
+  const fs = memoryFs()
+  const clock = fakeClock(T0)
+  for (const liveMarkerPath of [42, null, undefined, {}]) {
+    const out = await proveLiveBefore({ ...agentRow(), liveMarkerPath } as never, { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000 })
+    assert.deepEqual(out, { live: null, detail: 'no_marker_path', lastLiveAt: null })
+  }
+  assert.equal(fs.files.size, 0)
+})

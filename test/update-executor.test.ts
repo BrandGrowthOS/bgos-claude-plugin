@@ -2440,6 +2440,87 @@ test('a zero, negative or junk window for the question is the full window, never
   }
 })
 
+// Review of #396, round 3 (Astra, checked by Ares): an agent only counts
+// as a witness for the new build once its verify has PASSED. A was deaf
+// before and fails after; it is excused while B might still prove the build;
+// if B's restart then fails, nothing proved it, and the run rolls back at the
+// end with the same failed step and token a deaf rollback leaves.
+const deafBeforeFor = (deaf: string) => (id: string) =>
+  id === deaf ? { live: false, detail: 'no_answer_in_20000ms;never_live' } : { live: true, detail: 'answered' }
+
+test('the excused agent first, then the witness whose restart fails: nothing proved the build, so the run rolls back at the end', async () => {
+  const run = deafAgentRun(deafBeforeFor('912'), {
+    restartAgent: async (agent: { assistantId: string }) =>
+      agent.assistantId === '918' ? { ok: false, how: 'marker', message: 'marker write failed' } : { ok: true, how: 'marker' },
+  } as Partial<Deps>)
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.equal(result.verdict, 'rolled_back')
+  assert.deepEqual(result.failedStep, { id: 's06-verify_agent-912', kind: 'verify_agent', target: '912', message: 'agent_deaf_after_update' })
+  assert.equal(run.world.installedVersion(), '0.38.1')
+})
+
+test('the witness whose restart fails first, then the excused agent: the same, rolled back at the end', async () => {
+  const run = deafAgentRun(deafBeforeFor('918'), {
+    restartAgent: async (agent: { assistantId: string }) =>
+      agent.assistantId === '912' ? { ok: false, how: 'marker', message: 'marker write failed' } : { ok: true, how: 'marker' },
+    verifyAgent: async (agent: { assistantId: string }) =>
+      agent.assistantId === '918' ? { ok: false, message: 'no channel-live marker newer than restart' } : { ok: true, evidence: 'marker' },
+  } as Partial<Deps>)
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.equal(result.failedStep?.message, 'agent_deaf_after_update')
+  assert.equal(result.failedStep?.target, '918')
+  assert.equal(run.world.installedVersion(), '0.38.1')
+})
+
+// Round 3 (Astra): the reread at a failed verify must not take a marker the
+// NEW boot wrote after the verify gave up for a late answer to the question
+// asked before the update. Only a marker from the old session counts there.
+test('a late answer seen only at the read before the restart gives the rollback back', async () => {
+  let reads = 0
+  const run = deafAgentRun(deafBeforeFor('912'), {
+    readLastLiveAt: async () => {
+      reads += 1
+      return reads === 1 ? { lastLiveAt: '2999-01-01T00:00:00.000Z', bootedAt: '2000-01-01T00:00:00.000Z' } : null
+    },
+  } as Partial<Deps>)
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.equal(result.failedStep?.message, 'agent_deaf_after_update')
+})
+
+test('a late answer seen only at the failed verify, from the OLD session, gives the rollback back', async () => {
+  let reads = 0
+  const run = deafAgentRun(deafBeforeFor('912'), {
+    readLastLiveAt: async () => {
+      reads += 1
+      return reads === 1 ? null : { lastLiveAt: '2999-01-01T00:00:00.000Z', bootedAt: '2000-01-01T00:00:00.000Z' }
+    },
+  } as Partial<Deps>)
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+})
+
+test('at the failed verify, a marker from the NEW boot, or one that does not say when it booted, is not a late answer', async () => {
+  for (const second of [
+    { lastLiveAt: '2999-01-01T00:00:00.000Z', bootedAt: '2999-01-01T00:00:00.000Z' },
+    { lastLiveAt: '2999-01-01T00:00:00.000Z', bootedAt: null },
+    '2999-01-01T00:00:00.000Z',
+  ]) {
+    let reads = 0
+    const run = deafAgentRun(deafBeforeFor('912'), {
+      readLastLiveAt: async () => {
+        reads += 1
+        return reads === 1 ? null : second
+      },
+    } as Partial<Deps>)
+    const result = await executePlan(run.plan, run.deps)
+    assert.equal(result.rolledBack, false, JSON.stringify(second))
+    assert.equal(result.failedStep?.message, 'agent_deaf_after_restart')
+  }
+})
+
 test('the question is asked once per agent, before anything is installed', async () => {
   const run = deafAgentRun(() => ({ live: true, detail: 'answered' }))
   await executePlan(run.plan, run.deps)
