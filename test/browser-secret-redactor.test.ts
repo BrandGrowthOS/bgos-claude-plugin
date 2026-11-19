@@ -6,7 +6,7 @@ import { BrowserHostCore, ChromiumEngine } from '../bin/hoai-browser-host.mjs'
 test('a status response includes passwords registered while its page read waits, even after engine close', async () => {
   const secrets = new BrowserSecretRedactor()
   const engine: any = new ChromiumEngine({ profileDir: '/fixture', outputDir: '/fixture', executable: 'unused' })
-  engine._engine = { _secrets: secrets }
+  engine._engine = { protectAnswer: async (value: any) => value, _secrets: secrets }
   let titleReady: (value: string) => void = () => {}
   const title = new Promise<string>(resolve => { titleReady = resolve })
   engine.pages = () => [{ title: () => title, url: () => 'https://example.test' }]

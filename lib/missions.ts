@@ -59,6 +59,8 @@
  * as the tool result.
  */
 
+import { describeGoalCheck } from './mission-turn.mjs'
+
 export const MISSION_MIN_GOALS = 2
 export const MISSION_MAX_GOALS = 20
 export const MISSION_TITLE_MAX = 200
@@ -85,6 +87,21 @@ export const MISSION_TARGET_RANGE = '4 to 10'
 export interface MissionGoalBody {
   name: string
   doneWhen: string
+  /**
+   * The goal's machine check (missions that stay true, 2026-10-26), passed
+   * through UNCHANGED: the server's grammar refuses an unknown kind or an
+   * extra key with one sentence, so the tool never trims or drops a key that
+   * would turn that refusal into a silent rewrite. Absent when none.
+   */
+  check?: Record<string, unknown>
+}
+
+/** Who a goal waits on, as the server stores it. */
+export interface MissionGoalWaiting {
+  on: 'owner' | 'agent'
+  who: string
+  why: string
+  since?: string
 }
 
 export interface MissionCreateBody {
@@ -201,6 +218,12 @@ export interface MissionSnapshot {
     done: boolean
     doneAt: string | null
     evidence: string | null
+    /** The server's machine check of this goal, when it has one. */
+    check?: Record<string, unknown>
+    /** 'check' when the SERVER ticked it on its check. */
+    doneBy?: 'check'
+    /** Set while the next step is the owner's or another agent's. */
+    waiting?: MissionGoalWaiting | null
   }>
   /** The chat this mission belongs to; null (or absent) means the main chat. */
   chatId?: number | null
@@ -297,7 +320,20 @@ function parseMissionGoals(
           `max ${MISSION_DONE_WHEN_MAX}).`,
       }
     }
-    miniGoals.push({ name: trimmedName, doneWhen: trimmedDoneWhen })
+    const check = raw.check
+    if (check !== undefined && check !== null && !isPlainObject(check)) {
+      return {
+        ok: false,
+        error:
+          `Mini-goal ${i + 1} check must be an object such as ` +
+          '{ "kind": "pr_merged", "repo": "owner/name", "number": 12 }, or left out.',
+      }
+    }
+    miniGoals.push({
+      name: trimmedName,
+      doneWhen: trimmedDoneWhen,
+      ...(isPlainObject(check) ? { check } : {}),
+    })
   }
   return { ok: true, body: miniGoals }
 }
@@ -826,6 +862,17 @@ export function buildMissionCancelGoalPath(
 export const MISSION_GOAL_WORKING_REFRESH_MINUTES = 30
 
 /**
+ * A held mark (KC 2026-11-17 msg 241497): the agent says the goal is being
+ * worked on by background work that outlives its turn, such as workers it
+ * started. The daemon keeps a held mark through Stop, SessionEnd, a new
+ * prompt and idle time, refreshing it before the server's 30 minute lapse,
+ * until the hold runs out, the agent clears it, or the goal is ticked.
+ * held: true holds for the default; held_minutes picks the time, up to the max.
+ */
+export const MISSION_GOAL_WORKING_HOLD_DEFAULT_MINUTES = 120
+export const MISSION_GOAL_WORKING_HOLD_MAX_MINUTES = 240
+
+/**
  * The mission writes that take NO pending self-write stamp (server.ts). A
  * mark only ever emits mission_updated, which is never narrated and never
  * spends a pending stamp (lib/mission-events.ts MISSION_SELF_WRITE_FRAMES), so
@@ -865,6 +912,8 @@ export interface MissionGoalWorkingInput {
   /** Distinct goal ids in the order the agent gave them: one request each. */
   goalIds: number[]
   working: boolean
+  /** Present only on a held mark: how long the daemon keeps it, in minutes. */
+  holdMinutes?: number
 }
 
 /**
@@ -878,8 +927,10 @@ export interface MissionGoalWorkingInput {
 export function buildMissionGoalWorkingInput(input: {
   goal_ids?: unknown
   working?: unknown
+  held?: unknown
+  held_minutes?: unknown
 }): MissionBuildResult<MissionGoalWorkingInput> {
-  const { goal_ids, working } = input
+  const { goal_ids, working, held, held_minutes } = input
   const countRefusal = (): { ok: false; error: string } => ({
     ok: false,
     error:
@@ -915,7 +966,35 @@ export function buildMissionGoalWorkingInput(input: {
         `clears the mark (got ${JSON.stringify(working)}).`,
     }
   }
-  return { ok: true, body: { goalIds, working } }
+  // The hold is judged with the rest, so a bad one marks nothing at all.
+  if (held !== undefined && typeof held !== 'boolean') {
+    return {
+      ok: false,
+      error:
+        `held must be true or false: true keeps the mark for background work after your turn ends ` +
+        `(got ${JSON.stringify(held)}). Nothing was marked.`,
+    }
+  }
+  if (
+    held_minutes !== undefined &&
+    (typeof held_minutes !== 'number' || !Number.isInteger(held_minutes) ||
+      held_minutes < 1 || held_minutes > MISSION_GOAL_WORKING_HOLD_MAX_MINUTES)
+  ) {
+    return {
+      ok: false,
+      error:
+        `held_minutes must be a whole number of minutes from 1 to ${MISSION_GOAL_WORKING_HOLD_MAX_MINUTES} ` +
+        `(got ${JSON.stringify(held_minutes)}). Nothing was marked.`,
+    }
+  }
+  if (held === false && held_minutes !== undefined) {
+    return { ok: false, error: 'held: false takes no held_minutes. Nothing was marked.' }
+  }
+  // A clear always clears: a hold sent with working: false has nothing to keep.
+  const holding = working && (held === true || held_minutes !== undefined)
+  if (!holding) return { ok: true, body: { goalIds, working } }
+  const holdMinutes = (held_minutes as number | undefined) ?? MISSION_GOAL_WORKING_HOLD_DEFAULT_MINUTES
+  return { ok: true, body: { goalIds, working, holdMinutes } }
 }
 
 export interface MissionGoalWaitingBody {
@@ -934,11 +1013,22 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f\u2028\u2029]/
  * reaches the agent as the sentence below before any request is made.
  */
 export function buildMissionGoalWaitingBody(input: {
+  waiting?: unknown
   on?: unknown
   who?: unknown
   why?: unknown
   clear?: unknown
 }): MissionBuildResult<MissionGoalWaitingBody> {
+  if (input.waiting !== undefined) {
+    if (['on', 'who', 'why', 'clear'].some((key) => input[key as keyof typeof input] !== undefined)) {
+      return { ok: false, error: 'Send waiting, or on, who, why and clear, never both forms.' }
+    }
+    if (input.waiting === null) return { ok: true, body: { waiting: null } }
+    if (!isPlainObject(input.waiting)) {
+      return { ok: false, error: 'waiting must be null, or { on: "owner" or "agent", who, why }.' }
+    }
+    return buildMissionGoalWaitingBody({ on: input.waiting.on, who: input.waiting.who, why: input.waiting.why })
+  }
   const { on, who, why, clear } = input
   if (clear !== undefined && clear !== false) {
     if (clear !== true) {
@@ -972,6 +1062,17 @@ export function buildMissionGoalWaitingBody(input: {
     return { ok: false, error: `why is too long (${whyText.length} chars, max ${MISSION_WAITING_WHY_MAX}).` }
   }
   return { ok: true, body: { waiting: { on, who: whoText, why: whyText } } }
+}
+
+/**
+ * The goal checks read (missions that stay true, 2026-10-26): what each open
+ * goal's server check answers now. Read only, PAIRING family. The daemon asks
+ * it when a turn starts and when the Stop hook asks at turn end.
+ */
+export function buildMissionGoalChecksPath(assistantId: unknown, missionId: unknown): MissionPathResult {
+  const goals = buildMissionSetGoalsPath(assistantId, missionId)
+  if (!goals.ok) return goals
+  return { ok: true, path: goals.path.replace(/\/goals$/, '/goal-checks') }
 }
 
 /** The goal lane's check write. */
@@ -1027,10 +1128,19 @@ export function formatMissionSummary(mission: MissionSnapshot): string {
     `Mission #${mission.id}: "${mission.title}" (${mission.status}), ${done} of ${total} mini-goals done.`,
   ]
   for (const g of mission.miniGoals) {
-    lines.push(`  [${g.done ? 'x' : ' '}] ${g.id}. ${g.name} (done when ${g.doneWhen})`)
+    const check = describeGoalCheck(g.check)
+    const extras = [
+      check ? ` [server check: ${check}]` : '',
+      g.done && g.doneBy === 'check' ? ' [ticked by the server]' : '',
+      !g.done && g.waiting
+        ? ` [waiting on ${g.waiting.on === 'owner' ? 'your owner' : 'agent'} ${g.waiting.who}: ${g.waiting.why}]`
+        : '',
+    ].join('')
+    lines.push(`  [${g.done ? 'x' : ' '}] ${g.id}. ${g.name} (done when ${g.doneWhen})${extras}`)
   }
   if (mission.status === 'active') {
-    const next = mission.miniGoals.find((g) => !g.done)
+    // The next goal is the agent's own: one that waits on somebody is not.
+    const next = mission.miniGoals.find((g) => !g.done && !g.waiting)
     if (next) lines.push(`Next: ${next.id}. ${next.name}`)
   }
   return lines.join('\n')

@@ -1080,6 +1080,17 @@ test('runWatcher win32: with Show agent windows OFF (or a backend without the fi
   }
 })
 
+test('runWatcher win32: agentWindows in the keep-alive answer reaches the windows pass; the agent its own value decides, not showAgentWindows', async () => {
+  const on = await twoCycles({ platform: 'win32', keepAlive: { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: false, agentWindows: { '912': true } } })
+  assert.deepEqual(on.spawns.map((s) => s.args.slice(2)), [['-ConsolePid', '4242', '-AssistantId', '912']])
+  assert.deepEqual(on.beats[1]!.windows, { mode: 'viewer', reason: 'showing' })
+  const off = await twoCycles({ platform: 'win32', keepAlive: { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: true, agentWindows: { '912': false } } })
+  assert.deepEqual(off.spawns, [])
+  assert.deepEqual(off.beats[1]!.windows, { mode: 'viewer', reason: 'setting_off' })
+  const unknown = await twoCycles({ platform: 'win32', keepAlive: { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: true, agentWindows: { '7': true } } })
+  assert.deepEqual(unknown.spawns, [], 'agent 912 is not listed yet: it stays Off')
+})
+
 test('runWatcher win32 (review): a viewer the owner closed stays closed across a watcher restart (the memory rides state.json)', async () => {
   const keepAlive = { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: true }
   const first = await twoCycles({ platform: 'win32', keepAlive })

@@ -1,0 +1,617 @@
+First regression run before production edits: six expected assertion failures and fifteen passes; four workers
+TAP reports six assertion failures; the first red shell wrapper ended with tail, so its test exit code was not separately saved
+
+TAP version 13
+# Subtest: self-write ordering: HTTP first retains a newer checked goal and Stop asks and blocks
+ok 1 - self-write ordering: HTTP first retains a newer checked goal and Stop asks and blocks
+  ---
+  duration_ms: 242.66075
+  type: 'test'
+  ...
+# Subtest: self-write ordering: HTTP first cannot resurrect a newer completed mission
+ok 2 - self-write ordering: HTTP first cannot resurrect a newer completed mission
+  ---
+  duration_ms: 0.892958
+  type: 'test'
+  ...
+# Subtest: self-write ordering: frame first retains a newer checked goal and Stop asks and blocks
+not ok 3 - self-write ordering: frame first retains a newer checked goal and Stop asks and blocks
+  ---
+  duration_ms: 10.212166
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:7:1287'
+  failureType: 'testCodeFailure'
+  error: |-
+    an older tool response cannot write the state
+    + actual - expected
+    ... Skipped lines
+
+      {
+        assistantId: '7',
+        chats: {
+          '12': {
+            missions: {
+    ...
+                    name: 'Date',
+    +               waiting: {
+    +                 on: 'owner',
+    +                 who: 'Demo Owner',
+    +                 why: 'choose a date'
+    +               }
+                  },
+                  {
+                    done: false,
+                    doneWhen: 'written',
+                    id: 2,
+                    name: 'Draft'
+                  },
+    -             {
+    -               check: {
+    -                 kind: 'pr_merged',
+    -                 number: 42,
+    -                 repo: 'example/project'
+    -               },
+    -               done: false,
+    -               doneWhen: 'merged',
+    -               id: 3,
+    -               name: 'Merge release'
+    -             }
+                ],
+                missionId: 101,
+                passing: [],
+    +           seenAt: 1793994807158,
+    -           seenAt: 1793994807157,
+                status: 'active',
+                title: 'Demo 101'
+              }
+            },
+    +       seenAt: 1793994807158
+    -       seenAt: 1793994807157
+          }
+        },
+        schemaVersion: 1,
+        turnChatId: null,
+    +   updatedAt: 1793994807158
+    -   updatedAt: 1793994807157
+      }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793994807157
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+              2:
+                id: 3
+                name: 'Merge release'
+                doneWhen: 'merged'
+                done: false
+                check:
+                  kind: 'pr_merged'
+                  repo: 'example/project'
+                  number: 42
+            passing:
+            checkedAt: ~
+            seenAt: 1793994807157
+        seenAt: 1793994807157
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793994807158
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+                waiting:
+                  on: 'owner'
+                  who: 'Demo Owner'
+                  why: 'choose a date'
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+            passing:
+            checkedAt: ~
+            seenAt: 1793994807158
+        seenAt: 1793994807158
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:127:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: self-write ordering: frame first cannot resurrect a newer completed mission
+not ok 4 - self-write ordering: frame first cannot resurrect a newer completed mission
+  ---
+  duration_ms: 0.848333
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:7:3928'
+  failureType: 'testCodeFailure'
+  error: |-
+    the closed mission keeps its version after removal
+    + actual - expected
+
+      {
+        assistantId: '7',
+    +   chats: {
+    +     '12': {
+    +       missions: {
+    +         '101': {
+    +           checkedAt: null,
+    +           goals: [
+    +             {
+    +               done: false,
+    +               doneWhen: 'chosen',
+    +               id: 1,
+    +               name: 'Date'
+    +             },
+    +             {
+    +               done: false,
+    +               doneWhen: 'written',
+    +               id: 2,
+    +               name: 'Draft'
+    +             }
+    +           ],
+    +           missionId: 101,
+    +           passing: [],
+    +           seenAt: 1793994807165,
+    +           status: 'active',
+    +           title: 'Demo 101'
+    +         }
+    +       },
+    +       seenAt: 1793994807165
+    +     }
+    +   },
+    -   chats: {},
+        schemaVersion: 1,
+        turnChatId: null,
+        updatedAt: 1793994807165
+      }
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793994807165
+    turnChatId: ~
+    chats:
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793994807165
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+            passing:
+            checkedAt: ~
+            seenAt: 1793994807165
+        seenAt: 1793994807165
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:170:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1208:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: self-write ordering: an older frame cannot erase a newer self-write checked goal
+not ok 5 - self-write ordering: an older frame cannot erase a newer self-write checked goal
+  ---
+  duration_ms: 0.552959
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:7:4796'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    ... Skipped lines
+
+      {
+        assistantId: '7',
+        chats: {
+          '12': {
+            missions: {
+    ...
+                  },
+    -             {
+    -               check: {
+    -                 kind: 'pr_merged',
+    -                 number: 42,
+    -                 repo: 'example/project'
+    -               },
+    -               done: false,
+    -               doneWhen: 'merged',
+    -               id: 3,
+    -               name: 'Merge release'
+    -             }
+                ],
+                missionId: 101,
+                passing: [],
+                seenAt: 1793994807166,
+                status: 'active',
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793994807166
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+              2:
+                id: 3
+                name: 'Merge release'
+                doneWhen: 'merged'
+                done: false
+                check:
+                  kind: 'pr_merged'
+                  repo: 'example/project'
+                  number: 42
+            passing:
+            checkedAt: ~
+            seenAt: 1793994807166
+        seenAt: 1793994807166
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793994807166
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+            passing:
+            checkedAt: ~
+            seenAt: 1793994807166
+        seenAt: 1793994807166
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:181:10)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1201:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+    Test.postRun (node:internal/test_runner/test:1330:19)
+    Test.run (node:internal/test_runner/test:1258:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: self-write ordering: an older frame cannot resurrect a newer self-write completion
+not ok 6 - self-write ordering: an older frame cannot resurrect a newer self-write completion
+  ---
+  duration_ms: 0.41125
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:7:5140'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + 'HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:\n' +
+    +   '- 1. Date (done when: chosen)\n' +
+    +   '- 2. Draft (done when: written)\n' +
+    +   "Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own."
+    - null
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: ~
+  actual: |-
+    HOAI: Mission #101 "Demo 101" is active in this chat. Its open mini goals:
+    - 1. Date (done when: chosen)
+    - 2. Draft (done when: written)
+    Tick a goal with tick_mini_goal (mission_id: 101) the moment its done when line is true. When the next step on a goal is somebody else's, mark it with set_goal_waiting. The server ticks a goal whose check passes on its own.
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:189:10)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1201:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+    Test.postRun (node:internal/test_runner/test:1330:19)
+    Test.run (node:internal/test_runner/test:1258:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: self-write ordering: timestamps compare instants across time zones
+not ok 7 - self-write ordering: timestamps compare instants across time zones
+  ---
+  duration_ms: 0.334333
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:7:5451'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    false !== true
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:197:10)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1201:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+    Test.postRun (node:internal/test_runner/test:1330:19)
+    Test.run (node:internal/test_runner/test:1258:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: self-write ordering: unversioned legacy snapshots work until a server version is known
+not ok 8 - self-write ordering: unversioned legacy snapshots work until a server version is known
+  ---
+  duration_ms: 0.476083
+  type: 'test'
+  location: '[checkout]/test/mission-turn-refresh.test.ts:7:5749'
+  failureType: 'testCodeFailure'
+  error: |-
+    unknown or duplicate versions cannot overwrite a versioned snapshot
+    + actual - expected
+    ... Skipped lines
+
+      {
+        assistantId: '7',
+        chats: {
+          '12': {
+            missions: {
+    ...
+                  },
+    -             {
+    -               check: {
+    -                 kind: 'pr_merged',
+    -                 number: 42,
+    -                 repo: 'example/project'
+    -               },
+    -               done: false,
+    -               doneWhen: 'merged',
+    -               id: 3,
+    -               name: 'Merge release'
+    -             }
+                ],
+                missionId: 101,
+                passing: [],
+                seenAt: 1793994807167,
+                status: 'active',
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793994807167
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+              2:
+                id: 3
+                name: 'Merge release'
+                doneWhen: 'merged'
+                done: false
+                check:
+                  kind: 'pr_merged'
+                  repo: 'example/project'
+                  number: 42
+            passing:
+            checkedAt: ~
+            seenAt: 1793994807167
+        seenAt: 1793994807167
+  actual:
+    schemaVersion: 1
+    assistantId: '7'
+    updatedAt: 1793994807167
+    turnChatId: ~
+    chats:
+      12:
+        missions:
+          101:
+            missionId: 101
+            title: 'Demo 101'
+            status: 'active'
+            goals:
+              0:
+                id: 1
+                name: 'Date'
+                doneWhen: 'chosen'
+                done: false
+              1:
+                id: 2
+                name: 'Draft'
+                doneWhen: 'written'
+                done: false
+            passing:
+            checkedAt: ~
+            seenAt: 1793994807167
+        seenAt: 1793994807167
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> ([checkout]/test/mission-turn-refresh.test.ts:209:12)
+    Test.runInAsyncScope (node:async_hooks:226:14)
+    Test.run (node:internal/test_runner/test:1201:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+    Test.postRun (node:internal/test_runner/test:1330:19)
+    Test.run (node:internal/test_runner/test:1258:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.processPendingSubtests (node:internal/test_runner/test:831:7)
+  ...
+# Subtest: closing one of two missions preserves the other in prompt context and Stop eligibility
+ok 9 - closing one of two missions preserves the other in prompt context and Stop eligibility
+  ---
+  duration_ms: 0.283292
+  type: 'test'
+  ...
+# Subtest: a completion removes only its mission when another open mission was most recently seen
+ok 10 - a completion removes only its mission when another open mission was most recently seen
+  ---
+  duration_ms: 0.250125
+  type: 'test'
+  ...
+# Subtest: multiple cached missions are checked by explicit id and Stop names every passing mission
+ok 11 - multiple cached missions are checked by explicit id and Stop names every passing mission
+  ---
+  duration_ms: 0.515292
+  type: 'test'
+  ...
+# Subtest: a failed check read for one mission does not prevent verification of another mission
+ok 12 - a failed check read for one mission does not prevent verification of another mission
+  ---
+  duration_ms: 0.40625
+  type: 'test'
+  ...
+# Subtest: a cold implicit lookup can discover one mission, and ambiguity produces an empty answer
+ok 13 - a cold implicit lookup can discover one mission, and ambiguity produces an empty answer
+  ---
+  duration_ms: 0.39625
+  type: 'test'
+  ...
+# Subtest: adding a checked goal after a fresh empty report performs a new verification before Stop
+ok 14 - adding a checked goal after a fresh empty report performs a new verification before Stop
+  ---
+  duration_ms: 0.298375
+  type: 'test'
+  ...
+# Subtest: a closed explicit report removes only that mission and a wrong report id is ignored
+ok 15 - a closed explicit report removes only that mission and a wrong report id is ignored
+  ---
+  duration_ms: 0.303709
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block
+ok 16 - a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.320833
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block
+ok 17 - a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.167333
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block
+ok 18 - a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.178875
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block
+ok 19 - a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.184542
+  type: 'test'
+  ...
+# Subtest: a cold discovery cannot resurrect a mission created and completed while the read was pending
+ok 20 - a cold discovery cannot resurrect a mission created and completed while the read was pending
+  ---
+  duration_ms: 0.398417
+  type: 'test'
+  ...
+# Subtest: HTTP work completing after the daemon answer budget cannot resurrect a completed mission
+ok 21 - HTTP work completing after the daemon answer budget cannot resurrect a completed mission
+  ---
+  duration_ms: 22.803292
+  type: 'test'
+  ...
+1..21
+# tests 21
+# suites 0
+# pass 15
+# fail 6
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1138.270917

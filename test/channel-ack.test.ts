@@ -118,7 +118,8 @@ test('the probe poll: a 3s unref timer that rate-limits, unlinks the file, and p
   assert.ok(block.includes('shouldSendLivenessProbe({'), block)
   assert.ok(block.includes('unlinkSync(PROBE_REQUEST_PATH)'), block)
   assert.ok(block.includes('buildLivenessProbeNotification('), block)
-  assert.ok(block.includes("method: 'notifications/claude/channel'"), block)
+  // A channel card, through the one sender that spells the method (channelNotify, 0.86.20).
+  assert.ok(block.includes('channelNotify(() =>'), block)
   // The unlink happens BEFORE the push: a failed push must not loop forever
   // on the same file, the watcher rewrites it every 30s anyway.
   assert.ok(block.indexOf('unlinkSync(PROBE_REQUEST_PATH)') < block.indexOf('buildLivenessProbeNotification('))

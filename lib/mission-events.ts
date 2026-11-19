@@ -44,6 +44,7 @@
 
 import {
   MISSION_TITLE_MAX,
+  buildMissionGoalWaitingBody,
   formatMissionSummary,
   type MissionSnapshot,
   type MissionSnapshotStatus,
@@ -124,6 +125,9 @@ function safeText(raw: unknown, max: number): string {
 
 const safeTitle = (raw: unknown): string => safeText(raw, MISSION_TITLE_MAX)
 
+const safeCheckValue = (value: unknown): unknown =>
+  typeof value === 'string' ? safeText(value, 200) : value
+
 /** The whole snapshot, display-safe, for the one notice that prints a ledger. */
 function safeMission(mission: MissionSnapshot): MissionSnapshot {
   return {
@@ -133,6 +137,14 @@ function safeMission(mission: MissionSnapshot): MissionSnapshot {
       ...g,
       name: safeText(g.name, 120),
       doneWhen: safeText(g.doneWhen, 200),
+      ...(g.check ? { check: Object.fromEntries(Object.entries(g.check).map(([key, value]) =>
+        [key, Array.isArray(value) ? value.map(safeCheckValue) : safeCheckValue(value)],
+      )) } : {}),
+      ...(g.waiting ? { waiting: {
+        ...g.waiting,
+        who: safeText(g.waiting.who, 80),
+        why: safeText(g.waiting.why, 200),
+      } } : {}),
     })),
   }
 }
@@ -174,6 +186,7 @@ export function parseMissionEvent(
       if (!isPlainObject(raw)) continue
       const goalId = positiveInt(raw.id)
       if (goalId == null) continue
+      const waiting = raw.waiting === undefined ? null : buildMissionGoalWaitingBody({ waiting: raw.waiting })
       miniGoals.push({
         id: goalId,
         name: text(raw.name),
@@ -181,6 +194,12 @@ export function parseMissionEvent(
         done: raw.done === true,
         doneAt: typeof raw.doneAt === 'string' ? raw.doneAt : null,
         evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
+        ...(isPlainObject(raw.check) ? { check: raw.check } : {}),
+        ...(raw.doneBy === 'check' ? { doneBy: 'check' as const } : {}),
+        ...(waiting?.ok ? { waiting: waiting.body.waiting === null ? null : {
+          ...waiting.body.waiting,
+          ...(isPlainObject(raw.waiting) && typeof raw.waiting.since === 'string' ? { since: raw.waiting.since } : {}),
+        } } : {}),
       })
     }
 

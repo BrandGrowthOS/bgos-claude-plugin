@@ -4,7 +4,7 @@ not ok 1 - market2 diagnostics: installed marketplace CLI reports effective home
   ---
   duration_ms: 181.005792
   type: 'test'
-  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:7282'
+  location: '/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:7282'
   failureType: 'testCodeFailure'
   error: |-
     the legacy setting remains independently visible
@@ -17,7 +17,7 @@ not ok 1 - market2 diagnostics: installed marketplace CLI reports effective home
   actual: 'home'
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:311:12)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:311:12)
     Test.runInAsyncScope (node:async_hooks:226:14)
     Test.run (node:internal/test_runner/test:1201:25)
     Test.start (node:internal/test_runner/test:1096:17)

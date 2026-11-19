@@ -3,13 +3,13 @@
     "npm",
     "test"
   ],
-  "cwd": "/Users/kc/hoai-work/mbplugin084",
+  "cwd": "/Users/you/hoai-work/mbplugin084",
   "started_utc": "2026-11-03T20:50:18.696663+00:00",
   "head": "d80e6e2355fceb404f67a7ac647670d6145373e3",
   "environment": {
-    "HOME": "/Users/kc/hoai-work/mbplugin084/node_modules/.plugin084/full/home",
-    "TMPDIR": "/Users/kc/hoai-work/mbplugin084/node_modules/.plugin084/full/tmp",
-    "npm_config_cache": "/Users/kc/hoai-work/mbplugin084/node_modules/.plugin084/full/npm-cache",
+    "HOME": "/Users/you/hoai-work/mbplugin084/node_modules/.plugin084/full/home",
+    "TMPDIR": "/Users/you/hoai-work/mbplugin084/node_modules/.plugin084/full/tmp",
+    "npm_config_cache": "/Users/you/hoai-work/mbplugin084/node_modules/.plugin084/full/npm-cache",
     "npm_config_offline": "true"
   },
   "browser": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",

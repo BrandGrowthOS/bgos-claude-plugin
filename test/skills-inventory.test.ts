@@ -25,6 +25,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -36,13 +37,20 @@ import {
   SKILLS_ROOT_MAX,
   SKILL_NAME_RE,
   displayPath,
+  identOf,
   listSkills,
+  markOf,
   managedSkillsDir,
+  overlaps,
   parseFrontmatter,
   readSkillHead,
   removeAgentSkill,
+  sameMark,
+  wouldBeUnder,
+  type IdentFs,
   type SkillItem,
 } from '../lib/skills-inventory.ts'
+import { fakeIdentFs, type FolderNumbers } from './helpers/fake-ident-fs.ts'
 import { fileSymlinkRefused, linkFolder } from './helpers/links.ts'
 
 const LEAK = 'LEAKED-FILE-CONTENT-must-never-be-read'
@@ -303,7 +311,7 @@ function remove(
   f: ReturnType<typeof fixture>,
   payload: Record<string, unknown>,
   agentDir: string | null = f.agent,
-  extra: { trashDir?: string; configDir?: string; rename?: (from: string, to: string) => void } = {},
+  extra: { trashDir?: string; configDir?: string; rename?: (from: string, to: string) => void; fs?: IdentFs } = {},
 ) {
   const trashDir = extra.trashDir ?? join(f.home, 'state', 'skills-trash')
   return {
@@ -316,6 +324,7 @@ function remove(
       now: () => 1_700_000_000_000,
       payload,
       ...(extra.rename ? { rename: extra.rename } : {}),
+      ...(extra.fs ? { fs: extra.fs } : {}),
     }),
   }
 }
@@ -643,6 +652,159 @@ test('a linked skill can be removed by the name the list showed, and its target 
   const { answer } = remove(f, { name: row.name, scope: 'agent', path: row.path })
   assert.equal(answer.ok, true, JSON.stringify(answer))
   assert.ok(existsSync(join(f.home, 'elsewhere', 'pretty', 'SKILL.md')))
+})
+
+test('a folder identity is its whole device and file numbers, and a missing folder has none', () => {
+  const f = fixture()
+  const whole = statSync(f.agent, { bigint: true })
+  assert.equal(identOf(f.agent), `${whole.dev}:${whole.ino}`)
+  const own = lstatSync(f.agent, { bigint: true })
+  assert.equal(identOf(f.agent, false), `${own.dev}:${own.ino}`)
+  assert.equal(identOf(join(f.home, 'no-such-folder')), null)
+})
+
+test('identOf keeps every digit of a file number past 2^53, and takes a missing or zero number as unknown', () => {
+  const folderWith = (numbers: { dev?: bigint; ino?: bigint }): IdentFs => ({
+    statSync: () => numbers,
+    lstatSync: () => numbers,
+  })
+  const at = '/a/folder/that/is/never/read'
+  const past = 2n ** 53n
+  assert.equal(identOf(at, true, folderWith({ dev: 7n, ino: past })), `7:${past}`)
+  assert.notEqual(identOf(at, true, folderWith({ dev: 7n, ino: past })), identOf(at, true, folderWith({ dev: 7n, ino: past + 1n })))
+  for (const unknown of [{ dev: 7n, ino: 0n }, { dev: 0n, ino: 7n }, { dev: 7n }, { ino: 7n }, {}]) {
+    assert.equal(identOf(at, true, folderWith(unknown)), null, JSON.stringify(unknown, (_k, v) => (typeof v === 'bigint' ? String(v) : v)))
+  }
+  const gone = (): never => {
+    throw new Error('gone')
+  }
+  assert.equal(identOf(at, true, { statSync: gone, lstatSync: gone }), null)
+})
+
+/** Removes the agent skill "big" with a fake file system that gives the folder before the move and the entry after it these numbers. */
+function removeWithFolderNumbers(before: FolderNumbers, after: FolderNumbers) {
+  const f = fixture()
+  const target = join(f.agent, '.claude', 'skills', 'big')
+  skill(target, 'name: big\ndescription: a skill whose folder has a large file number')
+  const trashDir = join(f.home, 'state', 'skills-trash')
+  const moved = join(trashDir, '001700000000000-big')
+  const fs = fakeIdentFs(new Map([[target, before], [moved, after]]))
+  const { answer } = remove(f, { name: 'big', scope: 'agent', path: target }, f.agent, { trashDir, fs })
+  return { answer, target, moved }
+}
+
+test('remove moves a skill whose folder number is past 2^53, the moved entry being known by every digit', () => {
+  const past = 2n ** 53n
+  const { answer, target, moved } = removeWithFolderNumbers({ dev: 7n, ino: past + 1n }, { dev: 7n, ino: past + 1n })
+  assert.equal(answer.ok, true, JSON.stringify(answer))
+  assert.ok(!existsSync(target), 'the skill left its folder')
+  assert.ok(existsSync(join(moved, 'SKILL.md')), 'and is in the trash')
+})
+
+test('remove still puts back an entry that is not the one it meant to move, even when the numbers differ only past 2^53', () => {
+  const past = 2n ** 53n
+  const { answer, target, moved } = removeWithFolderNumbers({ dev: 7n, ino: past }, { dev: 7n, ino: past + 1n })
+  assert.equal(answer.ok, false)
+  assert.equal(answer.ok ? '' : answer.code, 'scope_refused')
+  assert.ok(existsSync(join(target, 'SKILL.md')), 'it was put back')
+  assert.ok(!existsSync(moved))
+})
+
+test('remove goes on when the drive gives no file number, as it did before: an unknown number is not a mismatch', () => {
+  for (const none of [{ dev: 7n, ino: 0n }, { dev: 7n }, {}]) {
+    const { answer, target } = removeWithFolderNumbers(none, none)
+    assert.equal(answer.ok, true, JSON.stringify(answer))
+    assert.ok(!existsSync(target))
+  }
+})
+
+/** A drive that gives no folder numbers: every folder it reports has a zero file number. */
+const NO_NUMBERS: FolderNumbers = { dev: 7n, ino: 0n }
+
+test('with no folder numbers, an agent folder whose skills ARE the computer skills is still listed once, as computer', () => {
+  const f = fixture()
+  const fs = fakeIdentFs(new Map([[join(f.home, '.claude', 'skills'), NO_NUMBERS]]))
+  const { skills, omitted } = listSkills({ agentDir: f.home, configDir: join(f.home, '.claude'), home: f.home, managedDir: f.managed, fs })
+  assert.ok(!skills.some((s) => s.scope === 'agent'), JSON.stringify(skills.filter((s) => s.scope === 'agent')))
+  assert.deepEqual(omitted, [{ scope: 'agent', reason: 'agent_is_computer' }])
+})
+
+test('with no folder numbers, remove still refuses a skill of the computer folder reached as the agent one', () => {
+  const f = fixture()
+  const fs = fakeIdentFs(new Map([[join(f.home, '.claude', 'skills'), NO_NUMBERS]]))
+  const { answer } = remove(f, { name: 'not-in-config', scope: 'agent', path: '~/.claude/skills/not-in-config' }, f.home, { fs })
+  assert.equal((answer as any).code, 'scope_refused')
+  assert.ok(existsSync(join(f.home, '.claude', 'skills', 'not-in-config')))
+})
+
+test('a folder is the same folder after a check by its number, or by where it is when it has no number', () => {
+  const f = fixture()
+  const a = join(f.home, 'one')
+  const b = join(f.home, 'two')
+  mkdirSync(a)
+  mkdirSync(b)
+  // known numbers decide
+  assert.equal(sameMark(markOf(a), markOf(a)), true)
+  assert.equal(sameMark(markOf(a), markOf(b)), false)
+  // no numbers: the place decides, so the same folder is the same and another folder is not
+  const none = fakeIdentFs(new Map([[a, NO_NUMBERS], [b, NO_NUMBERS]]))
+  assert.equal(markOf(a, none).id, null)
+  assert.equal(sameMark(markOf(a, none), markOf(a, none)), true)
+  assert.equal(sameMark(markOf(a, none), markOf(b, none)), false)
+  // a number that came and went, or went and came, is a change
+  const onlyA = fakeIdentFs(new Map([[a, NO_NUMBERS]]))
+  assert.equal(sameMark(markOf(a), markOf(a, onlyA)), false)
+  assert.equal(sameMark(markOf(a, onlyA), markOf(a)), false)
+})
+
+test('with no folder numbers, two different folders are not one, and a folder inside another is', () => {
+  const f = fixture()
+  const plain = join(f.home, 'plain-skills')
+  const sibling = join(f.home, 'plain-skills-old')
+  const inner = join(plain, 'inner')
+  mkdirSync(inner, { recursive: true })
+  mkdirSync(sibling)
+  const fs = fakeIdentFs(new Map([[plain, NO_NUMBERS], [sibling, NO_NUMBERS], [inner, NO_NUMBERS]]))
+  assert.equal(overlaps(plain, sibling, fs), false, 'a name that only starts the same is another folder')
+  assert.equal(overlaps(sibling, plain, fs), false)
+  assert.equal(overlaps(plain, inner, fs), true)
+  assert.equal(overlaps(inner, plain, fs), true)
+  assert.equal(wouldBeUnder(join(plain, 'not', 'made', 'yet'), plain, fs), true)
+  assert.equal(wouldBeUnder(join(sibling, 'not', 'made', 'yet'), plain, fs), false)
+})
+
+test('with no folder numbers, an agent folder that is not the computer one is still listed as the agent', () => {
+  const f = fixture()
+  const fs = fakeIdentFs(new Map([[join(f.agent, '.claude', 'skills'), NO_NUMBERS], [join(f.config, 'skills'), NO_NUMBERS]]))
+  const { skills, omitted } = listSkills({ agentDir: f.agent, configDir: f.config, home: f.home, managedDir: f.managed, fs })
+  assert.ok(skills.some((s) => s.scope === 'agent' && s.name === 'agent-skill'))
+  assert.ok(!(omitted ?? []).some((o) => o.reason === 'agent_is_computer'))
+})
+
+test('with no folder numbers, remove notices the agent folder swapped for a link to another folder around the move', () => {
+  const f = fixture()
+  const target = join(f.agent, '.claude', 'skills', 'agent-skill')
+  const trashDir = join(f.home, 'state', 'skills-trash')
+  const moved = join(trashDir, '001700000000000-agent-skill')
+  const other = join(f.home, 'other-agent')
+  mkdirSync(join(other, '.claude', 'skills'), { recursive: true })
+  const fs = fakeIdentFs(new Map([
+    [target, NO_NUMBERS],
+    [moved, NO_NUMBERS],
+    [join(f.agent, '.claude', 'skills'), NO_NUMBERS],
+  ]))
+  const { answer } = remove(f, { name: 'agent-skill', scope: 'agent', path: target }, f.agent, {
+    trashDir,
+    fs,
+    rename: (from, to) => {
+      renameSync(from, to)
+      // right after the move, the whole agent folder becomes a link to a folder with real .claude and skills folders
+      renameSync(f.agent, `${f.agent}-moved`)
+      linkFolder(other, f.agent)
+    },
+  })
+  assert.equal(answer.ok, false, JSON.stringify(answer))
+  assert.equal((answer as any).code, 'scope_refused')
 })
 
 test.after(() => {

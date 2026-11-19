@@ -86,7 +86,7 @@ test('an unsuccessful file and a missing executable fail without waiting for the
   } finally { removeScratchDir(dir) }
 })
 
-test('file scheduling caps requested concurrency at four and continues after a failure', async () => {
+test('file scheduling respects the configured worker cap and continues after a failure', async () => {
   assert.ok(runner, 'the bounded file runner must exist')
   const dir = mkdtempSync(join(tmpdir(), 'runner-pool-'))
   try {
@@ -111,7 +111,7 @@ test('file scheduling caps requested concurrency at four and continues after a f
     assert.equal(results.filter((r: { code: number }) => r.code !== 0).length, 1)
     assert.equal(finished, 6)
     assert.equal(active, 0)
-    assert.ok(peak > 1 && peak <= 4, `observed ${peak} concurrent workers`)
+    assert.ok(peak >= Math.min(2, runner.MAX_TEST_WORKERS) && peak <= runner.MAX_TEST_WORKERS, `observed ${peak} concurrent workers`)
   } finally { removeScratchDir(dir) }
 })
 

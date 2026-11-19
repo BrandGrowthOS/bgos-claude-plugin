@@ -1,6 +1,11 @@
 /** Hook-driven leases for goals explicitly selected by set_goal_working.
  * The daemon supplies transport and only forwards admitted hook events.
  * Queues follow backend goals, so an old session cannot clear its successor.
+ *
+ * A HELD mark is kept for background work that outlives the turn: Stop,
+ * SessionEnd, a new prompt and idle time leave it on, the sweep refreshes it,
+ * and it ends only when its hold runs out, the agent clears it, or the goal is
+ * ticked (noteMission). A mark without a hold follows the session as before.
  */
 export const MISSION_WORKING_REFRESH_MS = 10 * 60_000
 export const MISSION_WORKING_IDLE_MS = 15 * 60_000
@@ -24,6 +29,8 @@ type Entry = {
   generation?: string
   ownerSession: string
   wanted: boolean
+  /** When a held mark lapses; 0 for a mark that follows the session. */
+  holdUntil: number
   marked: boolean
   uncertain: boolean
   lastActivity: number
@@ -66,7 +73,8 @@ export function createMissionWorkingTracker(opts: {
   const keyOf = (scope: WorkingScope) => JSON.stringify([scope.missionId, scope.goalId])
   const finalRefusal = (error: unknown) => [400, 403, 404, 409].includes((error as { status?: number } | null)?.status ?? 0) ||
     (error as { workingWriteFenced?: boolean } | null)?.workingWriteFenced === true
-  const retire = (entry: Entry) => { entry.wanted = false; entry.marked = false; entry.uncertain = false }
+  const retire = (entry: Entry) => { entry.wanted = false; entry.holdUntil = 0; entry.marked = false; entry.uncertain = false }
+  const holding = (entry: Entry) => entry.wanted && entry.holdUntil > now()
   const enqueue = <T>(entry: Entry, work: () => Promise<T>): Promise<T> => {
     entry.pending++
     const next = entry.tail.then(work).finally(() => { entry.pending-- })
@@ -147,13 +155,17 @@ export function createMissionWorkingTracker(opts: {
   }
   const maintain = (entry: Entry, refresh = true, stopping = false) => enqueue(entry, async () => {
     if (!stopping && !opts.isArmed()) return
-    const busy = entry.wanted && now() - entry.lastActivity < MISSION_WORKING_IDLE_MS
+    // A hold that ran out lapses like an explicit deselection.
+    if (entry.holdUntil > 0 && now() >= entry.holdUntil) { entry.wanted = false; entry.holdUntil = 0 }
+    // A held mark is busy without tool activity, and the sweep refreshes it.
+    const held = holding(entry)
+    const busy = held || (entry.wanted && now() - entry.lastActivity < MISSION_WORKING_IDLE_MS)
     try {
       if (!busy) {
         // Stand-down removes the sweep timer, so give its final clear a
         // chance even when an earlier failure reserved a retry window.
         if ((entry.marked || entry.uncertain) && (stopping || now() >= entry.clearRetryAt)) await write(entry, false)
-      } else if (refresh && now() - entry.lastAttempt >= MISSION_WORKING_REFRESH_MS) {
+      } else if ((refresh || held) && now() - entry.lastAttempt >= MISSION_WORKING_REFRESH_MS) {
         await write(entry, true)
       }
     } catch {
@@ -173,7 +185,8 @@ export function createMissionWorkingTracker(opts: {
     /** Explicit writes are not throttled. Only successful choices are kept.
      * Register before awaiting so a simultaneous Stop can queue its clear.
      */
-    async mark(input: WorkingScope & { working: boolean; context?: WorkingContext }): Promise<unknown> {
+    async mark(input: WorkingScope & { working: boolean; holdMs?: number; context?: WorkingContext }): Promise<unknown> {
+      const holdMs = input.working && Number.isFinite(input.holdMs) && input.holdMs! > 0 ? input.holdMs! : 0
       const scope: WorkingScope = { sessionId: input.sessionId, missionId: input.missionId, goalId: input.goalId, headers: { ...input.headers } }
       const context = input.context ?? capture(scope.sessionId)
       const check = () => {
@@ -183,7 +196,7 @@ export function createMissionWorkingTracker(opts: {
       const key = keyOf(scope)
       let entry = entries.get(key)
       if (!entry) {
-        entry = { scope, ownerSession: scope.sessionId, wanted: false, marked: false, uncertain: false, lastActivity: now(), selectedAt: context.startedAt, lastAttempt: -Infinity, clearRetryAt: 0, clearRetryDelay: MISSION_WORKING_SWEEP_MS, pending: 0, tail: Promise.resolve() }
+        entry = { scope, ownerSession: scope.sessionId, wanted: false, holdUntil: 0, marked: false, uncertain: false, lastActivity: now(), selectedAt: context.startedAt, lastAttempt: -Infinity, clearRetryAt: 0, clearRetryDelay: MISSION_WORKING_SWEEP_MS, pending: 0, tail: Promise.resolve() }
         entries.set(key, entry)
       }
       const held = entry
@@ -192,16 +205,20 @@ export function createMissionWorkingTracker(opts: {
         const previousScope = held.scope
         // A failed reselection must not erase a previously confirmed choice.
         // Explicit deselection takes effect even if its clear needs a retry.
-        if (!input.working) held.wanted = false
+        if (!input.working) { held.wanted = false; held.holdUntil = 0 }
         try {
           const result = await write(held, input.working, scope, check)
           if (context.isCurrent()) {
             held.ownerSession = scope.sessionId
             held.selectedAt = context.startedAt
-            held.wanted = !!scope.sessionId && input.working && !!(result as { mission?: unknown } | null)?.mission
+            // A held mark is the daemon's to keep even before a session binds:
+            // only the sweep and the hold time decide its end.
+            held.wanted = (!!scope.sessionId || holdMs > 0) && input.working && !!(result as { mission?: unknown } | null)?.mission
+            // The latest call decides: a mark sent without a hold follows the session again.
+            held.holdUntil = held.wanted && holdMs > 0 ? now() + holdMs : 0
             // A successful manual write replaces old cleanup without becoming
             // owned by a session that has not bound to the intake yet.
-            if (!scope.sessionId) held.marked = false
+            if (!scope.sessionId && !held.holdUntil) held.marked = false
             held.lastActivity = now()
           } else if (held.wanted) {
             held.scope = previousScope
@@ -231,6 +248,8 @@ export function createMissionWorkingTracker(opts: {
       for (const entry of entries.values()) {
         if (entry.ownerSession !== sessionId) continue
         if (stop && at < entry.selectedAt) continue
+        // Background work outlives the turn: no turn boundary ends a hold.
+        if (stop && holding(entry)) continue
         if (stop) {
           entry.wanted = false
         } else {
@@ -240,6 +259,24 @@ export function createMissionWorkingTracker(opts: {
         work.push(maintain(entry))
       }
       await Promise.all(work)
+    },
+    /** A mission as the server sent it (a write's answer or a frame). A held
+     * goal that is ticked or gone, or a mission that closed, has no mark left
+     * on the server, so it is forgotten with no write. Never throws. */
+    noteMission(mission: unknown): void {
+      try {
+        const m = mission as { id?: unknown; status?: unknown; miniGoals?: unknown } | null
+        if (!m || typeof m !== 'object' || typeof m.id !== 'number' || !Array.isArray(m.miniGoals)) return
+        const closed = m.status === 'completed' || m.status === 'abandoned' || m.status === 'failed'
+        for (const entry of entries.values()) {
+          if (entry.scope.missionId !== m.id || entry.holdUntil === 0) continue
+          const goal = (m.miniGoals as Array<{ id?: unknown; done?: unknown } | null>)
+            .find(g => g?.id === entry.scope.goalId)
+          if (closed || !goal || goal.done === true) retire(entry)
+        }
+      } catch {
+        // A malformed mission must never break the caller.
+      }
     },
     sweep: () => sweep(),
     async stop(): Promise<void> {

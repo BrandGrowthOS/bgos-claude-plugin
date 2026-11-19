@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { RemoteBrowserViews, REMOTE_VIEW_FRAME_MAX_BYTES } from '../lib/remote-view.mjs'
+import { RemoteBrowserViews, REMOTE_VIEW_FRAME_MAX_BYTES, captureParamsFor } from '../lib/remote-view.mjs'
 import { PairingConnection } from '../bin/hoai-browser-host.mjs'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -99,6 +99,73 @@ test('negotiated capture intent survives active target close while an old start 
   assert.equal(f.views.views.get('view-one').loading, false)
   assert.ok(nextCalls.includes('Page.startScreencast'))
   await f.views.stop()
+})
+
+for (const outcome of ['resolve', 'reject', 'detached']) {
+  test(`a paint acknowledgement from the previous tab cannot close or reset the replacement stream (${outcome})`, async (t) => {
+    const f = fixture()
+    t.after(() => f.views.stop())
+    const nextCdp: any = new EventEmitter()
+    nextCdp.send = async (method: string) => method === 'Page.getLayoutMetrics'
+      ? { cssVisualViewport: { clientWidth: 1200, clientHeight: 800 } } : {}
+    nextCdp.detach = async () => {}
+    const nextPage: any = new EventEmitter()
+    nextPage.isClosed = () => false
+    nextPage.context = () => ({ newCDPSession: async () => nextCdp })
+    nextPage.url = () => 'http://127.0.0.1/next'
+    nextPage.title = async () => 'Next page'
+    f.engine.pages = () => [f.page, nextPage]
+    ;(f.engine as any).selectedPage = () => f.page
+    await f.open('view-one', 'host-socket', true)
+    const view = f.views.views.get('view-one')
+    await f.command('Page.startScreencast')
+    f.cdp.emit('Page.screencastFrame', { sessionId: 7, data: 'b2xk', metadata: {} })
+    let settle!: () => void
+    const original = f.cdp.send
+    f.cdp.send = (method: string, params: any) => method === 'Page.screencastFrameAck'
+      ? new Promise((resolve, reject) => {
+        settle = () => outcome === 'reject' ? reject(new Error('Old target detached')) : resolve({})
+      }) : original(method, params)
+    let acknowledgement: Promise<boolean>
+    if (outcome === 'detached') {
+      let selected!: () => void
+      const selecting = new Promise<void>(resolve => { selected = resolve })
+      let finishSelection!: () => void
+      ;(f.engine as any).selectPage = () => { selected(); return new Promise<void>(resolve => { finishSelection = resolve }) }
+      const switching = f.views._switch(view, nextPage)
+      await selecting
+      assert.equal(view.cdp, null, 'the old tab is still named while its CDP session is detached')
+      acknowledgement = f.command('Page.screencastFrameAck', { sessionId: 7 }, { id: undefined })
+      await acknowledgement
+      finishSelection()
+      await switching
+    } else {
+      acknowledgement = f.command('Page.screencastFrameAck', { sessionId: 7 }, { id: undefined })
+      await tick()
+      await f.views._switch(view, nextPage)
+      nextCdp.emit('Page.screencastFrame', { sessionId: 8, data: 'bmV3', metadata: {} })
+      settle()
+      await acknowledgement
+      assert.equal(view.pendingFrame, 8, 'the old acknowledgement must leave the new frame pending')
+    }
+    assert.equal(f.views.views.get('view-one'), view, 'the replacement stream stays open')
+    assert.equal(view.page, nextPage)
+    assert.deepEqual(f.closes, [])
+  })
+}
+
+test('a failed paint acknowledgement on the current tab still closes the broken stream', async () => {
+  const f = fixture()
+  await f.open()
+  f.cdp.emit('Page.screencastFrame', { sessionId: 7, data: 'b2xk', metadata: {} })
+  const original = f.cdp.send
+  f.cdp.send = async (method: string, params: any) => {
+    if (method === 'Page.screencastFrameAck') throw new Error('Current target detached')
+    return original(method, params)
+  }
+  assert.equal(await f.command('Page.screencastFrameAck', { sessionId: 7 }, { id: undefined }), false)
+  assert.equal(f.views.views.size, 0)
+  assert.equal(f.closes[0].reason, 'remote_target_gone')
 })
 
 test('negotiated input revocation names expiry and navigation while legacy viewers receive empty params', async () => {
@@ -245,3 +312,37 @@ test('PairingConnection binds remote views to the admitting socket and this pair
   assert.equal(calls.at(-1).id, 'socket-original')
   conn.stop()
 })
+
+test('capture bounds: a phone start within its cap is honoured smaller, anything else keeps the host default', () => {
+  const host = { format: 'jpeg', quality: 70, maxWidth: 1600, maxHeight: 1200, everyNthFrame: 1 }
+  assert.deepEqual(captureParamsFor({}), host)
+  assert.deepEqual(captureParamsFor(undefined), host)
+  assert.deepEqual(captureParamsFor({ format: 'jpeg', quality: 40, maxWidth: 780, maxHeight: 1688 }), { format: 'jpeg', quality: 40, maxWidth: 780, maxHeight: 1688, everyNthFrame: 1 })
+  for (const bad of [{ format: 'png', quality: 40, maxWidth: 780, maxHeight: 1688 }, { format: 'jpeg', quality: 90, maxWidth: 780, maxHeight: 1688 },
+    { format: 'jpeg', quality: 40, maxWidth: 5000, maxHeight: 1688 }, { format: 'jpeg', quality: 40, maxWidth: 780, maxHeight: 9000 },
+    { format: 'jpeg', quality: 0, maxWidth: 780, maxHeight: 1688 }, { format: 'jpeg', quality: 40, maxWidth: 780 }]) {
+    assert.deepEqual(captureParamsFor(bad), host, JSON.stringify(bad))
+  }
+})
+
+
+
+test('round14 only explicit handback clears privacy and a target change during drain refuses it', async t => {
+  const f=fixture();t.after(()=>f.views.stop());await f.open('view-one','host-socket',true);
+  let released:any[]=[];(f.engine as any).handBackPrivacy=(page:any)=>released.push(page);
+  await f.command('hoai.input.release');assert.equal(released.length,0);
+  await f.command('hoai.input.release',{handBackPrivacy:true});assert.deepEqual(released,[f.page]);
+  released=[];
+  f.views.input.drain=async(view:any)=>{view.tabId='replacement';};
+  assert.equal(await f.command('hoai.input.release',{handBackPrivacy:true}),false);assert.equal(released.length,0);assert.equal(f.frames.at(-1).frame.error.code,'stale_target');
+});
+
+
+test('round15 the dedicated phone Hand back releases only its captured page', async t => {
+  const f=fixture();t.after(()=>f.views.stop());await f.open('view-one','host-socket',true);
+  const released:any[]=[];(f.engine as any).handBackPrivacy=(page:any)=>released.push(page);
+  await f.command('hoai.input.handBack');assert.deepEqual(released,[f.page]);released.length=0;
+  f.views.input.drain=async(view:any)=>{view.tabId='replacement';};
+  assert.equal(await f.command('hoai.input.handBack'),false);assert.equal(released.length,0);
+  assert.equal(f.frames.at(-1).frame.error.code,'stale_target');
+});

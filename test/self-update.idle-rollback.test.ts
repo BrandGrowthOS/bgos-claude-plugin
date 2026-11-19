@@ -38,7 +38,8 @@ afterEach(() => {
   for (const dir of made) rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
 })
 
-// Litter guard: every folder this file made must be outside the repo working tree and gone when the file ends.
+// Litter guard: fixtures use the OS temp folder or an explicitly configured
+// dedicated temp subfolder, and every fixture is gone when the file ends.
 after(() => {
   const real = (p: string) => {
     try {
@@ -53,11 +54,23 @@ after(() => {
   }
   const repoRoot = real(resolve(dirname(fileURLToPath(import.meta.url)), '..'))
   // A checkout that itself sits under the OS temp folder cannot tell its tree from the temp folder, so only the removal is checked there.
-  // A temp folder that IS the checkout (or sits inside it) is exactly the litter case, so it is not excused.
   const tempRoot = real(tmpdir())
   const checkoutInTemp = inside(repoRoot, tempRoot) && !inside(tempRoot, repoRoot)
+  // A folder-only run may explicitly allow an isolated scratch subfolder.
+  // Never excuse the checkout itself, and require containment and cleanup.
+  const isolatedRepoTemp = process.env.HOAI_ALLOW_REPO_TEST_TMP === '1' && tempRoot !== repoRoot && inside(tempRoot, repoRoot)
+  if (isolatedRepoTemp) {
+    assert.deepEqual(made.filter((dir) => !inside(join(real(dirname(dir)), basename(dir)), tempRoot)), [], 'scratch folders escaped the configured temp folder')
+  }
+  // Local-only runs may deliberately keep all temporary files in the checkout.
+  // Never excuse the checkout itself or a fixture outside the selected temp root.
+  const localTemp = tempRoot !== repoRoot && inside(tempRoot, repoRoot) &&
+    [process.env.TMPDIR, process.env.TEMP, process.env.TMP].some(value => value && real(value) === tempRoot)
   // The folders are gone by now, so the folder that held them (tmpdir()) is what gets resolved.
-  const inTree = checkoutInTemp ? [] : made.filter((dir) => inside(join(real(dirname(dir)), basename(dir)), repoRoot))
+  const inTree = checkoutInTemp ? [] : made.filter((dir) => {
+    const path = join(real(dirname(dir)), basename(dir))
+    return inside(path, repoRoot) && !((localTemp || isolatedRepoTemp) && inside(path, tempRoot))
+  })
   const left = made.filter((dir) => existsSync(dir))
   assert.deepEqual(inTree, [], 'scratch folders were created inside the repo working tree')
   assert.deepEqual(left, [], 'scratch folders were left behind')

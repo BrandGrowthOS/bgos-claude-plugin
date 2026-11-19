@@ -19,7 +19,9 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { closeSync, constants as fsConstants, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { lstat as lstatPromise } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -2323,20 +2325,35 @@ function r8BigWorkbook(n: number): Buffer {
   ])
 }
 
-test('review round 8: ordinary large files go: 24.9 MB of prose, a 24 MB log, a 22.5 MB CSV and a workbook of 900000 shared strings', { timeout: 180_000 }, async () => {
+test('review round 8: ordinary large files go: 24.9 MB of prose, a 24 MB log, a 22.5 MB CSV and a workbook of 900000 shared strings', { timeout: 180_000 }, async (t) => {
+  const { outboundContentVerdict } = await import('../lib/email-outbound-content.ts')
   for (const [name, build] of [
     ['notes.txt', () => r8Lines(24.9 * MB, (_, words) => `${words}\n`)],
     ['server.log.txt', () => r8Lines(24 * MB, (i, words) => `2026-10-28T03:${String(i % 60).padStart(2, '0')}:00Z INFO worker=${i % 17} ${words}\n`)],
     ['sales.csv', () => r8Lines(22.5 * MB, (i) => `2026-10-28,Widget blue large,SKU-${1234567 + i},12.50,warehouse ${i % 9}\n`)],
     ['orders.xlsx', () => r8BigWorkbook(900_000)],
   ] as const) {
-    const bytes = build()
-    const stop = await stopOf(async () => {
-      const got = await heartbeatRefusal(name, bytes)
-      assert.equal(got.why, null, `${name} (${(bytes.length / MB).toFixed(1)} MB)`)
-      return got.maxGap
+    await t.test(name, async (t) => {
+      const bytes = build()
+      const ratios: number[] = []
+      // Calibrate with the real content checks inline in this process, on these same bytes and under the same
+      // unspendable budget. A busy runner slows the calibration too. The Worker must keep its longest main thread
+      // pause below a quarter of that inline cost, rather than below a fixed number of milliseconds.
+      // Always take three paired samples: their median tolerates a scheduling or GC outlier in either measurement,
+      // while moving the content checks back onto the main thread leaves their long pauses visible in every round.
+      for (let round = 0; round < 3; round++) {
+        const started = performance.now()
+        assert.deepEqual(await outboundContentVerdict(bytes, name.endsWith('.xlsx') ? 'xlsx' : 'text', name, [], UNDER_BUDGET_MS), { kind: 'ok' }, `${name}: inline calibration`)
+        const baselineMs = performance.now() - started
+        const got = await heartbeatRefusal(name, bytes)
+        assert.equal(got.why, null, `${name} (${(bytes.length / MB).toFixed(1)} MB)`)
+        const ratio = got.maxGap / baselineMs
+        ratios.push(ratio)
+        t.diagnostic(`round ${round + 1}: inline ${baselineMs.toFixed(1)} ms, main thread gap ${got.maxGap.toFixed(1)} ms, ratio ${ratio.toFixed(3)}`)
+      }
+      const ratio = ratios.sort((a, b) => a - b)[1]!
+      assert.ok(ratio < 0.25, `${name}: median main thread pause / inline content time was ${ratio.toFixed(3)}, expected < 0.25`)
     })
-    assert.ok(stop <= 100, `${name} stopped the main thread for ${Math.round(stop)} ms`)
   }
 })
 
@@ -3876,9 +3893,10 @@ test('final fix: a path that leads somewhere else when HOAI looks again after op
   }
   assert.equal((await readOne(clean, { home, fs: swapTo(secret) })).error, changedSentence(clean), 'into a key folder')
   assert.equal((await readOne(clean, { home, fs: swapTo(other) })).error, changedSentence(clean), 'onto another plain file')
-  // The very same file (a second name of it in the key folder): the second look still runs steps 1 and 2.
-  const sameInKeys = join(home, '.ssh', 'same.pdf')
-  linkSync(clean, sameInKeys)
+  // The very same file, reached through the key folder (a junction in it to the file's folder; a hard link, a second
+  // name of the file, is refused before the open since hardening 2): the second look still runs steps 1 and 2.
+  symlinkSync(join(home, 'docs', 'sw'), join(home, '.ssh', 'same'), 'junction')
+  const sameInKeys = join(home, '.ssh', 'same', 'report.pdf')
   assert.equal((await readOne(clean, { home, fs: swapTo(sameInKeys) })).error, changedSentence(clean), 'the same file, now reached through a key folder')
   // A second look that cannot resolve at all is refused the same way.
   let n = 0
@@ -4275,7 +4293,7 @@ test('Windows aliases: resolving the home never exempts a sibling, an outside li
   const { fs, calls } = spyFs()
   const key = `${home}\\.ssh\\report.pdf`
   assert.equal(await refusal(key, { home, fs }), `${key} looks like a key or password file, so it is never attached. ${NO_WAY_AROUND}`)
-  assert.deepEqual(calls, [], 'a lexical refusal still resolves nothing, including the home')
+  assert.deepEqual(calls, [], 'a lexical refusal still resolves nothing through the given file system, the home included (homesOf reads only the owner\'s own home, for its real path)')
 })
 
 test('final fix 2: a file on a mapped network drive goes, read by its drive letter, when the share path is the given path below the drive', async () => {
@@ -4672,4 +4690,285 @@ test('final fix 4: a main thread stop is read over rounds: one spike passes, a s
   const within = rounds(50, 900, 900)
   assert.equal(await stopOf(within.round, 50), 50)
   assert.equal(within.left(), 2)
+})
+
+// ── the text check runs in the content Worker ──
+
+/** The refusal a .txt or .csv file gets when its bytes are not clean UTF-8 text. */
+const notTextSentence = (path: string) => `${path} is not really a text file (its contents say otherwise), so it is not attached.`
+
+/** Files named .txt or .csv whose bytes are not clean text, and clean text that sits at the edge of the rule. */
+const TEXT_EDGES: readonly (readonly [string, Buffer, boolean])[] = [
+  ['program.txt', PROGRAM, false],
+  ['latin1.csv', Buffer.from('Name,City\nAna,Mal\xe9\n', 'latin1'), false],
+  ['bell.txt', Buffer.from('Hello\x07 there\n'), false],
+  ['tab-vt.txt', Buffer.from('one\x0btwo\n'), false],
+  ['del.csv', Buffer.from('a,b\x7f\n'), false],
+  ['c1.txt', Buffer.from('Price \u0085 list\n'), false],
+  ['nul-late.csv', Buffer.concat([Buffer.from('Item,Qty\n'.repeat(5000)), Buffer.from([0])]), false],
+  ['cut.txt', Buffer.from([0x61, 0x62, 0xe2, 0x82]), false],
+  ['surrogate.txt', Buffer.from([0x61, 0xed, 0xa0, 0x80, 0x0a]), false],
+  ['overlong.txt', Buffer.from([0xc0, 0xaf, 0x0a]), false],
+  ['bom.csv', Buffer.from('\ufeffName,Qty\nChairs,12\n'), true],
+  ['spacing.txt', Buffer.from('a\tb\r\n\fc\n'), true],
+  ['world.txt', Buffer.from('Grüße aus Köln, café, 日本語, thanks 🎉\n'), true],
+  ['markup.txt', Buffer.from('<html><body>Quarterly notes</body></html>\n'), true],
+]
+
+test('a .txt or .csv file whose bytes are not clean text is refused with the same sentence as before, under any budget; clean text at the edges goes', async () => {
+  for (const [name, bytes, goes] of TEXT_EDGES) {
+    const got = await memRefusal(name, bytes)
+    assert.equal(got.why, goes ? null : notTextSentence(got.path), name)
+    // A budget already spent says nothing about a file that is not text: it is still refused as not text.
+    if (!goes) assert.equal((await memRefusal(name, bytes, { officeReadMs: OVER_BUDGET_MS })).why, notTextSentence(got.path), `${name}, over budget`)
+  }
+})
+
+/**
+ * The text rule as it was before the check moved into the Worker, copied here and frozen, so a change to the shared
+ * rule (lib/email-clean-text.ts) shows up as a change in what is accepted.
+ */
+function frozenCleanText(bytes: Uint8Array): boolean {
+  let text: string
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return false
+  }
+  return !/[\u0000-\u0008\u000B\u000E-\u001F\u007F-\u009F]/.test(text)
+}
+
+test('the text rule is unchanged: the inbound type check and the content stage both say not text exactly where the old rule did, before any budget is read', async () => {
+  const { isType } = await import('../lib/email-files.ts')
+  const { outboundContentVerdict } = await import('../lib/email-outbound-content.ts')
+  const samples: Buffer[] = TEXT_EDGES.map(([, bytes]) => bytes)
+  // Short printable lines, some with a two byte letter, and every third with one random byte put in: a fixed seed,
+  // so a run is repeatable.
+  let seed = 11
+  const next = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff)
+  for (let n = 0; n < 400; n++) {
+    const line = Array.from({ length: 1 + (next() % 24) }, () => 0x20 + (next() % 95))
+    if (n % 5 === 0) line.push(0xc3, 0xa9)
+    if (n % 3 === 0) line.splice(next() % line.length, 1, next() % 256)
+    samples.push(Buffer.from(line))
+  }
+  let notText = 0
+  for (const bytes of samples) {
+    const clean = frozenCleanText(bytes)
+    if (!clean) notText++
+    assert.equal(isType(bytes, 'text'), clean, `${bytes.toString('hex')}: inbound type check`)
+    for (const budget of [UNDER_BUDGET_MS, OVER_BUDGET_MS]) {
+      const verdict = await outboundContentVerdict(new Uint8Array(bytes), 'text', 'sample.txt', [], budget)
+      assert.equal(verdict.kind === 'not_type', !clean, `${bytes.toString('hex')} at budget ${budget}: ${verdict.kind}`)
+    }
+  }
+  // Both kinds were tried.
+  assert.ok(notText > 50 && notText < samples.length - 50, `${notText} of ${samples.length} samples were not text`)
+})
+
+test('the main thread is free while a large text file is checked: a timer queued as the read ends is not held by the check', { timeout: 180_000 }, async (t) => {
+  const { isType } = await import('../lib/email-files.ts')
+  for (const [name, build] of [
+    ['digits.csv', () => digitLines(23 * MB)],
+    ['letters.txt', () => Buffer.from('Grüße aus Köln, café 日本語, see you Monday.\n'.repeat(480_000))],
+  ] as const) {
+    await t.test(name, async (t) => {
+      const bytes = build()
+      const ratios: number[] = []
+      // Three paired rounds, the median read: a GC or scheduling outlier comes once, a check on the main thread every time.
+      for (let round = 0; round < 3; round++) {
+        // What the text check costs on this thread, on this runner, right now.
+        const started = performance.now()
+        assert.equal(isType(bytes, 'text'), true, `${name}: inline calibration`)
+        const inlineMs = performance.now() - started
+        // The read ends at the handle's close. A timer queued there runs at the next turn of the event loop, so it is
+        // late by whatever this thread does between the close and the hand off to the Worker.
+        const fs = memFs(bytes)
+        const open = fs.open
+        let lateMs = -1
+        fs.open = async () => {
+          const handle = await open()
+          const close = handle.close
+          handle.close = async () => {
+            const queued = performance.now()
+            setImmediate(() => {
+              lateMs = performance.now() - queued
+            })
+            return close()
+          }
+          return handle
+        }
+        const why = await refusal(`${MEM_HOME}\\Documents\\${name}`, { home: MEM_HOME, fs, officeReadMs: UNDER_BUDGET_MS })
+        assert.equal(why, null, name)
+        assert.ok(lateMs >= 0, `${name}: the timer ran`)
+        ratios.push(lateMs / inlineMs)
+        t.diagnostic(`round ${round + 1}: inline text check ${inlineMs.toFixed(1)} ms, timer late ${lateMs.toFixed(1)} ms`)
+      }
+      const ratio = ratios.sort((a, b) => a - b)[1]!
+      assert.ok(ratio < 0.25, `${name}: the timer was held for ${ratio.toFixed(2)} of the inline text check, expected under 0.25`)
+    })
+  }
+})
+
+// ── hardenings: a home behind a link, a file with two names, a FIFO swapped in ──
+
+const hardLinkSentence = (path: string) => `${path} has more than one name (a hard link), so it is not attached.`
+
+test('hardening 1: a home reached through a link (macOS /var is one) is the home by its real path too: a file named by that path is not refused', async (t) => {
+  const lib = await m()
+  // The temp folder by its real path first (on Windows it can hold an 8.3 name), so the one link here is the one made below.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'hoai-outbound-files-')))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  // As on macOS, where /var is a link to /private/var: the home is named through var, and really lives under private/var.
+  const realVar = join(root, 'private', 'var')
+  const realHome = join(realVar, 'John Key')
+  mkdirSync(join(realHome, 'Documents'), { recursive: true })
+  symlinkSync(realVar, join(root, 'var'), 'junction')
+  const home = join(root, 'var', 'John Key')
+  const report = join(realHome, 'Documents', 'report.pdf')
+  writeFileSync(report, PDF)
+  // Named by its real path, the word rules read below the home's real path, so the owner's name refuses nothing: the
+  // preflight, all four steps, and a runtime folder that holds the home (taken by its real path too) is not taken as one.
+  assert.equal(lib.outboundFileLexicalRefusal(report, { home }), null, 'the preflight')
+  assert.equal(await refusal(report, { home }), null, 'all four steps')
+  const dirs = lib.outboundRuntimeDirs([join(root, 'var')])
+  assert.equal(dirs.length, 2, JSON.stringify(dirs))
+  assert.equal(await refusal(report, { home, runtimeDirs: dirs }), null, 'a runtime folder that holds the home')
+  // Named through the link, as before.
+  assert.equal(await refusal(join(home, 'Documents', 'report.pdf'), { home }), null, 'through the link')
+  // The daemon passes no home: its own (os.homedir(), and USERPROFILE on Windows) counts by its real path the same way.
+  const was = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
+  process.env.HOME = home
+  process.env.USERPROFILE = home
+  try {
+    assert.equal(lib.outboundFileLexicalRefusal(report), null, 'no home passed: the preflight')
+    assert.equal(await refusal(report, {}), null, 'no home passed: all four steps')
+  } finally {
+    for (const [name, value] of Object.entries(was)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+  // The controls: a key name below the real home, a key folder in it, a sibling of the real home, and a link from the home
+  // to that sibling stay refused; the real path exempts the home, nothing beside it.
+  const stripe = join(realHome, 'Documents', 'stripe key.txt')
+  assert.equal(await refusal(stripe, { home }), lookedSecret(stripe))
+  const ssh = join(realHome, '.ssh', 'report.pdf')
+  assert.equal(await refusal(ssh, { home }), lookedSecret(ssh))
+  const sibling = join(realVar, 'Jane Key')
+  mkdirSync(sibling, { recursive: true })
+  writeFileSync(join(sibling, 'report.pdf'), PDF)
+  assert.equal(await refusal(join(sibling, 'report.pdf'), { home }), lookedSecret(join(sibling, 'report.pdf')))
+  symlinkSync(sibling, join(realHome, 'Documents', 'jane'), 'junction')
+  const viaHome = join(home, 'Documents', 'jane', 'report.pdf')
+  assert.equal(await refusal(viaHome, { home }), `${viaHome} leads to a key or password file (HOAI followed its links), so it is never attached. ${NO_WAY_AROUND}`)
+})
+
+test('hardening 2: a file with more than one name (a hard link) is refused, by its path and again on the open handle', async (t) => {
+  const home = scratchHome(t)
+  mkdirSync(join(home, '.ssh'))
+  // A file in a key folder, refused by its own path, and a second name of it in a plain folder (an ordinary user can make
+  // one): realpath answers the second name as its own, so only the link count tells.
+  const key = join(home, '.ssh', 'backup.pdf')
+  writeFileSync(key, Buffer.concat([PDF, Buffer.from('% rig dummy\n')]))
+  const named = join(home, 'docs', 'report.pdf')
+  linkSync(key, named)
+  assert.equal(await refusal(named, { home }), hardLinkSentence(named))
+  // Refused by the path's own count, before the file is opened.
+  const opens: string[] = []
+  const counted = { open: async (p: string) => { opens.push(p); throw Object.assign(new Error('EACCES'), { code: 'EACCES' }) } }
+  assert.equal(await refusal(named, { home, fs: counted }), hardLinkSentence(named))
+  assert.deepEqual(opens, [], 'not opened')
+  // The control: with one name again it goes.
+  rmSync(key)
+  assert.equal(await refusal(named, { home }), null, 'one name')
+  // On the handle: a second name made after the lstat (which saw one) and before the open is caught by the open file's
+  // own count (fstat).
+  const late = join(home, '.ssh', 'late.pdf')
+  let made = false
+  const fs = {
+    lstat: async (p: string, options?: { bigint: true }) => {
+      const st = await lstatPromise(p, options)
+      if (!made) {
+        made = true
+        linkSync(p, late)
+      }
+      return st
+    },
+  }
+  assert.equal(await refusal(named, { home, fs }), hardLinkSentence(named))
+  assert.ok(made, 'the second name was made after the lstat')
+})
+
+test('hardening 3: a FIFO swapped in for the file cannot freeze the read: the open never blocks (O_NONBLOCK; Windows opens read only, as before)', async (t) => {
+  // Windows has no FIFO to swap in (a named pipe is a \\.\pipe\ path, refused before any file system call).
+  if (process.platform !== 'win32') {
+    const home = scratchHome(t)
+    const path = join(home, 'docs', 'q3.pdf')
+    writeFileSync(path, PDF)
+    // lstat sees the regular file; then, before the open, the file is swapped for a FIFO no one writes to.
+    let swapped = false
+    const fs = {
+      lstat: async (p: string, options?: { bigint: true }) => {
+        const st = await lstatPromise(p, options)
+        if (!swapped) {
+          swapped = true
+          rmSync(p)
+          execFileSync('mkfifo', [p])
+        }
+        return st
+      },
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const blocked = new Promise<'blocked'>((done) => {
+      timer = setTimeout(() => done('blocked'), 3000)
+    })
+    const outcome = await Promise.race([readOne(path, { home, fs }), blocked])
+    clearTimeout(timer)
+    if (outcome === 'blocked') {
+      // A writer arriving frees the open that hangs, so the run goes on; then the test fails.
+      try {
+        closeSync(openSync(path, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK))
+      } catch {
+        // nothing waits on it
+      }
+      assert.fail('the open of a FIFO blocked for 3 s')
+    }
+    assert.ok(swapped)
+    assert.equal(outcome.error, changedSentence(path))
+  }
+  // The flags of the one open: a number on every platform (undefined never reaches them), O_NONBLOCK where the platform
+  // has it, and on Windows read only, exactly the old 'r'.
+  const flagsOf = async (): Promise<unknown> => {
+    let seen: unknown = 'not opened'
+    const mem = memFs(PDF)
+    const fs = { ...mem, open: async (_path: string, flags: unknown) => ((seen = flags), mem.open()) }
+    const read = await readOne(`${MEM_HOME}\\Documents\\q3.pdf`, { home: MEM_HOME, fs })
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+    return seen
+  }
+  for (const platform of ['linux', 'darwin', process.platform]) {
+    const flags = platform === process.platform ? await flagsOf() : await asPlatform(platform, flagsOf)
+    assert.equal(typeof flags, 'number', `${platform}: ${String(flags)}`)
+    assert.equal((flags as number) & 3, fsConstants.O_RDONLY, `${platform}: read only`)
+    if (platform !== 'win32' && typeof fsConstants.O_NONBLOCK === 'number') assert.equal((flags as number) & fsConstants.O_NONBLOCK, fsConstants.O_NONBLOCK, `${platform}: O_NONBLOCK`)
+  }
+  assert.equal(await asPlatform('win32', flagsOf), fsConstants.O_RDONLY, 'win32: read only and nothing else, as before')
+  // The open handle must be a regular file before a byte is read: one that is not (a FIFO, with the very file number the
+  // lstat saw) is refused and never read.
+  const reads: number[] = []
+  const notRegular = {
+    ...memFs(PDF),
+    open: async () => ({
+      stat: async () => ({ isFile: () => false, size: PDF.length, dev: 1, ino: 7 }),
+      read: async () => {
+        reads.push(1)
+        return { bytesRead: 0 }
+      },
+      close: async () => {},
+    }),
+  }
+  const odd = `${MEM_HOME}\\Documents\\q3.pdf`
+  assert.equal((await readOne(odd, { home: MEM_HOME, fs: notRegular })).error, changedSentence(odd))
+  assert.deepEqual(reads, [], 'nothing read')
 })

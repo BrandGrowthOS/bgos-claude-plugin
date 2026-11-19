@@ -50,13 +50,13 @@ test('authoritative sender ignores owner transport IDs and forged scheduled acto
   ]) assert.equal(privateActor(value), null)
 })
 
-test('same text from two recipients cannot select the latest actor', (t) => {
+test('same text from two recipients cannot authorize either actor in a mixed turn', (t) => {
   const f = fixture(t)
   const first = f.tracker.deliver({ content: 'same question', actingUserId: 'user_alice', chatId: '21' })
   f.tracker.deliver({ content: 'same question', actingUserId: 'user_bob', chatId: '22' })
   recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 's', cwd: f.cwd, prompt: first }, f.env)
   f.tracker.begin({ prompt: first, sessionId: 's' })
-  assert.equal(requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner').actingUserId, 'user_alice')
+  assert.throws(() => requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner'), /did not start/)
 })
 
 test('synchronous next prompt invalidates previous actor before async intake and a scheduled wake freezes its actor', (t) => {
@@ -68,7 +68,7 @@ test('synchronous next prompt invalidates previous actor before async intake and
   recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 'session-a', cwd: f.cwd, prompt: wake }, f.env)
   assert.throws(() => requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner'), /did not start/)
   f.tracker.begin({ prompt: wake, sessionId: 'session-a' })
-  assert.equal(requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner').actingUserId, 'user_bob')
+  assert.throws(() => requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner'), /did not start/, 'a new prompt in the mixed CLI turn grants neither sender authority')
   assert.equal(admitted.headers['X-BGOS-Acting-User'], 'user_alice', 'already admitted work keeps its actor')
 })
 
@@ -202,7 +202,7 @@ test('managed launch carries mandatory signed context while explicit standalone 
   assert.equal(relayEnvFromResolution({ ...resolution, contextFile: '' }).env!.HOAI_RELAY_CONTEXT_FILE, undefined)
 })
 
-test('a mid-turn delivery from another person or an unattributed sender revokes the live private turn until the next prompt', (t) => {
+test('a mid-turn delivery from another person revokes the live private turn until a fresh CLI turn', (t) => {
   const f = fixture(t)
   const path = privateContextPath(f.root, '7')
   const revoked: number[] = []
@@ -230,10 +230,17 @@ test('a mid-turn delivery from another person or an unattributed sender revokes 
   // It never rebinds to the newcomer either, even after another delivery.
   tracker.deliver({ content: 'and my schedules', actingUserId: 'user_bob', chatId: '22' })
   assert.equal(tracker.current({ markerPaths: f.markerPaths }), null)
-  // The next prompt admits exactly one actor again.
+  // Another prompt cannot turn the same mixed CLI turn into the newcomer's authority.
+  begin('user_bob', '22')
+  assert.throws(() => requirePrivateTurn(tracker, f.markerPaths, 'user_owner'), /did not start/)
+  recordPrivateBoundary({ hook_event_name: 'Stop', session_id: 's', cwd: f.cwd }, f.env)
+  tracker.end()
+  // A fresh CLI turn admits exactly one actor again.
   begin('user_bob', '22')
   assert.equal(requirePrivateTurn(tracker, f.markerPaths, 'user_owner').actingUserId, 'user_bob')
   for (const intruder of [{ actingUserId: null, chatId: '23' }, { actingUserId: 'user_bob', chatId: '99' }]) {
+    recordPrivateBoundary({ hook_event_name: 'Stop', session_id: 's', cwd: f.cwd }, f.env)
+    tracker.end()
     begin('user_bob', '22')
     assert.equal(requirePrivateTurn(tracker, f.markerPaths, 'user_owner').actingUserId, 'user_bob')
     tracker.deliver({ content: 'peer or other chat', ...intruder })

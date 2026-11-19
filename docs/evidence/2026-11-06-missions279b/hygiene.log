@@ -1,0 +1,15 @@
+workstation paths: zero added-line matches
+private networks: zero added-line matches
+credential patterns: zero added-line matches
+em/en dashes: zero added-line matches
+private board row identifiers: zero added-line matches
+Release metadata and both lockfiles match current main at 0.86.3
+Vault, thread-goal and socket-liveness libraries match current main
+Current main de15eda is an ancestor of HEAD; merge is committed
+Merge author and committer use the required public identity
+Staged paths exactly match the explicit source, test and evidence allowlist
+No REPORT, BRIEF or .lane files are staged; no force-add used
+git diff --cached --check: passed
+Full suite exit code 0, both families green, 10054 passed, 0 failed, 60 skipped, 473 files
+Final npm run build exit code 0
+No push, publish, deployment or production call performed

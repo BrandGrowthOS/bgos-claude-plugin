@@ -47,6 +47,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 
 import { boundedFetch } from './bounded-fetch.ts'
+import { cleanTextOf } from './email-clean-text.ts'
 import { emailFileEntries, isExternalEmailInbound, readExternalEmailId, readsEmailFiles } from './inbound-channel.ts'
 import type { EmailFileSave } from './inbound-channel.ts'
 import type { InboundFileLike } from './message-text.ts'
@@ -110,19 +111,12 @@ const ascii = (s: string): number[] => Array.from(s, (c) => c.charCodeAt(0))
 
 /**
  * Valid UTF-8 with no NUL and no control character but tab, newline, form
- * feed and return. A text that opens with markup is still text: the backend
- * serves a Word or Excel file's extracted text as attachment-N.txt, and a
- * document may well begin with '<'. It is saved as text and only ever read
- * with Read, never opened or run.
+ * feed and return (lib/email-clean-text.ts, the one rule both directions
+ * read). A file to attach is not checked here but in the content Worker
+ * (lib/email-outbound-content.ts), off the main thread.
  */
 function isCleanText(bytes: Uint8Array): boolean {
-  let text: string
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-  } catch {
-    return false
-  }
-  return !/[\u0000-\u0008\u000B\u000E-\u001F\u007F-\u009F]/.test(text)
+  return cleanTextOf(bytes) !== null
 }
 
 const ZIP_ENTRIES_MAX = 2000

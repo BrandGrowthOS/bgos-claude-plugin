@@ -275,15 +275,19 @@ test('withDeadline gives up, says so, and never rejects', { timeout: 3_000 }, as
   assert.match(lines[0]!, /deadline exceeded after 25ms: slash registry walk/)
 })
 
-test('withDeadline does not turn a late rejection into an unhandled rejection', async () => {
-  const rejectsLater = new Promise<string>((_r, reject) =>
-    setTimeout(() => reject(new Error('the walk failed after we gave up')), 5),
-  )
-  const out = await withDeadline(rejectsLater, { timeoutMs: 1, label: 'walk' })
+test('withDeadline does not turn a late rejection into an unhandled rejection', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let rejectWork!: (error: Error) => void
+  const rejectsLater = new Promise<string>((_resolve, reject) => { rejectWork = reject })
+  const bounded = withDeadline(rejectsLater, { timeoutMs: 1, label: 'walk' })
+  t.mock.timers.tick(1)
+  const out = await bounded
   assert.equal(out, DEADLINE_EXCEEDED)
-  // Give the late rejection a turn to land. If it were unhandled, node would
-  // fail this test file.
-  await new Promise((r) => setTimeout(r, 25))
+  // Reject only AFTER the deadline settled. Windows can coalesce 1 ms and 5 ms
+  // timers and run the earlier registered rejection first. An event loop turn
+  // lets node:test detect an unhandled rejection without racing two timers.
+  rejectWork(new Error('the walk failed after we gave up'))
+  await new Promise<void>(resolve => setImmediate(resolve))
 })
 
 test('withDeadline surfaces a failure that happens BEFORE the deadline', async () => {

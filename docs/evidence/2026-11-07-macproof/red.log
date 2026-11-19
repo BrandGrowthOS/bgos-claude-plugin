@@ -1,0 +1,69 @@
+Mac process proof: red-first evidence
+
+Baseline command:
+node --import tsx --test --test-concurrency=1 test/browser-profile-runtime.test.ts test/browser-profile-runtime-bootstrap.test.ts
+INFO tests 97
+INFO suites 0
+INFO pass 97
+INFO fail 0
+INFO cancelled 0
+INFO skipped 0
+INFO todo 0
+INFO duration_ms 2030.19525
+
+New Darwin reader tests before implementation:
+node --import tsx --test --test-concurrency=1 test/browser-profile-process-darwin.test.ts
+FAIL Darwin proof distinguishes a live identity, a reused pid and an exited process (0.487666ms)
+PASS Darwin proof fails closed when the helper is missing or its output is unproved (0.587875ms)
+PASS Darwin proof validates calendar dates and does not normalize malformed timestamps (0.074ms)
+PASS Darwin proof rejects untrusted pids before invoking the reader (0.05775ms)
+FAIL Darwin proof uses an absolute helper, fixed locale and timezone, bounded argv execution (0.039334ms)
+FAIL Darwin group inventory carries start identities and refuses partial or empty tables (0.044875ms)
+FAIL real Darwin reader proves a child is alive and then proves its exit (1.725917ms)
+INFO tests 7
+INFO suites 0
+INFO pass 3
+INFO fail 4
+INFO cancelled 0
+INFO skipped 0
+INFO todo 0
+INFO duration_ms 118.523334
+Expected failure code: profile_process_exit_proof_unavailable
+
+Real-child runtime tests against the original Linux-only runtime:
+node --import tsx --test --test-concurrency=1 test/browser-profile-runtime-bootstrap.test.ts
+PASS runtime factory is awaited before owned context and bind is awaited before the first private seed (193.082208ms)
+PASS unknown or ambiguous native context delta and targets during bind refuse before seed and clean the new browser (27.227875ms)
+PASS seed context must equal the context proved before any owned seed creation (8.572167ms)
+PASS mixed proof factories fail before launch and disposal failure cannot skip physical close or DEK zeroing (6.652416ms)
+PASS a noncanonical native package binding refuses without fallback and positively closes the newly owned browser (4.8865ms)
+FAIL real Darwin runtime normal close proves its owned child exited (9.671875ms)
+FAIL real Darwin runtime emergency group stop proves its owned child exited (8.3475ms)
+PASS Windows keeps the unavailable process exit proof code and closes the new browser (5.779584ms)
+INFO tests 8
+INFO suites 0
+INFO pass 6
+INFO fail 2
+INFO cancelled 0
+INFO skipped 0
+INFO todo 0
+INFO duration_ms 407.281375
+Both native Darwin tests failed with profile_process_exit_proof_unavailable.
+
+Undefined-pid regression before its fix:
+PASS Darwin proof distinguishes a live identity, a reused pid and an exited process (2.821833ms)
+PASS Darwin proof fails closed when the helper is missing or its output is unproved (1.030709ms)
+PASS Darwin proof validates calendar dates and does not normalize malformed timestamps (0.474709ms)
+FAIL Darwin proof rejects untrusted pids before invoking the reader (1.399084ms)
+PASS Darwin proof uses an absolute helper, fixed locale and timezone, bounded argv execution (0.250875ms)
+PASS Darwin group inventory carries start identities and refuses partial or empty tables (0.547292ms)
+PASS real Darwin reader proves a child is alive and then proves its exit (40.4575ms)
+INFO tests 7
+INFO suites 0
+INFO pass 6
+INFO fail 1
+INFO cancelled 0
+INFO skipped 0
+INFO todo 0
+INFO duration_ms 214.81625
+Expected assertion: Missing expected exception.

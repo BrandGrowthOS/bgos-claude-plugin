@@ -25,6 +25,7 @@
  *
  * Run with: npx tsx --test test/plan-tap-authority.test.ts
  */
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -38,6 +39,7 @@ import { LoginController } from '../lib/auth-login.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { createPostedButtons, createPrivateTurnTracker, privateTapCard } from '../lib/private-turn.mjs'
+import { isHumanClick } from '../lib/skill-origins.ts'
 
 // Normalized to LF: the working tree is CRLF on a Windows checkout.
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
@@ -312,6 +314,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     ownerLaneVerdict,
     ownerAnnounceRefused,
     noteLaneMisroute: () => undefined,
+    // No group lanes here: no tap is a group's.
+    routeGroupStreamTap: () => false,
     lanesOnForThisAgent: false,
     chatOwnership: { isOthers: () => false },
     USER_ID: OWNER,
@@ -319,19 +323,26 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     // The daemon's own tracker (server.ts): a tap by anyone but the owner is noted with it (70f1898b).
     privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }),
     // Every tap site announces through it (4bf28148): only the owner's own stream tap in its window opens a turn.
-    privateTapCard,
+    privateTapCardNoting: privateTapCard,
+    // The click row's humanPrincipal, read as server.ts reads it at every tap site (lib/skill-origins.ts).
+    isHumanClick,
     // The cards this daemon life posted (server.ts): none here, so no tap of this rig opens a private turn.
     postedButtons: createPostedButtons(),
     streamAuthority: {},
     // The pending question groups (lib/ask-tracker.ts): none here, so every tap of this rig is a button tap.
     askTracker: { askIdOf: () => null },
     announcedClickIds,
+    postedButtonCards: new Map(),
     rememberAnnouncedClick: (id: number) => announcedClickIds.add(id),
     chatUnansweredButtons: new Map(),
+    loginMethodCard: null,
+    pendingLoginMethodCard: () => null,
     recentButtonPrompts: new Map(),
     pendingPermissions: new Map(),
     senderUserIdOf: (m: unknown) => permissionRelay.senderUserIdCandidate(m) ?? OWNER,
     trackMessageOperation: (op: () => Promise<unknown>) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: StreamHarness['notes'][number]) => {
         notes.push(n)
@@ -464,12 +475,15 @@ test('the record names the plan\'s person, from the permission relay\'s own sour
   assert.doesNotMatch(SERVER, /const requesterUserId = lastInboundUserByChat\.get\(chatId\) \?\? USER_ID/)
 })
 
-test('all three call sites pass a NULL AWARE clicker id and drop a refused tap', () => {
+test('all four call sites pass a NULL AWARE clicker id and drop a refused tap', () => {
   assert.equal(
     (SERVER.match(/applyPlanAnswer\(\{/g) ?? []).length,
-    3,
-    'the poll, the stream and the boot sweep, and no other',
+    4,
+    'the poll, the stream, posted-card recovery and the boot sweep',
   )
+  const direct = declaredFunction('announcePostedButtonAnswer')
+  assert.match(direct, /clickerUserId: senderUserIdCandidate\(payload\), via: 'poll',/)
+  assert.match(direct, /if \(planAnswer\.refused\) return/)
   // The poll: the answer payload, through the null aware reader.
   const poll = SERVER.slice(
     SERVER.indexOf('const planAnswer = applyPlanAnswer({\n        chatId,\n        messageId: mm.id,'),

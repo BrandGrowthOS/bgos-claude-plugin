@@ -5432,6 +5432,268 @@
         "test/self-update.test.ts"
       ],
       "bun": true
+    },
+    {
+      "id": "never-arrived-requested",
+      "rule": "only a record still requested: no daemon on the build ever settled it",
+      "file": "lib/idle-update.mjs",
+      "find": "if (!record || record.state !== 'requested') return { action: 'none', reason: 'not_requested' }",
+      "replace": "if (!record) return { action: 'none', reason: 'not_requested' }",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-marketplace",
+      "rule": "a clone is not this rule",
+      "file": "lib/idle-update.mjs",
+      "find": "if (record.installMethod !== 'marketplace') return { action: 'none', reason: 'not_marketplace' }",
+      "replace": "if (false) return { action: 'none', reason: 'not_marketplace' }",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-install-names-target",
+      "rule": "only while the install still names the build",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.installedVersion !== record.target) return { action: 'none', reason: 'install_moved' }",
+      "replace": "if (f.installedVersion === null) return { action: 'none', reason: 'install_moved' }",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-came-back",
+      "rule": "only no daemon, or a daemon on the old build; an unknown reading is none",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.cameBack !== 'none' && f.cameBack !== 'old') return { action: 'none', reason: 'came_back_on_target' }",
+      "replace": "if (f.cameBack === 'target') return { action: 'none', reason: 'came_back_on_target' }",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-login",
+      "rule": "an expired login is not the build",
+      "file": "lib/idle-update.mjs",
+      "find": "if (f.loginExpired === true) return { action: 'none', reason: 'login_expired' }",
+      "replace": "if (false) return { action: 'none', reason: 'login_expired' }",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-this-launch",
+      "rule": "only a launch at or after the ask counts",
+      "file": "lib/idle-update.mjs",
+      "find": "if (askedAtMs === null || !finite(f.launchedAtMs) || f.launchedAtMs < askedAtMs) return { action: 'none', reason: 'not_this_launch' }",
+      "replace": "if (askedAtMs === null) return { action: 'none', reason: 'not_this_launch' }",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-same-ms",
+      "rule": "the launch in the ask's own millisecond counts",
+      "file": "lib/idle-update.mjs",
+      "find": "f.launchedAtMs < askedAtMs) return { action: 'none', reason: 'not_this_launch' }",
+      "replace": "f.launchedAtMs <= askedAtMs) return { action: 'none', reason: 'not_this_launch' }",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-latest-ask",
+      "rule": "the ask counted is the latest",
+      "file": "lib/idle-update.mjs",
+      "find": "  for (let i = attempts.length - 1; i >= 0; i -= 1) {\n    if (attempts[i]?.outcome !== 'requested') continue",
+      "replace": "  for (let i = 0; i < attempts.length; i += 1) {\n    if (attempts[i]?.outcome !== 'requested') continue",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-bad-first",
+      "rule": "the build is held bad before the install is touched",
+      "file": "lib/idle-update.mjs",
+      "find": "  create(join(vdir, 'bad'), { assistantId: deps.assistantId, at, reason: 'never_arrived' })\n",
+      "replace": "\n",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-verdict",
+      "rule": "a follower that spent its way back stays (decideRollback)",
+      "file": "lib/idle-update.mjs",
+      "find": "const verdict = decideRollback({ canary, wentBack: spent !== null && spent.target !== found.target, loginExpired: false })",
+      "replace": "const verdict = 'rollback'",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-canary-role",
+      "rule": "a voided canary, or a version validated meanwhile, is a follower",
+      "file": "lib/idle-update.mjs",
+      "find": "const canary = Number.isInteger(found.canaryN) && !has(`void-${found.canaryN}`) && !has('validated')",
+      "replace": "const canary = Number.isInteger(found.canaryN)",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-went-back",
+      "rule": "a follower spends its one way back",
+      "file": "lib/idle-update.mjs",
+      "find": "    create(wentBackPath, { assistantId: deps.assistantId, at, target: found.target, reason: 'never_arrived' })\n",
+      "replace": "\n",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-source",
+      "rule": "a follower goes back to the newer of its build and the canary's",
+      "file": "lib/idle-update.mjs",
+      "find": "record = { ...record, ...rollbackSourceFor(record, canaryLeft, { heldBad, holds }) }",
+      "replace": "record = { ...record }",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-superseded",
+      "rule": "a record another daemon settled meanwhile is left",
+      "file": "lib/idle-update.mjs",
+      "find": "    if (isRecordSuperseded(found, parseIdleUpdateRecord(read(() => fs.readFile(deps.recordPath), null)))) return false\n",
+      "replace": "\n",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-install-failed",
+      "rule": "a way back that did not take is rollback_failed",
+      "file": "lib/idle-update.mjs",
+      "find": "const next = withAttempt(record, deps.now, 'rollback_failed', { state: 'rollback_failed', neverArrived: decision.reason })",
+      "replace": "const next = withAttempt(record, deps.now, 'rolled_back', { state: 'rolled_back', neverArrived: decision.reason })",
+      "tests": [
+        "test/idle-update.never-arrived.test.ts",
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-controller-old",
+      "rule": "a daemon back on the old build with the install on the new one goes back at once",
+      "file": "lib/idle-update.mjs",
+      "find": "if (found?.state === 'requested' && found.target !== deps.runningVersion) {",
+      "replace": "if (false) {",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-controller-reported",
+      "rule": "reported once: the next boot of the old build does not say it again",
+      "file": "lib/idle-update.mjs",
+      "find": "record = back.outcome === 'rolled_back' && back.written ? settleTo({ ...back.record, reportedAt: iso(now()) }) : back.record",
+      "replace": "record = back.record",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-controller-lease",
+      "rule": "the lease goes with the way back",
+      "file": "lib/idle-update.mjs",
+      "find": "        releaseLease(record.nonce, record.target)\n        log(\n          `the restart onto ${record.target} came back on",
+      "replace": "        log(\n          `the restart onto ${record.target} came back on",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "never-arrived-controller-no-restart",
+      "rule": "already on the old build: no rollback restart",
+      "file": "lib/idle-update.mjs",
+      "find": "                : `, and putting the install back on ${record.from} did not take (${back.reason}); ${record.target} is held on this computer`),\n        )\n        phase = 'watch'",
+      "replace": "                : `, and putting the install back on ${record.from} did not take (${back.reason}); ${record.target} is held on this computer`),\n        )\n        phase = 'rollback'\n        rollbackStage = 'restart'",
+      "tests": [
+        "test/idle-update.controller.test.ts"
+      ]
+    },
+    {
+      "id": "hoai-asks-the-way-back",
+      "rule": "hoai asks the way back when a launch sends no heartbeat",
+      "file": "bin/hoai-core.mjs",
+      "find": "if (!idleRollback) return afterWayBack()",
+      "replace": "if (true) return afterWayBack()",
+      "tests": [
+        "test/hoai-core.idle-never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "hoai-way-back-before-relaunch",
+      "rule": "the install moves before hoai relaunches",
+      "file": "bin/hoai-core.mjs",
+      "find": "if (!idleRollback) return afterWayBack()",
+      "replace": "afterWayBack()\n        if (!idleRollback) return",
+      "tests": [
+        "test/hoai-core.idle-never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "hoai-way-back-throws",
+      "rule": "a way back that throws still relaunches",
+      "file": "bin/hoai-core.mjs",
+      "find": "          .then(noteIdleWayBack, () => null)",
+      "replace": "          .then(noteIdleWayBack)",
+      "tests": [
+        "test/hoai-core.idle-never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "hoai-way-back-stop",
+      "rule": "a launcher asked to stop meanwhile relaunches nothing",
+      "file": "bin/hoai-core.mjs",
+      "find": "        const afterWayBack = () => {\n          if (!live || restartRequested) return",
+      "replace": "        const afterWayBack = () => {\n          if (false) return",
+      "tests": [
+        "test/hoai-core.idle-never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "hoai-way-back-launch-start",
+      "rule": "the launch's own start is what is compared with the ask",
+      "file": "bin/hoai-core.mjs",
+      "find": "launchedAtMs: startedAt, now: now() })",
+      "replace": "launchedAtMs: now(), now: now() })",
+      "tests": [
+        "test/hoai-core.idle-never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "hoai-way-back-real-by-default",
+      "rule": "the launcher over the real files takes the real way back",
+      "file": "bin/hoai-core.mjs",
+      "find": "readFile === defaultReadText ? idleRollbackNeverArrived : null",
+      "replace": "null",
+      "tests": [
+        "test/hoai-core.idle-never-arrived.test.ts"
+      ]
+    },
+    {
+      "id": "hoai-main-hands-way-back-on",
+      "rule": "main() hands an injected way back on",
+      "file": "bin/hoai-core.mjs",
+      "find": "      idleRollback: opts.idleRollback,\n",
+      "replace": "\n",
+      "tests": [
+        "test/hoai-core.idle-never-arrived.test.ts"
+      ]
     }
   ]
 }

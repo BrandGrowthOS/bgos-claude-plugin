@@ -12,3 +12,7 @@ node_modules
 .laneenv5-suite/
 .laneenv6-tmp/
 .laneenv6-suite/
+# A lane's brief and report stay in its folder, never in this public repository
+/BRIEF*.md
+/REPORT*.md
+/*-REPORT.md

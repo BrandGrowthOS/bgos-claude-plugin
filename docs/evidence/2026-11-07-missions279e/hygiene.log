@@ -1,0 +1,6 @@
+Final source additions and evidence scanned: no local home/temp/volume paths, private identity/host, or em/en dashes.
+No BRIEF, REPORT or .lane files in the explicit commit paths.
+Release metadata unchanged.
+git diff --check exits 0.
+Fetched main Unreleased and release history are byte-identical.
+Public author and committer required for the final commit.

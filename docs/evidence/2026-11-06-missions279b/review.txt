@@ -1,0 +1,5 @@
+Independent read-only review: no open Critical or Important findings.
+
+Reviewed cache identity, checked-goal invalidation, revision fences, answer serialization and strengthened test sensitivity. The reviewer found one failure-isolation issue; a test reproduced it before the per-mission catch was added. The reviewer rechecked the fix. No tests were run by the reviewer.
+
+Residual availability limit: a slow stale mission can consume the shared answer budget and suppress another mission's fresh passing result. The hook retains the existing fail-open policy.

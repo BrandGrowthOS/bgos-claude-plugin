@@ -1,0 +1,367 @@
+Every TAP case result and the final runner totals; passing diagnostics omitted.
+ok 1 - self-write ordering: HTTP first retains a newer checked goal and Stop asks and blocks
+ok 2 - self-write ordering: HTTP first cannot resurrect a newer completed mission
+ok 3 - self-write ordering: frame first retains a newer checked goal and Stop asks and blocks
+ok 4 - self-write ordering: frame first cannot resurrect a newer completed mission
+ok 5 - self-write ordering: an older frame cannot erase a newer self-write checked goal
+ok 6 - self-write ordering: an older frame cannot resurrect a newer self-write completion
+ok 7 - self-write ordering: timestamps compare instants across time zones
+ok 8 - self-write ordering: unversioned snapshots cannot create or replace goal state
+ok 9 - self-write ordering: versions are per mission and allow later server writes after closure
+ok 10 - self-write ordering: newer cold discovery prevents an older waiting response from erasing checks
+ok 11 - self-write ordering: a remembered completion rejects an older cold discovery without checking it
+ok 12 - self-write ordering: an unchanged open discovery can restore a mission after chat cache eviction
+ok 13 - self-write ordering: a goal-check completion cannot be mistaken for chat cache eviction
+ok 14 - closing one of two missions preserves the other in prompt context and Stop eligibility
+ok 15 - a completion removes only its mission when another open mission was most recently seen
+ok 16 - multiple cached missions are checked by explicit id and Stop names every passing mission
+ok 17 - a failed check read for one mission does not prevent verification of another mission
+ok 18 - a cold implicit lookup can discover one mission, and ambiguity produces an empty answer
+ok 19 - adding a checked goal after a fresh empty report performs a new verification before Stop
+ok 20 - a closed explicit report removes only that mission and a wrong report id is ignored
+ok 21 - a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block
+ok 22 - a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block
+ok 23 - a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block
+ok 24 - a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block
+ok 25 - a cold discovery cannot resurrect a mission created and completed while the read was pending
+ok 26 - HTTP work completing after the daemon answer budget cannot resurrect a completed mission
+    ok 1 - snapshot then older snapshot: checked goal
+    ok 2 - snapshot then older snapshot: completion
+    ok 3 - snapshot then older HTTP self-write: checked goal
+    ok 4 - snapshot then older HTTP self-write: completion
+    ok 5 - snapshot then older HTTP discovery: checked goal
+    ok 6 - snapshot then older HTTP discovery: completion
+    ok 7 - snapshot then older versioned goal-check report: checked goal
+    ok 8 - snapshot then older versioned goal-check report: completion
+    ok 9 - snapshot then older mission_created: checked goal
+    ok 10 - snapshot then older mission_created: completion
+    ok 11 - snapshot then older mission_ticked: checked goal
+    ok 12 - snapshot then older mission_ticked: completion
+    ok 13 - snapshot then older mission_paused: checked goal
+    ok 14 - snapshot then older mission_paused: completion
+    ok 15 - snapshot then older mission_resumed: checked goal
+    ok 16 - snapshot then older mission_resumed: completion
+    ok 17 - snapshot then older mission_completed: checked goal
+    ok 18 - snapshot then older mission_completed: completion
+    ok 19 - snapshot then older mission_abandoned: checked goal
+    ok 20 - snapshot then older mission_abandoned: completion
+    ok 21 - snapshot then older mission_failed: checked goal
+    ok 22 - snapshot then older mission_failed: completion
+    ok 23 - snapshot then older mission_updated: checked goal
+    ok 24 - snapshot then older mission_updated: completion
+    ok 25 - HTTP self-write then older snapshot: checked goal
+    ok 26 - HTTP self-write then older snapshot: completion
+    ok 27 - HTTP self-write then older HTTP self-write: checked goal
+    ok 28 - HTTP self-write then older HTTP self-write: completion
+    ok 29 - HTTP self-write then older HTTP discovery: checked goal
+    ok 30 - HTTP self-write then older HTTP discovery: completion
+    ok 31 - HTTP self-write then older versioned goal-check report: checked goal
+    ok 32 - HTTP self-write then older versioned goal-check report: completion
+    ok 33 - HTTP self-write then older mission_created: checked goal
+    ok 34 - HTTP self-write then older mission_created: completion
+    ok 35 - HTTP self-write then older mission_ticked: checked goal
+    ok 36 - HTTP self-write then older mission_ticked: completion
+    ok 37 - HTTP self-write then older mission_paused: checked goal
+    ok 38 - HTTP self-write then older mission_paused: completion
+    ok 39 - HTTP self-write then older mission_resumed: checked goal
+    ok 40 - HTTP self-write then older mission_resumed: completion
+    ok 41 - HTTP self-write then older mission_completed: checked goal
+    ok 42 - HTTP self-write then older mission_completed: completion
+    ok 43 - HTTP self-write then older mission_abandoned: checked goal
+    ok 44 - HTTP self-write then older mission_abandoned: completion
+    ok 45 - HTTP self-write then older mission_failed: checked goal
+    ok 46 - HTTP self-write then older mission_failed: completion
+    ok 47 - HTTP self-write then older mission_updated: checked goal
+    ok 48 - HTTP self-write then older mission_updated: completion
+    ok 49 - HTTP discovery then older snapshot: checked goal
+    ok 50 - HTTP discovery then older snapshot: completion
+    ok 51 - HTTP discovery then older HTTP self-write: checked goal
+    ok 52 - HTTP discovery then older HTTP self-write: completion
+    ok 53 - HTTP discovery then older HTTP discovery: checked goal
+    ok 54 - HTTP discovery then older HTTP discovery: completion
+    ok 55 - HTTP discovery then older versioned goal-check report: checked goal
+    ok 56 - HTTP discovery then older versioned goal-check report: completion
+    ok 57 - HTTP discovery then older mission_created: checked goal
+    ok 58 - HTTP discovery then older mission_created: completion
+    ok 59 - HTTP discovery then older mission_ticked: checked goal
+    ok 60 - HTTP discovery then older mission_ticked: completion
+    ok 61 - HTTP discovery then older mission_paused: checked goal
+    ok 62 - HTTP discovery then older mission_paused: completion
+    ok 63 - HTTP discovery then older mission_resumed: checked goal
+    ok 64 - HTTP discovery then older mission_resumed: completion
+    ok 65 - HTTP discovery then older mission_completed: checked goal
+    ok 66 - HTTP discovery then older mission_completed: completion
+    ok 67 - HTTP discovery then older mission_abandoned: checked goal
+    ok 68 - HTTP discovery then older mission_abandoned: completion
+    ok 69 - HTTP discovery then older mission_failed: checked goal
+    ok 70 - HTTP discovery then older mission_failed: completion
+    ok 71 - HTTP discovery then older mission_updated: checked goal
+    ok 72 - HTTP discovery then older mission_updated: completion
+    ok 73 - versioned goal-check report then older snapshot: checked goal
+    ok 74 - versioned goal-check report then older snapshot: completion
+    ok 75 - versioned goal-check report then older HTTP self-write: checked goal
+    ok 76 - versioned goal-check report then older HTTP self-write: completion
+    ok 77 - versioned goal-check report then older HTTP discovery: checked goal
+    ok 78 - versioned goal-check report then older HTTP discovery: completion
+    ok 79 - versioned goal-check report then older versioned goal-check report: checked goal
+    ok 80 - versioned goal-check report then older versioned goal-check report: completion
+    ok 81 - versioned goal-check report then older mission_created: checked goal
+    ok 82 - versioned goal-check report then older mission_created: completion
+    ok 83 - versioned goal-check report then older mission_ticked: checked goal
+    ok 84 - versioned goal-check report then older mission_ticked: completion
+    ok 85 - versioned goal-check report then older mission_paused: checked goal
+    ok 86 - versioned goal-check report then older mission_paused: completion
+    ok 87 - versioned goal-check report then older mission_resumed: checked goal
+    ok 88 - versioned goal-check report then older mission_resumed: completion
+    ok 89 - versioned goal-check report then older mission_completed: checked goal
+    ok 90 - versioned goal-check report then older mission_completed: completion
+    ok 91 - versioned goal-check report then older mission_abandoned: checked goal
+    ok 92 - versioned goal-check report then older mission_abandoned: completion
+    ok 93 - versioned goal-check report then older mission_failed: checked goal
+    ok 94 - versioned goal-check report then older mission_failed: completion
+    ok 95 - versioned goal-check report then older mission_updated: checked goal
+    ok 96 - versioned goal-check report then older mission_updated: completion
+    ok 97 - mission_created then older snapshot: checked goal
+    ok 98 - mission_created then older snapshot: completion
+    ok 99 - mission_created then older HTTP self-write: checked goal
+    ok 100 - mission_created then older HTTP self-write: completion
+    ok 101 - mission_created then older HTTP discovery: checked goal
+    ok 102 - mission_created then older HTTP discovery: completion
+    ok 103 - mission_created then older versioned goal-check report: checked goal
+    ok 104 - mission_created then older versioned goal-check report: completion
+    ok 105 - mission_created then older mission_created: checked goal
+    ok 106 - mission_created then older mission_created: completion
+    ok 107 - mission_created then older mission_ticked: checked goal
+    ok 108 - mission_created then older mission_ticked: completion
+    ok 109 - mission_created then older mission_paused: checked goal
+    ok 110 - mission_created then older mission_paused: completion
+    ok 111 - mission_created then older mission_resumed: checked goal
+    ok 112 - mission_created then older mission_resumed: completion
+    ok 113 - mission_created then older mission_completed: checked goal
+    ok 114 - mission_created then older mission_completed: completion
+    ok 115 - mission_created then older mission_abandoned: checked goal
+    ok 116 - mission_created then older mission_abandoned: completion
+    ok 117 - mission_created then older mission_failed: checked goal
+    ok 118 - mission_created then older mission_failed: completion
+    ok 119 - mission_created then older mission_updated: checked goal
+    ok 120 - mission_created then older mission_updated: completion
+    ok 121 - mission_ticked then older snapshot: checked goal
+    ok 122 - mission_ticked then older snapshot: completion
+    ok 123 - mission_ticked then older HTTP self-write: checked goal
+    ok 124 - mission_ticked then older HTTP self-write: completion
+    ok 125 - mission_ticked then older HTTP discovery: checked goal
+    ok 126 - mission_ticked then older HTTP discovery: completion
+    ok 127 - mission_ticked then older versioned goal-check report: checked goal
+    ok 128 - mission_ticked then older versioned goal-check report: completion
+    ok 129 - mission_ticked then older mission_created: checked goal
+    ok 130 - mission_ticked then older mission_created: completion
+    ok 131 - mission_ticked then older mission_ticked: checked goal
+    ok 132 - mission_ticked then older mission_ticked: completion
+    ok 133 - mission_ticked then older mission_paused: checked goal
+    ok 134 - mission_ticked then older mission_paused: completion
+    ok 135 - mission_ticked then older mission_resumed: checked goal
+    ok 136 - mission_ticked then older mission_resumed: completion
+    ok 137 - mission_ticked then older mission_completed: checked goal
+    ok 138 - mission_ticked then older mission_completed: completion
+    ok 139 - mission_ticked then older mission_abandoned: checked goal
+    ok 140 - mission_ticked then older mission_abandoned: completion
+    ok 141 - mission_ticked then older mission_failed: checked goal
+    ok 142 - mission_ticked then older mission_failed: completion
+    ok 143 - mission_ticked then older mission_updated: checked goal
+    ok 144 - mission_ticked then older mission_updated: completion
+    ok 145 - mission_paused then older snapshot: checked goal
+    ok 146 - mission_paused then older snapshot: completion
+    ok 147 - mission_paused then older HTTP self-write: checked goal
+    ok 148 - mission_paused then older HTTP self-write: completion
+    ok 149 - mission_paused then older HTTP discovery: checked goal
+    ok 150 - mission_paused then older HTTP discovery: completion
+    ok 151 - mission_paused then older versioned goal-check report: checked goal
+    ok 152 - mission_paused then older versioned goal-check report: completion
+    ok 153 - mission_paused then older mission_created: checked goal
+    ok 154 - mission_paused then older mission_created: completion
+    ok 155 - mission_paused then older mission_ticked: checked goal
+    ok 156 - mission_paused then older mission_ticked: completion
+    ok 157 - mission_paused then older mission_paused: checked goal
+    ok 158 - mission_paused then older mission_paused: completion
+    ok 159 - mission_paused then older mission_resumed: checked goal
+    ok 160 - mission_paused then older mission_resumed: completion
+    ok 161 - mission_paused then older mission_completed: checked goal
+    ok 162 - mission_paused then older mission_completed: completion
+    ok 163 - mission_paused then older mission_abandoned: checked goal
+    ok 164 - mission_paused then older mission_abandoned: completion
+    ok 165 - mission_paused then older mission_failed: checked goal
+    ok 166 - mission_paused then older mission_failed: completion
+    ok 167 - mission_paused then older mission_updated: checked goal
+    ok 168 - mission_paused then older mission_updated: completion
+    ok 169 - mission_resumed then older snapshot: checked goal
+    ok 170 - mission_resumed then older snapshot: completion
+    ok 171 - mission_resumed then older HTTP self-write: checked goal
+    ok 172 - mission_resumed then older HTTP self-write: completion
+    ok 173 - mission_resumed then older HTTP discovery: checked goal
+    ok 174 - mission_resumed then older HTTP discovery: completion
+    ok 175 - mission_resumed then older versioned goal-check report: checked goal
+    ok 176 - mission_resumed then older versioned goal-check report: completion
+    ok 177 - mission_resumed then older mission_created: checked goal
+    ok 178 - mission_resumed then older mission_created: completion
+    ok 179 - mission_resumed then older mission_ticked: checked goal
+    ok 180 - mission_resumed then older mission_ticked: completion
+    ok 181 - mission_resumed then older mission_paused: checked goal
+    ok 182 - mission_resumed then older mission_paused: completion
+    ok 183 - mission_resumed then older mission_resumed: checked goal
+    ok 184 - mission_resumed then older mission_resumed: completion
+    ok 185 - mission_resumed then older mission_completed: checked goal
+    ok 186 - mission_resumed then older mission_completed: completion
+    ok 187 - mission_resumed then older mission_abandoned: checked goal
+    ok 188 - mission_resumed then older mission_abandoned: completion
+    ok 189 - mission_resumed then older mission_failed: checked goal
+    ok 190 - mission_resumed then older mission_failed: completion
+    ok 191 - mission_resumed then older mission_updated: checked goal
+    ok 192 - mission_resumed then older mission_updated: completion
+    ok 193 - mission_completed then older snapshot: checked goal
+    ok 194 - mission_completed then older snapshot: completion
+    ok 195 - mission_completed then older HTTP self-write: checked goal
+    ok 196 - mission_completed then older HTTP self-write: completion
+    ok 197 - mission_completed then older HTTP discovery: checked goal
+    ok 198 - mission_completed then older HTTP discovery: completion
+    ok 199 - mission_completed then older versioned goal-check report: checked goal
+    ok 200 - mission_completed then older versioned goal-check report: completion
+    ok 201 - mission_completed then older mission_created: checked goal
+    ok 202 - mission_completed then older mission_created: completion
+    ok 203 - mission_completed then older mission_ticked: checked goal
+    ok 204 - mission_completed then older mission_ticked: completion
+    ok 205 - mission_completed then older mission_paused: checked goal
+    ok 206 - mission_completed then older mission_paused: completion
+    ok 207 - mission_completed then older mission_resumed: checked goal
+    ok 208 - mission_completed then older mission_resumed: completion
+    ok 209 - mission_completed then older mission_completed: checked goal
+    ok 210 - mission_completed then older mission_completed: completion
+    ok 211 - mission_completed then older mission_abandoned: checked goal
+    ok 212 - mission_completed then older mission_abandoned: completion
+    ok 213 - mission_completed then older mission_failed: checked goal
+    ok 214 - mission_completed then older mission_failed: completion
+    ok 215 - mission_completed then older mission_updated: checked goal
+    ok 216 - mission_completed then older mission_updated: completion
+    ok 217 - mission_abandoned then older snapshot: checked goal
+    ok 218 - mission_abandoned then older snapshot: completion
+    ok 219 - mission_abandoned then older HTTP self-write: checked goal
+    ok 220 - mission_abandoned then older HTTP self-write: completion
+    ok 221 - mission_abandoned then older HTTP discovery: checked goal
+    ok 222 - mission_abandoned then older HTTP discovery: completion
+    ok 223 - mission_abandoned then older versioned goal-check report: checked goal
+    ok 224 - mission_abandoned then older versioned goal-check report: completion
+    ok 225 - mission_abandoned then older mission_created: checked goal
+    ok 226 - mission_abandoned then older mission_created: completion
+    ok 227 - mission_abandoned then older mission_ticked: checked goal
+    ok 228 - mission_abandoned then older mission_ticked: completion
+    ok 229 - mission_abandoned then older mission_paused: checked goal
+    ok 230 - mission_abandoned then older mission_paused: completion
+    ok 231 - mission_abandoned then older mission_resumed: checked goal
+    ok 232 - mission_abandoned then older mission_resumed: completion
+    ok 233 - mission_abandoned then older mission_completed: checked goal
+    ok 234 - mission_abandoned then older mission_completed: completion
+    ok 235 - mission_abandoned then older mission_abandoned: checked goal
+    ok 236 - mission_abandoned then older mission_abandoned: completion
+    ok 237 - mission_abandoned then older mission_failed: checked goal
+    ok 238 - mission_abandoned then older mission_failed: completion
+    ok 239 - mission_abandoned then older mission_updated: checked goal
+    ok 240 - mission_abandoned then older mission_updated: completion
+    ok 241 - mission_failed then older snapshot: checked goal
+    ok 242 - mission_failed then older snapshot: completion
+    ok 243 - mission_failed then older HTTP self-write: checked goal
+    ok 244 - mission_failed then older HTTP self-write: completion
+    ok 245 - mission_failed then older HTTP discovery: checked goal
+    ok 246 - mission_failed then older HTTP discovery: completion
+    ok 247 - mission_failed then older versioned goal-check report: checked goal
+    ok 248 - mission_failed then older versioned goal-check report: completion
+    ok 249 - mission_failed then older mission_created: checked goal
+    ok 250 - mission_failed then older mission_created: completion
+    ok 251 - mission_failed then older mission_ticked: checked goal
+    ok 252 - mission_failed then older mission_ticked: completion
+    ok 253 - mission_failed then older mission_paused: checked goal
+    ok 254 - mission_failed then older mission_paused: completion
+    ok 255 - mission_failed then older mission_resumed: checked goal
+    ok 256 - mission_failed then older mission_resumed: completion
+    ok 257 - mission_failed then older mission_completed: checked goal
+    ok 258 - mission_failed then older mission_completed: completion
+    ok 259 - mission_failed then older mission_abandoned: checked goal
+    ok 260 - mission_failed then older mission_abandoned: completion
+    ok 261 - mission_failed then older mission_failed: checked goal
+    ok 262 - mission_failed then older mission_failed: completion
+    ok 263 - mission_failed then older mission_updated: checked goal
+    ok 264 - mission_failed then older mission_updated: completion
+    ok 265 - mission_updated then older snapshot: checked goal
+    ok 266 - mission_updated then older snapshot: completion
+    ok 267 - mission_updated then older HTTP self-write: checked goal
+    ok 268 - mission_updated then older HTTP self-write: completion
+    ok 269 - mission_updated then older HTTP discovery: checked goal
+    ok 270 - mission_updated then older HTTP discovery: completion
+    ok 271 - mission_updated then older versioned goal-check report: checked goal
+    ok 272 - mission_updated then older versioned goal-check report: completion
+    ok 273 - mission_updated then older mission_created: checked goal
+    ok 274 - mission_updated then older mission_created: completion
+    ok 275 - mission_updated then older mission_ticked: checked goal
+    ok 276 - mission_updated then older mission_ticked: completion
+    ok 277 - mission_updated then older mission_paused: checked goal
+    ok 278 - mission_updated then older mission_paused: completion
+    ok 279 - mission_updated then older mission_resumed: checked goal
+    ok 280 - mission_updated then older mission_resumed: completion
+    ok 281 - mission_updated then older mission_completed: checked goal
+    ok 282 - mission_updated then older mission_completed: completion
+    ok 283 - mission_updated then older mission_abandoned: checked goal
+    ok 284 - mission_updated then older mission_abandoned: completion
+    ok 285 - mission_updated then older mission_failed: checked goal
+    ok 286 - mission_updated then older mission_failed: completion
+    ok 287 - mission_updated then older mission_updated: checked goal
+    ok 288 - mission_updated then older mission_updated: completion
+ok 27 - all goal-state sources obey one server revision rule
+ok 28 - T0 snapshot, T2 unversioned report, T1 HTTP preserves Stop verification
+ok 29 - T0 snapshot, T2 unversioned report, T1 HTTP preserves closure
+ok 30 - T0 snapshot, T2 unversioned report, T1 WebSocket preserves Stop verification
+ok 31 - T0 snapshot, T2 unversioned report, T1 WebSocket preserves closure
+ok 32 - T0 snapshot, T2 versioned report, T1 HTTP preserves Stop verification
+ok 33 - T0 snapshot, T2 versioned report, T1 HTTP preserves closure
+ok 34 - T0 snapshot, T2 versioned report, T1 WebSocket preserves Stop verification
+ok 35 - T0 snapshot, T2 versioned report, T1 WebSocket preserves closure
+ok 36 - legacy report reconciliation: stable
+ok 37 - legacy report reconciliation: write during check
+ok 38 - legacy report reconciliation: different goals
+ok 39 - legacy report reconciliation: wrong mission
+ok 40 - legacy report reconciliation: wrong chat
+ok 41 - legacy report reconciliation: missing revision
+ok 42 - legacy report reconciliation: ambiguous
+ok 43 - equal report revisions refresh check evidence only for identical held goals
+ok 44 - a wrong-chat write cannot steal a held mission even with a newer timestamp
+ok 45 - matching legacy reports verify every cached mission without an ambiguous implicit lookup
+ok 46 - confirmed equal revision repairs tick after check reuse expires
+ok 47 - confirmed equal revision repairs add check after check reuse expires
+ok 48 - unversioned terminal completed clears missed frames and cannot be resurrected
+ok 49 - unversioned terminal abandoned clears missed frames and cannot be resurrected
+ok 50 - unversioned terminal failed clears missed frames and cannot be resurrected
+ok 51 - unversioned terminal confirmation rejects wrong id
+ok 52 - unversioned terminal confirmation rejects different status
+ok 53 - unversioned terminal confirmation rejects paused status
+ok 54 - unversioned terminal confirmation rejects unknown second status
+ok 55 - unversioned terminal confirmation rejects different goals
+ok 56 - unversioned terminal confirmation rejects read failure
+ok 57 - unversioned terminal confirmation rejects unknown status
+ok 58 - unversioned terminal read 1 with frame cannot cross a newer chat revision
+ok 59 - unversioned terminal read 2 with frame cannot cross a newer chat revision
+ok 60 - unversioned terminal read 1 with self-write cannot cross a newer chat revision
+ok 61 - unversioned terminal read 2 with self-write cannot cross a newer chat revision
+ok 62 - unversioned completion preserves other missions without an implicit lookup
+ok 63 - unversioned terminal tombstone survives eviction and newer cold discovery
+ok 64 - unversioned terminal confirmation requires a known mission in its original chat and invents no revision
+ok 65 - a parsed mission update retains server checks, waiting and server ticks for the turn hook
+ok 66 - malformed optional goal state is ignored without losing a valid mission frame
+ok 67 - new optional state stays display safe in an owner-created mission notice
+ok 68 - an ambiguous snapshot is never cached under an unrelated active recipient chat
+ok 69 - a snapshot uses its explicit chat or the event envelope chat, never a live-turn fallback
+1..69
+# tests 357
+# suites 0
+# pass 357
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2858.935458

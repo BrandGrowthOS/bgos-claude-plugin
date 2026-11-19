@@ -1,0 +1,4 @@
+Command: npm run build
+> claude-channel-bgos@0.86.1 build
+> tsc --noEmit
+Exit status: 0

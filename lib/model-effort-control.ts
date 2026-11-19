@@ -37,7 +37,8 @@
  * (a key the owner pressed meanwhile, a dialog) is refused with no Enter, and
  * the literal is cleared off the composer only where a fresh read shows it
  * right before the cursor at the composer's end (REVIEW-275 L5, round 2 L1).
- * Confirmation is a
+ * After submission, only the exact model-switch question for this selection
+ * may receive one guarded confirmation Enter. Confirmation of the change is a
  * NEWER observation (a higher sequence number) from the SAME session that
  * reports the requested value; echoed input, a refresh that still reports the
  * old value, the request itself or a success exit code never confirm. A
@@ -58,12 +59,13 @@ import {
   buildClearTypedArgs,
   buildPaneCaptureArgs,
   buildPaneStateArgs,
+  buildModelSwitchConfirmArgs,
   buildSetEffortInjectionSteps,
   buildSetModelInjectionSteps,
   EFFORT_LITERALS,
   isEffortLevel,
   isModelFamily,
-  MODEL_LITERALS,
+  modelLiteral,
   type InjectionStep,
   type TmuxTarget,
 } from './compact-inject.ts'
@@ -85,6 +87,8 @@ import {
   cursorFollows,
   parsePaneState,
   readComposer,
+  isModelSwitchDialog,
+  isEffortSwitchDialog,
   type ProcessEntry,
 } from './model-effort-pane.ts'
 
@@ -257,7 +261,7 @@ export class ModelEffortControl {
     if (effort === 'ultracode') return this.refused('apply', new Refusal('ultracode_unconfirmable'), null)
     // A model is a table family, or the running model's own id (checked
     // against the session below); nothing else is ever looked at again.
-    if (!isEffortLevel(effort) || (!isModelFamily(model) && pickerModelOf(model) !== model)) {
+    if (!isEffortLevel(effort) || (modelLiteral(model) === null && pickerModelOf(model) !== model)) {
       return this.refused('apply', new Refusal('unsupported_value'), null)
     }
     if (this.inFlight || this.deps.otherInjectionBusy()) {
@@ -273,9 +277,10 @@ export class ModelEffortControl {
       sessionId = pre.sessionId
       catalog = pre.catalog
       if (wanted !== pre.sessionId) throw new Refusal('session_mismatch')
-      if (!isModelFamily(model) && model !== pickerModelOf(pre.observation.modelId)) throw new Refusal('unsupported_value')
+      if (!isModelFamily(model) && !catalog.models.includes(model) && model !== pickerModelOf(pre.observation.modelId, catalog)) throw new Refusal('unsupported_value')
       let applied = false
-      if (model !== pickerModelOf(pre.observation.modelId)) {
+      const modelMatches = (id: string) => isModelFamily(model) ? modelFamilyOf(id) === model : id === model
+      if (!modelMatches(pre.observation.modelId)) {
         this.checkTime(opts.deadlineAtMs)
         const step = await this.change('set_model', model, pre, opts.deadlineAtMs)
         applied = step.ok && step.applied
@@ -290,7 +295,7 @@ export class ModelEffortControl {
         applied = applied || (step.ok && step.applied)
       }
       const final = this.deps.readObservation(sessionId)
-      if (!final || pickerModelOf(final.modelId) !== model || final.effort !== effort) throw new Refusal('not_confirmed')
+      if (!final || !modelMatches(final.modelId) || final.effort !== effort) throw new Refusal('not_confirmed')
       this.deps.log(`model control: apply ${model} ${effort} ${applied ? 'applied' : 'already'}`)
       return { ok: true, op: 'apply', applied, report: this.report(catalog, sessionId)! }
     } catch (err) {
@@ -314,7 +319,7 @@ export class ModelEffortControl {
     } catch {
       help = null
     }
-    return { optedIn, sessionId, observation, catalog: parseHelpCatalog(help) }
+    return { optedIn, sessionId, observation, catalog: parseHelpCatalog(help, observation?.version) }
   }
 
   private release(): void {
@@ -386,7 +391,7 @@ export class ModelEffortControl {
     } catch {
       help = null
     }
-    return { sessionId, target, observation, catalog: parseHelpCatalog(help) }
+    return { sessionId, target, observation, catalog: parseHelpCatalog(help, observation.version) }
   }
 
   private async change(
@@ -396,13 +401,13 @@ export class ModelEffortControl {
     deadlineAtMs: number,
   ): Promise<ControlOutcome> {
     const { sessionId, target, catalog } = pre
-    if (op === 'set_model' && !catalog.models.includes(value as keyof typeof MODEL_LITERALS)) throw new Refusal('not_in_catalog')
+    if (op === 'set_model' && !catalog.models.includes(value) && !(isModelFamily(value) && catalog.models.some((id) => modelFamilyOf(id) === value))) throw new Refusal('not_in_catalog')
     if (op === 'set_effort') {
       if (!catalog.efforts.includes(value as keyof typeof EFFORT_LITERALS)) throw new Refusal('not_in_catalog')
       if (pre.observation.effort === null) throw new Refusal('effort_unsupported')
     }
     const matches = (o: ModelObservation) =>
-      op === 'set_model' ? modelFamilyOf(o.modelId) === value : o.effort === value
+      op === 'set_model' ? (isModelFamily(value) ? modelFamilyOf(o.modelId) === value : o.modelId === value) : o.effort === value
     if (matches(pre.observation)) {
       return { ok: true, op, applied: false, report: this.report(catalog, sessionId)! }
     }
@@ -419,7 +424,7 @@ export class ModelEffortControl {
 
     const steps = op === 'set_model' ? buildSetModelInjectionSteps(pane, value) : buildSetEffortInjectionSteps(pane, value)
     if (!steps) throw new Refusal('unsupported_value')
-    const literal = op === 'set_model' ? MODEL_LITERALS[value as keyof typeof MODEL_LITERALS] : EFFORT_LITERALS[value as keyof typeof EFFORT_LITERALS]
+    const literal = op === 'set_model' ? modelLiteral(value)! : EFFORT_LITERALS[value as keyof typeof EFFORT_LITERALS]
     const [typeLiteral, enter] = steps as [InjectionStep, InjectionStep]
     await this.run(typeLiteral)
     if (enter.delayMsBefore > 0) await this.deps.sleep(enter.delayMsBefore)
@@ -427,12 +432,34 @@ export class ModelEffortControl {
     await this.run({ ...enter, delayMsBefore: 0 })
 
     const deadline = Math.min(this.deps.now() + this.opts.confirmTimeoutMs, deadlineAtMs - this.opts.confirmTailMs)
+    const isSwitchDialog = (screen: string) => op === 'set_model'
+      ? isModelSwitchDialog(screen, value) : isEffortSwitchDialog(screen, value)
+    let answeredSwitch = false
     while (this.deps.now() < deadline) {
       await this.deps.sleep(this.opts.pollMs)
       if (this.deps.sessionId() !== sessionId) throw new Refusal('session_changed')
       const o = this.deps.readObservation(sessionId)
       if (o && o.seq > baseline.seq && matches(o)) {
         return { ok: true, op, applied: true, report: this.report(catalog, sessionId)! }
+      }
+      if (!answeredSwitch) {
+        const screen = await this.deps.exec(buildPaneCaptureArgs(pane))
+        if (isSwitchDialog(screen)) {
+          const late = this.checkIdle()
+          if (late) throw late
+          if (this.deps.sessionId() !== sessionId) throw new Refusal('session_changed')
+          // Recheck the proven pane and the exact question just before Enter.
+          const state = parsePaneState(await this.deps.exec(buildPaneStateArgs(pane)))
+          if (!state || state.dead || state.paneId !== pane.target) throw new Refusal('pane_lost')
+          if (state.inMode) throw new Refusal('pane_in_mode')
+          if (!agentOwnsPane(state.tty, state.pid, await this.deps.ancestry())) throw new Refusal('pane_not_agent')
+          if (!isSwitchDialog(await this.deps.exec(buildPaneCaptureArgs(pane)))) continue
+          const finalCheck = this.checkIdle()
+          if (finalCheck) throw finalCheck
+          if (this.deps.sessionId() !== sessionId) throw new Refusal('session_changed')
+          answeredSwitch = true
+          await this.run({ argv: buildModelSwitchConfirmArgs(pane), delayMsBefore: 0 })
+        }
       }
     }
     let still = false
@@ -536,7 +563,20 @@ export class ModelEffortControl {
     } catch {
       throw new Refusal('pane_lost')
     }
-    const composer = readComposer(capture)
+    let cursorState = pane
+    if (pane.cursor) {
+      try {
+        const fresh = parsePaneState(await this.deps.exec(buildPaneStateArgs(proven)))
+        if (!fresh) throw new Refusal('pane_lost')
+        cursorState = fresh
+      } catch {
+        throw new Refusal('pane_lost')
+      }
+    }
+    if (!cursorState || cursorState.dead || cursorState.paneId !== pane.paneId) throw new Refusal('pane_lost')
+    if (cursorState.inMode) throw new Refusal('pane_in_mode')
+    if (cursorState.pid !== pane.pid || cursorState.tty !== pane.tty) throw new Refusal('pane_not_agent')
+    const composer = readComposer(capture, cursorState.cursor)
     if (composer === 'draft') throw new Refusal('composer_not_empty')
     if (composer !== 'empty') throw new Refusal('composer_unknown')
     return proven

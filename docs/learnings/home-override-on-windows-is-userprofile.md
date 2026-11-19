@@ -12,7 +12,7 @@ over that agent's. Proven afterwards in one line, which is the check that should
 
 ```
 USERPROFILE=C:/Temp/x node -e "console.log(require('os').homedir())"   ->  C:/Temp/x
-HOME=C:/Temp/x        node -e "console.log(require('os').homedir())"   ->  C:\Users\karim
+HOME=C:/Temp/x        node -e "console.log(require('os').homedir())"   ->  C:\Users\you
 ```
 
 The deeper mistake was not the variable. It was reaching for an environment override as the isolation

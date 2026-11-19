@@ -30,7 +30,7 @@ Both PR'd to `main`. Plugin merge first, then app.
 
 ### Step 1 — Pre-flight: branch + read-back
 
-1. `cd /Users/kc/Projects/BGOS/bgos-claude-plugin`
+1. `cd /Users/you/Projects/BGOS/bgos-claude-plugin`
 2. Confirm clean: `git status` (already clean per pre-check).
 3. `git checkout -b feat/slash-command-sync`.
 
@@ -293,7 +293,7 @@ Merge to main when CI passes (no CI exists — merge after smoke). Bump and merg
 The current working branch is `feature/enterprise-admin-mvp` with substantial unrelated work. Do NOT touch that. New branch off main:
 
 ```bash
-cd /Users/kc/Projects/BGOS/BGOS
+cd /Users/you/Projects/BGOS/BGOS
 git fetch origin main --quiet
 git worktree add /tmp/bgos-slash-styling origin/main
 cd /tmp/bgos-slash-styling

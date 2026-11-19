@@ -1,34 +1,9 @@
 /**
- * call_owner, the mission tools and list_chats are TURN AWARE, not turn gated
- * (shared agents Phase 0, items 0.3, 0.4, 0.7, as the delegated review of the
- * branch found, in two rounds).
- *
- * WHY NOT GATED. The owner's own work runs on turns no delivery opened: the
- * native goal lane types `/goal` into the composer and runs every
- * continuation after a Stop has ended the private turn, the mission_started
- * and mission_resumed cards and a button tap reach the session with no
- * delivery token, and a peer agent's message has no person behind it. Gated
- * like boards, a Keep working mission could never tick or complete a goal.
- *
- * WHY THE TRACKER AND NOT THE CHAT. The first fix refused when the turn's
- * chat was a recipient's. A typed `/goal` and a mission card inherit the chat
- * of whatever was delivered last, so a goal run could be refused for good,
- * and a recipient's message injected into a running owner turn left the
- * owner's chat in place and ran as the owner. The private turn tracker knows
- * both facts directly: who the delivery the prompt carried named, and which
- * people's deliveries reached the turn since it began.
- *
- * WHAT THESE TESTS HOLD (lib/private-turn.mjs turnAwarePrivateTurn and the
- * tracker's turnSenders, with the real tracker; and the admission gate in
- * server.ts that uses them):
- *   - a verified turn is used as requirePrivateTurn answers it;
- *   - no verified turn, and the prompt's delivery named someone other than the
- *     owner, or another person's delivery reached the turn: refused;
- *   - otherwise the owner, with no headers, as every such call was on main;
- *   - boards and schedule stay gated exactly as on main.
- *
- * Run with: npx tsx --test test/turn-aware-tools.test.ts
+ * Turn-aware tools use the verified sender and complete turn provenance.
+ * Without a verified turn, another person's content cannot grant owner authority.
+ * The owner's supported continuation policy and gated tool checks remain enforced.
  */
+import { createScheduleGrantRuns, requireBoardsTurn } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -179,7 +154,7 @@ function admit(name: string, tracker: unknown, lockHeld = true) {
     req: { params: { name } }, lockHeld, privateTurns: tracker, PRIVATE_MARKER_PATHS: [],
     PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: OWNER, log: () => {},
     requirePrivateTurn: (...args: any[]) => { strictCalls++; return (privateTurn as any).requirePrivateTurn(...args) },
-    turnAwarePrivateTurn,
+    turnAwarePrivateTurn, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
     recordPeerRefusal: () => ({ line: '' }), pathDirname: () => '/s', CURSOR_FILE_PATH: '/s/c', ASSISTANT_ID: 900,
   })
   return { result, strictCalls }
@@ -205,14 +180,14 @@ test('the admission gate, for every turn aware tool: verified, someone else unve
   }
 })
 
-test('boards and schedule stay gated exactly as on main', async () => {
-  for (const name of ['schedule', 'list_schedules', 'cancel_schedule', 'boards_list']) {
+test('boards, Artifacts and schedules require a verified private turn', async () => {
+  for (const name of ['schedule', 'list_schedules', 'cancel_schedule', 'boards_list', 'artifact_create', 'artifact_update', 'artifact_read', 'artifact_list', 'artifact_versions', 'vault_items', 'vault_request_login', 'vault_fill_prepare']) {
     const { result, strictCalls } = admit(name, stubTracker(null, null))
     const refused = await result
     assert.equal(strictCalls, 1, name)
     assert.equal(refused?.isError, true, `${name}: an unverified turn is refused, wherever it is`)
   }
-  assert.match(admissionSource, /if \(req\.params\.name\.startsWith\('boards_'\) \|\| \['schedule', 'list_schedules', 'cancel_schedule'\]\.includes\(req\.params\.name\)\) \{/, 'the strict list is main\'s, unchanged')
+  assert.match(admissionSource, /if \(req\.params\.name\.startsWith\('boards_'\) \|\| req\.params\.name\.startsWith\('artifact_'\) \|\| req\.params\.name\.startsWith\('vault_'\) \|\| \['schedule', 'list_schedules', 'cancel_schedule'\]\.includes\(req\.params\.name\)\) \{/, 'boards, Artifacts, the vault and schedules keep the strict private-turn gate')
 })
 
 test('a prompt carrying several deliveries at once (queued messages, the boot sweep) counts every sender', (t) => {

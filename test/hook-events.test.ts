@@ -38,6 +38,12 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
+import ts from 'typescript'
+import { REACT_TOOL } from '../lib/react-tool.ts'
+import { BOARDS_TOOL_DECLS } from '../lib/boards-tools.ts'
+import { ARTIFACT_TOOL_DECLS } from '../lib/artifacts-tools.ts'
+import { VAULT_TOOL_DECLS } from '../lib/vault-tools.ts'
+import { EMAIL_TOOL_DECLS } from '../lib/agent-email-tools.ts'
 
 import {
   CARD_OUTPUT_BUDGET,
@@ -332,16 +338,74 @@ test("the channel's own tools and the task tools never draw a row", () => {
   assert.equal(isSkippedTool('Agent'), false)
 })
 
-test('every tool this daemon declares is in SKIPPED_TOOLS (drift guard)', () => {
-  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
-  const boards = readFileSync(new URL('../lib/boards-tools.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+function assertToolDrift(server: string, skipped: readonly string[], extraBindings: Record<string, unknown> = {}) {
+  const ast = ts.createSourceFile('server.ts', server, ts.ScriptTarget.Latest, true)
+  const handlers: ts.CallExpression[] = []
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(ast) === 'mcp.setRequestHandler' &&
+        ts.isIdentifier(node.arguments[0]!) && node.arguments[0]!.getText(ast) === 'ListToolsRequestSchema') handlers.push(node)
+    ts.forEachChild(node, visit)
+  }
+  visit(ast)
+  assert.equal(handlers.length, 1, 'the tool-list handler must be found exactly once')
+  const handler = handlers[0]!.arguments[1]!
+  assert.ok(ts.isArrowFunction(handler), 'the tool-list callback must be inspected')
+  let body: ts.Node = handler.body
+  while (ts.isParenthesizedExpression(body)) body = body.expression
+  assert.ok(ts.isObjectLiteralExpression(body))
+  const tools = body.properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(ast) === 'tools')
+  assert.ok(tools && ts.isPropertyAssignment(tools) && ts.isArrayLiteralExpression(tools.initializer))
+  const bindings: Record<string, unknown> = { REACT_TOOL, BOARDS_TOOL_DECLS, ARTIFACT_TOOL_DECLS, VAULT_TOOL_DECLS, EMAIL_TOOL_DECLS, ...extraBindings }
   const declared = new Set<string>()
-  for (const m of server.matchAll(/^ {6}name: '([a-z][a-z0-9_]*)',$/gm)) declared.add(m[1]!)
-  for (const m of boards.matchAll(/^ {4}name: '(boards_[a-z_]+)',$/gm)) declared.add(m[1]!)
+  const add = (value: unknown) => {
+    assert.ok(value && typeof value === 'object' && !Array.isArray(value), 'each tool must be an object')
+    const name = (value as { name?: unknown }).name
+    assert.equal(typeof name, 'string', 'each tool must have a name')
+    declared.add(name as string)
+  }
+  const binding = (node: ts.Expression) => {
+    assert.ok(ts.isIdentifier(node), 'inspect every non-inline declaration, never silently skip it')
+    assert.ok(Object.hasOwn(bindings, node.text), `add the library declaration binding for ${node.text}`)
+    return bindings[node.text]
+  }
+  for (const entry of tools.initializer.elements) {
+    if (ts.isObjectLiteralExpression(entry)) {
+      const name = entry.properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(ast) === 'name')
+      assert.ok(name && ts.isPropertyAssignment(name) && ts.isStringLiteralLike(name.initializer), 'inspect the inline tool name')
+      add({ name: name.initializer.text })
+    } else if (ts.isSpreadElement(entry)) {
+      const values = binding(entry.expression)
+      assert.ok(Array.isArray(values), 'spread declarations must be a tool list')
+      values.forEach(add)
+    } else {
+      add(binding(entry))
+    }
+  }
   assert.ok(declared.size >= 40, `expected the tool declarations to parse, got ${declared.size}`)
   assert.ok(declared.has('reply') && declared.has('boards_query'), 'the scan found the wrong lines')
-  const missing = [...declared].filter((name) => !SKIPPED_TOOLS.includes(name))
+  const missing = [...declared].filter((name) => !skipped.includes(name))
   assert.deepEqual(missing, [], 'a new owner facing tool must join SKIPPED_TOOLS or it draws a row')
+  return declared
+}
+
+test('every tool this daemon declares is in SKIPPED_TOOLS (drift guard)', () => {
+  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  assertToolDrift(server, SKIPPED_TOOLS)
+})
+
+test('the drift guard sees the library reaction declaration', () => {
+  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+  assert.ok(assertToolDrift(server, SKIPPED_TOOLS).has('react'), 'library tool must be discovered')
+})
+
+test('a library tool missing from the skip list fails the drift guard', () => {
+  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+  assert.throws(() => assertToolDrift(server, SKIPPED_TOOLS.filter(name => name !== 'react')), /react/)
+})
+
+test('a new library tool reference cannot silently escape the drift guard', () => {
+  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace('    REACT_TOOL,', '    NEW_LIBRARY_TOOL,')
+  assert.throws(() => assertToolDrift(server, SKIPPED_TOOLS, { NEW_LIBRARY_TOOL: { name: 'new_library_tool' } }), /new_library_tool/)
 })
 
 // ── Subagents ────────────────────────────────────────────────────────────────

@@ -332,7 +332,7 @@ export const TASK_TOOLS = ['TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList'] as
 
 /**
  * The channel's own MCP tools, read off the ListTools declarations in
- * server.ts (and lib/boards-tools.ts for the boards family). Calling reply is
+ * server.ts and the library tool declarations. Calling reply is
  * the agent talking to the owner, not the agent doing work, so it never draws
  * a row. test/hook-events.test.ts re-reads those declarations and fails if a
  * new tool is added without landing here.
@@ -345,6 +345,7 @@ export const OWN_MCP_TOOLS = [
   // already looking at.
   'propose_plan',
   'edit_message',
+  'react',
   'rename_chat',
   'set_status',
   'ask_user_input',
@@ -378,6 +379,16 @@ export const OWN_MCP_TOOLS = [
   'show_health_tracker',
   'show_component',
   'channel_ack',
+  'artifact_create',
+  'artifact_update',
+  'artifact_read',
+  'artifact_list',
+  'artifact_versions',
+  'vault_items',
+  'vault_request_login',
+  'vault_fill_prepare',
+  'email_draft',
+  'email_send',
   'boards_list',
   'boards_describe',
   'boards_create',
@@ -656,7 +667,7 @@ const escapeForRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]
  * home directory becomes `~`.
  *
  * A Bash row ships the command itself, so without this the owner's row reads
- * `cat /home/karim/.bgos-agent/credentials-901.json` and the machine layout
+ * `cat /home/you/.bgos-agent/credentials-901.json` and the machine layout
  * (and the account name) is on the wire. Runs BEFORE the redaction and the 120
  * character clip, so a shortened path is what gets measured.
  */

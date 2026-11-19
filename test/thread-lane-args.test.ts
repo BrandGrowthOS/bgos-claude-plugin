@@ -32,6 +32,7 @@ import {
   protectedGitPaths,
   threadLaneArgs,
   threadLaneSettings,
+  threadLaneHooks,
   threadLaneTools,
   threadTurnPrompt,
 } from '../lib/thread-lane-args.ts'
@@ -98,6 +99,7 @@ test('a working lane never inherits the owner permissions: --restricted, edits a
       filesystem: { denyWrite: ['/work/atlas/.git/index'] },
     },
     remoteControlAtStartup: false,
+    hooks: threadLaneHooks(),
   })
   const args = threadLaneArgs({ mainSessionId: MAIN, forkSessionId: null, emptyMcpConfigPath: MCP, confinement: WORK })
   assert.ok(args.includes('--restricted'), 'user, project and local settings are ignored, the file tools confined')
@@ -130,6 +132,7 @@ test('a read only lane (folder not a git repository) has no Bash and no editing 
       additionalDirectories: ['/work/atlas'],
     },
     remoteControlAtStartup: false,
+    hooks: threadLaneHooks(),
   })
   assert.deepEqual(READ_ONLY_DENIED_TOOLS, ['Bash', 'Edit', 'Write', 'NotebookEdit'])
   // The variadic --mcp-config stays last so it never swallows another flag's value.
@@ -272,7 +275,7 @@ test('a thread start tells the lane it is a separate conversation in its own fol
   const text = threadTurnPrompt({ mode: 'start', text: 'Look at the flaky test.', title: 'Flaky test', rootText: 'CI is red again.' })
   assert.equal(
     text,
-    '[You are now working in a thread of this chat titled "Flaky test". It is a separate conversation about this message: CI is red again. Work on it in this folder only. The main conversation continues without you.]\n\nLook at the flaky test.',
+    '[You are now working in a thread of this chat titled "Flaky test". It is a separate conversation about this message: CI is red again. Work on it in this folder only. The main conversation continues without you. Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\nLook at the flaky test.',
   )
 })
 
@@ -280,6 +283,11 @@ test('a read only thread start says so', () => {
   const text = threadTurnPrompt({ mode: 'start', text: 'x', title: 't', rootText: 'r', readOnly: true })
   assert.match(text, /read only/)
   assert.match(text, /do not edit/i)
+})
+
+test('a read only thread on a large repository names the agent folder as the place to read', () => {
+  const text = threadTurnPrompt({ mode: 'start', text: 'What does server.ts do?', title: 'Code', rootText: 'Read the code.', readOnly: true, agentFolder: '/work/large repo' })
+  assert.equal(text, '[You are now working in a thread of this chat titled "Code". It is a separate conversation about this message: Read the code. This thread is read only: read files in the agent folder "/work/large repo" and do not edit files. The main conversation continues without you. Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\nWhat does server.ts do?')
 })
 
 test('a thread reply is the text as is, and a summary asks for the summary only', () => {

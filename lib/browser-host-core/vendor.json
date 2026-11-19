@@ -3,7 +3,8 @@
   "files": {
     "policy.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/policy.js",
-      "sha256": "8219e9b39276b9ef90fb6288c80872b1b8c4f968fd21bde6fa79a0fe4cbc0048"
+      "sha256": "21fb90b35fc086e08d3857132f0cd000710699f1a40fa539b3d60ca0c32f58d6",
+      "aheadOfSource": "Plugin 0.86.2 reads activating keys in every chord position. The BGOS policy mirror and its pin must take these bytes; outside-checkout mirrors were not changed."
     },
     "settings.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/settings.js",
@@ -13,11 +14,22 @@
       "source": "BGOS: frontend/electron-app/agent-browser/profiles.js",
       "sha256": "336225827578f3f66849d5d946aebacd6cea877c20cd793fd6c7080d8cd3119a",
       "whyThisOneToo": "It owns WHERE a remembered answer is stored (agentGrants per agent key, the legacy alwaysGrants overlay, withAlwaysGrant, withTrustGrant, withoutTrustGrant). Without it the daemon host would have had to re-implement that shape, and 'Always allow' meaning two different things on two machines is the same class of drift the policy copy exists to prevent."
+    },
+    "snapshot-target.js": {
+      "source": "BGOS: frontend/electron-app/agent-browser/snapshot-target.js",
+      "sha256": "6bc1af348365380ab1626da1cb7c20a94857673a86967a707ca0464596b477c1",
+      "whyThisOneToo": "What names a gate's target from the host's own last snapshot, not from the agent's words. A machine and a desktop must read a target the same way."
+    },
+    "answer-privacy.js": {
+      "source": "BGOS: frontend/electron-app/agent-browser/answer-privacy.js",
+      "sha256": "4ba2e40c1ed6d6d883249c83bb4176b4b0bcfa7f22c25697452371e533acd492",
+      "sourceCommit": "1108f55db11ed26027c013206e0ddd220092586b",
+      "changedOnTopOfSource": "These are the bytes of sourceCommit (sha256 f772f822a49e11ab5b0396ad4e63c027d64dddde41bd1c6bdc10b9f406117c78) plus TWO changes, each applied here by exact text. First (2026-11-16, GlitchTip hoai-desktop-main 1631, applied to the BGOS original the same day): every lookup of a driver object goes through one guarded line (implOf), so an object the driver let go of is the privacy owner's own refusal and not Playwright's TypeError, and a watch on person input that cannot start is that call's refusal instead of a throw that left a new tab with Playwright's unguarded reads (cases: test/browser-host-core.gone-object.test.ts). Second (2026-11-17, plugin 0.90.8, HOAI board row 01a1ea02): BGOS d9d49f02b9 and e7f147df0d (2026-11-09, board row 09b6b468), taken as they are: a read waits only for the person input watcher's work begun before it, never until none is in flight, so a page that keeps making frames cannot hold a read (P1-6 took 174.6 s of its 180 s on Windows CI; cases: the P1-6 tests in test/browser-answer-routes.chromium.test.ts). It is NOT a re-vendor: the BGOS original is newer (the pay guard reads) and those stay out of this copy until one is done, so this file matches no BGOS commit. The next re-vendor replaces it whole and drops this note."
     }
   },
-  "vendoredAt": "2026-10-15, policy.js re vendored from BGOS d1bcd4e2b for current permission intent wording",
+  "vendoredAt": "2026-11-06, whole-chord activation classification",
   "whyADirectory": "settings.js and profiles.js both do require(\"./policy\"), so the copies keep their ORIGINAL filenames and sit together. package.json here pins type=commonjs, because the plugin root declares type=module and these files are CommonJS.",
-  "howToUpdate": "Re-copy all three from the BGOS paths above, rerun the hashes, update this file, and run: HOAI_BROWSER_HOST_CORE_SOURCE=<BGOS agent-browser dir> npx tsx --test test/browser-host-core.vendor.test.ts",
-  "theHalfThisCannotSee": "Nothing here fires when the BGOS originals change and these copies do not. That check lives on the BGOS side in frontend/electron-app/agent-browser/__tests__/hostCoreVendorPin.test.js, which pins the same two hashes.",
-  "sourceCommit": "d1bcd4e2b7cfc14df3e37dc367fd6a0184f75cba"
+  "howToUpdate": "Re-copy every file named above from its BGOS path, rerun the hashes, update this file, and run: HOAI_BROWSER_HOST_CORE_SOURCE=<BGOS agent-browser dir> npx tsx --test test/browser-host-core.vendor.test.ts",
+  "theHalfThisCannotSee": "Nothing here fires when the BGOS originals change and these copies do not. That check lives on the BGOS side in frontend/electron-app/agent-browser/__tests__/hostCoreVendorPin.test.js, which pins the same hashes.",
+  "sourceCommit": "1108f55db11ed26027c013206e0ddd220092586b"
 }

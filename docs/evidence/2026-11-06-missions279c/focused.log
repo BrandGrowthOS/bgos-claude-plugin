@@ -1,0 +1,781 @@
+Final focused production, tool, frame and real hook tests; four workers
+Exit code: 0
+
+TAP version 13
+# Subtest: parseMissionEvent never throws, whatever the socket hands it
+ok 1 - parseMissionEvent never throws, whatever the socket hands it
+  ---
+  duration_ms: 0.659042
+  type: 'test'
+  ...
+# Subtest: all eight mission frames parse from the real gateway envelope
+ok 2 - all eight mission frames parse from the real gateway envelope
+  ---
+  duration_ms: 0.17425
+  type: 'test'
+  ...
+# Subtest: an event for another assistant is dropped, whatever it says
+ok 3 - an event for another assistant is dropped, whatever it says
+  ---
+  duration_ms: 0.057958
+  type: 'test'
+  ...
+# Subtest: a backend that sends no chat and no cleared_by still parses
+ok 4 - a backend that sends no chat and no cleared_by still parses
+  ---
+  duration_ms: 0.041709
+  type: 'test'
+  ...
+# Subtest: the goal lane fields ride a mission_created frame through the parser
+ok 5 - the goal lane fields ride a mission_created frame through the parser
+  ---
+  duration_ms: 0.065667
+  type: 'test'
+  ...
+# Subtest: a backend older than the goal lane reads as off, and junk never becomes a cap
+ok 6 - a backend older than the goal lane reads as off, and junk never becomes a cap
+  ---
+  duration_ms: 0.05325
+  type: 'test'
+  ...
+# Subtest: the owner authored set is told: paused, resumed, set aside, marked done, started
+ok 7 - the owner authored set is told: paused, resumed, set aside, marked done, started
+  ---
+  duration_ms: 0.341875
+  type: 'test'
+  ...
+# Subtest: mission_ticked is never narrated, not even when the owner authored it
+ok 8 - mission_ticked is never narrated, not even when the owner authored it
+  ---
+  duration_ms: 0.063875
+  type: 'test'
+  ...
+# Subtest: an agent created mission is not narrated back to the agent
+ok 9 - an agent created mission is not narrated back to the agent
+  ---
+  duration_ms: 0.047
+  type: 'test'
+  ...
+# Subtest: the agent own writes are not narrated: the self write stamp and cleared_by agent
+ok 10 - the agent own writes are not narrated: the self write stamp and cleared_by agent
+  ---
+  duration_ms: 0.066667
+  type: 'test'
+  ...
+# Subtest: a frame already seen is never told twice
+ok 11 - a frame already seen is never told twice
+  ---
+  duration_ms: 0.045417
+  type: 'test'
+  ...
+# Subtest: a mission the owner REPLACED is not narrated as a set aside
+ok 12 - a mission the owner REPLACED is not narrated as a set aside
+  ---
+  duration_ms: 0.077791
+  type: 'test'
+  ...
+# Subtest: mission_failed and mission_updated are not narrated in this stage
+ok 13 - mission_failed and mission_updated are not narrated in this stage
+  ---
+  duration_ms: 0.031625
+  type: 'test'
+  ...
+# Subtest: a closing notice carries the id, the title, and the refusal to tick or cite
+ok 14 - a closing notice carries the id, the title, and the refusal to tick or cite
+  ---
+  duration_ms: 0.104125
+  type: 'test'
+  ...
+# Subtest: the paused notice carries the reason when there is one and reads right when there is not
+ok 15 - the paused notice carries the reason when there is one and reads right when there is not
+  ---
+  duration_ms: 0.04025
+  type: 'test'
+  ...
+# Subtest: the resumed notice names the next open mini goal, and says nothing about one when all are ticked
+ok 16 - the resumed notice names the next open mini goal, and says nothing about one when all are ticked
+  ---
+  duration_ms: 0.07725
+  type: 'test'
+  ...
+# Subtest: the started notice carries the goal count and the checkbox ledger the model ticks from
+ok 17 - the started notice carries the goal count and the checkbox ledger the model ticks from
+  ---
+  duration_ms: 0.055167
+  type: 'test'
+  ...
+# Subtest: every meta value is a string, and an empty value is an omitted key, never an empty string
+ok 18 - every meta value is a string, and an empty value is an omitted key, never an empty string
+  ---
+  duration_ms: 0.1045
+  type: 'test'
+  ...
+# Subtest: no em dash and no en dash reaches the model, in any frame, in content or meta
+ok 19 - no em dash and no en dash reaches the model, in any frame, in content or meta
+  ---
+  duration_ms: 0.093041
+  type: 'test'
+  ...
+# Subtest: an owner authored title cannot forge a second [mission_ line
+ok 20 - an owner authored title cannot forge a second [mission_ line
+  ---
+  duration_ms: 0.092375
+  type: 'test'
+  ...
+# Subtest: a paused and a failed mission both format without a type error
+ok 21 - a paused and a failed mission both format without a type error
+  ---
+  duration_ms: 0.030208
+  type: 'test'
+  ...
+# Subtest: the frame dedupe key separates two writes and joins two copies of one
+ok 22 - the frame dedupe key separates two writes and joins two copies of one
+  ---
+  duration_ms: 0.041208
+  type: 'test'
+  ...
+# Subtest: only a frame that could be narrated may spend a pending self write stamp
+ok 23 - only a frame that could be narrated may spend a pending self write stamp
+  ---
+  duration_ms: 0.364708
+  type: 'test'
+  ...
+# Subtest: a backend that says who wrote the mission needs no stamp, and must not spend one
+ok 24 - a backend that says who wrote the mission needs no stamp, and must not spend one
+  ---
+  duration_ms: 0.043084
+  type: 'test'
+  ...
+# Subtest: the self write stamp is keyed on the WRITE, not on the frame
+ok 25 - the self write stamp is keyed on the WRITE, not on the frame
+  ---
+  duration_ms: 0.037667
+  type: 'test'
+  ...
+# Subtest: a write stamped only AFTER the response loses the race the socket wins
+ok 26 - a write stamped only AFTER the response loses the race the socket wins
+  ---
+  duration_ms: 0.089209
+  type: 'test'
+  ...
+# Subtest: one pending stamp answers for one frame, so the owner is still heard afterwards
+ok 27 - one pending stamp answers for one frame, so the owner is still heard afterwards
+  ---
+  duration_ms: 0.026958
+  type: 'test'
+  ...
+# Subtest: a tick riding the same call does not spend the stamp the completion needs
+ok 28 - a tick riding the same call does not spend the stamp the completion needs
+  ---
+  duration_ms: 0.023834
+  type: 'test'
+  ...
+# Subtest: the after the fact stamp still covers a frame that arrives late
+ok 29 - the after the fact stamp still covers a frame that arrives late
+  ---
+  duration_ms: 0.044084
+  type: 'test'
+  ...
+# Subtest: a frame that names its author is the backend answer, and spends nothing
+ok 30 - a frame that names its author is the backend answer, and spends nothing
+  ---
+  duration_ms: 0.026625
+  type: 'test'
+  ...
+# Subtest: the ledger is bounded, because this is a daemon that runs for weeks
+ok 31 - the ledger is bounded, because this is a daemon that runs for weeks
+  ---
+  duration_ms: 0.581459
+  type: 'test'
+  ...
+# Subtest: create, fill and add pass a goal check through unchanged, every key kept
+ok 32 - create, fill and add pass a goal check through unchanged, every key kept
+  ---
+  duration_ms: 1.298
+  type: 'test'
+  ...
+# Subtest: a check that is not an object is refused before the network, naming the goal
+ok 33 - a check that is not an object is refused before the network, naming the goal
+  ---
+  duration_ms: 0.127542
+  type: 'test'
+  ...
+# Subtest: set_goal_waiting: the body and the pairing path
+ok 34 - set_goal_waiting: the body and the pairing path
+  ---
+  duration_ms: 0.202166
+  type: 'test'
+  ...
+# Subtest: the summary shows a goal check, a server tick and a waiting state in one clause each
+ok 35 - the summary shows a goal check, a server tick and a waiting state in one clause each
+  ---
+  duration_ms: 0.140875
+  type: 'test'
+  ...
+# Subtest: the goal checks read is the pairing family, by mission
+ok 36 - the goal checks read is the pairing family, by mission
+  ---
+  duration_ms: 0.066041
+  type: 'test'
+  ...
+# Subtest: the next suggested goal skips an earlier waiting goal
+ok 37 - the next suggested goal skips an earlier waiting goal
+  ---
+  duration_ms: 0.041833
+  type: 'test'
+  ...
+# Subtest: nested waiting uses current validation and rejects mixed flat and nested calls
+ok 38 - nested waiting uses current validation and rejects mixed flat and nested calls
+  ---
+  duration_ms: 0.081417
+  type: 'test'
+  ...
+# Subtest: the six mission tools are private for the helper guard, under any install prefix, in every install
+ok 39 - the six mission tools are private for the helper guard, under any install prefix, in every install
+  ---
+  duration_ms: 1.326458
+  type: 'test'
+  ...
+# Subtest: a helper started in an earlier turn cannot write a mission for the current sender
+ok 40 - a helper started in an earlier turn cannot write a mission for the current sender
+  ---
+  duration_ms: 617.343625
+  type: 'test'
+  ...
+# Subtest: the admission gate is turn aware for every mission tool: a verified turn frozen, an unverified recipient prompt refused, else the owner
+ok 41 - the admission gate is turn aware for every mission tool: a verified turn frozen, an unverified recipient prompt refused, else the owner
+  ---
+  duration_ms: 88.2665
+  type: 'test'
+  ...
+# Subtest: on a recipient turn the implicit chat is that turn own chat, never an owner chat
+ok 42 - on a recipient turn the implicit chat is that turn own chat, never an owner chat
+  ---
+  duration_ms: 0.164208
+  type: 'test'
+  ...
+# Subtest: a recipient turn that names no chat is refused, never null (null is the owner main chat)
+ok 43 - a recipient turn that names no chat is refused, never null (null is the owner main chat)
+  ---
+  duration_ms: 0.288083
+  type: 'test'
+  ...
+# Subtest: on the owner own turn, and with no private turn, the implicit chat is exactly what it was
+ok 44 - on the owner own turn, and with no private turn, the implicit chat is exactly what it was
+  ---
+  duration_ms: 0.182625
+  type: 'test'
+  ...
+# Subtest: on a recipient turn every mission request names them, in their own chat, with no chat named
+ok 45 - on a recipient turn every mission request names them, in their own chat, with no chat named
+  ---
+  duration_ms: 106.320875
+  type: 'test'
+  ...
+# Subtest: on the owner own turn every mission request is what it was: no header, the cached read, the same chat
+ok 46 - on the owner own turn every mission request is what it was: no header, the cached read, the same chat
+  ---
+  duration_ms: 39.20025
+  type: 'test'
+  ...
+# Subtest: a recipient turn with no chat of its own writes nothing and says why, for every mission tool
+ok 47 - a recipient turn with no chat of its own writes nothing and says why, for every mission tool
+  ---
+  duration_ms: 34.922709
+  type: 'test'
+  ...
+# Subtest: on a recipient turn a chat named that is not their own is refused, for every mission tool
+ok 48 - on a recipient turn a chat named that is not their own is refused, for every mission tool
+  ---
+  duration_ms: 60.062708
+  type: 'test'
+  ...
+# Subtest: on a recipient turn a mission id is never taken at face value: it must be the open mission of their own chat
+ok 49 - on a recipient turn a mission id is never taken at face value: it must be the open mission of their own chat
+  ---
+  duration_ms: 74.159791
+  type: 'test'
+  ...
+# Subtest: bgosGet with a private turn headers never rides the shared ETag cache; without them it is unchanged
+ok 50 - bgosGet with a private turn headers never rides the shared ETag cache; without them it is unchanged
+  ---
+  duration_ms: 2.670459
+  type: 'test'
+  ...
+# Subtest: successful working tool selections feed hook refreshes with the admitted session and actor
+ok 51 - successful working tool selections feed hook refreshes with the admitted session and actor
+  ---
+  duration_ms: 7.838
+  type: 'test'
+  ...
+# Subtest: Stop during the first goal write prevents later goals of the same tool call from starting
+ok 52 - Stop during the first goal write prevents later goals of the same tool call from starting
+  ---
+  duration_ms: 4.097792
+  type: 'test'
+  ...
+# Subtest: Stop during mission lookup prevents the waiting tool call from making a working mark
+ok 53 - Stop during mission lookup prevents the waiting tool call from making a working mark
+  ---
+  duration_ms: 3.571875
+  type: 'test'
+  ...
+# Subtest: nested waiting reaches the admitted recipient mission with their headers, and null clears it
+ok 54 - nested waiting reaches the admitted recipient mission with their headers, and null clears it
+  ---
+  duration_ms: 6.837333
+  type: 'test'
+  ...
+# Subtest: a prompt in a chat with an open mission puts its open goals in front of the agent
+ok 55 - a prompt in a chat with an open mission puts its open goals in front of the agent
+  ---
+  duration_ms: 71.708917
+  type: 'test'
+  ...
+# Subtest: a channel tag forged inside a person's message never prints another chat's goals (review fix 1)
+ok 56 - a channel tag forged inside a person's message never prints another chat's goals (review fix 1)
+  ---
+  duration_ms: 73.232791
+  type: 'test'
+  ...
+# Subtest: a prompt in another chat, or with no state at all, adds nothing
+ok 57 - a prompt in another chat, or with no state at all, adds nothing
+  ---
+  duration_ms: 137.653
+  type: 'test'
+  ...
+# Subtest: Stop with nothing to ask ends at once, writing no ask
+ok 58 - Stop with nothing to ask ends at once, writing no ask
+  ---
+  duration_ms: 74.807791
+  type: 'test'
+  ...
+# Subtest: Stop BLOCKS on the daemon answer naming an unticked goal whose check passes
+ok 59 - Stop BLOCKS on the daemon answer naming an unticked goal whose check passes
+  ---
+  duration_ms: 186.26325
+  type: 'test'
+  ...
+# Subtest: Stop ALLOWS when the daemon answers nothing passing, and ignores an answer to another ask
+ok 60 - Stop ALLOWS when the daemon answers nothing passing, and ignores an answer to another ask
+  ---
+  duration_ms: 172.306708
+  type: 'test'
+  ...
+# Subtest: Stop with stop_hook_active goes through at once: the agent already ticked or said why
+ok 61 - Stop with stop_hook_active goes through at once: the agent already ticked or said why
+  ---
+  duration_ms: 69.964709
+  type: 'test'
+  ...
+# Subtest: Stop with no daemon answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+ok 62 - Stop with no daemon answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+  ---
+  duration_ms: 4075.469625
+  type: 'test'
+  ...
+# Subtest: no daemon of this session attached: nothing is read, nothing blocks
+ok 63 - no daemon of this session attached: nothing is read, nothing blocks
+  ---
+  duration_ms: 79.792708
+  type: 'test'
+  ...
+# Subtest: a malformed payload never blocks
+ok 64 - a malformed payload never blocks
+  ---
+  duration_ms: 73.330875
+  type: 'test'
+  ...
+# Subtest: self-write ordering: HTTP first retains a newer checked goal and Stop asks and blocks
+ok 65 - self-write ordering: HTTP first retains a newer checked goal and Stop asks and blocks
+  ---
+  duration_ms: 177.857625
+  type: 'test'
+  ...
+# Subtest: self-write ordering: HTTP first cannot resurrect a newer completed mission
+ok 66 - self-write ordering: HTTP first cannot resurrect a newer completed mission
+  ---
+  duration_ms: 0.526541
+  type: 'test'
+  ...
+# Subtest: self-write ordering: frame first retains a newer checked goal and Stop asks and blocks
+ok 67 - self-write ordering: frame first retains a newer checked goal and Stop asks and blocks
+  ---
+  duration_ms: 182.443917
+  type: 'test'
+  ...
+# Subtest: self-write ordering: frame first cannot resurrect a newer completed mission
+ok 68 - self-write ordering: frame first cannot resurrect a newer completed mission
+  ---
+  duration_ms: 0.380542
+  type: 'test'
+  ...
+# Subtest: self-write ordering: an older frame cannot erase a newer self-write checked goal
+ok 69 - self-write ordering: an older frame cannot erase a newer self-write checked goal
+  ---
+  duration_ms: 0.190792
+  type: 'test'
+  ...
+# Subtest: self-write ordering: an older frame cannot resurrect a newer self-write completion
+ok 70 - self-write ordering: an older frame cannot resurrect a newer self-write completion
+  ---
+  duration_ms: 0.173791
+  type: 'test'
+  ...
+# Subtest: self-write ordering: timestamps compare instants across time zones
+ok 71 - self-write ordering: timestamps compare instants across time zones
+  ---
+  duration_ms: 0.205417
+  type: 'test'
+  ...
+# Subtest: self-write ordering: unversioned legacy snapshots work until a server version is known
+ok 72 - self-write ordering: unversioned legacy snapshots work until a server version is known
+  ---
+  duration_ms: 0.2335
+  type: 'test'
+  ...
+# Subtest: self-write ordering: versions are per mission and allow later server writes after closure
+ok 73 - self-write ordering: versions are per mission and allow later server writes after closure
+  ---
+  duration_ms: 0.19225
+  type: 'test'
+  ...
+# Subtest: self-write ordering: newer cold discovery prevents an older waiting response from erasing checks
+ok 74 - self-write ordering: newer cold discovery prevents an older waiting response from erasing checks
+  ---
+  duration_ms: 0.460625
+  type: 'test'
+  ...
+# Subtest: self-write ordering: a remembered completion rejects an older cold discovery without checking it
+ok 75 - self-write ordering: a remembered completion rejects an older cold discovery without checking it
+  ---
+  duration_ms: 0.127
+  type: 'test'
+  ...
+# Subtest: self-write ordering: an unchanged open discovery can restore a mission after chat cache eviction
+ok 76 - self-write ordering: an unchanged open discovery can restore a mission after chat cache eviction
+  ---
+  duration_ms: 1.49875
+  type: 'test'
+  ...
+# Subtest: self-write ordering: a goal-check completion cannot be mistaken for chat cache eviction
+ok 77 - self-write ordering: a goal-check completion cannot be mistaken for chat cache eviction
+  ---
+  duration_ms: 0.217041
+  type: 'test'
+  ...
+# Subtest: closing one of two missions preserves the other in prompt context and Stop eligibility
+ok 78 - closing one of two missions preserves the other in prompt context and Stop eligibility
+  ---
+  duration_ms: 0.150334
+  type: 'test'
+  ...
+# Subtest: a completion removes only its mission when another open mission was most recently seen
+ok 79 - a completion removes only its mission when another open mission was most recently seen
+  ---
+  duration_ms: 0.114125
+  type: 'test'
+  ...
+# Subtest: multiple cached missions are checked by explicit id and Stop names every passing mission
+ok 80 - multiple cached missions are checked by explicit id and Stop names every passing mission
+  ---
+  duration_ms: 0.200167
+  type: 'test'
+  ...
+# Subtest: a failed check read for one mission does not prevent verification of another mission
+ok 81 - a failed check read for one mission does not prevent verification of another mission
+  ---
+  duration_ms: 0.266125
+  type: 'test'
+  ...
+# Subtest: a cold implicit lookup can discover one mission, and ambiguity produces an empty answer
+ok 82 - a cold implicit lookup can discover one mission, and ambiguity produces an empty answer
+  ---
+  duration_ms: 0.232334
+  type: 'test'
+  ...
+# Subtest: adding a checked goal after a fresh empty report performs a new verification before Stop
+ok 83 - adding a checked goal after a fresh empty report performs a new verification before Stop
+  ---
+  duration_ms: 0.152958
+  type: 'test'
+  ...
+# Subtest: a closed explicit report removes only that mission and a wrong report id is ignored
+ok 84 - a closed explicit report removes only that mission and a wrong report id is ignored
+  ---
+  duration_ms: 0.159792
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block
+ok 85 - a late HTTP report cannot overwrite a newer tick snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.201125
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block
+ok 86 - a late HTTP report cannot overwrite a newer complete snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.092833
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block
+ok 87 - a late HTTP report cannot overwrite a newer replace snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.107125
+  type: 'test'
+  ...
+# Subtest: a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block
+ok 88 - a late HTTP report cannot overwrite a newer change check snapshot or produce a stale Stop block
+  ---
+  duration_ms: 0.098875
+  type: 'test'
+  ...
+# Subtest: a cold discovery cannot resurrect a mission created and completed while the read was pending
+ok 89 - a cold discovery cannot resurrect a mission created and completed while the read was pending
+  ---
+  duration_ms: 0.114084
+  type: 'test'
+  ...
+# Subtest: HTTP work completing after the daemon answer budget cannot resurrect a completed mission
+ok 90 - HTTP work completing after the daemon answer budget cannot resurrect a completed mission
+  ---
+  duration_ms: 22.192875
+  type: 'test'
+  ...
+# Subtest: a parsed mission update retains server checks, waiting and server ticks for the turn hook
+ok 91 - a parsed mission update retains server checks, waiting and server ticks for the turn hook
+  ---
+  duration_ms: 1.529084
+  type: 'test'
+  ...
+# Subtest: malformed optional goal state is ignored without losing a valid mission frame
+ok 92 - malformed optional goal state is ignored without losing a valid mission frame
+  ---
+  duration_ms: 0.082417
+  type: 'test'
+  ...
+# Subtest: new optional state stays display safe in an owner-created mission notice
+ok 93 - new optional state stays display safe in an owner-created mission notice
+  ---
+  duration_ms: 0.315667
+  type: 'test'
+  ...
+# Subtest: an ambiguous snapshot is never cached under an unrelated active recipient chat
+ok 94 - an ambiguous snapshot is never cached under an unrelated active recipient chat
+  ---
+  duration_ms: 0.269333
+  type: 'test'
+  ...
+# Subtest: a snapshot uses its explicit chat or the event envelope chat, never a live-turn fallback
+ok 95 - a snapshot uses its explicit chat or the event envelope chat, never a live-turn fallback
+  ---
+  duration_ms: 0.130291
+  type: 'test'
+  ...
+# Subtest: the turn start binds the turn chat into the mission turn state and refreshes it
+ok 96 - the turn start binds the turn chat into the mission turn state and refreshes it
+  ---
+  duration_ms: 0.710584
+  type: 'test'
+  ...
+# Subtest: every mission frame and every own mission write updates the state, with no network call
+ok 97 - every mission frame and every own mission write updates the state, with no network call
+  ---
+  duration_ms: 0.532084
+  type: 'test'
+  ...
+# Subtest: the ask is answered only by the pairing lock holder, within its budget, through the pure writer
+ok 98 - the ask is answered only by the pairing lock holder, within its budget, through the pure writer
+  ---
+  duration_ms: 0.152
+  type: 'test'
+  ...
+# Subtest: the watcher never keeps the process alive and has a polling fallback
+ok 99 - the watcher never keeps the process alive and has a polling fallback
+  ---
+  duration_ms: 86.761708
+  type: 'test'
+  ...
+# Subtest: the state is written only by the lock holder
+ok 100 - the state is written only by the lock holder
+  ---
+  duration_ms: 0.319541
+  type: 'test'
+  ...
+# Subtest: the answer is for the ASK's chat, only one this daemon delivered to recently, from a fresh entry when it has one (review fixes 4 and 6)
+ok 101 - the answer is for the ASK's chat, only one this daemon delivered to recently, from a fresh entry when it has one (review fixes 4 and 6)
+  ---
+  duration_ms: 0.321584
+  type: 'test'
+  ...
+# Subtest: describeGoalCheck names each kind in one line, and nothing for no check
+ok 102 - describeGoalCheck names each kind in one line, and nothing for no check
+  ---
+  duration_ms: 0.771916
+  type: 'test'
+  ...
+# Subtest: promptChatId reads ONLY the channel tag that opens the prompt (review fix 1)
+ok 103 - promptChatId reads ONLY the channel tag that opens the prompt (review fix 1)
+  ---
+  duration_ms: 0.15275
+  type: 'test'
+  ...
+# Subtest: the daemon keeps only goals that passed and are still open
+ok 104 - the daemon keeps only goals that passed and are still open
+  ---
+  duration_ms: 2.6995
+  type: 'test'
+  ...
+# Subtest: a mission frame refreshes the goals and drops a passing goal the agent has since ticked
+ok 105 - a mission frame refreshes the goals and drops a passing goal the agent has since ticked
+  ---
+  duration_ms: 0.273792
+  type: 'test'
+  ...
+# Subtest: adding checked goals invalidates a fresh report, including a previously empty mission
+ok 106 - adding checked goals invalidates a fresh report, including a previously empty mission
+  ---
+  duration_ms: 0.172708
+  type: 'test'
+  ...
+# Subtest: changing or removing a check invalidates its old passing evidence
+ok 107 - changing or removing a check invalidates its old passing evidence
+  ---
+  duration_ms: 0.111334
+  type: 'test'
+  ...
+# Subtest: unchanged checks reuse a report across goal reordering, waiting updates and ticks
+ok 108 - unchanged checks reuse a report across goal reordering, waiting updates and ticks
+  ---
+  duration_ms: 0.117583
+  type: 'test'
+  ...
+# Subtest: BLOCKS while a goal whose check passes is unticked, naming it and its evidence
+ok 109 - BLOCKS while a goal whose check passes is unticked, naming it and its evidence
+  ---
+  duration_ms: 0.167791
+  type: 'test'
+  ...
+# Subtest: ALLOWS the second stop of the same turn (stop_hook_active): the agent already answered
+ok 110 - ALLOWS the second stop of the same turn (stop_hook_active): the agent already answered
+  ---
+  duration_ms: 0.063375
+  type: 'test'
+  ...
+# Subtest: ALLOWS when nothing passes, and when the answer says the daemon could not ask
+ok 111 - ALLOWS when nothing passes, and when the answer says the daemon could not ask
+  ---
+  duration_ms: 0.084625
+  type: 'test'
+  ...
+# Subtest: a missing or late answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+ok 112 - a missing or late answer ALLOWS, even with a fresh passing list on disk (review fix 3)
+  ---
+  duration_ms: 0.062625
+  type: 'test'
+  ...
+# Subtest: ALLOWS on a missing or malformed state and answer
+ok 113 - ALLOWS on a missing or malformed state and answer
+  ---
+  duration_ms: 0.0535
+  type: 'test'
+  ...
+# Subtest: the turn start block lists the open goals with their check and waiting state
+ok 114 - the turn start block lists the open goals with their check and waiting state
+  ---
+  duration_ms: 0.199833
+  type: 'test'
+  ...
+# Subtest: no block without an open mission or without an open goal
+ok 115 - no block without an open mission or without an open goal
+  ---
+  duration_ms: 0.058709
+  type: 'test'
+  ...
+# Subtest: mergeMissionTurnEntry keeps other chats, drops a closed one, and bounds the file
+ok 116 - mergeMissionTurnEntry keeps other chats, drops a closed one, and bounds the file
+  ---
+  duration_ms: 0.637542
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk answers a new ask once, with what compute found
+ok 117 - answerMissionTurnAsk answers a new ask once, with what compute found
+  ---
+  duration_ms: 8.948625
+  type: 'test'
+  ...
+# Subtest: the daemon file answer preserves mission identities when goal ids overlap
+ok 118 - the daemon file answer preserves mission identities when goal ids overlap
+  ---
+  duration_ms: 3.318209
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk answers an empty list when compute fails, so the hook allows at once
+ok 119 - answerMissionTurnAsk answers an empty list when compute fails, so the hook allows at once
+  ---
+  duration_ms: 3.077792
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk ignores an ask older than the hook can wait for, and removes it (review fix 5)
+ok 120 - answerMissionTurnAsk ignores an ask older than the hook can wait for, and removes it (review fix 5)
+  ---
+  duration_ms: 2.152083
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk removes an ask once it is answered, and hands compute the ask
+ok 121 - answerMissionTurnAsk removes an ask once it is answered, and hands compute the ask
+  ---
+  duration_ms: 3.920125
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk ignores a missing or malformed ask
+ok 122 - answerMissionTurnAsk ignores a missing or malformed ask
+  ---
+  duration_ms: 1.716167
+  type: 'test'
+  ...
+# Subtest: the Stop hook asks the daemon only when THIS turn's chat has an open goal with a check (review fix 4)
+ok 123 - the Stop hook asks the daemon only when THIS turn's chat has an open goal with a check (review fix 4)
+  ---
+  duration_ms: 0.128291
+  type: 'test'
+  ...
+# Subtest: freshMissionTurnEntry answers from a chat entry checked under 30 s ago, and only then (review fix 6)
+ok 124 - freshMissionTurnEntry answers from a chat entry checked under 30 s ago, and only then (review fix 6)
+  ---
+  duration_ms: 0.0655
+  type: 'test'
+  ...
+# Subtest: the turn record: written for a session at its prompt, read back only by that session (review fix 4)
+ok 125 - the turn record: written for a session at its prompt, read back only by that session (review fix 4)
+  ---
+  duration_ms: 2.213042
+  type: 'test'
+  ...
+# Subtest: answerMissionTurnAsk never removes a NEWER ask written while it answered the old one (review confirmation A)
+ok 126 - answerMissionTurnAsk never removes a NEWER ask written while it answered the old one (review confirmation A)
+  ---
+  duration_ms: 4.181
+  type: 'test'
+  ...
+# Subtest: a cancelled goal loses its cached passing result when a newer snapshot removes it
+ok 127 - a cancelled goal loses its cached passing result when a newer snapshot removes it
+  ---
+  duration_ms: 0.128666
+  type: 'test'
+  ...
+# Subtest: twenty-goal chats stay readable when their combined state exceeds the file budget
+ok 128 - twenty-goal chats stay readable when their combined state exceeds the file budget
+  ---
+  duration_ms: 9.780125
+  type: 'test'
+  ...
+1..128
+# tests 128
+# suites 0
+# pass 128
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 5153.824917

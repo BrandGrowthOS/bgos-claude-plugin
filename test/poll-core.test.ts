@@ -791,7 +791,7 @@ test('server.ts polls chats through buildChatPollRequest (afterId delta path)', 
   )
   assert.match(
     pollBody,
-    /bgosGet\(req\.path, \{\s*cacheKey: req\.cacheKey,\s*callerAssistantId: ASSISTANT_ID,\s*\}\)/,
+    /bgosGet\(req\.path, \{\s*cacheKey: req\.cacheKey,\s*callerAssistantId: ASSISTANT_ID,\s*\.\.\.\(loginCard \|\| freshButtonCard \? \{ conditional: false \} : \{\}\),\s*\}\)/,
     'pollChat must use the built request and identify the calling assistant',
   )
 })
@@ -963,9 +963,10 @@ test('fastScopeChatIds unions button-prompt chats with meeting and permission ch
 
 test('server.ts fast-polls a chat with a fresh inline-button prompt and stops when the tap lands in either lane or the daemon moves on', () => {
   assert.ok(
-    serverSource.includes('recentButtonPrompts.set(String(resolvedChatId)'),
+    serverSource.includes('notePostedButtonCard(String(resolvedChatId), msgId)'),
     'a reply that carries buttons registers the prompt at send time',
   )
+  assert.ok(serverSource.includes('recentButtonPrompts.set(chatId, { messageId, sentAtMs: Date.now() })'), 'posted-card registration opens the fast scope')
   assert.ok(
     serverSource.includes(
       'Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId',
