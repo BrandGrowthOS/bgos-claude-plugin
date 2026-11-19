@@ -767,18 +767,22 @@ function cutLaneSocket(backend: Backend): void {
 
 test('a settled reaction wakes only its stamped lane and leaves the message cursor alone', async () => {
   const backend = await startBackend({ rows: [] })
-  const rig = await startLane(backend)
+  const floor = Date.now()
+  const rig = await startLane(backend, { inbox: { cursor: 0, delivered: [], pending: [], newFrom: floor } })
   try {
     await waitFor(() => backend.io.of('/').sockets.size > 0 && backend.inboundGets > 0, 'the lane socket')
     const frame = {
       assistantId: ASSISTANT_ID,
       chatId: CHAT_ID,
-      messageId: Date.now(),
-      reactionId: String(Date.now()),
+      messageId: floor,
+      reactionId: String(floor),
+      senderRelationship: 'shared_recipient',
+      reactorUserId: String(floor),
       emoji: '👍',
       name: 'Reader',
       preview: 'Ready?',
     }
+    backend.io.emit('inbound_reaction', { ...frame, lane: STAMP, messageId: floor - 1, preview: 'Before' })
     backend.io.emit('inbound_reaction', { ...frame, lane: 'owner', preview: 'Owner session' })
     backend.io.emit('inbound_reaction', { ...frame, lane: STAMP })
     await waitFor(() => rig.channel.some((card) => card.content.includes('Ready?')), 'the reaction in this lane')

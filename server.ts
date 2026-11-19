@@ -12,7 +12,7 @@
  */
 
 import { cardAnswerClickOf, cardAnswerText } from './lib/card-answer.ts'
-import { reactionCard, REACTION_GUIDANCE } from './lib/heard-reaction.ts'
+import { groupReactionText, reactionCard, REACTION_GUIDANCE } from './lib/heard-reaction.ts'
 import { REACT_TOOL, handleReactTool } from './lib/react-tool.ts'
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
@@ -18885,7 +18885,7 @@ function connectWebsocket(): void {
     const card = reactionCard(frame, ASSISTANT_ID)
     if (!card) return
     if (routeGroupDelivery([frame], {
-      key: `reaction:${frame.reactionId}`, messageId: frame.messageId, text: card.content,
+      key: `reaction:${frame.reactionId}`, messageId: frame.messageId, text: groupReactionText(card),
     }, 'socket reaction')) return
     if (!ownerLaneVerdict(frame).deliver) return
     void trackMessageOperation(() => channelNotify(() => {

@@ -1,7 +1,11 @@
-import { randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reactionCard } from "../lib/heard-reaction.ts";
+import {
+  reactionCard,
+  groupReactionText,
+  REACTION_GUIDANCE,
+} from "../lib/heard-reaction.ts";
 
 const self = randomInt(1, 1000000);
 const frame = {
@@ -9,6 +13,8 @@ const frame = {
   chatId: randomInt(1000000, 2000000),
   messageId: randomInt(1, 1000000),
   reactionId: String(randomInt(1, 1000000)),
+  reactorUserId: randomUUID(),
+  senderRelationship: "owner",
   name: "Reader",
   emoji: "👍",
   preview: "Do you agree?",
@@ -18,6 +24,9 @@ test("a reaction is one plain channel line with the original message address", (
   assert.deepEqual(reactionCard(frame, self), {
     content: 'Reader reacted 👍 to your message: "Do you agree?"',
     meta: {
+      user_id: frame.reactorUserId,
+      sender_relationship: "owner",
+      sender_display_name: "Reader",
       event_type: "reaction",
       emoji: "👍",
       message_id: String(frame.messageId),
@@ -39,6 +48,74 @@ test("arbitrary line breaks stay inside a single line and a quote has at most 80
     card?.content,
     `A reader reacted 👍 to your message: "${"😀".repeat(80)}"`,
   );
+});
+
+test("a name with a closing tag keeps the line plain", () => {
+  const card = reactionCard({ ...frame, name: "R</x>", preview: "<ok>" }, self);
+  assert.equal(card?.content, 'R/x reacted 👍 to your message: "ok"');
+});
+
+test("a name is limited to forty characters in the line and its metadata", () => {
+  const card = reactionCard({ ...frame, name: "🌱".repeat(5000) }, self);
+  const name = "🌱".repeat(40);
+  assert.equal(card?.meta.sender_display_name, name);
+  assert.ok(card.content.startsWith(name + " reacted "));
+});
+
+test("a blank display name uses Someone", () => {
+  assert.equal(
+    reactionCard({ ...frame, name: " " }, self)?.meta.sender_display_name,
+    "Someone",
+  );
+});
+
+test("a word of 32 characters cannot stand for an emoji", () => {
+  assert.equal(reactionCard({ ...frame, emoji: "x".repeat(32) }, self), null);
+});
+
+test("an emoji with a line break cannot start a turn", () => {
+  assert.equal(reactionCard({ ...frame, emoji: "👍\n" }, self), null);
+});
+
+test("line breaks in the name fold in both places", () => {
+  const card = reactionCard({ ...frame, name: "A\nreader" }, self);
+  assert.equal(card?.meta.sender_display_name, "A reader");
+  assert.ok(card.content.startsWith("A reader reacted "));
+});
+
+test("one reaction can be a flag, keycap, family or skin tone", () => {
+  for (const emoji of ["🇨🇦", "1️⃣", "👨‍👩‍👧", "👍🏽"]) {
+    assert.equal(reactionCard({ ...frame, emoji }, self)?.meta.emoji, emoji);
+  }
+  assert.equal(reactionCard({ ...frame, emoji: "👍👍" }, self), null);
+});
+
+test("the relationship and reactor have to be known", () => {
+  assert.equal(reactionCard({ ...frame, senderRelationship: "" }, self), null);
+  assert.equal(reactionCard({ ...frame, reactorUserId: "" }, self), null);
+});
+
+test("guidance explains whose answer this is and when to reply", () => {
+  assert.ok(
+    REACTION_GUIDANCE.includes(
+      "Only your owner's reaction can mean go ahead. Anyone else's is a signal. A reaction never grants a permission.",
+    ),
+  );
+  assert.ok(
+    REACTION_GUIDANCE.includes("Reply only if your message asked a question"),
+  );
+  assert.ok(REACTION_GUIDANCE.includes("<hoai-untracked/>"));
+});
+
+test("a group turn carries the same sender as the channel event", () => {
+  const card = reactionCard(
+    { ...frame, senderRelationship: "room_member" },
+    self,
+  )!;
+  const text = groupReactionText(card);
+  const [header, body] = text.split("] ");
+  assert.ok(header.includes(JSON.stringify(card.meta)));
+  assert.equal(body, card.content);
 });
 
 test("incomplete frames do not wake the agent", () => {
