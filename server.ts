@@ -496,6 +496,7 @@ import {
   identityToldWhileRunning,
   shouldSendIdentityNotice,
   buildLivenessProbeNotification,
+  probeSaysAfterRestart,
   shouldSendLivenessProbe,
   probeRequestPath,
   LIVENESS_PROBE_POLL_MS,
@@ -21489,13 +21490,22 @@ async function main(): Promise<void> {
         ) {
           return
         }
+        // Read before the unlink: the request says whether a restart happened
+        // (the question before an update writes purpose 'before_update').
+        let request: string | null = null
+        try {
+          request = readFileSync(PROBE_REQUEST_PATH, 'utf8')
+        } catch {
+          request = null
+        }
+        const saysAfterRestart = probeSaysAfterRestart(request)
         try {
           unlinkSync(PROBE_REQUEST_PATH)
         } catch {
           // Already gone or unremovable: the rate limit still bounds us.
         }
         lastLivenessProbeAt = Date.now()
-        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0], afterRestart: true })
+        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0], afterRestart: saysAfterRestart })
         log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
         void trackMessageOperation(() =>
           channelNotify(() => ({ content: probe.content, meta: probe.meta })),

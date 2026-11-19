@@ -615,12 +615,20 @@ test('runWatcher reconcile: the executor is given the question to ask BEFORE an 
     if (fs.files.has(`${HOME}/.bgos-agent/7/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/7/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString() }))
   })
   let answers: any = null
+  let reread: any = null
   const execute = async (_plan: any, deps: any) => {
     assert.equal(typeof deps.proveLiveBefore, 'function', 'the watcher hands the executor the question')
     answers = {
       live: await deps.proveLiveBefore({ assistantId: '7', cwd: null }, { timeoutMs: 9000 }),
       deaf: await deps.proveLiveBefore({ assistantId: '912', cwd: null }, { timeoutMs: 9000 }),
       stranger: await deps.proveLiveBefore({ assistantId: '4242', cwd: null }, { timeoutMs: 9000 }),
+    }
+    // Review of #396, C1: the second read, for a late answer.
+    assert.equal(typeof deps.readLastLiveAt, 'function', 'the watcher hands the executor the second read')
+    reread = {
+      live: await deps.readLastLiveAt({ assistantId: '7', cwd: null }),
+      deaf: await deps.readLastLiveAt({ assistantId: '912', cwd: null }),
+      stranger: await deps.readLastLiveAt({ assistantId: '4242', cwd: null }),
     }
     return { ok: true, verdict: 'done', failedStep: null, rolledBack: false, steps: [] }
   }
@@ -632,6 +640,26 @@ test('runWatcher reconcile: the executor is given the question to ask BEFORE an 
   assert.deepEqual(answers.stranger, { live: null, detail: 'agent_not_in_inventory:4242' })
   assert.ok(fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`), 'the deaf agent was really asked')
   assert.ok(logs.some((line: string) => line.includes('live before 912: DEAF')), 'and the log says so')
+  assert.match(reread.live, /^\d{4}-\d\d-\d\dT/, 'the answering agent\'s marker time')
+  assert.equal(reread.deaf, null, 'no marker, no time')
+  assert.equal(reread.stranger, null, 'an agent this watcher does not hold is never read')
+})
+
+test('runWatcher reconcile: past the job deadline the question before an update is not asked: unknown, and no probe is written (review minor 6)', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'update', targets: [] } } })
+  const clock = fakeClock()
+  let late: any = null
+  const execute = async (_plan: any, deps: any) => {
+    clock.advance(60_000)
+    late = await deps.proveLiveBefore({ assistantId: '912', cwd: null }, { timeoutMs: 9000 })
+    return { ok: true, verdict: 'done', failedStep: null, rolledBack: false, steps: [] }
+  }
+  const { deps } = baseDeps(fs, backend, clock, { modules: stubModules({ plan: updatePlan, execute }), jobDeadlineMs: 1_000 })
+  await runWatcher(deps as any)
+  assert.deepEqual(late, { live: null, detail: 'job_deadline_exceeded' })
+  assert.equal(fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`), false, 'no probe after the deadline')
 })
 
 test('runWatcher reconcile: a verify failure rolls back, names the step, posts scrubbed diagnostics', async () => {

@@ -349,3 +349,116 @@ test('proveLiveBefore: a clock that never reaches the deadline still ends the wa
   assert.equal(out.live, false)
   assert.ok(laps < 100)
 })
+
+// Review of #396 (Fable, C1): the live marker moves only on a boot's first
+// tool call and on channel_ack, so a healthy session that has been up for
+// more than six hours and is in a long turn, or simply slow for 20 s, has an
+// old marker and does not answer in time. The daemon's own published state
+// (agent-state.json, parseAgentState) says whether it is busy: a fresh one
+// that shows work in hand or recent activity is UNKNOWN, never "deaf".
+const AGENT_STATE = '/home/kc/.bgos-plugin-state/912/agent-state.json'
+const agentState = (over: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    schemaVersion: 1,
+    assistantId: '912',
+    pid: 4242,
+    claudePid: 4243,
+    turnInFlight: false,
+    pendingMessages: 0,
+    pendingPermissions: 0,
+    activeOperations: 0,
+    updatedAt: new Date(T0 - 5_000).toISOString(),
+    lastActivityAt: new Date(T0 - 9 * 3_600_000).toISOString(),
+    turnSignal: 'hooks',
+    ...over,
+  })
+const alive = (pid: number) => pid === 4242
+
+test('proveLiveBefore: a healthy session up for hours, mid turn, with an old marker, is UNKNOWN, never deaf (review C1)', async () => {
+  for (const [label, over] of [
+    ['a turn in flight', { turnInFlight: true }],
+    ['messages waiting', { pendingMessages: 2 }],
+    ['a permission waiting', { pendingPermissions: 1 }],
+    ['an operation running', { activeOperations: 1 }],
+    ['activity inside the window', { lastActivityAt: new Date(T0 - 20 * 60_000).toISOString() }],
+  ] as const) {
+    const fs = memoryFs()
+    fs.writeFile(MARKER, liveMarker(T0 - 8 * 3_600_000, T0 - 30 * 3_600_000))
+    fs.writeFile(AGENT_STATE, agentState(over))
+    const clock = fakeClock(T0)
+    const out = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000, pidAlive: alive })
+    assert.equal(out.live, null, label)
+    assert.match(out.detail, /;busy_/, label)
+  }
+})
+
+test('proveLiveBefore: the published state vouches only when it is fresh, its writer alive, and it shows work or recent activity', async () => {
+  const cases = [
+    ['idle, last activity long ago', agentState()],
+    ['written long ago', agentState({ turnInFlight: true, updatedAt: new Date(T0 - 3_600_000).toISOString() })],
+    ['its writer is gone', agentState({ turnInFlight: true, pid: 999 })],
+    ['the state of another agent', agentState({ turnInFlight: true, assistantId: '913' })],
+    ['junk', 'junk'],
+  ] as const
+  for (const [label, raw] of cases) {
+    const fs = memoryFs()
+    fs.writeFile(MARKER, liveMarker(T0 - 8 * 86_400_000))
+    fs.writeFile(AGENT_STATE, raw)
+    const clock = fakeClock(T0)
+    const out = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000, pidAlive: alive })
+    assert.equal(out.live, false, label)
+  }
+  // No state file at all (a daemon older than design 7): as before.
+  const fs = memoryFs()
+  fs.writeFile(MARKER, liveMarker(T0 - 8 * 86_400_000))
+  const clock = fakeClock(T0)
+  const none = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000, pidAlive: alive })
+  assert.equal(none.live, false)
+})
+
+test('proveLiveBefore: a marker that cannot be read at the end keeps the last good read (review minor)', async () => {
+  const fs = memoryFs()
+  fs.writeFile(MARKER, liveMarker(T0 - 40 * 60_000))
+  const clock = fakeClock(T0, (_nowMs, tick) => {
+    if (tick >= 1) fs.writeFile(MARKER, '{"lastLive')
+  })
+  const out = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000, pidAlive: alive })
+  assert.equal(out.live, null, 'recently live by the last good read, not "never live"')
+  assert.match(out.detail, /recently_live_/)
+})
+
+// Review of #396 (Fable, minors): the edges no test held.
+test('proveLiveBefore: a marker that moved at the very moment of the question is not an answer', async () => {
+  const fs = memoryFs()
+  fs.writeFile(MARKER, liveMarker(T0))
+  const clock = fakeClock(T0)
+  const out = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000 })
+  assert.notEqual(out.live, true)
+  assert.notEqual(out.detail, 'answered')
+})
+
+test('proveLiveBefore: an agent with no state folder cannot be judged, and writes no probe anywhere', async () => {
+  const fs = memoryFs()
+  const clock = fakeClock(T0)
+  const out = await proveLiveBefore({ ...agentRow(), stateDir: '' }, { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000 })
+  assert.deepEqual(out, { live: null, detail: 'no_marker_path', lastLiveAt: null })
+  assert.equal(fs.files.size, 0)
+})
+
+test('proveLiveBefore: a zero, negative or junk timeout is the full window, never an instant "deaf"', async () => {
+  for (const timeoutMs of [0, -5, Number.NaN, 'soon' as unknown as number]) {
+    const fs = memoryFs()
+    const clock = fakeClock(T0)
+    const out = await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs })
+    assert.equal(out.live, false, String(timeoutMs))
+    assert.ok(clock.now() - T0 >= LIVE_BEFORE_TIMEOUT_MS, `it waited the whole window for ${String(timeoutMs)}`)
+    assert.match(out.detail, new RegExp(`^no_answer_in_${LIVE_BEFORE_TIMEOUT_MS}ms;`))
+  }
+})
+
+test('proveLiveBefore: its probe says it is the question before an update, so the card claims no restart', async () => {
+  const fs = memoryFs()
+  const clock = fakeClock(T0)
+  await proveLiveBefore(agentRow(), { fs, now: clock.now, sleep: clock.sleep, timeoutMs: 3_000 })
+  assert.equal(JSON.parse(fs.readFile(PROBE) as string).purpose, 'before_update')
+})

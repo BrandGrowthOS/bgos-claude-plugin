@@ -2340,6 +2340,106 @@ test('when the question before the update has no answer either way (unknown, a t
   }
 })
 
+// Review of #396 (Fable, C1): an agent that did not answer within the 20 s
+// may answer a moment later. Just before its restart (and again when its
+// verify fails) the marker is read once more; a move after the question was
+// asked is a late answer, so the agent was live and the update keeps its
+// rollback.
+test('a late answer after the question, before the restart, gives the update its rollback back', async () => {
+  const reads: string[] = []
+  const run = deafAgentRun((id) => (id === '912' ? { live: false, detail: 'no_answer_in_20000ms;never_live' } : { live: true, detail: 'answered' }), {
+    readLastLiveAt: async (agent: { assistantId: string }) => {
+      reads.push(agent.assistantId)
+      return '2999-01-01T00:00:00.000Z'
+    },
+  } as Partial<Deps>)
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.equal(result.failedStep?.message, 'agent_deaf_after_update')
+  assert.ok(reads.includes('912'), 'the marker of the agent that did not answer was read again')
+  assert.ok(!reads.includes('918'), 'an agent that answered is not read again')
+})
+
+test('the second read keeps the agent excused when the marker did not move, or cannot be read', async () => {
+  for (const readLastLiveAt of [
+    async () => '2000-01-01T00:00:00.000Z',
+    async () => null,
+    async () => 'junk',
+    async () => {
+      throw new Error('unreadable')
+    },
+    () => new Promise<string>(() => {}),
+  ]) {
+    const run = deafAgentRun((id) => (id === '912' ? { live: false, detail: 'no_answer_in_20000ms;never_live' } : { live: true, detail: 'answered' }), {
+      readLastLiveAt,
+      liveBeforeTimeoutMs: 40,
+    } as Partial<Deps>)
+    const result = await executePlan(run.plan, run.deps)
+    assert.equal(result.rolledBack, false, String(readLastLiveAt))
+    assert.equal(result.failedStep?.message, 'agent_deaf_after_restart')
+  }
+})
+
+test('a verify that escalates is asked about too, and a deaf before answer takes the escalation away the same way', async () => {
+  const run = deafAgentRun((id) => (id === '912' ? { live: false, detail: 'no_answer_in_20000ms;never_live' } : { live: true, detail: 'answered' }))
+  // The planner gives verify_agent rollback today; a hand plan may say escalate.
+  const plan = { ...run.plan, steps: run.plan.steps.map((st: any) => (st.kind === 'verify_agent' ? { ...st, onFailure: 'escalate' } : st)) }
+  const result = await executePlan(plan as any, run.deps)
+  assert.ok(run.asked.some((a) => a.id === '912'), 'the escalating verify was asked about')
+  assert.equal(result.rolledBack, false)
+  assert.equal(result.failedStep?.message, 'agent_deaf_after_restart')
+  assert.ok((stepById(result, 's06-verify_agent-912').detail ?? '').includes('deaf_before_update'))
+})
+
+// Review of #396 (Fable I2, Ares's ruling (a)): when every agent that could
+// roll back was deaf before, nothing is left to prove the new build. Then the
+// run rolls back as before: the restart on the known build also cures an
+// agent that was wedged, and a bad build is not kept unproven.
+test('a one agent computer whose only agent was deaf before: nothing proves the new build, so it rolls back and restarts it as before', async () => {
+  const world = memWorld()
+  const plan = seededUpdate(world, { agents: [agentState('912')] })
+  const made = memDeps(world, realisticScript(world, '0.38.3'), {
+    agents: [{ assistantId: '912', cwd: '/home/kc/hoai-agents/912' }],
+    verifyAgent: async () => ({ ok: false, message: 'no channel-live marker newer than restart' }),
+    proveLiveBefore: async () => ({ live: false, detail: 'no_answer_in_20000ms;never_live' }),
+  } as Partial<Deps>)
+  const result = await executePlan(plan, made.deps)
+  assert.equal(result.rolledBack, true)
+  assert.equal(result.failedStep?.message, 'agent_deaf_after_update')
+  assert.equal(world.installedVersion(), '0.38.1', 'back on the known build')
+  assert.ok(made.restarts.filter((r) => r.id === '912').length >= 2, 'restarted again on the known build')
+})
+
+test('every agent deaf before, on a computer with two: nothing proves the build either, so it rolls back', async () => {
+  const run = deafAgentRun(() => ({ live: false, detail: 'no_answer_in_20000ms;never_live' }))
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.equal(result.failedStep?.message, 'agent_deaf_after_update')
+})
+
+test('one agent unknown before is still a witness for the build: the deaf before agent stays excused', async () => {
+  const run = deafAgentRun((id) => (id === '912' ? { live: false, detail: 'no_answer_in_20000ms;never_live' } : { live: null, detail: 'no_answer_in_20000ms;busy_turn_in_flight' }))
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, false)
+  assert.equal(result.failedStep?.message, 'agent_deaf_after_restart')
+})
+
+test('a zero, negative or junk window for the question is the full window, never an instant answer (review minor 5)', async () => {
+  for (const liveBeforeTimeoutMs of [0, -1, Number.NaN]) {
+    const seen: number[] = []
+    const run = deafAgentRun(() => ({ live: true, detail: 'answered' }), {
+      liveBeforeTimeoutMs,
+      proveLiveBefore: async (_agent: unknown, opts: { timeoutMs: number }) => {
+        seen.push(opts.timeoutMs)
+        return { live: true, detail: 'answered' }
+      },
+    } as Partial<Deps>)
+    await executePlan(run.plan, run.deps)
+    assert.ok(seen.length > 0, String(liveBeforeTimeoutMs))
+    assert.ok(seen.every((ms) => ms === 20_000), `${String(liveBeforeTimeoutMs)}: ${seen.join(',')}`)
+  }
+})
+
 test('the question is asked once per agent, before anything is installed', async () => {
   const run = deafAgentRun(() => ({ live: true, detail: 'answered' }))
   await executePlan(run.plan, run.deps)
