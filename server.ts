@@ -12,6 +12,7 @@
  */
 
 import { cardAnswerClickOf, cardAnswerText } from './lib/card-answer.ts'
+import { reactionCard, REACTION_GUIDANCE } from './lib/heard-reaction.ts'
 import { REACT_TOOL, handleReactTool } from './lib/react-tool.ts'
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
@@ -7084,7 +7085,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   switch (req.params.name) {
     case 'bgos_capabilities': {
       const caps = await loadServedCapabilities()
-      return { content: [{ type: 'text', text: caps.text }] }
+      return { content: [{ type: 'text', text: `${caps.text}\n${REACTION_GUIDANCE}` }] }
     }
 
     case 'reply': {
@@ -15755,7 +15756,7 @@ function routeGroupDelivery(
   if (updateDrainMode) return true
   const taken = groupLanes.deliver(readGroupDelivery(records, { chatId, ...input }))
   const id = Number(input.messageId)
-  if (taken && Number.isSafeInteger(id) && !String(input.key).startsWith('tap:')) rememberForwarded(id)
+  if (taken && Number.isSafeInteger(id) && !String(input.key).startsWith('tap:') && !input.key.startsWith('reaction:')) rememberForwarded(id)
   if (taken) log(`groups: ${transport} delivery ${String(input.key)} handed to the lane of group ${chatId}`)
   return true
 }
@@ -18877,6 +18878,25 @@ function connectWebsocket(): void {
     if (routeStampedInbound(payload, deliver)) return
     void trackMessageOperation(() => applyHumanEdit(payload))
       .catch((err) => log(`message_edited delivery failed: ${err}`))
+  }))
+
+  realtimeSocket.on('inbound_reaction', whenArmed('inbound_reaction', (frame: any) => {
+    if (updateDrainMode) return
+    const card = reactionCard(frame, ASSISTANT_ID)
+    if (!card) return
+    if (routeGroupDelivery([frame], {
+      key: `reaction:${frame.reactionId}`, messageId: frame.messageId, text: card.content,
+    }, 'socket reaction')) return
+    if (!ownerLaneVerdict(frame).deliver) return
+    void trackMessageOperation(() => channelNotify(() => {
+      const marker = privateTurns.noteTap({
+        chatId: card.meta.chat_id,
+        tapperUserId: frame.reactorUserId,
+      })
+      // Keep the transport's provenance tags on the same line as this short answer.
+      const content = privateTurns.tagRawCard(card.content + marker).replace(/\n/g, ' ')
+      return { content, meta: card.meta }
+    })).catch((err) => log(`reaction delivery failed: ${String(err)}`))
   }))
 
   realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {

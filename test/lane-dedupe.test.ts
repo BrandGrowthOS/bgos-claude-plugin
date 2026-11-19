@@ -765,6 +765,32 @@ function cutLaneSocket(backend: Backend): void {
   for (const socket of backend.io.of('/').sockets.values()) socket.conn.close()
 }
 
+test('a settled reaction wakes only its stamped lane and leaves the message cursor alone', async () => {
+  const backend = await startBackend({ rows: [] })
+  const rig = await startLane(backend)
+  try {
+    await waitFor(() => backend.io.of('/').sockets.size > 0 && backend.inboundGets > 0, 'the lane socket')
+    const frame = {
+      assistantId: ASSISTANT_ID,
+      chatId: CHAT_ID,
+      messageId: Date.now(),
+      reactionId: String(Date.now()),
+      emoji: '👍',
+      name: 'Reader',
+      preview: 'Ready?',
+    }
+    backend.io.emit('inbound_reaction', { ...frame, lane: 'owner', preview: 'Owner session' })
+    backend.io.emit('inbound_reaction', { ...frame, lane: STAMP })
+    await waitFor(() => rig.channel.some((card) => card.content.includes('Ready?')), 'the reaction in this lane')
+    assert.deepEqual(rig.channel.map(({ content, messageId }) => [content, messageId]), [
+      ['Reader reacted 👍 to your message: "Ready?"', String(frame.messageId)],
+    ])
+    assert.ok(!backend.acks.includes(frame.messageId))
+  } finally {
+    await stopLane(rig)
+  }
+})
+
 const handedOver = (rig: Rig) => rig.channel.map((c) => Number(c.messageId))
 
 async function waitQuietly(check: () => boolean, ms: number): Promise<void> {
