@@ -464,6 +464,8 @@ test('a rollback onto a held build takes no other agent onto it, and the first f
   assert.equal(deps.restarts.some((r: any) => r.id === '913'), false, JSON.stringify(deps.restarts))
   assert.equal(deps.restarts.filter((r: any) => r.id === '912').length, 1, `the rollback's own retry reads the mark too: ${JSON.stringify(deps.restarts)}`)
   assert.equal(String(result.failedStep?.message).endsWith('version_held_bad'), false, JSON.stringify(result.failedStep))
+  // Round 7: the held retry leaves 912 on the rejected build too.
+  assert.deepEqual((result as { notRestored?: string[] }).notRestored, ['912'])
 })
 
 test('a mark that stops a run with no rollback names itself over a softer failure before it', async () => {
@@ -2341,7 +2343,7 @@ test('when the question before the update has no answer either way (unknown, a t
   }
 })
 
-// Review of #396 (Fable, C1): an agent that did not answer within the 20 s
+// Review of #396 (C1): an agent that did not answer within the 20 s
 // may answer a moment later. Just before its restart (and again when its
 // verify fails) the marker is read once more; a move after the question was
 // asked is a late answer, so the agent was live and the update keeps its
@@ -2392,7 +2394,7 @@ test('a verify that escalates is asked about too, and a deaf before answer takes
   assert.ok((stepById(result, 's06-verify_agent-912').detail ?? '').includes('deaf_before_update'))
 })
 
-// Review of #396 (Fable I2, Ares's ruling (a)): when every agent that could
+// Review of #396 (I2, the ruling (a)): when every agent that could
 // roll back was deaf before, nothing is left to prove the new build. Then the
 // run rolls back as before: the restart on the known build also cures an
 // agent that was wedged, and a bad build is not kept unproven.
@@ -2441,7 +2443,7 @@ test('a zero, negative or junk window for the question is the full window, never
   }
 })
 
-// Review of #396, round 3 (Astra, checked by Ares): an agent only counts
+// Review of #396, round 3: an agent only counts
 // as a witness for the new build once its verify has PASSED. A was deaf
 // before and fails after; it is excused while B might still prove the build;
 // if B's restart then fails, nothing proved it, and the run rolls back at the
@@ -2475,7 +2477,7 @@ test('the witness whose restart fails first, then the excused agent: the same, r
   assert.equal(run.world.installedVersion(), '0.38.1')
 })
 
-// Round 4 (Astra, checked by Ares): the end of run restore restarted only the
+// Round 4: the end of run restore restarted only the
 // first excused agent; a second one stayed on the rejected build. Every agent
 // restarted onto the new build is restarted on the restored one, with one
 // verify each. And the excused step reads the reason the summary gives.
@@ -2506,14 +2508,14 @@ test('two excused agents and a witness whose restart fails: after the restore bo
   assert.equal(run.world.installedVersion(), '0.38.1')
   assert.deepEqual(restarts, ['912@0.38.3', '915@0.38.3', '918@0.38.3', '912@0.38.1', '915@0.38.1'])
   assert.deepEqual(verifies, ['912@0.38.3', '915@0.38.3', '912@0.38.1', '915@0.38.1'])
-  // Round 5 (Astra, minor): each retry takes the route its first restart took.
+  // Round 5 (minor): each retry takes the route its first restart took.
   assert.deepEqual(vias.slice(3), [vias[0], vias[1]])
   assert.notEqual(vias[0], '912:null')
   assert.equal(result.failedStep?.message, 'agent_deaf_after_update')
   assert.equal(stepById(result, String(result.failedStep?.id)).message, result.failedStep?.message, 'the checklist says what the summary says')
 })
 
-// Round 5 (Astra): the immediate rollback retried only the agent that caused
+// Round 5: the immediate rollback retried only the agent that caused
 // it; an excused agent restarted before it kept the rejected build. Both paths
 // now restart every agent that may be on it. A restart that timed out may
 // still be starting it, so it counts too. A restore that fails retries none.
@@ -2592,7 +2594,9 @@ test('a timed out restart that never settles is not retried on top of itself; th
   assert.deepEqual(restarts, ['912@0.38.3', '918@0.38.3', '918@0.38.1'])
   const retry = result.steps.find((step: { id: string }) => step.id.endsWith('.912.retry'))
   assert.equal(retry?.state, 'failed')
-  assert.equal(retry?.message, 'previous_restart_unsettled')
+  // The token the app already words; the reason rides in the detail (round 7).
+  assert.equal(retry?.message, 'timeout')
+  assert.match(String(retry?.detail), /^previous_restart_unsettled;/)
   assert.deepEqual((result as { notRestored?: string[] }).notRestored, ['912'])
 })
 
@@ -2628,7 +2632,37 @@ test('a timed out restart that settles late is retried after it settled', async 
   assert.deepEqual((result as { notRestored?: string[] }).notRestored ?? [], [])
 })
 
-// Round 6 (Opus): an agent whose retry was refused stays on the rejected
+// Round 7: a retry that timed out could still send its stop signal
+// after the job had reported. The run settles it before it returns.
+test('a retry that timed out is settled before the run returns its result', async () => {
+  let calls912 = 0
+  const events: string[] = []
+  const { run } = trackedRun(
+    {
+      failVerify: new Set(['918']),
+      timeoutsMs: { network: 2_000, list: 1_000, restart: 20 },
+      restartAgent: async (agent: { assistantId: string }) => {
+        if (agent.assistantId !== '912') return { ok: true, how: 'marker' }
+        calls912 += 1
+        if (calls912 === 1) return { ok: true, how: 'marker' }
+        // The retry outlives its window, then finishes.
+        return new Promise((resolve) =>
+          setTimeout(() => {
+            events.push('retry settled')
+            resolve({ ok: true, how: 'marker' })
+          }, 40),
+        )
+      },
+    } as never,
+    [],
+  )
+  const result = await executePlan(run.plan, run.deps)
+  events.push('result')
+  assert.equal(result.rolledBack, true)
+  assert.deepEqual(events, ['retry settled', 'result'])
+})
+
+// Round 6: an agent whose retry was refused stays on the rejected
 // build, and only its own row said so.
 test('a refused retry names the agent in the run result', async () => {
   let calls912 = 0
@@ -2669,10 +2703,10 @@ test('a restore at the end of the run that fails retries nobody, and the run is 
   assert.deepEqual(restarts, ['912@0.38.3', '915@0.38.3', '918@0.38.3'])
 })
 
-// Round 3 (Astra): the reread at a failed verify must not take a marker the
+// Round 3: the reread at a failed verify must not take a marker the
 // NEW boot wrote after the verify gave up for a late answer to the question
 // asked before the update. Only a marker from the old session counts there.
-// Round 4 (Astra): each read is proven alone. The reply exists only before
+// Round 4: each read is proven alone. The reply exists only before
 // 912's restart (or only after it), so dropping the other read cannot pass.
 test('a late answer seen only at the read before the restart gives the rollback back', async () => {
   let restarted = false

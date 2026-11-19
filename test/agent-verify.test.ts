@@ -76,7 +76,7 @@ test('parseLiveMarker mirrors lib/boot-hello.ts (both fields, one field, junk)',
   assert.equal(parseLiveMarker(null), null)
 })
 
-// Review of #396, round 5 (Astra): an old daemon's reply with no boot stamp
+// Review of #396, round 5: an old daemon's reply with no boot stamp
 // passed, and so did a torn marker judged by its modified time; one such
 // false witness kept a bad build. Proof now needs a whole marker stamped
 // with a boot after the restart (every build since 2026-08-25 writes one).
@@ -355,7 +355,7 @@ test('proveLiveBefore: a clock that never reaches the deadline still ends the wa
   assert.ok(laps < 100)
 })
 
-// Review of #396 (Fable, C1): the live marker moves only on a boot's first
+// Review of #396 (C1): the live marker moves only on a boot's first
 // tool call and on channel_ack, so a healthy session that has been up for
 // more than six hours and is in a long turn, or simply slow for 20 s, has an
 // old marker and does not answer in time. The daemon's own published state
@@ -432,7 +432,7 @@ test('proveLiveBefore: a marker that cannot be read at the end keeps the last go
   assert.match(out.detail, /recently_live_/)
 })
 
-// Review of #396 (Fable, minors): the edges no test held.
+// Review of #396 (minors): the edges no test held.
 test('proveLiveBefore: a marker that moved at the very moment of the question is not an answer', async () => {
   const fs = memoryFs()
   fs.writeFile(MARKER, liveMarker(T0))
@@ -489,7 +489,7 @@ test('verifyAgent: a zero, negative or junk window or poll is the default, never
   }
 })
 
-// Round 4 (Astra): the rewrite window had no case of its own, so dropping
+// Round 4: the rewrite window had no case of its own, so dropping
 // its guard kept every test green. Unguarded, a zero window asks again on
 // every poll.
 test('verifyAgent: a zero, negative or junk probe rewrite window is the default, not a new question every poll', async () => {
@@ -511,7 +511,7 @@ test('verifyAgent: a zero, negative or junk probe rewrite window is the default,
       pollMs: 3_000,
       probeRewriteMs: bad,
     })
-    // Round 5 (Astra, minor): exactly the default's rhythm, every 30 s, up
+    // Round 5 (minor): exactly the default's rhythm, every 30 s, up
     // to the 120 s deadline (which ends the wait before a fifth question).
     assert.deepEqual(asked, [0, PROBE_REWRITE_MS, 2 * PROBE_REWRITE_MS, 3 * PROBE_REWRITE_MS], String(bad))
   }

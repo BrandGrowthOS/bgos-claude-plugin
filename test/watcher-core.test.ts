@@ -1625,7 +1625,7 @@ test('runWatcher: a reconcile job restart hands the injected kill to the restart
   assert.deepEqual(kills, [[5151, 'SIGTERM']])
 })
 
-// Review of #396, round 5 (Astra): the keepalive tier signalled the claude
+// Review of #396, round 5: the keepalive tier signalled the claude
 // pid the inventory saw when the job STARTED. After the first restart its
 // keepalive script has started a new claude, so a second restart of the
 // same agent (the retry on a restored build) signalled a pid that was gone,
@@ -1680,7 +1680,7 @@ for (const after of ['relaunched', 'reused'] as const) {
     if (after === 'reused') {
       assert.ok(restartLines.some((l) => l.includes('no signal sent')), restartLines.join('\n'))
       assert.equal(restartLines.filter((l) => l.includes(': ok ')).length, 1, restartLines.join('\n'))
-      // Round 5 (Opus): the job's own report names the refused restart.
+      // Round 5: the job's own report names the refused restart.
       const terminal = backend.progress('job-k2').at(-1)!
       assert.equal(terminal.steps.find((step: any) => step.id === 's2-restart_agent:7')!.message, 'restart_failed:keepalive_unverified_now')
     } else {
@@ -1689,11 +1689,11 @@ for (const after of ['relaunched', 'reused'] as const) {
   })
 }
 
-// Round 5 (Astra): on a Mac claude runs under tmux, not under its keepalive
+// Round 5: on a Mac claude runs under tmux, not under its keepalive
 // script, so the claude is known by its folder or by the agent's own state
 // file, and its owner must be the watcher's user. No case read those three
 // inputs: dropping any of them from the fresh check kept every test green.
-function keepaliveOnlyRun(opts: { cwd?: string | null; owner?: number; agentState?: boolean; restarts?: number; relaunchLate?: boolean }) {
+function keepaliveOnlyRun(opts: { cwd?: string | null; owner?: number; agentState?: boolean; restarts?: number; relaunchLate?: boolean; relaunchNever?: boolean; frozenClock?: boolean; jobDeadlineMs?: number }) {
   const marker = `${HOME}/.bgos-agent/7/keepalive.json`
   // The process's own uid: the job's inventory (observeMachine) reads with it too.
   const UID = process.getuid?.() ?? 0
@@ -1718,6 +1718,12 @@ function keepaliveOnlyRun(opts: { cwd?: string | null; owner?: number; agentStat
   let claude = 5151
   const kills: Array<[number, string]> = []
   const clock = fakeClock()
+  if (opts.frozenClock) {
+    // A clock that never moves: a stepped wall clock, or a sleep that does
+    // not advance it. Only a pass cap can end a wait on it.
+    const frozen = clock.now()
+    clock.now = () => frozen
+  }
   let relaunchAt: number | null = null
   clock.onSleep((_ms, nowMs) => {
     // The new keepalive script writes its marker a few seconds after its claude is up.
@@ -1741,7 +1747,12 @@ function keepaliveOnlyRun(opts: { cwd?: string | null; owner?: number; agentStat
     kill: (pid: number, signal: string) => {
       kills.push([pid, signal])
       // launchd starts a new script, which starts a new claude; its marker
-      // lands later (relaunchLate) or at once.
+      // lands later (relaunchLate) or at once, or never (relaunchNever).
+      if (opts.relaunchNever) {
+        script = -1
+        claude = -1
+        return
+      }
       script += 101
       claude += 1010
       // Late: after the 10 s stagger between restarts (the script's marker
@@ -1750,8 +1761,9 @@ function keepaliveOnlyRun(opts: { cwd?: string | null; owner?: number; agentStat
       else fs.writeFile(marker, JSON.stringify({ kind: 'keepalive', pid: script, claudePid: claude, capabilities: ['relaunch'] }))
     },
     keepAliveSweep: async () => ({ enabled: false, agents: [] }),
+    ...(opts.jobDeadlineMs ? { jobDeadlineMs: opts.jobDeadlineMs } : {}),
   })
-  return { deps, kills, backend, logs }
+  return { deps, kills, backend, logs, clock }
 }
 
 test('runWatcher: a claude under tmux, known by its own folder, is signalled; another folder is not', async () => {
@@ -1779,7 +1791,7 @@ test("runWatcher: a claude named by the agent's own fresh state file is signalle
   assert.deepEqual(run.kills, [[5151, 'SIGTERM']])
 })
 
-// Round 5 (Opus): after a restart the keepalive script exits and launchd
+// Round 5: after a restart the keepalive script exits and launchd
 // starts a new one, which writes its marker seconds after its claude is up.
 // The second restart waits for that marker (bounded) instead of failing.
 test('runWatcher: a second restart waits for the relaunched keepalive to declare its new claude, then signals it', async () => {
@@ -1787,6 +1799,50 @@ test('runWatcher: a second restart waits for the relaunched keepalive to declare
   // The relaunched claude runs in the same folder.
   await runWatcher(run.deps as any)
   assert.deepEqual(run.kills, [[5151, 'SIGTERM'], [6161, 'SIGTERM']])
+})
+
+// Round 7: the wait for a relaunched keepalive had no case for its
+// bound, for the job deadline inside it, or for a clock that never moves.
+const declarePolls = (sleeps: number[]) => sleeps.filter((ms) => ms === 2_000).reduce((a, b) => a + b, 0)
+
+test('runWatcher: the wait for a relaunched keepalive gives up after 30 s', async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, restarts: 2, relaunchNever: true })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(run.kills, [[5151, 'SIGTERM']])
+  assert.ok(declarePolls(run.clock.sleeps) <= 30_000, `${declarePolls(run.clock.sleeps)} ms`)
+  assert.ok(declarePolls(run.clock.sleeps) >= 28_000, `${declarePolls(run.clock.sleeps)} ms`)
+})
+
+test("runWatcher: the wait ends at the job's deadline when that comes first", async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, restarts: 2, relaunchNever: true, jobDeadlineMs: 16_000 })
+  await runWatcher(run.deps as any)
+  assert.ok(declarePolls(run.clock.sleeps) <= 8_000, `${declarePolls(run.clock.sleeps)} ms`)
+})
+
+test('runWatcher: on a clock that never moves the wait still ends (a pass cap)', { timeout: 20_000 }, async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, restarts: 2, relaunchNever: true, frozenClock: true })
+  // Without a cap the loop runs on microtasks for minutes and never yields
+  // to a timer, so the test's own timeout cannot stop it: time it directly.
+  const startedAt = performance.now()
+  await runWatcher(run.deps as any)
+  assert.ok(performance.now() - startedAt < 5_000, `${Math.round(performance.now() - startedAt)} ms`)
+  // At most the cap's 15 polls of 2 s, however the clock behaves.
+  assert.ok(declarePolls(run.clock.sleeps) <= 30_000, `${declarePolls(run.clock.sleeps)} ms of polls`)
+  assert.deepEqual(run.kills, [[5151, 'SIGTERM']])
+})
+
+test('runWatcher: agents a rollback could not restart are named in the job log', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend({
+    frames: [{ rpcId: 'job-left', op: 'restart_only' }],
+    jobs: { 'job-left': { op: 'restart_only', intent: 'restart_only', targets: [{ pairingId: 2, assistantId: '7' }] } },
+  })
+  const plan = () => ({ verdict: 'plan', targetVersion: null, steps: [{ id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' }] })
+  const execute = async () => ({ ok: false, verdict: 'rolled_back', failedStep: { id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', message: 'x' }, rolledBack: true, targetVersion: null, installedVersion: '0.38.3', steps: [], notRestored: ['7', '912'] })
+  const { deps, logs } = baseDeps(fs, backend, fakeClock(), { modules: stubModules({ plan, execute }), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.ok(logs.some((l) => l.includes('left on the rejected build: 7, 912')), logs.filter((l) => l.includes('job-left')).join('\n'))
 })
 
 test('runWatcher: the first heartbeat after a restart carries the keep-alive states the previous process persisted', async () => {

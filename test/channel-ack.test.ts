@@ -107,7 +107,7 @@ test('the channel_ack handler marks liveness, records the marker, answers ok, an
   assert.ok(tracked !== -1 && ack < tracked, 'the ack is not a tracked message operation (it must never block a drain)')
 })
 
-// Review of #396 (Fable, minor): the watcher also asks BEFORE an update, when
+// Review of #396 (minor): the watcher also asks BEFORE an update, when
 // nothing was restarted, and the card said "after a restart" to a session
 // that had been running for days. The request says which question it is.
 test('probeSaysAfterRestart: the restart wording only for a request that is not the question before an update', () => {
