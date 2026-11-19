@@ -134,6 +134,32 @@ test("a group turn carries the same sender as the channel event", () => {
   assert.equal(body, card.content);
 });
 
+test("a runtime without Unicode sets can load a card and uses a single emoji fallback", async () => {
+  const original = globalThis.RegExp;
+  let tried = 0;
+  try {
+    globalThis.RegExp = new Proxy(original, {
+      construct(target, args) {
+        if (String(args[1]).includes("v")) {
+          tried++;
+          throw new SyntaxError("unsupported flag");
+        }
+        return Reflect.construct(target, args);
+      },
+    });
+    const url = new URL("../lib/heard-reaction.ts", import.meta.url);
+    url.search = "?basic";
+    const basic = await import(url.href);
+    assert.equal(tried, 0);
+    assert.equal(basic.reactionCard(frame, self)?.meta.emoji, "👍");
+    assert.equal(basic.reactionCard({ ...frame, emoji: "ok" }, self), null);
+    assert.equal(basic.reactionCard({ ...frame, emoji: "👍👍" }, self), null);
+    assert.ok(tried > 0);
+  } finally {
+    globalThis.RegExp = original;
+  }
+});
+
 test("incomplete frames do not wake the agent", () => {
   assert.equal(reactionCard({ ...frame, emoji: "" }, self), null);
 });

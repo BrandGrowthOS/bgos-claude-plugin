@@ -17,8 +17,6 @@ function id(value: unknown): string | null {
   return /^[1-9]\d*$/.test(s) && Number.isSafeInteger(Number(s)) ? s : null;
 }
 
-const emojiSequence = new RegExp("^\\p{RGI_Emoji}$", "v");
-
 // This keeps the line plain.
 function oneLine(value: unknown): string {
   return typeof value === "string"
@@ -37,12 +35,15 @@ export function reactionCard(
   const message = id(frame.messageId);
   const emoji = frame.emoji;
   if (!chat || !message || !id(frame.reactionId)) return null;
-  if (
-    typeof emoji !== "string" ||
-    emoji.length > 32 ||
-    !(emojiSequence.test(emoji) || emojiSequence.test(emoji + "\uFE0F"))
-  )
-    return null;
+  if (typeof emoji !== "string" || !emoji || emoji.length > 32) return null;
+  try {
+    const sequence = new RegExp("^\\p{RGI_Emoji}$", "v");
+    if (!sequence.test(emoji) && !sequence.test(emoji + "\uFE0F"))
+      return null;
+  } catch {
+    // Older runtimes can still display common single reactions.
+    if (!/^(?:👍|👎|🎉|😀|🌱|❤️?|😄|😢|🔥|🙏)$/u.test(emoji)) return null;
+  }
   const relationship = frame.senderRelationship;
   const user = frame.reactorUserId;
   if (
