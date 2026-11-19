@@ -1,4 +1,5 @@
 import { randomInt, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -33,6 +34,21 @@ test("a reaction is one plain channel line with the original message address", (
       chat_id: String(frame.chatId),
     },
   });
+});
+
+test("a reaction checks the last reset before notifying the session", () => {
+  const source = readFileSync(
+    new URL("../lane-server.ts", import.meta.url),
+    "utf8",
+  );
+  const handler =
+    source.match(/socket\.on\('inbound_reaction',[\s\S]*?\n  \}\)/)?.[0] ?? "";
+  const notify = handler.indexOf("mcp.notification(");
+  assert.ok(notify >= 0);
+  assert.match(
+    handler.slice(0, notify),
+    /if\s*\(ending\s*\|\|\s*Number\(card\.meta\.message_id\)\s*<\s*\(inbox\.newFrom\s*\?\?\s*0\)\)\s*return\b/,
+  );
 });
 
 test("only the addressed agent can hear the reaction", () => {
