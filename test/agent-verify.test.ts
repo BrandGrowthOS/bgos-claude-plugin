@@ -490,13 +490,13 @@ test('verifyAgent: a zero, negative or junk window or poll is the default, never
 test('verifyAgent: a zero, negative or junk probe rewrite window is the default, not a new question every poll', async () => {
   for (const bad of [0, -5, Number.NaN]) {
     const fs = memoryFs()
-    let probes = 0
+    const clock = fakeClock(T0)
+    const asked: number[] = []
     const write = fs.writeFile
     fs.writeFile = (path, text, opts) => {
-      if (path === PROBE) probes += 1
+      if (path === PROBE) asked.push(clock.now() - T0)
       write(path, text, opts)
     }
-    const clock = fakeClock(T0)
     await verifyAgent(agentRow(), {
       restartedAtMs: T0,
       fs,
@@ -506,8 +506,9 @@ test('verifyAgent: a zero, negative or junk probe rewrite window is the default,
       pollMs: 3_000,
       probeRewriteMs: bad,
     })
-    // 120 s of 3 s polls is 40 polls; every 30 s is the first question and 4 more.
-    assert.ok(probes <= 1 + Math.ceil(120_000 / PROBE_REWRITE_MS), `${String(bad)}: ${probes} questions`)
+    // Round 5 (Astra, minor): exactly the default's rhythm, every 30 s, up
+    // to the 120 s deadline (which ends the wait before a fifth question).
+    assert.deepEqual(asked, [0, PROBE_REWRITE_MS, 2 * PROBE_REWRITE_MS, 3 * PROBE_REWRITE_MS], String(bad))
   }
 })
 

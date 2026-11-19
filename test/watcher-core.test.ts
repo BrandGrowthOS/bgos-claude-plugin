@@ -1625,6 +1625,67 @@ test('runWatcher: a reconcile job restart hands the injected kill to the restart
   assert.deepEqual(kills, [[5151, 'SIGTERM']])
 })
 
+// Review of #396, round 5 (Astra): the keepalive tier signalled the claude
+// pid the inventory saw when the job STARTED. After the first restart its
+// keepalive script has started a new claude, so a second restart of the
+// same agent (the retry on a restored build) signalled a pid that was gone,
+// or reused. Each restart now verifies the claude again just before the
+// signal, and sends none when it cannot.
+for (const after of ['relaunched', 'reused'] as const) {
+  test(`runWatcher: a second restart of one agent signals the claude verified just now (${after})`, async () => {
+    const marker = `${HOME}/.bgos-agent/7/keepalive.json`
+    const fs = machineFs({
+      [marker]: JSON.stringify({ kind: 'keepalive', pid: 4242, claudePid: 5151, capabilities: ['relaunch'] }),
+    })
+    manifestFor(fs)
+    const backend = fakeBackend({
+      frames: [{ rpcId: 'job-k2', op: 'restart_only' }],
+      jobs: { 'job-k2': { op: 'restart_only', intent: 'restart_only', targets: [{ pairingId: 2, assistantId: '7' }] } },
+    })
+    const uid = process.getuid?.() ?? 0
+    let claude = 5151
+    let comm = 'claude'
+    const kills: Array<[number, string]> = []
+    const plan = () => ({
+      verdict: 'plan',
+      targetVersion: null,
+      steps: [
+        { id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' },
+        { id: 's2-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' },
+      ],
+    })
+    const { deps, logs } = baseDeps(fs, backend, fakeClock(), {
+      modules: stubModules({ plan }),
+      pidAlive: (pid: number) => pid === 4242 || pid === claude,
+      execSync: (file: string, args: string[]) =>
+        file === 'ps' && args[1] === 'comm='
+          ? { code: 0, stdout: `${comm}\n` }
+          : file === 'ps' && args[0] === '-A'
+            ? { code: 0, stdout: `4242 1 ${uid} 01:00:00\n${claude} 4242 ${uid} 10:00\n` }
+            : { code: 1, stdout: '' },
+      kill: (pid: number, signal: string) => {
+        kills.push([pid, signal])
+        // The keepalive script relaunches: a new claude at a new pid, or a
+        // marker that now names a pid another program took.
+        claude = after === 'relaunched' ? 6161 : 7171
+        if (after === 'reused') comm = 'python3'
+        fs.writeFile(marker, JSON.stringify({ kind: 'keepalive', pid: 4242, claudePid: claude, capabilities: ['relaunch'] }))
+      },
+      keepAliveSweep: async () => ({ enabled: false, agents: [] }),
+    })
+    await runWatcher(deps as any)
+    assert.deepEqual(kills, after === 'relaunched' ? [[5151, 'SIGTERM'], [6161, 'SIGTERM']] : [[5151, 'SIGTERM']])
+    // Unverified is a FAILED restart, never another tier that reads as a pass.
+    const restartLines = logs.filter((l) => / restart 7[ :]/.test(` ${l}`))
+    if (after === 'reused') {
+      assert.ok(restartLines.some((l) => l.includes('no signal sent')), restartLines.join('\n'))
+      assert.equal(restartLines.filter((l) => l.includes(': ok ')).length, 1, restartLines.join('\n'))
+    } else {
+      assert.equal(restartLines.filter((l) => l.includes(': ok ')).length, 2, restartLines.join('\n'))
+    }
+  })
+}
+
 test('runWatcher: the first heartbeat after a restart carries the keep-alive states the previous process persisted', async () => {
   const fs = machineFs()
   manifestFor(fs)

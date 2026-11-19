@@ -2482,13 +2482,15 @@ test('the witness whose restart fails first, then the excused agent: the same, r
 test('two excused agents and a witness whose restart fails: after the restore both excused agents are restarted and verified on the restored version', async () => {
   const holder: { world?: ReturnType<typeof memWorld> } = {}
   const restarts: string[] = []
+  const vias: string[] = []
   const verifies: string[] = []
   const deaf = new Set(['912', '915'])
   const run = deafAgentRun(
     (id) => (deaf.has(id) ? { live: false, detail: 'no_answer_in_20000ms;never_live' } : { live: true, detail: 'answered' }),
     {
-      restartAgent: async (agent: { assistantId: string }) => {
+      restartAgent: async (agent: { assistantId: string }, opts: { via: string | null }) => {
         restarts.push(`${agent.assistantId}@${holder.world?.installedVersion()}`)
+        vias.push(`${agent.assistantId}:${opts.via}`)
         return agent.assistantId === '918' ? { ok: false, how: 'marker', message: 'marker write failed' } : { ok: true, how: 'marker' }
       },
       verifyAgent: async (agent: { assistantId: string }) => {
@@ -2504,8 +2506,84 @@ test('two excused agents and a witness whose restart fails: after the restore bo
   assert.equal(run.world.installedVersion(), '0.38.1')
   assert.deepEqual(restarts, ['912@0.38.3', '915@0.38.3', '918@0.38.3', '912@0.38.1', '915@0.38.1'])
   assert.deepEqual(verifies, ['912@0.38.3', '915@0.38.3', '912@0.38.1', '915@0.38.1'])
+  // Round 5 (Astra, minor): each retry takes the route its first restart took.
+  assert.deepEqual(vias.slice(3), [vias[0], vias[1]])
+  assert.notEqual(vias[0], '912:null')
   assert.equal(result.failedStep?.message, 'agent_deaf_after_update')
   assert.equal(stepById(result, String(result.failedStep?.id)).message, result.failedStep?.message, 'the checklist says what the summary says')
+})
+
+// Round 5 (Astra): the immediate rollback retried only the agent that caused
+// it; an excused agent restarted before it kept the rejected build. Both paths
+// now restart every agent that may be on it. A restart that timed out may
+// still be starting it, so it counts too. A restore that fails retries none.
+function trackedRun(over: Partial<Deps> & { failVerify: Set<string> }, deafBefore: string[], ids = ['912', '918']) {
+  const holder: { world?: ReturnType<typeof memWorld> } = {}
+  const restarts: string[] = []
+  const run = deafAgentRun(
+    (id) => (deafBefore.includes(id) ? { live: false, detail: 'no_answer_in_20000ms;never_live' } : { live: true, detail: 'answered' }),
+    {
+      verifyAgent: async (agent: { assistantId: string }) =>
+        over.failVerify.has(agent.assistantId) ? { ok: false, message: 'no channel-live marker newer than restart' } : { ok: true, evidence: 'marker' },
+      ...over,
+      restartAgent: async (agent: { assistantId: string }, opts: { via: string | null; restartedAtMs: number }) => {
+        restarts.push(`${agent.assistantId}@${holder.world?.installedVersion()}`)
+        return over.restartAgent ? over.restartAgent(agent as never, opts as never) : { ok: true, how: 'marker' }
+      },
+    } as Partial<Deps>,
+    ids,
+  )
+  holder.world = run.world
+  return { run, restarts, holder }
+}
+
+test('the immediate rollback also restarts the excused agent that went before, on the restored version', async () => {
+  const { run, restarts } = trackedRun({ failVerify: new Set(['912', '918']) }, ['912'])
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.equal(result.failedStep?.target, '918')
+  assert.deepEqual(restarts, ['912@0.38.3', '918@0.38.3', '918@0.38.1', '912@0.38.1'])
+})
+
+test('a restart that timed out may still be starting the rejected build: it is restarted on the restored one too', async () => {
+  let first912 = true
+  const { run, restarts } = trackedRun(
+    {
+      failVerify: new Set(['918']),
+      timeoutsMs: { network: 2_000, list: 1_000, restart: 20 },
+      restartAgent: async (agent: { assistantId: string }) => {
+        if (agent.assistantId === '912' && first912) {
+          first912 = false
+          return new Promise(() => {})
+        }
+        return { ok: true, how: 'marker' }
+      },
+    } as never,
+    [],
+  )
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, true)
+  assert.deepEqual(restarts, ['912@0.38.3', '918@0.38.3', '918@0.38.1', '912@0.38.1'])
+})
+
+test('a restore at the end of the run that fails retries nobody, and the run is not called rolled back', async () => {
+  const deaf = new Set(['912', '915'])
+  const { run, restarts, holder } = trackedRun(
+    {
+      failVerify: deaf,
+      restartAgent: async (agent: { assistantId: string }) => {
+        if (agent.assistantId !== '918') return { ok: true, how: 'marker' }
+        // The snapshot of the old version disappears before the restore.
+        holder.world?.fs.rm(holder.world.installPathFor('0.38.1'))
+        return { ok: false, how: 'marker', message: 'marker write failed' }
+      },
+    } as never,
+    ['912', '915'],
+    ['912', '915', '918'],
+  )
+  const result = await executePlan(run.plan, run.deps)
+  assert.equal(result.rolledBack, false)
+  assert.deepEqual(restarts, ['912@0.38.3', '915@0.38.3', '918@0.38.3'])
 })
 
 // Round 3 (Astra): the reread at a failed verify must not take a marker the
