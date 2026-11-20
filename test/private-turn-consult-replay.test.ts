@@ -307,6 +307,19 @@ test('a late Stop drained after the next prompt closes only its original message
   assert.equal(boot.tracker.canRecover(next.fireKey), true)
 })
 
+test('a reply recorded between recovery delivery and admission prevents a second answer', t => {
+  const home = agentHome(t)
+  const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  const first = home.life()
+  first.submit(first.tracker.deliver(message))
+  const next = home.life()
+  const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+  next.tracker.noteHandled('reply:1')
+  next.submit(card)
+  assert.equal(next.outcomes.at(-1), 'replayed')
+  assert.equal(next.call(), null)
+})
+
 test('a locked open record lets the reply finish, logs once and stays closed on restart', t => {
   const home = agentHome(t)
   const first = home.life()
