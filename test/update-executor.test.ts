@@ -2645,12 +2645,14 @@ test('a retry that timed out is settled before the run returns its result', asyn
         if (agent.assistantId !== '912') return { ok: true, how: 'marker' }
         calls912 += 1
         if (calls912 === 1) return { ok: true, how: 'marker' }
-        // The retry outlives its window, then finishes.
+        // The retry outlives its 20 ms window, then finishes 10 ms inside
+        // the settle window that follows (20 to 40 ms): 10 ms of margin on
+        // each side on real timers.
         return new Promise((resolve) =>
           setTimeout(() => {
             events.push('retry settled')
             resolve({ ok: true, how: 'marker' })
-          }, 40),
+          }, 30),
         )
       },
     } as never,

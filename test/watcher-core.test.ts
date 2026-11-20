@@ -1693,7 +1693,7 @@ for (const after of ['relaunched', 'reused'] as const) {
 // script, so the claude is known by its folder or by the agent's own state
 // file, and its owner must be the watcher's user. No case read those three
 // inputs: dropping any of them from the fresh check kept every test green.
-function keepaliveOnlyRun(opts: { cwd?: string | null; owner?: number; agentState?: boolean; restarts?: number; relaunchLate?: boolean; relaunchNever?: boolean; frozenClock?: boolean; jobDeadlineMs?: number }) {
+function keepaliveOnlyRun(opts: { cwd?: string | null; owner?: number; agentState?: boolean; restarts?: number; relaunchLate?: boolean; relaunchNever?: boolean; frozenClock?: boolean; jobDeadlineMs?: number; slowPollMs?: number }) {
   const marker = `${HOME}/.bgos-agent/7/keepalive.json`
   // The process's own uid: the job's inventory (observeMachine) reads with it too.
   const UID = process.getuid?.() ?? 0
@@ -1725,7 +1725,9 @@ function keepaliveOnlyRun(opts: { cwd?: string | null; owner?: number; agentStat
     clock.now = () => frozen
   }
   let relaunchAt: number | null = null
-  clock.onSleep((_ms, nowMs) => {
+  clock.onSleep((ms, nowMs) => {
+    // A busy computer: each 2 s poll's check takes this much more clock.
+    if (opts.slowPollMs && ms === 2_000) clock.advance(opts.slowPollMs)
     // The new keepalive script writes its marker a few seconds after its claude is up.
     if (relaunchAt !== null && nowMs >= relaunchAt) {
       fs.writeFile(marker, JSON.stringify({ kind: 'keepalive', pid: script, claudePid: claude, capabilities: ['relaunch'] }))
@@ -1811,6 +1813,16 @@ test('runWatcher: the wait for a relaunched keepalive gives up after 30 s', asyn
   assert.deepEqual(run.kills, [[5151, 'SIGTERM']])
   assert.ok(declarePolls(run.clock.sleeps) <= 30_000, `${declarePolls(run.clock.sleeps)} ms`)
   assert.ok(declarePolls(run.clock.sleeps) >= 28_000, `${declarePolls(run.clock.sleeps)} ms`)
+})
+
+// Only the 30 s bound ends this one: each poll takes 5 s of clock, so 30 s
+// pass after 6 polls, long before the 15 poll cap.
+test('runWatcher: the wait ends at 30 s of clock even when the polls are slow', async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, restarts: 2, relaunchNever: true, slowPollMs: 3_000 })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(run.kills, [[5151, 'SIGTERM']])
+  const polls = run.clock.sleeps.filter((ms) => ms === 2_000).length
+  assert.ok(polls >= 5 && polls <= 6, `${polls} polls`)
 })
 
 test("runWatcher: the wait ends at the job's deadline when that comes first", async () => {
