@@ -12,6 +12,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.14 (2026-11-20)
+
+**fix(update): an agent that was already deaf before an update no longer rolls the computer back.** An agent counts as restarted only when it is seen answering after the restart: a whole live marker whose boot stamp is after it, never the file's modified time. An agent that was not answering before the update is left out of the proof when another agent can prove the new build; when none can, the run rolls back as before. A keepalive restart checks the fresh marker right before its signal, with nothing in between, and waits at most 30 s (and never past the job deadline, whatever the clock does) for the relaunched one. A retry that timed out is settled before the run reports, and every agent a rollback could not restart is named in the run's result and the watcher's log. Guard: `test/update-executor.test.ts`, `test/watcher-core.test.ts`, `test/agent-verify.test.ts` and `test/agent-inventory.boot-clock.test.ts`, each new case red first, with the mutants named in the pull request.
+
 ## 0.90.13 (2026-11-19)
 
 **fix(secret scan): the AWS secret key rule stays fast on any line.** The rule now checks a line in linear time with the same matches as before, byte for byte, so a long or unusual line can no longer slow the scan. Tests compare the new check with the old pattern on 200,000 generated lines and 156 long ones.
