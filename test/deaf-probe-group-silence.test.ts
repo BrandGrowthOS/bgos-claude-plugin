@@ -656,7 +656,10 @@ test('server.ts: only the watcher\'s probe, which follows a real restart, asks f
   const start = SRC.indexOf('// Step 2.6: liveness probe')
   const end = SRC.indexOf('// Step 2.7:', start)
   assert.ok(start !== -1 && end !== -1)
-  assert.match(SRC.slice(start, end), /buildLivenessProbeNotification\(\{ chatId: monitoredChatIds\[0\], afterRestart: true \}\)/)
+  // Review of #396: the watcher also asks before an update, when nothing was
+  // restarted; the request's purpose decides (probeSaysAfterRestart, pinned in
+  // channel-ack.test.ts).
+  assert.match(SRC.slice(start, end), /buildLivenessProbeNotification\(\{ chatId: monitoredChatIds\[0\], afterRestart: saysAfterRestart \}\)/)
   const ladder = serverFunction('function checkReplyOverdue(')
   assert.match(ladder, /buildLivenessProbeNotification\(\{ chatId \}\)/)
   assert.doesNotMatch(ladder, /afterRestart/)
