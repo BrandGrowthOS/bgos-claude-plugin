@@ -366,6 +366,45 @@ test('a late Stop drained after the next prompt closes only its original message
   assert.equal(boot.tracker.canRecover(next.fireKey), true)
 })
 
+
+for (const guard of ['token', 'content', 'daemon', 'marker list', 'folder', 'key', 'slot', 'timestamp', 'age', 'closed', 'open', 'tool']) {
+  test(`the release hook withholds the request for an invalid ${guard}`, t => {
+    const home = agentHome(t)
+    home.clock.now = Date.now()
+    const message = { content: 'summarize the document', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+    const first = home.life()
+    first.submit(first.tracker.deliver(message))
+    const next = home.life()
+    const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+    const dir = join(dirname(home.firesPath), 'interrupted-turns')
+    const offerPath = join(dir, fs.readdirSync(dir).find(name => name.endsWith('.claimed'))!)
+    const offer = JSON.parse(readFileSync(offerPath, 'utf8'))
+    const source = join(dir, privateTurnModule.privatePromptHash(offer.key))
+    switch (guard) {
+      case 'token': offer.token = ''; break
+      case 'content': offer.content = 1; break
+      case 'daemon': offer.pid++; break
+      case 'marker list': offer.markers = offer.markers[0]; break
+      case 'folder': offer.markers = []; break
+      case 'key':
+        offer.key = 'invalid'
+        fs.copyFileSync(source + '.open', join(dir, privateTurnModule.privatePromptHash(offer.key) + '.open'))
+        break
+      case 'slot': offer.slot = 'invalid.attempt'; break
+      case 'timestamp': delete offer.at; break
+      case 'age': offer.at -= privateTurnModule.PRIVATE_TURN_MAX_AGE_MS + 1; break
+      case 'closed': writeFileSync(source + '.closed', ''); break
+      case 'open': fs.unlinkSync(source + '.open'); break
+      case 'tool': writeFileSync(join(dir, offer.slot.replace(/\.attempt$/, '.tool')), ''); break
+    }
+    writeFileSync(offerPath, JSON.stringify(offer))
+    const decision = privateTurnModule.recoveryPromptDecision(card, home.markerPath, dirname(dirname(home.firesPath)), next.sessionId, process.pid)
+    assert.equal(decision?.decision, 'block')
+    assert.doesNotMatch(JSON.stringify(decision), /summarize the document/)
+    assert.equal(fs.readdirSync(dir).some(name => name.endsWith('.shown') || name.endsWith('.attempt')), false)
+  })
+}
+
 test('an answer before the recovery prompt removes the card before the model can reply', t => {
   const home = agentHome(t)
   home.clock.now = Date.now()
@@ -424,15 +463,17 @@ test('the hook releases an unanswered retry once and keeps fresh work beside a c
   assert.equal(home.life().tracker.canRecover(message.fireKey), false)
 })
 
-test('a reply recorded between recovery delivery and admission prevents a second answer', t => {
+test('a reply recorded between hook release and admission prevents a second answer', t => {
   const home = agentHome(t)
+  home.clock.now = Date.now()
   const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
   const first = home.life()
   first.submit(first.tracker.deliver(message))
   const next = home.life()
   const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+  assert.ok(home.runPromptHook(next.sessionId, card)?.hookSpecificOutput)
   next.tracker.noteHandled('reply:1')
-  next.submit(card)
+  next.submitWithoutRelease(card)
   assert.equal(next.outcomes.at(-1), 'cancelled-retry')
   assert.equal(next.call(), null)
 })
