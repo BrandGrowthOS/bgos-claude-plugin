@@ -14,7 +14,7 @@ Running commands is not available for people you share with yet. Your own tools 
 
 ## 0.90.15 (2026-11-20)
 
-**fix(email): a file that was changing asks the person to wait and try again.** When a file changed while an agent was attaching it to an email, the refusal said "<file> changed while HOAI read it, so it is not attached." and read like a dead end. It now says "<file> was changing while we tried to attach it. Wait a moment and try again." Both refusal paths (the check on the opened file and the second look at the path) return the same sentence. Guard: the changed-file helper in `test/email-outbound-files.test.ts`, red on the old words first.
+**fix(email): a file that was changing asks the person to wait and try again.** When a file changed while an agent was attaching it to an email, the refusal said "`<file>` changed while HOAI read it, so it is not attached." and read like a dead end. It now says "`<file>` was changing while we tried to attach it. Wait a moment and try again." Both refusal paths (the check on the opened file and the second look at the path) return the same sentence. Guard: the changed-file helper in `test/email-outbound-files.test.ts`, red on the old words first.
 
 ## 0.90.14 (2026-11-20)
 
