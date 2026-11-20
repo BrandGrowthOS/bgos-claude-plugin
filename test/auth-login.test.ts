@@ -43,6 +43,7 @@ import {
   buildLoginEnv,
   carriesSignInCode,
   isRoomContext,
+  loginMethodFromCallback,
   mustDropMessage,
   extractLoginUrl,
   parseAuthStatusJson,
@@ -1909,3 +1910,36 @@ test('cancel and reopen with both card POSTs delayed: the older response cannot 
   assert.equal(spawned, 1, 'the current card still selects its method')
   controller.dispose()
 })
+
+test('a login: button value is matched exactly: a hidden character, a case change or a space is not a sign-in method', () => {
+  assert.equal(loginMethodFromCallback('login:claudeai'), 'claudeai')
+  assert.equal(loginMethodFromCallback('login:console'), 'console')
+  const zeroWidth = String.fromCharCode(0x200b)
+  const softHyphen = String.fromCharCode(0x00ad)
+  const directionMark = String.fromCharCode(0x200e)
+  for (const value of [
+    `lo${zeroWidth}gin:claudeai`,
+    `${zeroWidth}login:claudeai`,
+    `login:claude${zeroWidth}ai`,
+    `login${softHyphen}:console`,
+    `${directionMark}login:console`,
+    'LOGIN:claudeai',
+    ' login:claudeai',
+    'login:claudeai ',
+    'login:other',
+    'u:login:claudeai',
+  ]) {
+    assert.equal(loginMethodFromCallback(value), null, JSON.stringify(value))
+  }
+})
+
+test('a tap whose value only looks like a sign-in method, on a card that is not the sign-in card, is not taken', () => {
+  const zeroWidth = String.fromCharCode(0x200b)
+  const { controller, children } = harness()
+  assert.equal(
+    controller.button({ chatId: 'c1', messageId: 7, callbackData: `lo${zeroWidth}gin:claudeai`, clickerUserId: null }),
+    'not_mine',
+  )
+  assert.equal(children.length, 0, 'no sign-in process was started')
+})
+
