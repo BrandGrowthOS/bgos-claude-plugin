@@ -420,6 +420,51 @@ test('review #10: a failed job and the account a status is about survive a reope
   assert.equal((await f.watcher.snapshot()).statusRpcId, thrown)
 })
 
+test('verify A and B: a refused job reaches the page by its id, with or without a registry, never over a waiting change', async (t) => {
+  const f = fixture(t)
+  // No registry yet: a Restore on a fresh computer is refused, and still reported.
+  const fresh = randomUUID()
+  f.watcher.recordFailure(fresh, { ownerUserId: 'user_fixture', accountCommand: { action: 'rebind' } }, new Error('account_change_refused'))
+  assert.deepEqual((await f.watcher.snapshot()).refusedRpcIds, [fresh])
+  // A change waiting for its turn keeps its own status when a second press is refused.
+  const a = await f.add('A')
+  f.sign(a, 1, 1, 1)
+  f.row.ready = false
+  await f.assign('now', a, 41)
+  const waiting = (await f.watcher.snapshot()).statusRpcId
+  const second = randomUUID()
+  f.watcher.recordFailure(second, { ownerUserId: 'user_fixture', accountCommand: { action: 'assign', mode: 'now', accountId: a, assistantId: 41 } }, new Error('job_in_flight'))
+  const snap = await f.watcher.snapshot()
+  assert.deepEqual([snap.status, snap.statusRpcId], ['waiting_for_turn', waiting])
+  assert.deepEqual(snap.refusedRpcIds, [fresh, second])
+})
+
+test('verify D: a rollback held by a safety check gives up after its bounded wait', async (t) => {
+  const f = fixture(t)
+  const b = await f.add('B')
+  f.sign(b, 1, 1, 1)
+  let clock = now
+  const calls: any[] = []
+  const watcher = createHelperAccounts({
+    ...f.deps,
+    now: () => clock,
+    restart: async (_r: any, choice: string | null) => {
+      calls.push(choice)
+      return choice === b ? false : { started: false, wait: true }
+    },
+  })
+  await watcher.run(randomUUID(), {
+    op: 'helper_accounts', machineId: 'machine-12345', watcherPairingId: 23, ownerUserId: 'user_fixture', requestedBy: 'owner',
+    targets: [{ assistantId: 41, pairingId: 13 }], accountCommand: { action: 'assign', mode: 'now', accountId: b, assistantId: 41 },
+  })
+  assert.equal((await watcher.snapshot()).status, 'waiting_for_turn')
+  clock += 31 * 60_000
+  await watcher.tick()
+  assert.equal((await watcher.snapshot()).status, 'failed')
+  // The previous login stays the next start's, and other changes are accepted again.
+  assert.equal(JSON.parse(readFileSync(registryOf(f), 'utf8')).targets['41'].transition, undefined)
+})
+
 test('review #11: the same owner rebinds a re-enrolled watcher without spending a slot', async (t) => {
   const f = fixture(t)
   for (let i = 0; i < 32; i++) await f.add(`Saved ${i}`)
