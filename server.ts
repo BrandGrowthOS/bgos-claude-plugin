@@ -12084,6 +12084,10 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
     scheduleGrantRuns.noteBegin(payload.prompt)
     // After the tracker's begin: a pending card's own prompt hands over to the tracker's bound turn.
     quietTurns.noteBegin(payload.prompt)
+    if (began === 'cancelled-retry') {
+      publishBrowserPrivateTurn()
+      return
+    }
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with

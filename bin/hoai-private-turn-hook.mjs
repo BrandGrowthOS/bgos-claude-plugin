@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findOwnAttachedKey, floorKey, floorStateRoot, pidIsAlive, sessionFolders } from '../lib/floor-state.mjs'
-import { GROUP_LANE_ENV, PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateTurnRecord, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
+import { GROUP_LANE_ENV, PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateTurnRecord, privateUnservedPath, recoveryPromptDecision, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 
 const envText = (env, name) => (env && typeof env[name] === 'string' ? env[name].trim() : '')
 
@@ -320,6 +320,8 @@ export async function main() {
         if (ready?.turnId === recorded.marker.turnId && ready.sessionId === recorded.marker.sessionId) break
         await new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.min(25, until - performance.now()))))
       }
+      const decision = recoveryPromptDecision(payload.prompt, recorded.path, floorStateRoot(), recorded.marker.sessionId, recorded.marker.daemon?.pid)
+      if (decision) process.stdout.write(JSON.stringify(decision))
     }
   } catch {
     const event = payload?.hook_event_name

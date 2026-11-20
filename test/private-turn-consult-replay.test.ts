@@ -17,6 +17,8 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import fs, { existsSync, utimesSync, writeFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -110,7 +112,14 @@ function agentHome(t: any) {
     hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd,
     prompt: '<task-notification><status>killed</status></task-notification>',
   }, env)
-  return { paths: markerPaths, life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs }
+  const runPromptHook = (sessionId: string, prompt: string) => {
+    const hook = fileURLToPath(new URL('../bin/hoai-private-turn-hook.mjs', import.meta.url))
+    const child = spawnSync(process.execPath, [hook], { env, encoding: 'utf8', windowsHide: true,
+      input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd, prompt }) })
+    assert.equal(child.status, 0, child.stderr)
+    return child.stdout.trim() ? JSON.parse(child.stdout) : null
+  }
+  return { runPromptHook, paths: markerPaths, life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs }
 }
 
 for (const [card, action] of [['peer', 'call_owner'], ['other chat', 'meeting_reply'], ['meeting', 'send_to_peer']]) {
@@ -169,7 +178,7 @@ for (const interruption of ['another chat', 'another person', 'peer', 'meeting',
       assert.equal(next.tracker.canRecover(message.fireKey), boot === 0)
       if (next.tracker.canRecover(message.fireKey)) {
         const redelivery = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
-        assert.match(redelivery, /^\[Interrupted:/)
+        assert.match(redelivery, /^<hoai-recovery /)
         next.submit(redelivery)
         assert.equal(next.call(), OWNER)
         next.act('reply')
@@ -201,7 +210,7 @@ test('restart recovery can answer a killed turn once, even after another boot', 
   assert.equal(first.call(), OWNER)
   const recovered = home.life()
   const prompt = recovered.tracker.deliver({ ...message, recoveryWithoutReply: true })
-  assert.match(prompt, /^\[Interrupted: check what you already did before acting again\.\]/)
+  assert.match(prompt, /^<hoai-recovery /)
   recovered.submit(prompt)
   assert.equal(recovered.call(), OWNER)
   const again = home.life()
@@ -244,6 +253,7 @@ test('boot cleans only recovery files older than seven days', (t) => {
     ['a'.repeat(64) + '.open', cutoff - 1000],
     ['a'.repeat(64) + '.closed', cutoff - 1000],
     ['a'.repeat(64) + '.claimed', cutoff - 1000],
+    ['a'.repeat(64) + '.shown', cutoff - 1000],
     ['a'.repeat(64) + '.attempt', cutoff - 1000],
     ['a'.repeat(64) + '.tool', cutoff - 1000],
     ['b'.repeat(64) + '.claimed', cutoff],
@@ -254,7 +264,7 @@ test('boot cleans only recovery files older than seven days', (t) => {
     utimesSync(path, new Date(at), new Date(at))
   }
   home.life()
-  for (const suffix of ['open', 'closed', 'claimed', 'attempt', 'tool']) assert.equal(existsSync(join(dir, 'a'.repeat(64) + '.' + suffix)), false)
+  for (const suffix of ['open', 'closed', 'claimed', 'shown', 'attempt', 'tool']) assert.equal(existsSync(join(dir, 'a'.repeat(64) + '.' + suffix)), false)
   assert.ok(existsSync(join(dir, 'b'.repeat(64) + '.claimed')))
   assert.ok(existsSync(join(dir, 'unrelated')))
 })
@@ -282,7 +292,7 @@ for (const shape of ['held behind refused probe', 'expired before admission', 'a
     const working = home.life()
     assert.equal(working.tracker.canRecover(key), true)
     const retry = working.tracker.deliver({ ...message, recoveryWithoutReply: true })
-    assert.match(retry, /^\[Interrupted:/)
+    assert.match(retry, /^<hoai-recovery /)
     working.submit(retry)
     assert.equal(working.call(), OWNER)
     working.act('reply')
@@ -307,6 +317,64 @@ test('a late Stop drained after the next prompt closes only its original message
   assert.equal(boot.tracker.canRecover(next.fireKey), true)
 })
 
+test('an answer before the recovery prompt removes the card before the model can reply', t => {
+  const home = agentHome(t)
+  home.clock.now = Date.now()
+  const first = home.life()
+  const message = { content: 'summarize the document', chatId: 'chat', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  const next = home.life()
+  const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+  next.tracker.noteHandled('reply:1')
+  let answers = 1
+  const decision = home.runPromptHook(next.sessionId, card)
+  if (decision?.decision !== 'block') answers++
+  assert.equal(answers, 1)
+  const submission = { prompt: card, sessionId: next.sessionId, promptId: 'submission' }
+  assert.equal(next.tracker.begin(submission), 'cancelled-retry')
+  assert.equal(next.tracker.begin(submission), 'cancelled-retry')
+  assert.doesNotMatch(card, /Interrupted|summarize the document/)
+  assert.doesNotMatch(JSON.stringify(decision), /Interrupted|summarize the document/)
+  assert.equal(home.life().tracker.canRecover(message.fireKey), false)
+})
+
+test('showing a retry beside another prompt leaves its own admission unspent', t => {
+  const home = agentHome(t)
+  home.clock.now = Date.now()
+  const first = home.life()
+  const message = { content: 'summarize the document', chatId: 'chat', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  const next = home.life()
+  const retry = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+  const other = next.tracker.deliver({ content: 'new question', chatId: 'second', actingUserId: OWNER })
+  const batch = retry + '\n' + other
+  const shown = home.runPromptHook(next.sessionId, batch)
+  assert.match(shown?.hookSpecificOutput?.additionalContext ?? '', /summarize the document/)
+  next.submit(batch)
+  assert.equal(next.outcomes.at(-1), 'ambiguous')
+  assert.equal(home.life().tracker.canRecover(message.fireKey), true)
+})
+
+test('the hook releases an unanswered retry once and keeps fresh work beside a cancelled retry', t => {
+  const home = agentHome(t)
+  home.clock.now = Date.now()
+  const first = home.life()
+  const message = { content: 'summarize the document', chatId: 'chat', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  const next = home.life()
+  const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+  assert.doesNotMatch(card, /summarize the document/)
+  const opened = home.runPromptHook(next.sessionId, card)
+  assert.match(opened?.hookSpecificOutput?.additionalContext ?? '', /summarize the document/)
+  next.submit(card)
+  assert.equal(next.call(), OWNER)
+  assert.equal(home.runPromptHook(next.sessionId, card), null)
+  next.tracker.noteHandled('reply:1')
+  const fresh = next.tracker.deliver({ ...message, content: 'fresh question', fireKey: 'owner:2' })
+  assert.equal(home.runPromptHook(next.sessionId, card + '\n' + fresh), null)
+  assert.equal(home.life().tracker.canRecover(message.fireKey), false)
+})
+
 test('a reply recorded between recovery delivery and admission prevents a second answer', t => {
   const home = agentHome(t)
   const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
@@ -316,7 +384,7 @@ test('a reply recorded between recovery delivery and admission prevents a second
   const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
   next.tracker.noteHandled('reply:1')
   next.submit(card)
-  assert.equal(next.outcomes.at(-1), 'replayed')
+  assert.equal(next.outcomes.at(-1), 'cancelled-retry')
   assert.equal(next.call(), null)
 })
 
@@ -332,7 +400,7 @@ test('retry admission requires its saved offer from this boot', t => {
   assert.equal(offers.length, 1)
   fs.unlinkSync(join(dir, offers[0]!))
   next.submit(card)
-  assert.equal(next.outcomes.at(-1), 'replayed')
+  assert.equal(next.outcomes.at(-1), 'cancelled-retry')
   assert.equal(next.call(), null)
   assert.equal(home.life().tracker.canRecover(message.fireKey), true)
 })

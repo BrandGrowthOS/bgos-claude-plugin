@@ -995,8 +995,10 @@ test('incident replay integrates the usage refusal, resumed prompt, boot poll an
     await lane.clock.elapse()
     assert.equal(lane.run.notifications.length, expected)
     for (const n of lane.run.notifications) {
-      assert.match(n.content, /^\[Interrupted:/)
-      assert.match(n.content, /Carry on/)
+      assert.match(n.content, /^<hoai-recovery /)
+      assert.doesNotMatch(n.content, /Carry on/)
+      const release = privateTurnModule.recoveryPromptDecision(n.content, paths[0], root, session, process.pid)
+      assert.match(release?.hookSpecificOutput?.additionalContext ?? '', /Carry on/)
       assert.equal(b.submit(n.content), OWNER)
       b.tracker.noteOutbound('reply', paths)
       b.tracker.noteHandled('reply:1')
