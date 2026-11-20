@@ -183,6 +183,44 @@ test('authenticated watcher frame returns only after the selected child resumes 
   assert.ok(!JSON.stringify(snapshot).includes(home))
 })
 
+test('review #14: without the pinned transcript the watcher never asks for a restart', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'account-pin-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const write = (p: string, value: string) => {
+    mkdirSync(dirname(p), { recursive: true })
+    writeFileSync(p, value)
+  }
+  const credentials = { machineId: 'machine12345', pairingId: 9, backendUrl: 'http://127.0.0.1:1' }
+  const stateDir = join(home, '.bgos-agent', '11'),
+    cwd = join(home, 'agent'),
+    pin = randomUUID()
+  const row: any = {
+    assistantId: '11', stateDir, pluginStateDir: stateDir, cwd, sessionId: pin,
+    credentialsPath: join(home, '.bgos-agent', 'credentials-11.json'),
+    recipe: { claudeConfigDir: null, cwd, assistantId: '11' }, launcherLive: true,
+  }
+  write(row.credentialsPath, JSON.stringify({ userId: 'user_fixture', assistantId: 11, pairingId: 19, backendUrl: credentials.backendUrl }))
+  write(join(stateDir, 'agent-state.json'), JSON.stringify({
+    schemaVersion: 1, assistantId: '11', pid: 101, updatedAt: new Date().toISOString(), sessionId: pin,
+    turnInFlight: false, pendingMessages: 0, pendingPermissions: 0, activeOperations: 0, turnSignal: 'hooks',
+  }))
+  // The pinned conversation's transcript is NOT on disk.
+  let restarts = 0
+  const watcher = createAccountWatcher({ home, credentials, now: () => Date.now(), env: {}, fs: nodeFs(), pidAlive: () => true, sleep: async () => {} }, {
+    list: () => [row], probe: async () => true, eligible: async () => true,
+    requestRestart: async () => { restarts++; return { ok: true } },
+    verify: async () => ({ ok: true }),
+  })
+  const job = (accountCommand: any, targets: any[] = []) => watcher.run(randomUUID(), {
+    op: 'helper_accounts', requestedBy: 'owner', ...credentials, watcherPairingId: 9, ownerUserId: 'user_fixture', targets, accountCommand,
+  })
+  await job({ action: 'add', label: 'Reserve' })
+  const [b] = (await watcher.snapshot()).accounts.map((x: any) => x.id)
+  await job({ action: 'assign', mode: 'now', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
+  assert.equal(restarts, 0)
+  assert.equal((await watcher.snapshot()).agents[0].status, 'failed')
+})
+
 test('the real watcher reads the agent limit line from its transcript and switches at the limit with the conversation', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'account-limit-'))
   t.after(() => rmSync(home, { recursive: true, force: true }))

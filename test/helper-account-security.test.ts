@@ -30,6 +30,7 @@ function machine(t: any, targets: (a: string, b: string) => object) {
         version: 1,
         machineId: 'machine-12345',
         pairingId: 23,
+        backendUrl: 'http://127.0.0.1:1',
         ownerUserId: 'owner',
         accounts: [
           { id: a, label: 'Account A' },
@@ -132,6 +133,17 @@ test('F3 a damaged registry or a lost profile never stops agents it does not own
   assert.throws(() => m.apply({}), /account_profile_unavailable/)
 })
 
+test('review #4: the launcher never takes a login from a registry another backend issued', async (t) => {
+  const m = machine(t, (a) => ({ computer: { choice: a } }))
+  const env: any = {}
+  m.apply(env)
+  assert.equal(env.CLAUDE_CONFIG_DIR, join(m.root, m.a))
+  m.registry({ backendUrl: 'https://another.backend.test', targets: { computer: { choice: m.a } } })
+  const other: any = {}
+  assert.equal(m.apply(other), false)
+  assert.equal(other.CLAUDE_CONFIG_DIR, undefined)
+})
+
 test('an automatic switch at a limit never cuts a permission question, thread work or a background job', () => {
   const now = Date.now()
   const state = { turnInFlight: true, pendingMessages: 2, activeOperations: 1, pendingPermissions: 0, threadWork: 0, turnSignal: 'hooks' }
@@ -155,7 +167,7 @@ test('F4 the sign-in check never runs from inside a saved login folder', async (
   const id = randomUUID()
   const root = join(home, '.bgos-agent', 'helper-accounts')
   mkdirSync(join(root, id), { recursive: true, mode: 0o700 })
-  write(join(root, 'registry.json'), JSON.stringify({ version: 1, machineId: 'm-1', pairingId: 23, ownerUserId: 'owner', accounts: [{ id, label: 'A' }], targets: {} }))
+  write(join(root, 'registry.json'), JSON.stringify({ version: 1, machineId: 'm-1', pairingId: 23, backendUrl: 'http://x', ownerUserId: 'owner', accounts: [{ id, label: 'A' }], targets: {} }))
   const seen: string[] = []
   const watcher = createAccountWatcher(
     { home, fs: nodeFs(), env: { PATH: '/bin' }, credentials: { pairingId: 23, machineId: 'm-1', backendUrl: 'http://x' }, now: () => Date.now(), pidAlive: () => true },

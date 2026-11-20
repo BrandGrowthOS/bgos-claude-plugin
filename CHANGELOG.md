@@ -12,6 +12,18 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.91.2 (2026-11-20)
+
+**fix(watcher): Helper Accounts review findings (REVIEW-rvacctbuild).**
+- #1: a recovered switch rolls back only the conversation it was made for, never one the owner opened since.
+- #3: a rollback held by a safety check waits and runs, instead of being dropped.
+- #4: the registry is bound to the backend that issued it, and another deployment sees and uses nothing.
+- #7: a Switch now waiting for its turn is cancelled (`clear`), never silently replaced.
+- #9: a provably stopped agent takes the new login at its next start.
+- #10: a job that threw is recorded as failed under its own id, and statuses name their account.
+- #11: `rebind` brings a re-enrolled watcher's logins back for the same owner without a slot.
+- #14: a test now pins that no restart is requested without the pinned transcript.
+
 ## 0.91.1 (2026-11-20)
 
 **feat(watcher): saved Claude accounts, switched now, at the limit, or by Auto.** The owner saves Claude logins per computer (each in its own folder under `~/.bgos-agent/helper-accounts/`) and assigns one to the computer's new starts or to one agent from HOAI Helper. Switch now waits for the agent's turn and restarts it in the same conversation. Switch at limit keeps the current login until the agent's own "You've hit your ... limit" line appears in its transcript (any model, read the way capkeeper reads it; the statusline has no per model usage), then switches once. Auto switches now to the saved login with the most week room (capkeeper's statusline sample, up to a day old; a tie keeps the current login) and picks again at each limit. A login whose agent just hit a model limit has no room for that model until the reset Claude gave; a session or weekly limit blocks it for every model. With no login left with room, the agent waits. At a limit the switch does not wait for the turn (the agent cannot answer anyway), but never cuts a permission question, thread work or a background job (`atLimitSafe`). The refused message is not sent again by itself.

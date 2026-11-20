@@ -17,7 +17,7 @@ const usage = (short: number, week: number, model: number) => ({
 function fixture(t: any) {
   const home = mkdtempSync(join(tmpdir(), 'watcher-accounts-'))
   t.after(() => rmSync(home, { recursive: true, force: true }))
-  const credentials = { pairingId: 23, machineId: 'machine-12345' }
+  const credentials = { pairingId: 23, machineId: 'machine-12345', backendUrl: 'https://api.fixture.test' }
   const readings = new Map<string, any>()
   const restarts: any[] = []
   const row = {
@@ -27,6 +27,7 @@ function fixture(t: any) {
     accountId: null as string | null,
     sessionId: randomUUID(),
     ready: true,
+    stopped: false,
     limit: null as null | { atMs: number; resetsAtMs: number; model: string | null; agentModel: string | null },
     model: 'opus',
   }
@@ -113,8 +114,9 @@ test('one agent finishes its turn and returns through its watcher on the same pi
   await f.assign('now', id, 41)
   assert.equal((await f.watcher.snapshot()).status, 'waiting_for_turn')
   const firstPress = (await f.watcher.snapshot()).statusRpcId
-  await f.assign('now', id, 41)
-  assert.notEqual((await f.watcher.snapshot()).statusRpcId, firstPress)
+  // Review #7: an accepted change waiting for its turn is never silently replaced by a later press.
+  await assert.rejects(f.assign('now', id, 41), /job_in_flight/)
+  assert.equal((await f.watcher.snapshot()).statusRpcId, firstPress)
   assert.equal(f.restarts.length, 0)
   f.row.ready = true
   await f.watcher.tick()
@@ -265,7 +267,7 @@ test('a re-enrolled watcher exposes no prior labels until the same owner proves 
   const f = fixture(t)
   const id = await f.add('Original')
   f.sign(id, 20, 10, 30)
-  const rebound = createHelperAccounts({ ...f.deps, credentials: { machineId: 'machine-12345', pairingId: 88 } })
+  const rebound = createHelperAccounts({ ...f.deps, credentials: { machineId: 'machine-12345', pairingId: 88, backendUrl: 'https://api.fixture.test' } })
   assert.deepEqual((await rebound.snapshot()).accounts, [])
   const job = {
     op: 'helper_accounts',
@@ -293,4 +295,142 @@ test('a damaged registry cannot send free text in a status, profile id or reques
   state.targets = { computer: { choice: canary }, '41': { status: canary } }
   writeFileSync(path, JSON.stringify(state))
   assert.equal(JSON.stringify(await f.watcher.snapshot()).includes(canary), false)
+})
+
+// ---- REVIEW-rvacctbuild.md, one test per watcher finding, each red on 46df4d1 ----
+
+const registryOf = (f: any) => join(f.deps.home, '.bgos-agent', 'helper-accounts', 'registry.json')
+const editRegistry = (f: any, change: (state: any) => void) => {
+  const state = JSON.parse(readFileSync(registryOf(f), 'utf8'))
+  change(state)
+  writeFileSync(registryOf(f), JSON.stringify(state))
+}
+
+test('review #1: recovery never restarts a conversation the owner opened after the interrupted switch', async (t) => {
+  const f = fixture(t)
+  const b = await f.add('B')
+  f.sign(b, 1, 1, 1)
+  const oldPin = f.row.sessionId
+  // The watcher stopped after journalling a switch to B; meanwhile the owner opened a new conversation.
+  editRegistry(f, (s) => {
+    s.targets['41'] = { rpcId: randomUUID(), assistantId: 41, pairingId: 13, choice: b, rule: { mode: 'now', accountId: b }, transition: { desired: b, previous: null, pin: oldPin } }
+  })
+  f.row.sessionId = randomUUID()
+  const recovered = createHelperAccounts(f.deps)
+  await recovered.tick()
+  assert.deepEqual(f.restarts, [])
+  const snap = await recovered.snapshot()
+  assert.equal(snap.status, 'failed')
+  // The previous login is still the one the next start of this agent uses.
+  assert.equal(JSON.parse(readFileSync(registryOf(f), 'utf8')).targets['41'].choice, null)
+})
+
+test('review #3: a safety hold on the rollback waits and rolls back, never abandons it', async (t) => {
+  const f = fixture(t)
+  const b = await f.add('B')
+  f.sign(b, 1, 1, 1)
+  const calls: any[] = []
+  let holdRollback = 1
+  const watcher = createHelperAccounts({
+    ...f.deps,
+    restart: async (r: any, choice: string | null) => {
+      calls.push(choice)
+      if (choice === b) return false // B starts and its verification fails
+      if (holdRollback-- > 0) return { started: false, wait: true } // A must wait for activity to finish
+      f.row.accountId = choice
+      return true
+    },
+  })
+  await watcher.run(randomUUID(), {
+    op: 'helper_accounts', machineId: 'machine-12345', watcherPairingId: 23, ownerUserId: 'user_fixture', requestedBy: 'owner',
+    targets: [{ assistantId: 41, pairingId: 13 }], accountCommand: { action: 'assign', mode: 'now', accountId: b, assistantId: 41 },
+  })
+  assert.deepEqual(calls, [b, null])
+  assert.equal((await watcher.snapshot()).status, 'waiting_for_turn')
+  await watcher.tick()
+  assert.deepEqual(calls, [b, null, null])
+  assert.equal((await watcher.snapshot()).status, 'restored')
+  assert.equal(f.row.accountId, null)
+})
+
+test('review #4: a registry from another backend is never published or used', async (t) => {
+  const f = fixture(t)
+  const a = await f.add('Earlier deployment')
+  f.sign(a, 1, 1, 1)
+  const other = createHelperAccounts({ ...f.deps, credentials: { pairingId: 23, machineId: 'machine-12345', backendUrl: 'https://another.backend.test' } })
+  const snap = await other.snapshot()
+  assert.deepEqual(snap.accounts, [])
+  assert.equal(snap.defaultAccountId, null)
+  await assert.rejects(
+    other.run(randomUUID(), {
+      op: 'helper_accounts', machineId: 'machine-12345', watcherPairingId: 23, ownerUserId: 'user_fixture', requestedBy: 'owner', targets: [],
+      accountCommand: { action: 'add', label: 'New deployment' },
+    }),
+  )
+  assert.equal(JSON.parse(readFileSync(registryOf(f), 'utf8')).backendUrl, 'https://api.fixture.test')
+})
+
+test('review #7: a change waiting for its turn can be cancelled by the owner, then replaced', async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B')
+  f.sign(a, 1, 1, 1)
+  f.sign(b, 1, 1, 1)
+  f.row.ready = false
+  await f.assign('now', a, 41)
+  await f.job({ action: 'clear', assistantId: 41 })
+  assert.equal((await f.watcher.snapshot()).status, 'saved')
+  await f.assign('now', b, 41)
+  f.row.ready = true
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [b])
+})
+
+test('review #9: a stopped agent takes the new login at its next start instead of waiting for a turn', async (t) => {
+  const f = fixture(t)
+  const b = await f.add('B')
+  f.sign(b, 1, 1, 1)
+  f.row.ready = false
+  f.row.stopped = true
+  await f.assign('now', b, 41)
+  assert.deepEqual(f.restarts, [])
+  assert.equal((await f.watcher.snapshot()).status, 'saved')
+  assert.equal(JSON.parse(readFileSync(registryOf(f), 'utf8')).targets['41'].choice, b)
+})
+
+test('review #10: a failed job and the account a status is about survive a reopened page', async (t) => {
+  const f = fixture(t)
+  const b = await f.add('B')
+  f.readings.set(b, { signedIn: false, usage: null })
+  const rpc = randomUUID()
+  await f.watcher.run(rpc, {
+    op: 'helper_accounts', machineId: 'machine-12345', watcherPairingId: 23, ownerUserId: 'user_fixture', requestedBy: 'owner',
+    targets: [{ assistantId: 41, pairingId: 13 }], accountCommand: { action: 'assign', mode: 'now', accountId: b, assistantId: 41 },
+  })
+  const snap = await f.watcher.snapshot()
+  assert.equal(snap.status, 'needs_sign_in')
+  assert.equal(snap.statusAccountId, b)
+  // A job that threw before it changed anything still reaches the owner as failed, under its own id.
+  const thrown = randomUUID()
+  f.watcher.recordFailure(thrown, { ownerUserId: 'user_fixture', accountCommand: { action: 'assign', mode: 'now', accountId: b, assistantId: 41 } })
+  const after = await f.watcher.snapshot()
+  assert.deepEqual([after.status, after.statusRpcId, after.statusAssistantId], ['failed', thrown, 41])
+  // Another owner's failure is not written into this registry.
+  f.watcher.recordFailure(randomUUID(), { ownerUserId: 'someone_else', accountCommand: { action: 'add', label: 'x' } })
+  assert.equal((await f.watcher.snapshot()).statusRpcId, thrown)
+})
+
+test('review #11: the same owner rebinds a re-enrolled watcher without spending a slot', async (t) => {
+  const f = fixture(t)
+  for (let i = 0; i < 32; i++) await f.add(`Saved ${i}`)
+  const rebound = createHelperAccounts({ ...f.deps, credentials: { machineId: 'machine-12345', pairingId: 88, backendUrl: 'https://api.fixture.test' } })
+  assert.deepEqual((await rebound.snapshot()).accounts, [])
+  const rebind = (ownerUserId: string) =>
+    rebound.run(randomUUID(), { op: 'helper_accounts', machineId: 'machine-12345', watcherPairingId: 88, ownerUserId, requestedBy: 'owner', targets: [], accountCommand: { action: 'rebind' } })
+  await assert.rejects(rebind('someone_else'))
+  assert.deepEqual((await rebound.snapshot()).accounts, [])
+  await rebind('user_fixture')
+  const snap = await rebound.snapshot()
+  assert.equal(snap.accounts.length, 32)
+  assert.equal(snap.status, 'saved')
 })

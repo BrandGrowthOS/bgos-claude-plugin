@@ -39,6 +39,7 @@ test('the ordinary supervisor starts its pinned conversation using the computer 
       version: 1,
       machineId: 'machine-12345',
       pairingId: 23,
+      backendUrl: 'http://127.0.0.1:1',
       ownerUserId: 'owner',
       accounts: [{ id, label: 'Fixture A' }],
       targets: { computer: { choice: id } },
