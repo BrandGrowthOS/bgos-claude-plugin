@@ -1214,6 +1214,18 @@ test('restart progress rejects the old lock, a mismatched pid and a turn at boot
   }
 })
 
+test('a resumed transcript refusal before or at boot does not fail the new restart', () => {
+  const state = JSON.parse(agentState({ updatedAt: new Date(T0 + MIN).toISOString() }))
+  const row = { assistantId: state.assistantId, credentialsPath: 'pairing', cwd: AVA, pluginStateDir: PLUGIN_STATE }
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: JSON.stringify(state) })
+  const boot = T0 + 1
+  fs.writeFile(row.credentialsPath + '.lock', JSON.stringify({ pid: state.pid, bootedAt: boot, heartbeatAt: T0 + MIN }))
+  for (const at of [boot - 1, boot]) {
+    writeTranscript(fs, [limitEnvelope(at, T0 + MIN)], T0 + MIN)
+    assert.equal(ownerRestartProgress(row, { configDir: CONFIG, fs, now: T0 + MIN, pidAlive: () => true, restartedAtMs: T0 }), null)
+  }
+})
+
 for (const limited of [false, true]) test(limited ? 'owner restart into a still limited account fails with its reset' : 'owner restart recognizes a working turn before a late acknowledgement', async () => {
   const fs = agentFs()
   const job = ownerRestartJob()
