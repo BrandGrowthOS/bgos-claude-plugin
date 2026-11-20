@@ -1134,6 +1134,21 @@ function ownerRestartJob(rpcId = 'rst-1', body: Record<string, unknown> = {}) {
   }
 }
 
+test('one queue removal preserves the wait of the other message', () => {
+  const limit = limitEnvelope(T0 - 6 * MIN, T0 + MIN)
+  const first = enqueueLine(T0 - 4 * MIN, 'first')
+  const second = enqueueLine(T0 - 3 * MIN, 'second')
+  for (const operation of ['dequeue', 'remove']) {
+    const taken = (content?: string) => JSON.stringify({ type: 'queue-operation', operation, content, timestamp: new Date(T0).toISOString() })
+    for (const target of ['first', 'second', undefined]) {
+      assert.equal(parseTranscriptTail([limit, first, second, taken(target)].join('\n'), T0).heldQueue, true)
+    }
+    assert.equal(parseTranscriptTail([limit, first, second, taken('second'), taken('first')].join('\n'), T0).heldQueue, false)
+    const recent = enqueueLine(T0 - MIN, 'second')
+    assert.equal(parseTranscriptTail([limit, first, recent, taken('first')].join('\n'), T0).heldQueue, false)
+  }
+})
+
 test('checkup reports a held queue with a fresh beacon and a literal usage-limit tail', async () => {
   const limit = limitEnvelope(T0 - 7 * MIN, T0 + MIN)
   const queue = [enqueueLine(T0 - 5 * MIN), enqueueLine(T0 - 4 * MIN), enqueueLine(T0 - 2 * MIN)]
