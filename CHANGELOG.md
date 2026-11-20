@@ -12,6 +12,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.91.5 (2026-11-20)
+
+**test(launcher): the unknown file identity case is pinned.** The identity decision is now the exported pure `sameKnownFile`. A test shows an unknown identity (null) never matches, not even another unknown one, and the `a === b` mutant fails it.
+
 ## 0.91.4 (2026-11-20)
 
 **fix(launcher): the linked conversation's identity check reads file numbers safely.** A saved login's transcript link compared plain device and inode numbers, which the file identity guard refuses: on some drives a number is 0 (unknown), and a large id loses precision as a plain number. It now compares bigint "dev:ino" identities, and an unknown identity is never taken as the conversation (the link is refused). The full suite found it (`test/file-identity.guard.test.ts`), and a new test pins the conflict.

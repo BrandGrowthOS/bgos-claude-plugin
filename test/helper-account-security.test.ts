@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { applyHelperAccount, prepareHelperTranscript, profileEnvOf } from '../lib/helper-account-launch.mjs'
+import { applyHelperAccount, prepareHelperTranscript, profileEnvOf, sameKnownFile } from '../lib/helper-account-launch.mjs'
 import { readAccountRegistry } from '../lib/helper-accounts.mjs'
 import { atLimitSafe, createAccountWatcher } from '../lib/helper-account-watcher.mjs'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
@@ -142,6 +142,15 @@ test('review #4: the launcher never takes a login from a registry another backen
   const other: any = {}
   assert.equal(m.apply(other), false)
   assert.equal(other.CLAUDE_CONFIG_DIR, undefined)
+})
+
+test('an unknown file identity is never the same file, not even as another unknown one', () => {
+  assert.equal(sameKnownFile('16777230:91', '16777230:91'), true)
+  assert.equal(sameKnownFile('16777230:91', '16777230:92'), false)
+  // A drive that reports no file number (0) gives null: never a match, on either side or both.
+  assert.equal(sameKnownFile(null, null), false)
+  assert.equal(sameKnownFile(null, '16777230:91'), false)
+  assert.equal(sameKnownFile('16777230:91', null), false)
 })
 
 test('the linked conversation is refused when another file already sits at its place in the new login', async (t) => {
