@@ -1258,6 +1258,27 @@ test('a second press on a held queue cannot use an earlier restart or answer', a
   }
 })
 
+test('an unreadable watch record logs the problem and allows the owner restart', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  writeTranscript(fs, [limitEnvelope(T0 - 6 * MIN, T0 + MIN), enqueueLine(T0 - 5 * MIN)], T0)
+  const beacon = `${PLUGIN_STATE}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, T0)
+  const watch = `${HOME}/.bgos-agent/watcher/limit-watch.json`
+  fs.writeFile(watch, '{}')
+  const read = fs.readFile
+  fs.readFile = (path) => path === watch ? null : read(path)
+  const job = ownerRestartJob()
+  const backend = fakeBackend(job)
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, PS_912)
+  await runWatcher(run.deps as any)
+  assert.equal(restartRequested(fs), true)
+  assert.equal(terminalOf(backend, job.frames[0]!.rpcId).state, 'done')
+  assert.ok(run.logs.some((line) => /unreadable.*owner restart/i.test(line)))
+})
+
 test('a checkup restarts a held queue after the reset without pressing a key', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1 }) })
   writeTranscript(fs, [limitEnvelope(T0 - 7 * MIN, T0 - MIN), enqueueLine(T0 - 6 * MIN)], T0)
