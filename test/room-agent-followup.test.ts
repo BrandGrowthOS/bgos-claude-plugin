@@ -928,6 +928,84 @@ test('first read paging: our reply across room context stops older reads at the 
   assert.equal(needsOlder([rows[0]!, { ...rows[1]!, sender: 'system' }, rows[2]!]), true, 'system traffic still separates a proactive assistant')
 })
 
+test('incident replay integrates the usage refusal, resumed prompt, boot poll and confirmed answer', async (t) => {
+  const fs = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { floorKey, markFloorAttached } = await import('../lib/floor-state.mjs')
+  const { recordPrivateBoundary } = await import('../bin/hoai-private-turn-hook.mjs')
+  const { parseTranscriptTail } = await import('../lib/watcher-checkup.mjs')
+  const { createFireLedger, createPrivateTurnTracker, privateFiresPath, privateMarkerPath, requirePrivateTurn } = privateTurnModule
+  const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'incident-')))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const cwd = join(root, 'agent')
+  fs.mkdirSync(cwd)
+  const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
+  const { spawn } = await import('node:child_process')
+  const { once } = await import('node:events')
+  const old = spawn(process.execPath, ['-e', 'process.stdin.resume()'], { cwd, env, windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] })
+  const oldEnded = once(old, 'exit')
+  t.after(() => { old.stdin.end() })
+  await once(old, 'spawn')
+  markFloorAttached({ root, folders: [cwd], pid: old.pid })
+  const paths = [privateMarkerPath(root, floorKey(cwd))]
+  const start = Date.parse('2026-11-20T11:18:00Z')
+  let now = start - 5 * 60_000
+  t.mock.method(Date, 'now', () => now)
+  const session = 'resumed'
+  const transcript: string[] = []
+  function boot() {
+    const fires = createFireLedger({ path: privateFiresPath(root, 'agent'), readTranscript: () => transcript.join('\n') })
+    const tracker = createPrivateTurnTracker({ markerPaths: paths, fires, ownerUserId: OWNER })
+    const submit = (card: string) => {
+      recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: session, cwd, prompt: card }, env)
+      assert.equal(tracker.begin({ prompt: card, sessionId: session }), 'opened')
+      return requirePrivateTurn(tracker, paths, OWNER).actingUserId
+    }
+    return { fires, tracker, submit }
+  }
+  const a = boot()
+  const row = { id: 1, sender: 'user', senderUserId: OWNER, text: 'Carry on', sentDate: new Date(now).toISOString() }
+  const card = a.tracker.deliver({ content: row.text, actingUserId: OWNER, chatId: CHAT, fireKey: 'owner:1' })
+  assert.equal(a.submit(card), OWNER)
+  const insert = (record: Record<string, unknown>) => transcript.push(JSON.stringify({ timestamp: new Date(now).toISOString(), ...record }))
+  insert({ type: 'user', message: { content: card } })
+  insert({ type: 'assistant', message: { role: 'assistant', model: 'fixture', content: [{ type: 'tool_use', id: 'task', name: 'background_task' }] } })
+  insert({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'task', content: 'started in background' }] } })
+  insert({ type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' })
+  now += 1_000
+  const other = a.tracker.deliver({ content: 'update', actingUserId: OWNER, chatId: 'second' })
+  insert({ type: 'queue-operation', operation: 'enqueue', content: other })
+  now = start + 3000
+  const tail = parseTranscriptTail(transcript.join('\n'), now)
+  assert.equal(tail.error?.kind, 'rate_limit')
+  assert.equal(tail.heldQueue, true)
+  old.stdin.end()
+  await oldEnded
+  recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: session, cwd,
+    prompt: '<task-notification><status>killed</status></task-notification>' }, env)
+  now = start + 5000
+  markFloorAttached({ root, folders: [cwd], now })
+  let answers = 0
+  for (const expected of [1, 0]) {
+    const b = boot()
+    const lane = pollLane([{ message: row, messageFiles: [] }], { chatLastSeen: new Map([[CHAT, row.id]]),
+      chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10, privateTurns: b.tracker, privateFires: b.fires })
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.length, expected)
+    for (const n of lane.run.notifications) {
+      assert.match(n.content, /^\[Interrupted:/)
+      assert.match(n.content, /Carry on/)
+      assert.equal(b.submit(n.content), OWNER)
+      b.tracker.noteOutbound('reply', paths)
+      b.tracker.noteHandled('reply:1')
+      answers++
+    }
+  }
+  assert.equal(answers, 1)
+})
+
 test('restart offers a held request once per boot until its first answer', async () => {
   const id = 1
   const rows = [{ message: { id, sender: 'user', senderUserId: PERSON, text: 'Request', sentDate: new Date().toISOString() }, messageFiles: [] }]

@@ -123,7 +123,7 @@ test('a normal stop closes an admitted message even after its private authority 
   assert.equal(home.life().tracker.canRecover(key), false)
 })
 
-for (const interruption of ['another chat', 'another person', 'peer', 'meeting', 'startup prompt', 'combined']) {
+for (const interruption of ['another chat', 'another person', 'peer', 'meeting', 'startup prompt']) {
   test(`an unanswered started message survives ${interruption}`, (t) => {
     const home = agentHome(t)
     const message = { content: 'Carry on', actingUserId: OWNER, chatId: 'first', fireKey: 'owner:1' }
@@ -131,12 +131,7 @@ for (const interruption of ['another chat', 'another person', 'peer', 'meeting',
     const card = first.tracker.deliver(message)
     first.submit(card)
     assert.equal(first.call(), OWNER)
-    home.transcripts.set(first.sessionId, [
-      { type: 'user', message: { content: card } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'background_task' }] } },
-      { type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' },
-    ].map(row => JSON.stringify(row)).join('\n'))
-    if (interruption === 'another chat' || interruption === 'combined') {
+    if (interruption === 'another chat') {
       first.tracker.deliver({ content: 'update', chatId: 'second', actingUserId: OWNER })
     } else if (interruption === 'peer') {
       first.tracker.deliver({ content: 'update', chatId: 'first', peerSourceAssistantId: 'peer' })
@@ -145,7 +140,7 @@ for (const interruption of ['another chat', 'another person', 'peer', 'meeting',
     } else if (interruption === 'meeting') {
       first.tracker.noteUntracked({ chatId: 'first' })
     }
-    if (interruption === 'startup prompt' || interruption === 'combined') {
+    if (interruption === 'startup prompt') {
       home.clock.now = T0 + 3_000
       home.startupPrompt(first.sessionId)
     }
