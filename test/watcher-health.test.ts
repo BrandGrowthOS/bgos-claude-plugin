@@ -354,3 +354,12 @@ test('heartbeatAgentIds: at most 64 ids, the kept and watched agents first (the 
   assert.deepEqual(heartbeatAgentIds(sixtyFour, ['1']), sixtyFour)
   assert.deepEqual(heartbeatAgentIds([], ['1']), [])
 })
+
+test('heartbeatAgentIds: more than 64 kept and watched agents still send 64 ids, the first 64 of them named', () => {
+  const ids = Array.from({ length: 140 }, (_, i) => String(i + 1))
+  // 70 agents kept or watched, in the order the keep-alive report names them.
+  const first = ids.slice(60, 130).reverse()
+  const sent = heartbeatAgentIds(ids, first)
+  assert.equal(sent.length, 64, 'never more than the server takes, however many are kept or watched')
+  assert.deepEqual(sent, first.slice(0, 64).sort((a, b) => Number(a) - Number(b)), 'the first 64 named, ascending')
+})
