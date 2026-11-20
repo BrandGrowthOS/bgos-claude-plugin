@@ -20,7 +20,7 @@ Before, when an agent kept running but stopped getting messages, the Helper noti
 
 - An agent on the keep-alive list is brought back, as before.
 - Any other agent is left alone: nothing is restarted, installed or changed for it. The Helper tells the app, which can say the agent is not kept running and offer to keep it running. Once the owner says yes, the agent is brought back.
-- The Helper also tells the app which agents it has just looked at and found fine. An app that knows this repairs by itself only those agents and the ones kept running, and none right after the Helper starts or when it stops on an error.
+- An agent you did not keep running is no longer restarted by itself when it stops getting messages.
 - A computer with more than 64 agents still reports, naming 64 of them.
 
 An app that does not know the new report ignores it, so nothing already installed changes.
