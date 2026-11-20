@@ -380,7 +380,7 @@ function answerProbes(fs: MemoryFs, clock: ReturnType<typeof fakeClock>, ids: st
   clock.onSleep((_ms, at) => {
     for (const id of ids) {
       if (fs.files.has(`${HOME}/.bgos-agent/${id}/probe-requested.json`)) {
-        fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+        fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString(), bootedAt: new Date(at).toISOString() }))
       }
     }
   })
@@ -1939,7 +1939,7 @@ test('F2 (win32): with claudePid null (the daemon has no ps there) the claude ab
   const rec = recorder({ win32Ps: winListing(false) })
   const clock = fakeClock()
   clock.onSleep((_ms, at) => {
-    if (idle.files.has(`${WSTATE}\\probe-requested.json`)) idle.writeFile('C:\\Users\\user\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+    if (idle.files.has(`${WSTATE}\\probe-requested.json`)) idle.writeFile('C:\\Users\\user\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString(), bootedAt: new Date(at).toISOString() }))
   })
   const report = await runKeepAliveSweep(windowsCtx(idle, rec, { now: clock.now, sleep: clock.sleep, pidAlive: alive }) as any)
   assert.equal(idle.files.get(`${WSTATE}\\restart-requested.json`), '{}', 'the live launcher restarts claude in place')
@@ -2566,7 +2566,7 @@ test('win32: a session the launcher started 9 s ago is never restarted by the sw
   const old = freshStartMachine(120 * MIN, 30 * MIN)
   const clock = fakeClock()
   clock.onSleep((_ms, at) => {
-    if (old.files.has(`${WSTATE}\\probe-requested.json`)) old.writeFile('C:\\Users\\user\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+    if (old.files.has(`${WSTATE}\\probe-requested.json`)) old.writeFile('C:\\Users\\user\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString(), bootedAt: new Date(at).toISOString() }))
   })
   await runKeepAliveSweep(windowsCtx(old, recorder({ win32Ps: freshStartListing(120 * MIN) }), { pidAlive: alive, now: clock.now, sleep: clock.sleep }) as any)
   assert.equal(old.files.get(`${WSTATE}\\restart-requested.json`), '{}')
@@ -2647,7 +2647,7 @@ test('a marker stranded longer than anyone takes to act on it does not block the
   fs.touch(`${WSTATE}\\restart-requested.json`, T0 - 10 * MIN)
   const clock = fakeClock()
   clock.onSleep((_ms, at) => {
-    if (fs.files.has(`${WSTATE}\\probe-requested.json`)) fs.writeFile('C:\\Users\\user\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+    if (fs.files.has(`${WSTATE}\\probe-requested.json`)) fs.writeFile('C:\\Users\\user\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString(), bootedAt: new Date(at).toISOString() }))
   })
   const report = await runKeepAliveSweep(windowsCtx(fs, recorder({ win32Ps: winListing(false) }), { now: clock.now, sleep: clock.sleep, pidAlive: (pid: number) => [777, 4912, 5912].includes(pid) }) as any)
   assert.equal(fs.files.get(`${WSTATE}\\restart-requested.json`), '{}')

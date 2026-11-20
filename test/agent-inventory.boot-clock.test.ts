@@ -159,6 +159,23 @@ test('F1: listAgents after the step: hoai\'s record and the daemon\'s declared-l
   assert.deepEqual(agents.map((a) => [a.assistantId, a.launcherLive, a.supervisor]), [['912', true, 'launcher-live'], ['913', true, 'launcher-live']])
 })
 
+// Review of #396, round 7: the fresh check read keepalive.json twice,
+// once to accept it and once more for its start stamp, so a rewrite between
+// the two reads paired one marker's pids with another's stamp.
+test('the keepalive marker is read once per verification, and its stamp comes from that same read', () => {
+  const marker = keepaliveMarkerBody({ pid: 3100, claudePid: 3200, tmuxSession: 'agent-912', startedAt: STAMP, boot: STAMP_BOOT })
+  const files: Record<string, string> = { ...PROC, [`${HOME}/.bgos-agent/912/keepalive.json`]: marker }
+  const ps = linuxPs({ 3100: { command: 'bash keepalive.sh', forkUptimeMs: FORK_UPTIME }, 3200: { command: 'claude', forkUptimeMs: FORK_UPTIME + 1000, ppid: 3100 } })
+  let markerReads = 0
+  const readFile = (p: string) => {
+    if (p.endsWith('/keepalive.json')) markerReads += 1
+    return files[p] ?? null
+  }
+  const probe = { platform: 'linux', home: HOME, assistantId: '912', readFile, pidAlive: () => true, execSync: ps.execSync, now: NOW, uid: UID }
+  assert.deepEqual(verifyKeepaliveMarker(probe), { pid: 3100, claudePid: 3200, tmuxSession: 'agent-912' })
+  assert.equal(markerReads, 1)
+})
+
 test('F1: a live keepalive script stays declared after the step: the watcher\'s reading and the daemon\'s G11 reading both see it', () => {
   const marker = keepaliveMarkerBody({ pid: 3100, claudePid: 3200, tmuxSession: 'agent-912', startedAt: STAMP, boot: STAMP_BOOT })
   const files = { ...PROC, [`${HOME}/.bgos-agent/912/keepalive.json`]: marker }
