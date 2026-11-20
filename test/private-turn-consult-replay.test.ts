@@ -841,6 +841,31 @@ for (const read of ['boards_download', 'vault_fill_prepare', 'unlisted_tool', 's
   })
 }
 
+test('a Stop after a progress update and a refusal leaves one answer due', t => {
+  const home = agentHome(t)
+  const request = { content: 'finish the document', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  const first = home.life()
+  const card = first.tracker.deliver(request)
+  first.submit(card)
+  first.act('set_status')
+  home.transcripts.set(first.sessionId, [
+    { type: 'user', message: { content: card } },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'progress', name: 'mcp__bgos__set_status' }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'progress', content: 'saved' }] } },
+  ].map(row => JSON.stringify(row)).concat(limitRecord).join('\n'))
+  first.stop()
+  let answers = 0
+  for (let boot = 0; boot < 2; boot++) {
+    const next = home.life()
+    if (!next.tracker.canRecover(request.fireKey)) continue
+    next.submit(next.tracker.deliver({ ...request, recoveryWithoutReply: true }))
+    assert.equal(next.call(), OWNER)
+    next.act('reply', request.chatId)
+    answers++
+  }
+  assert.equal(answers, 1)
+})
+
 test('plain reads leave their request open', t => {
   const home = agentHome(t)
   const first = home.life()
