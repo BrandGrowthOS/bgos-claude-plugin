@@ -563,6 +563,13 @@ async function postOpenCard(w: World): Promise<void> {
     },
   })
   assert.notEqual(result.isError, true, `the open card was sent: ${JSON.stringify(result.content)}`)
+  // The daemon reads every button card it posts once, directly. Return only
+  // when the stand-in has answered that read: a case that then arms a failed
+  // direct read, or empties this card's options, must not race it. On a slow
+  // runner it was still in flight, took the failure meant for the sign-in
+  // card, and kept the chat off the cached read the 503 case waits for.
+  const card = w.backend.rows.filter((r) => r.text === OPEN_CARD_TEXT).at(-1)!
+  await waitFor(() => w.backend.anchoredReads.some((r) => r.id === card.id), 'the daemon\'s own direct read of the open card')
 }
 
 /**
