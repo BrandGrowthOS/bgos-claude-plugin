@@ -24,6 +24,7 @@ import {
   proveLiveBefore,
   verifyAgent,
 } from '../lib/agent-verify.mjs'
+import { ownerRestartProgress } from '../lib/watcher-checkup.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 
 const MARKER = '/home/kc/.bgos-plugin-state/912/channel-live.json'
@@ -69,9 +70,11 @@ function fakeClock(start: number, onTick?: (nowMs: number, tick: number) => void
 
 test('owner verification fails at the deadline with only a fresh lock', async () => {
   const fs = memoryFs()
-  const clock = fakeClock(T0)
-  const result = await verifyAgent(agentRow(), {
-    fs, restartedAtMs: T0, now: clock.now, sleep: clock.sleep, timeoutMs: 75_000, ownerProgress: () => 'new_daemon',
+  const row = agentRow()
+  const clock = fakeClock(T0, (at) => fs.writeFile(row.credentialsPath + '.lock', JSON.stringify({ pid: 2, bootedAt: T0 + 1, heartbeatAt: at })))
+  const ownerProgress = () => ownerRestartProgress(row, { configDir: row.stateDir, fs, now: clock.now(), pidAlive: () => true, restartedAtMs: T0 })
+  const result = await verifyAgent(row, {
+    fs, restartedAtMs: T0, now: clock.now, sleep: clock.sleep, timeoutMs: 75_000, ownerProgress,
   })
   assert.equal(result.ok, false)
   assert.equal(result.evidence.via, null)

@@ -27,7 +27,7 @@ import assert from 'node:assert/strict'
 
 import { limitAccountChanged } from '../lib/watcher-limit.mjs'
 import { freeLimitResult, runWatcher } from '../lib/watcher-core.mjs'
-import { checkupTarget, endOldClaudes, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
+import { checkupTarget, endOldClaudes, isOwnerChannelText, ownerRestartProgress, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
 import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
 import { CHANNEL_CORE_FILES } from '../lib/keepalive-plan.mjs'
@@ -1144,6 +1144,7 @@ test('checkup reports a held queue with a fresh beacon and a literal usage-limit
   const remove = JSON.stringify({ ...JSON.parse(queue[0]!), operation: 'remove' })
   for (const [lines, beat, held] of [
     [[limit, ...queue], T0, true],
+    [[JSON.stringify({ ...JSON.parse(limit), isSidechain: true }), ...queue], T0, false],
     [[limit, ...queue, ownerMessage(T0 - MIN)], T0, true],
     [[JSON.stringify(tool), limit, ...queue], T0, false],
     [[JSON.stringify(tool), result, limit, ...queue], T0, true],
@@ -1199,6 +1200,18 @@ test('item 5: the owner Restart restarts an agent that looks healthy and busy: n
   assert.equal(record.lastRestartAt, new Date(T0).toISOString())
   assert.equal(record.reason, 'owner_restart')
   assertDtoShape(backend.progress('rst-1'))
+})
+
+test('restart progress rejects the old lock, a mismatched pid and a turn at boot', () => {
+  const row = { assistantId: JSON.parse(agentState()).assistantId, credentialsPath: 'pairing', cwd: AVA, pluginStateDir: PLUGIN_STATE }
+  const pid = JSON.parse(agentState()).pid
+  for (const [boot, statePid, turn] of [[T0, pid, T0 + 2], [T0 + 1, pid + 1, T0 + 2], [T0 + 1, pid, T0 + 1]]) {
+    const now = T0 + MIN
+    const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ pid: statePid, updatedAt: new Date(now).toISOString() }) })
+    fs.writeFile(row.credentialsPath + '.lock', JSON.stringify({ pid, bootedAt: boot, heartbeatAt: now }))
+    writeTranscript(fs, [assistantTurn(turn!)], now)
+    assert.equal(ownerRestartProgress(row, { configDir: CONFIG, fs, now, pidAlive: () => true, restartedAtMs: T0 }), null)
+  }
 })
 
 for (const limited of [false, true]) test(limited ? 'owner restart into a still limited account fails with its reset' : 'owner restart recognizes a working turn before a late acknowledgement', async () => {
@@ -1258,6 +1271,22 @@ test('a second press on a held queue cannot use an earlier restart or answer', a
   }
 })
 
+test('a keep-alive restart alone holds the owner reservation and cannot prove a restart', async () => {
+  const id = JSON.parse(agentState()).assistantId
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState(),
+    [KEEPALIVE_STATE]: JSON.stringify({ schemaVersion: 1, agents: { [id]: { lastRestartAt: new Date(T0 - MIN).toISOString() } } }) })
+  writeTranscript(fs, [limitEnvelope(T0 - 6 * MIN, T0 + MIN), enqueueLine(T0 - 5 * MIN)], T0)
+  const beacon = `${PLUGIN_STATE}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, T0)
+  const job = ownerRestartJob()
+  const backend = fakeBackend(job)
+  const run = rig(fs, backend, fakeClock(), PS_912)
+  await runWatcher(run.deps as any)
+  assert.equal(restartRequested(fs), false)
+  assert.match(terminalOf(backend, job.frames[0]!.rpcId).message, /still on the Claude usage limit/)
+})
+
 test('an unreadable watch record logs the problem and allows the owner restart', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
   writeTranscript(fs, [limitEnvelope(T0 - 6 * MIN, T0 + MIN), enqueueLine(T0 - 5 * MIN)], T0)
@@ -1294,6 +1323,8 @@ test('a checkup restarts a held queue after the reset without pressing a key', a
   assert.ok(result.actions.some((a: any) => a.cause === 'held_queue' && a.did === 'restart_agent' && a.outcome === 'fixed'), result.message)
   assert.equal(restartRequested(fs), true)
   assert.ok(!run.execCalls.some((call) => call.includes('send-keys')))
+  const watch = JSON.parse(fs.readFile(`${HOME}/.bgos-agent/watcher/limit-watch.json`) ?? '{}')
+  assert.equal(watch.agents?.[JSON.parse(agentState()).assistantId]?.lastQueueRestartAt, new Date(T0).toISOString())
 })
 
 test('item 5: only an owner job, for exactly one agent on this computer; anything else is refused and touches nothing', async () => {

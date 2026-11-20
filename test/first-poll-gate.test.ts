@@ -352,6 +352,16 @@ test('non-boot polls keep the delta path', () => {
 // module load), so pin the load-bearing call sites textually, per this repo's
 // convention (see poll-core.test.ts).
 
+test('boot recovery supplies only an interrupted message newer than the last reply to delivery', () => {
+  const start = serverSource.indexOf('for (const row of recovered)')
+  const body = serverSource.slice(start, serverSource.indexOf('log(', start))
+  const select = new Function('recovered', 'lastReply', 'privateTurns', 'recoveredWithoutReply', body)
+  const result = new Set<number>()
+  select([1, 2, 3].map(id => ({ message: { id } })), 1, { canRecover: (key: string) => key !== 'owner:2' }, result)
+  assert.deepEqual([...result], [3])
+  assert.match(serverSource, /privateTurns\.deliver\(\{ content, chatId, recoveryWithoutReply: recoveredWithoutReply\.has\(msg\.message\.id\)/)
+})
+
 const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
 
 test('server.ts no longer holds the cursor map in memory only', () => {

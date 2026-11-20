@@ -47,6 +47,12 @@ test('a tokened peer prompt receives its own receipt without opening a private t
   const path = f.markerPaths[0] + '.ready'
   assert.equal(readPrivateJson(path, 2048), null)
   const { marker } = write(payload.prompt_id) as any
+  for (const mismatch of [{ live: false }, { sessionId: 'other' }, { promptHash: privatePromptHash('other') }]) {
+    writePrivateJson(f.markerPaths[0], { ...marker, ...mismatch })
+    assert.equal(f.tracker.current({ markerPaths: f.markerPaths }), null)
+    assert.equal(readPrivateJson(path, 2048), null, JSON.stringify(mismatch))
+  }
+  writePrivateJson(f.markerPaths[0], marker)
   assert.equal(f.tracker.current({ markerPaths: f.markerPaths }), null)
   assert.deepEqual(readPrivateJson(path, 2048), { turnId: marker.turnId, sessionId: marker.sessionId })
 })
