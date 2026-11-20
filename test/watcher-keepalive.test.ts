@@ -3280,6 +3280,14 @@ test('deafwatch for every agent: on Windows a command line the watcher cannot re
   }
 })
 
+test('deafwatch for every agent: `looked` names at most 64 agents, the lowest ids first, by number', async () => {
+  const ids = Array.from({ length: 70 }, (_, i) => String(i + 1))
+  const fs = machine(ids.map((id) => ({ id, cwd: `${HOME}/hoai-agents/n${id}`, service: 'none' as const })))
+  for (const id of ids) healthyAt(fs, id, T0)
+  const report: any = await runKeepAliveSweep(ctxFor(fs, recorder({ ps: psLine(1, 0, '/sbin/launchd') }), fakeClock(), { fetchKeepAlive: switchOff() }).ctx as any)
+  // '1' to '64': a text sort would put '10' second and keep '7' to '9' out.
+  assert.deepEqual(report.looked, ids.slice(0, 64))
+})
 
 test('deafwatch for every agent: the boot read never names an agent as looked at. Only a look of this process can', () => {
   const fs = retestScene()
