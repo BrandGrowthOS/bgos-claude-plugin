@@ -103,8 +103,80 @@ function agentHome(t: any) {
     return { tracker, submit, consult, wake, call, act, stop, sessionId, replays, revokes, outcomes }
   }
   const ledgerKeys = (): string[] => { try { return Object.keys((JSON.parse(readFileSync(firesPath, 'utf8')) as any).fires) } catch { return [] } }
-  return { life, clock, ledgerKeys, transcripts, firesPath }
+  const startupPrompt = (sessionId: string) => recordPrivateBoundary({
+    hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd,
+    prompt: '<task-notification><status>killed</status></task-notification>',
+  }, env)
+  return { life, clock, ledgerKeys, transcripts, firesPath, startupPrompt }
 }
+
+test('a normal stop closes an admitted message even after its private authority was revoked', (t) => {
+  const home = agentHome(t)
+  const first = home.life()
+  const key = 'owner:1'
+  first.submit(first.tracker.deliver({ actingUserId: OWNER, chatId: 'first', content: 'continue', fireKey: key }))
+  first.tracker.noteUntracked({ chatId: 'second' })
+  assert.equal(first.call(), null)
+  assert.equal(home.life().tracker.canRecover(key), true)
+  first.stop()
+  assert.equal(home.life().tracker.canRecover(key), false)
+})
+
+for (const interruption of ['another chat', 'another person', 'peer', 'meeting', 'startup prompt', 'combined']) {
+  test(`an unanswered started message survives ${interruption}`, (t) => {
+    const home = agentHome(t)
+    const message = { content: 'Carry on', actingUserId: OWNER, chatId: 'first', fireKey: 'owner:1' }
+    const first = home.life()
+    const card = first.tracker.deliver(message)
+    first.submit(card)
+    assert.equal(first.call(), OWNER)
+    home.transcripts.set(first.sessionId, [
+      { type: 'user', message: { content: card } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'background_task' }] } },
+      { type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' },
+    ].map(row => JSON.stringify(row)).join('\n'))
+    if (interruption === 'another chat' || interruption === 'combined') {
+      first.tracker.deliver({ content: 'update', chatId: 'second', actingUserId: OWNER })
+    } else if (interruption === 'peer') {
+      first.tracker.deliver({ content: 'update', chatId: 'first', peerSourceAssistantId: 'peer' })
+    } else if (interruption === 'another person') {
+      first.tracker.deliver({ content: 'update', chatId: 'first', actingUserId: 'user_other' })
+    } else if (interruption === 'meeting') {
+      first.tracker.noteUntracked({ chatId: 'first' })
+    }
+    if (interruption === 'startup prompt' || interruption === 'combined') {
+      home.clock.now = T0 + 3_000
+      home.startupPrompt(first.sessionId)
+    }
+    home.clock.now = T0 + 5_000
+    let answers = 0
+    for (let boot = 0; boot < 2; boot++) {
+      const next = home.life()
+      assert.equal(next.tracker.canRecover(message.fireKey), boot === 0)
+      if (next.tracker.canRecover(message.fireKey)) {
+        const redelivery = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+        assert.match(redelivery, /^\[Interrupted:/)
+        next.submit(redelivery)
+        assert.equal(next.call(), OWNER)
+        next.act('reply')
+        next.tracker.noteHandled('reply:1')
+        answers++
+      }
+    }
+    assert.equal(answers, 1)
+  })
+}
+
+test('an explicit reply closes an open message despite startup marker drift', (t) => {
+  const home = agentHome(t)
+  const first = home.life()
+  const key = 'owner:1'
+  first.submit(first.tracker.deliver({ actingUserId: OWNER, chatId: 'first', content: 'continue', fireKey: key }))
+  assert.equal(first.call(), OWNER)
+  first.tracker.noteHandled('reply:1')
+  home.startupPrompt(first.sessionId)
+  assert.equal(home.life().tracker.canRecover(key), false)
+})
 
 test('restart recovery can answer a killed turn once, even after another boot', (t) => {
   const home = agentHome(t)

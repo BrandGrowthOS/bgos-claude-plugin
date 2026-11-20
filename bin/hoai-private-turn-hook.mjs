@@ -182,11 +182,13 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
   // `ended`: a SessionEnd says its session is over, and a marker written while the entry still names a session that
   // ended says so again, until the daemon reads that SessionEnd line and names none (managedMarker).
   const ended = event === 'SessionEnd' ? sessionId : target.ended
+  const stopping = event === 'Stop' ? previousAt(path, sessionId).previous : null
   const marker = {
     schemaVersion: 1, turnId, sessionId,
     promptHash: privatePromptHash(payload.prompt), live: event === 'UserPromptSubmit',
     ...(promptId ? { promptId } : {}),
     ...record,
+    ...(stopping?.live === true && stopping.sessionId === sessionId && Array.isArray(stopping.tags) ? { stoppedTags: stopping.tags } : {}),
     ...(ended ? { ended } : {}),
     // When this marker was written, on the clock the daemon's own moments are on: the daemon orders the marker by it,
     // never by the file's modification time, which a file clock ahead of the real one moves (lib/private-turn.mjs
