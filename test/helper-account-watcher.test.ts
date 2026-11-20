@@ -208,6 +208,51 @@ test('verify #10: a job that throws in the real frame handler reaches the owner 
   assert.equal(progress.at(-1).state, 'failed')
 })
 
+test('verify B: a second press refused in the real frame handler never overwrites the change still waiting', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'account-inflight-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const write = (p: string, value: string) => {
+    mkdirSync(dirname(p), { recursive: true })
+    writeFileSync(p, value)
+  }
+  const credentials = { machineId: 'machine12345', pairingId: 9, backendUrl: 'http://127.0.0.1:1' }
+  const stateDir = join(home, '.bgos-agent', '11'),
+    cwd = join(home, 'agent'),
+    pin = randomUUID()
+  const row: any = {
+    assistantId: '11', stateDir, pluginStateDir: stateDir, cwd, sessionId: pin,
+    credentialsPath: join(home, '.bgos-agent', 'credentials-11.json'),
+    recipe: { claudeConfigDir: null, cwd, assistantId: '11' }, launcherLive: true,
+  }
+  write(row.credentialsPath, JSON.stringify({ userId: 'user_fixture', assistantId: 11, pairingId: 19, backendUrl: credentials.backendUrl }))
+  // Mid turn: the first Switch now waits for it.
+  write(join(stateDir, 'agent-state.json'), JSON.stringify({
+    schemaVersion: 1, assistantId: '11', pid: 101, updatedAt: new Date().toISOString(), sessionId: pin,
+    turnInFlight: true, pendingMessages: 0, pendingPermissions: 0, activeOperations: 0, turnSignal: 'hooks',
+  }))
+  let job: any
+  const ctx: any = {
+    home, env: {}, credentials, fs: nodeFs(), now: () => Date.now(), pidAlive: () => true, log: () => {}, writeState: () => {},
+    publishAccounts: async () => {},
+    client: { ack: async () => ({ ok: true }), job: async () => ({ ok: true, json: job }), progress: async () => ({ ok: true }) },
+  }
+  ctx.accounts = createAccountWatcher(ctx, { list: () => [row], probe: async () => true, eligible: async () => true })
+  const send = async (accountCommand: any, targets: any[] = []) => {
+    const rpcId = randomUUID()
+    job = { op: 'helper_accounts', requestedBy: 'owner', ...credentials, watcherPairingId: 9, ownerUserId: 'user_fixture', targets, accountCommand }
+    await handleFrame(ctx, { op: job.op, rpcId })
+    return rpcId
+  }
+  await send({ action: 'add', label: 'Reserve' })
+  const [b] = (await ctx.accounts.snapshot()).accounts.map((x: any) => x.id)
+  const first = await send({ action: 'assign', mode: 'now', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
+  assert.equal((await ctx.accounts.snapshot()).status, 'waiting_for_turn')
+  const second = await send({ action: 'assign', mode: 'now', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
+  const snap = await ctx.accounts.snapshot()
+  assert.deepEqual([snap.status, snap.statusRpcId], ['waiting_for_turn', first])
+  assert.deepEqual(snap.refusedRpcIds, [second])
+})
+
 test('verify #9: the real watcher reads a stopped agent and saves the login for its next start, without a restart', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'account-stopped-'))
   t.after(() => rmSync(home, { recursive: true, force: true }))
