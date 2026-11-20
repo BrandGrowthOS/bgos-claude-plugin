@@ -1159,6 +1159,36 @@ test('item 5: the owner Restart restarts an agent that looks healthy and busy: n
   assertDtoShape(backend.progress('rst-1'))
 })
 
+test('owner restart recognizes a working turn before a late acknowledgement', async () => {
+  const fs = agentFs()
+  const job = ownerRestartJob()
+  const backend = fakeBackend(job)
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  const pid = 7000
+  const bootedAt = T0 + 12_000
+  clock.onSleep((_ms, at) => {
+    if (at < bootedAt) return
+    live.add(pid)
+    const id = job.jobs['rst-1']!.targets[0]!.assistantId
+    fs.writeFile(`${HOME}/.bgos-agent/credentials-${id}.json.lock`, JSON.stringify({ pid, bootedAt, heartbeatAt: at }))
+    fs.writeFile(`${PLUGIN_STATE}/agent-state.json`, agentState({ pid, updatedAt: new Date(at).toISOString() }))
+    const lines = []
+    if (at >= T0 + 16_000) lines.push(ownerMessage(T0 + 16_000))
+    if (at >= T0 + 27_000) lines.push(assistantTurn(T0 + 27_000))
+    writeTranscript(fs, lines, at)
+    if (at >= T0 + 96_000) fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({
+      bootedAt: new Date(bootedAt).toISOString(), lastLiveAt: new Date(at).toISOString(),
+    }))
+  })
+  const run = rig(fs, backend, clock, PS_912, { pidAlive: (candidate: number) => live.has(candidate) })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend, job.frames[0]!.rpcId)
+  assert.equal(terminal.state, 'done', terminal.message)
+  assert.match(terminal.message, /; back, catching up$/)
+  assert.ok(clock.now() >= T0 + 27_000 && clock.now() < T0 + 75_000)
+})
+
 test('item 5: only an owner job, for exactly one agent on this computer; anything else is refused and touches nothing', async () => {
   const rows: Array<[string, Record<string, unknown>]> = [
     ['restart_needs_owner', { requestedBy: undefined }],

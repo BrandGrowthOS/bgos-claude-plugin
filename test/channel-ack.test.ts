@@ -143,4 +143,6 @@ test('the probe poll: a 3s unref timer that rate-limits, unlinks the file, and p
   assert.ok(block.indexOf('probeSaysAfterRestart(') < block.indexOf('unlinkSync(PROBE_REQUEST_PATH)'))
   assert.ok(block.includes('afterRestart: saysAfterRestart'), block)
   assert.ok(!block.includes('afterRestart: true'), 'never hard coded')
+  const firstProbe = serverSource.indexOf('await sendPendingProbe()', start)
+  assert.ok(firstProbe > start && firstProbe < serverSource.indexOf("await phase('boot poll sweep'"))
 })

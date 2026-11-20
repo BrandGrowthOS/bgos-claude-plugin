@@ -21299,6 +21299,63 @@ async function main(): Promise<void> {
     // down, 5 min while it is healthy).
     await phase('discover chats', () => discoverChats())
     log(`Monitoring ${monitoredChatIds.length} chat(s)`)
+    // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
+    // the watcher restarts this agent nothing proves the new session HEARS the
+    // channel until the user speaks (the marker only refreshes on the first
+    // tool call of a boot; the hello fires once per pairing). So the watcher
+    // drops ~/.bgos-agent/<id>/probe-requested.json and we answer it with ONE
+    // silent channel notification asking for the channel_ack tool; that call
+    // goes through the CallTool chokepoint and touches channel-live.json,
+    // which the watcher reads (newer than its restart timestamp) as proof.
+    // Cheap stat every 3s, unref'd, rate-limited to one probe per 30s however
+    // often the file reappears. The file is unlinked BEFORE the push so a
+    // failed push cannot loop on the same file (the watcher rewrites it every
+    // 30s while it waits anyway).
+    const PROBE_REQUEST_PATH = probeRequestPath(homedir(), ASSISTANT_ID)
+    let lastLivenessProbeAt: number | null = null
+    if (PROBE_REQUEST_PATH) {
+      const sendPendingProbe = async () => {
+        let markerExists = false
+        try {
+          markerExists = existsSync(PROBE_REQUEST_PATH)
+        } catch {
+          markerExists = false
+        }
+        if (
+          !shouldSendLivenessProbe({
+            markerExists,
+            lastSentAt: lastLivenessProbeAt,
+            now: Date.now(),
+          })
+        ) {
+          return
+        }
+        // Read before the unlink: the request says whether a restart happened
+        // (the question before an update writes purpose 'before_update').
+        let request: string | null = null
+        try {
+          request = readFileSync(PROBE_REQUEST_PATH, 'utf8')
+          if (Number(JSON.parse(request)?.afterBootMs) >= DAEMON_START_MS) return
+        } catch {
+          request = null
+        }
+        const saysAfterRestart = probeSaysAfterRestart(request)
+        try {
+          unlinkSync(PROBE_REQUEST_PATH)
+        } catch {
+          // Already gone or unremovable: the rate limit still bounds us.
+        }
+        lastLivenessProbeAt = Date.now()
+        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0], afterRestart: saysAfterRestart })
+        log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
+        await trackMessageOperation(() =>
+          channelNotify(() => ({ content: probe.content, meta: probe.meta })),
+        ).catch((err) => log(`liveness probe delivery failed: ${err}`))
+      }
+      await sendPendingProbe()
+      setInterval(() => void sendPendingProbe(), LIVENESS_PROBE_POLL_MS).unref()
+    }
+
     // The boot sweep stays awaited too, and deliberately so: cursor persistence
     // below must NOT begin until it finishes. A partial sweep flushed to disk
     // would leave the next boot with a cursor file and the first-run backlog
@@ -21458,60 +21515,6 @@ async function main(): Promise<void> {
     // block, yet it too must die when its launching session closes stdin and
     // must release any lock it later reclaimed. flushChatCursors is gated by
     // channelLiveness.live, so a shutdown before this block ran writes nothing.
-
-    // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
-    // the watcher restarts this agent nothing proves the new session HEARS the
-    // channel until the user speaks (the marker only refreshes on the first
-    // tool call of a boot; the hello fires once per pairing). So the watcher
-    // drops ~/.bgos-agent/<id>/probe-requested.json and we answer it with ONE
-    // silent channel notification asking for the channel_ack tool; that call
-    // goes through the CallTool chokepoint and touches channel-live.json,
-    // which the watcher reads (newer than its restart timestamp) as proof.
-    // Cheap stat every 3s, unref'd, rate-limited to one probe per 30s however
-    // often the file reappears. The file is unlinked BEFORE the push so a
-    // failed push cannot loop on the same file (the watcher rewrites it every
-    // 30s while it waits anyway).
-    const PROBE_REQUEST_PATH = probeRequestPath(homedir(), ASSISTANT_ID)
-    let lastLivenessProbeAt: number | null = null
-    if (PROBE_REQUEST_PATH) {
-      setInterval(() => {
-        let markerExists = false
-        try {
-          markerExists = existsSync(PROBE_REQUEST_PATH)
-        } catch {
-          markerExists = false
-        }
-        if (
-          !shouldSendLivenessProbe({
-            markerExists,
-            lastSentAt: lastLivenessProbeAt,
-            now: Date.now(),
-          })
-        ) {
-          return
-        }
-        // Read before the unlink: the request says whether a restart happened
-        // (the question before an update writes purpose 'before_update').
-        let request: string | null = null
-        try {
-          request = readFileSync(PROBE_REQUEST_PATH, 'utf8')
-        } catch {
-          request = null
-        }
-        const saysAfterRestart = probeSaysAfterRestart(request)
-        try {
-          unlinkSync(PROBE_REQUEST_PATH)
-        } catch {
-          // Already gone or unremovable: the rate limit still bounds us.
-        }
-        lastLivenessProbeAt = Date.now()
-        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0], afterRestart: saysAfterRestart })
-        log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
-        void trackMessageOperation(() =>
-          channelNotify(() => ({ content: probe.content, meta: probe.meta })),
-        ).catch((err) => log(`liveness probe delivery failed: ${err}`))
-      }, LIVENESS_PROBE_POLL_MS).unref()
-    }
 
     // Step 2.65: the limit watch's notice (lib/limit-notice.ts). When this agent was stuck on Claude
     // Code's usage limit screen, the watcher presses Enter once as soon as usage is back (or says why
