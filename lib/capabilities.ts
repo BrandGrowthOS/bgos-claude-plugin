@@ -81,7 +81,10 @@ fetched from the backend at connect; if you are reading this, that fetch failed.
   Stop clears the selection, so select again on resuming. After 15 minutes
   without tool activity, marks clear until tools resume. Without hooks,
   refresh within 30 minutes. Send working: false when you hand a goal off.
-  A mark never ticks a goal.
+  When workers you started keep running in the background after your turn,
+  pass held: true (held_minutes up to 240, 120 by default) for each goal a
+  worker serves: Stop and idle time leave a held mark on until its hold runs
+  out; send working: false when that worker ends. A mark never ticks a goal.
   set_goal_waiting says a goal waits on your owner or another agent (on, who,
   why), and clear: true clears it.
 - Any message asking your owner 2 or more decisions is ONE ask_user_input

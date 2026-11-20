@@ -456,3 +456,139 @@ test('mission_goal_working is declared on every host, so the served canon tells 
     }
   }
 })
+
+// ── Held marks: a mark kept for background work (KC 2026-11-17 msg 241497) ──
+
+test('set_goal_working input: held true holds for the default, held_minutes 1 to 240 picks the time, a bad hold is refused with the value named', () => {
+  assert.equal(m.MISSION_GOAL_WORKING_HOLD_DEFAULT_MINUTES, 120)
+  assert.equal(m.MISSION_GOAL_WORKING_HOLD_MAX_MINUTES, 240)
+  assert.deepEqual(m.buildMissionGoalWorkingInput({ goal_ids: [2], working: true, held: true }), { ok: true, body: { goalIds: [2], working: true, holdMinutes: 120 } })
+  assert.deepEqual(m.buildMissionGoalWorkingInput({ goal_ids: [2], working: true, held_minutes: 45 }), { ok: true, body: { goalIds: [2], working: true, holdMinutes: 45 } })
+  assert.deepEqual(m.buildMissionGoalWorkingInput({ goal_ids: [2], working: true, held: true, held_minutes: 240 }), { ok: true, body: { goalIds: [2], working: true, holdMinutes: 240 } })
+  // No hold, or held: false, is today's mark exactly: the body has no hold at all.
+  assert.deepEqual(m.buildMissionGoalWorkingInput({ goal_ids: [2], working: true, held: false }), { ok: true, body: { goalIds: [2], working: true } })
+  // A clear always clears, so a hold sent with it is ignored rather than refused.
+  assert.deepEqual(m.buildMissionGoalWorkingInput({ goal_ids: [2], working: false, held: true }), { ok: true, body: { goalIds: [2], working: false } })
+  const refusals: Array<[unknown, RegExp]> = [
+    [{ goal_ids: [2], working: true, held: 'yes' }, /held must be true or false.*got "yes"/],
+    [{ goal_ids: [2], working: true, held: null }, /held must be true or false.*got null/],
+    [{ goal_ids: [2], working: true, held_minutes: 0 }, /held_minutes must be a whole number of minutes from 1 to 240.*got 0/],
+    [{ goal_ids: [2], working: true, held_minutes: 241 }, /got 241/],
+    [{ goal_ids: [2], working: true, held_minutes: 1.5 }, /got 1\.5/],
+    [{ goal_ids: [2], working: true, held_minutes: '30' }, /got "30"/],
+    [{ goal_ids: [2], working: true, held: false, held_minutes: 30 }, /held: false takes no held_minutes/],
+  ]
+  for (const [input, error] of refusals) {
+    const built = m.buildMissionGoalWorkingInput(input)
+    assert.equal(built.ok, false, JSON.stringify(input))
+    assert.match(built.error, error, JSON.stringify(input))
+    assert.match(built.error, /Nothing was marked/, JSON.stringify(input))
+  }
+})
+
+test('set_goal_working held: true keeps the mark through Stop and says so, with the hold time', async () => {
+  const r = rig(ownerCall)
+  const result = await r.run('set_goal_working', { goal_ids: [2, 3], working: true, held: true })
+  assert.notEqual(result?.isError, true, textOf(result))
+  assert.deepEqual(r.writes().map((c) => c.body), [{ working: true }, { working: true }], 'the wire is unchanged: a hold is the daemon\'s, not the server\'s')
+  assert.match(textOf(result), /Held working: goals 2, 3, for 120 minutes/)
+  assert.match(textOf(result), /Stop, a new prompt and idle time leave (it|them) on/)
+  assert.match(textOf(result), /working: false/)
+  await r.tracker.onHook({ hook_event_name: 'Stop', session_id: 'session-a' })
+  await r.tracker.onHook({ hook_event_name: 'SessionEnd', session_id: 'session-a' })
+  assert.equal(r.writes().length, 2, 'Stop and SessionEnd send no clear for a held mark')
+})
+
+test('set_goal_working held_minutes names its own hold time', async () => {
+  const r = rig(ownerCall)
+  const result = await r.run('set_goal_working', { goal_ids: [3], working: true, held_minutes: 45 })
+  assert.match(textOf(result), /Held working: goal 3, for 45 minutes/)
+})
+
+test('set_goal_working refuses a bad hold before ANY request', async () => {
+  const r = rig(ownerCall)
+  for (const args of [{ held: 'yes' }, { held_minutes: 0 }, { held_minutes: 500 }, { held: false, held_minutes: 10 }]) {
+    const result = await r.run('set_goal_working', { goal_ids: [2], working: true, ...args })
+    assert.equal(result?.isError, true, JSON.stringify(args))
+    assert.match(textOf(result), /Nothing was marked/)
+  }
+  assert.equal(r.sent.length, 0, 'no read and no write for a refused hold')
+})
+
+test('set_goal_working held with no hook intake says the daemon cannot keep it and gives the 30 minute rule', async () => {
+  const r = rig(ownerCall)
+  r.disconnectHooks()
+  const result = await r.run('set_goal_working', { goal_ids: [3], working: true, held: true })
+  assert.notEqual(result?.isError, true, textOf(result))
+  assert.match(textOf(result), /Marked working: goal 3/)
+  assert.match(textOf(result), /cannot hold/i)
+  assert.match(textOf(result), /refresh within 30 minutes/i)
+  assert.doesNotMatch(textOf(result), /Held working/)
+})
+
+test('set_goal_working without a hold is unchanged: Stop clears it', async () => {
+  const r = rig(ownerCall)
+  const result = await r.run('set_goal_working', { goal_ids: [3], working: true })
+  assert.doesNotMatch(textOf(result), /Held working/)
+  await r.tracker.onHook({ hook_event_name: 'Stop', session_id: 'session-a' })
+  assert.deepEqual(r.writes().map(call => call.body), [{ working: true }, { working: false }])
+})
+
+test('the set_goal_working declaration offers held and held_minutes and says in plain words what a hold does', () => {
+  const working = declaration('set_goal_working')
+  assert.match(working, /held: \{\s+type: 'boolean'/)
+  assert.match(working, /held_minutes: \{\s+type: 'number'/)
+  assert.match(working, /required: \['goal_ids', 'working'\]/, 'a hold stays optional')
+  const description = working.slice(working.indexOf('description:'), working.indexOf('inputSchema:')).replace(/'\s*\+\s*'/g, '')
+  assert.match(description, /held: true/)
+  assert.match(description, /background/)
+  assert.match(description, /120 minutes/)
+  assert.match(description, /240/)
+  assert.match(description, /Stop, SessionEnd, a new prompt and idle time do not clear a held mark/)
+  assert.doesNotMatch(working, /[\u2013\u2014]/)
+})
+
+test('the MCP instructions and the bundled fallback tell the agent to hold marks for background workers', () => {
+  const missionsSection = source.slice(source.indexOf("'## Missions ("), source.indexOf("'## Sending Files & Media'"))
+  for (const text of [missionsSection.replace(/',\s*'/g, ' '), BGOS_CAPABILITIES_FALLBACK.replace(/\s+/g, ' ')]) {
+    assert.match(text, /held: true/)
+    assert.match(text, /background/)
+  }
+})
+
+// A tick reaches the daemon two ways: the agent's own tick_mini_goal answer
+// (rememberMissionSelfWrite) and every mission frame (handleMissionEvent),
+// which also carries the owner's ticks. Both must end a held mark.
+function serverFunction(name: string, bindings: Record<string, unknown>) {
+  const start = source.indexOf(`function ${name}(`)
+  assert.ok(start > 0, name)
+  const end = source.indexOf('\n}\n', start) + 3
+  const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+  return new Function(...Object.keys(bindings), `${js}\nreturn ${name};`)(...Object.values(bindings))
+}
+
+for (const path of ['rememberMissionSelfWrite', 'handleMissionEvent']) {
+  test(`a tick seen by ${path} ends a held mark`, async () => {
+    const r = rig(ownerCall)
+    await r.run('set_goal_working', { goal_ids: [3], working: true, held: true })
+    const ticked = { ...MISSION, miniGoals: MISSION.miniGoals.map(g => ({ ...g, done: g.id === 3 })) }
+    const fn = serverFunction(path, {
+      missionWorking: r.tracker,
+      missionSelfWrites: { noteWritten: () => {}, isSelfAuthored: () => false },
+      noteMissionTurnSnapshot: () => {},
+      parseMissionEvent: () => ({ mission: ticked }),
+      missionEventKey: () => 'frame',
+      missionFramesSeen: new Set(),
+      evictOldest: () => {},
+      missionChatId: () => null,
+      applyMissionFrameToGoalLane: () => {},
+      decideMissionNotice: () => null,
+      ASSISTANT_ID: '900',
+      log: () => {},
+    })
+    fn(path === 'handleMissionEvent' ? 'mission_updated' : ticked, ticked)
+    // The ticked goal is forgotten: the stand-down sweep sends no clear for it.
+    await r.tracker.stop()
+    assert.deepEqual(r.writes().map(call => call.body), [{ working: true }])
+  })
+}
