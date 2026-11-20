@@ -1196,7 +1196,7 @@ test('item 5: the owner Restart restarts an agent that looks healthy and busy: n
   assertDtoShape(backend.progress('rst-1'))
 })
 
-test('owner restart recognizes a working turn before a late acknowledgement', async () => {
+for (const limited of [false, true]) test(limited ? 'owner restart into a still limited account fails with its reset' : 'owner restart recognizes a working turn before a late acknowledgement', async () => {
   const fs = agentFs()
   const job = ownerRestartJob()
   const backend = fakeBackend(job)
@@ -1212,7 +1212,7 @@ test('owner restart recognizes a working turn before a late acknowledgement', as
     fs.writeFile(`${PLUGIN_STATE}/agent-state.json`, agentState({ pid, updatedAt: new Date(at).toISOString() }))
     const lines = []
     if (at >= T0 + 16_000) lines.push(ownerMessage(T0 + 16_000))
-    if (at >= T0 + 27_000) lines.push(assistantTurn(T0 + 27_000))
+    if (at >= T0 + 27_000) lines.push(limited ? limitEnvelope(T0 + 27_000, T0 + 3600_000) : assistantTurn(T0 + 27_000))
     writeTranscript(fs, lines, at)
     if (at >= T0 + 96_000) fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({
       bootedAt: new Date(bootedAt).toISOString(), lastLiveAt: new Date(at).toISOString(),
@@ -1221,6 +1221,11 @@ test('owner restart recognizes a working turn before a late acknowledgement', as
   const run = rig(fs, backend, clock, PS_912, { pidAlive: (candidate: number) => live.has(candidate) })
   await runWatcher(run.deps as any)
   const terminal = terminalOf(backend, job.frames[0]!.rpcId)
+  if (limited) {
+    assert.equal(terminal.state, 'failed', terminal.message)
+    assert.match(terminal.message, /^Restarted, but it is still on the Claude usage limit\. Reset: /)
+    return
+  }
   assert.equal(terminal.state, 'done', terminal.message)
   assert.match(terminal.message, /; back, catching up$/)
   assert.ok(clock.now() >= T0 + 27_000 && clock.now() < T0 + 75_000)

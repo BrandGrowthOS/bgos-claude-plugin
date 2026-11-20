@@ -67,15 +67,15 @@ function fakeClock(start: number, onTick?: (nowMs: number, tick: number) => void
   }
 }
 
-test('owner verification waits for slow progress until the deadline and keeps the probe for the new daemon', async () => {
+test('owner verification fails at the deadline with only a fresh lock', async () => {
   const fs = memoryFs()
   const clock = fakeClock(T0)
   const result = await verifyAgent(agentRow(), {
     fs, restartedAtMs: T0, now: clock.now, sleep: clock.sleep, timeoutMs: 75_000, ownerProgress: () => 'new_daemon',
   })
-  assert.equal(result.ok, true)
-  assert.equal(result.evidence.via, 'new_daemon')
-  assert.equal(result.message, 'back, catching up')
+  assert.equal(result.ok, false)
+  assert.equal(result.evidence.via, null)
+  assert.equal(result.message, 'agent_deaf_after_restart')
   assert.equal(clock.now(), T0 + 75_000)
   assert.equal(JSON.parse(fs.readFile(PROBE)!).afterBootMs, T0)
 })
