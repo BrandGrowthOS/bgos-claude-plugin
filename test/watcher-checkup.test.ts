@@ -25,6 +25,7 @@ import './helpers/real-os-sentinel.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
+import { limitAccountChanged } from '../lib/watcher-limit.mjs'
 import { freeLimitResult, runWatcher } from '../lib/watcher-core.mjs'
 import { checkupTarget, endOldClaudes, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
 import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
@@ -491,9 +492,10 @@ function limitExec(ps: string) {
 test('a usage limit with usage back (the login changed after it): the checkup presses ONE Enter on the limit screen, verified by a fresh turn', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
   writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), ownerMessage(T0 - 31 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
-  // The owner switched the Claude account 10 minutes ago: the credential file moved (its mtime only; never opened).
-  fs.writeFile(`${CONFIG}/.credentials.json`, 'NEVER-READ')
-  fs.touch(`${CONFIG}/.credentials.json`, T0 - 10 * MIN)
+  const metadata = `${HOME}/.claude.json`
+  fs.writeFile(metadata, JSON.stringify({ oauthAccount: { accountUuid: 'first' } }))
+  limitAccountChanged(fs, STATE_DIR, metadata, { atMs: T0 - 30 * MIN })
+  fs.writeFile(metadata, JSON.stringify({ oauthAccount: { accountUuid: 'second' } }))
   const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
   const fake = limitExec(ps)
   const backend = fakeBackend(checkupJob())
@@ -525,8 +527,10 @@ test('a usage limit with usage back (the login changed after it): the checkup pr
 test('a usage limit with usage back but a corrupt Enter record: the checkup reads and presses nothing for the hour, and keeps the bad copy', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
   writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), ownerMessage(T0 - 31 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
-  fs.writeFile(`${CONFIG}/.credentials.json`, 'NEVER-READ')
-  fs.touch(`${CONFIG}/.credentials.json`, T0 - 10 * MIN)
+  const metadata = `${HOME}/.claude.json`
+  fs.writeFile(metadata, JSON.stringify({ oauthAccount: { accountUuid: 'first' } }))
+  limitAccountChanged(fs, STATE_DIR, metadata, { atMs: T0 - 30 * MIN })
+  fs.writeFile(metadata, JSON.stringify({ oauthAccount: { accountUuid: 'second' } }))
   // A torn write: the record may have held an Enter a minute ago, so it counts as one just now.
   const watchFile = `${HOME}/.bgos-agent/watcher/limit-watch.json`
   const torn = '{"schemaVersion":1,"agents":{"912":{"lastEnterAt":"'
