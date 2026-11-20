@@ -26,6 +26,7 @@ import { syncBuiltinESMExports } from 'node:module'
 import * as privateTurnModule from '../lib/private-turn.mjs'
 import { createPrivateTurnTracker, privateMarkerPath, privateRevokeLine, requirePrivateTurn, voiceConsultActor } from '../lib/private-turn.mjs'
 import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
+import { spoolPath } from '../bin/hoai-hook.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 
 // Read through the module so this file loads on a head without the ledger (#227 alone): there the tests fail on the
@@ -78,8 +79,9 @@ function agentHome(t: any) {
     })
     const sessionId = `session-${++session}`
     /** Claude Code submits a delivered card through the real synchronous hook; the daemon begins it. */
-    const submit = (prompt: string) => {
-      recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd, prompt }, env)
+    const submit = (prompt: string, release = true) => {
+      const recorded = recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd, prompt }, env)
+      if (recorded && release) privateTurnModule.recoveryPromptDecision(prompt, recorded.path, root, sessionId, process.pid, clock.now)
       outcomes.push(tracker.begin({ prompt, sessionId }))
     }
     /** server.ts's voice notify: a consult card through deliver(), the owner only from the backend stamp. */
@@ -106,7 +108,7 @@ function agentHome(t: any) {
     const act = (tool: string, chat?: string) => tracker.noteOutbound(tool, markerPaths,
       chat ?? (tool === 'reply' ? tracker.current({ markerPaths })?.chatId : undefined))
     const dispatch = (tool: string) => tracker.outboundCompletion(tool, markerPaths)
-    return { tracker, stopHook, dispatch, submit, consult, wake, call, act, stop, sessionId, replays, revokes, outcomes }
+    return { tracker, stopHook, dispatch, submitWithoutRelease: (prompt: string) => submit(prompt, false), submit, consult, wake, call, act, stop, sessionId, replays, revokes, outcomes }
   }
   const ledgerKeys = (): string[] => { try { return Object.keys((JSON.parse(readFileSync(firesPath, 'utf8')) as any).fires) } catch { return [] } }
   const startupPrompt = (sessionId: string) => recordPrivateBoundary({
@@ -120,7 +122,15 @@ function agentHome(t: any) {
     assert.equal(child.status, 0, child.stderr)
     return child.stdout.trim() ? JSON.parse(child.stdout) : null
   }
-  return { runPromptHook, paths: markerPaths, life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs, markerPath: markerPaths[0]! }
+  const runUnservedHook = (sessionId: string, prompt: string) => {
+    markFloorAttached({ root, folders: [cwd], sessionId: 'other-session' })
+    const hook = fileURLToPath(new URL('../bin/hoai-private-turn-hook.mjs', import.meta.url))
+    const child = spawnSync(process.execPath, [hook], { env, encoding: 'utf8',
+      windowsHide: true, input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd, prompt }) })
+    assert.equal(child.stdout.trim(), '')
+    assert.equal(child.status, 1, child.stderr)
+  }
+  return { runUnservedHook, runPromptHook, paths: markerPaths, life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs, markerPath: markerPaths[0]! }
 }
 
 for (const [card, action] of [['peer', 'call_owner'], ['other chat', 'meeting_reply'], ['meeting', 'send_to_peer']]) {
@@ -425,6 +435,65 @@ test('a reply recorded between recovery delivery and admission prevents a second
   next.submit(card)
   assert.equal(next.outcomes.at(-1), 'cancelled-retry')
   assert.equal(next.call(), null)
+})
+
+for (const skipped of [false, true]) {
+  test(`an unreleased retry stays available after restart (hook skipped: ${skipped})`, t => {
+    const home = agentHome(t)
+    home.clock.now = Date.now()
+    const message = { content: 'first question', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+    const first = home.life()
+    first.submit(first.tracker.deliver(message))
+    const retry = home.life()
+    const card = retry.tracker.deliver({ ...message, recoveryWithoutReply: true })
+    if (skipped) {
+      home.runUnservedHook(retry.sessionId, card)
+    }
+    if (skipped) retry.tracker.begin({ prompt: card, sessionId: retry.sessionId })
+    else {
+      retry.submitWithoutRelease(card)
+      assert.equal(retry.call(), null)
+    }
+    assert.equal(home.life().tracker.canRecover(message.fireKey), true)
+  })
+}
+
+test('the forwarder leaves an unreleased retry for the hook that shows its words', t => {
+  const home = agentHome(t)
+  home.clock.now = Date.now()
+  const first = home.life()
+  const request = { content: 'summarize the document', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(request))
+  const next = home.life()
+  const card = next.tracker.deliver({ ...request, recoveryWithoutReply: true })
+  const payload = { hook_event_name: 'UserPromptSubmit', session_id: next.sessionId, prompt: card }
+  const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: dirname(dirname(home.firesPath)) }
+  const forwarder = fileURLToPath(new URL('../bin/hoai-hook.mjs', import.meta.url))
+  const early = spawnSync(process.execPath, [forwarder], { env, encoding: 'utf8', windowsHide: true, input: JSON.stringify(payload) })
+  assert.equal(early.status, 0, early.stderr)
+  const spool = spoolPath(next.sessionId, env)
+  assert.equal(existsSync(spool), false)
+  assert.match(home.runPromptHook(next.sessionId, card)?.hookSpecificOutput.additionalContext, /summarize the document/)
+  const lines = readFileSync(spool, 'utf8').trim().split('\n')
+  assert.equal(lines.length, 1)
+  next.submitWithoutRelease(JSON.parse(lines[0]!).payload.prompt)
+  assert.equal(next.call(), OWNER)
+})
+
+test('an unreleased retry with an attempt record but no shown record cannot open', t => {
+  const home = agentHome(t)
+  home.clock.now = Date.now()
+  const first = home.life()
+  const request = { content: 'first question', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(request))
+  const retry = home.life()
+  const card = retry.tracker.deliver({ ...request, recoveryWithoutReply: true })
+  assert.ok(home.runPromptHook(retry.sessionId, card)?.hookSpecificOutput)
+  const dir = join(dirname(home.firesPath), 'interrupted-turns')
+  fs.unlinkSync(join(dir, fs.readdirSync(dir).find(name => name.endsWith('.shown'))!))
+  retry.submitWithoutRelease(card)
+  assert.equal(retry.outcomes.at(-1), 'cancelled-retry')
+  assert.equal(retry.call(), null)
 })
 
 test('retry admission requires its saved offer from this boot', t => {

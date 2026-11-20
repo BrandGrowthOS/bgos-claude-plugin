@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findOwnAttachedKey, floorKey, floorStateRoot, pidIsAlive, sessionFolders } from '../lib/floor-state.mjs'
+import { appendEvent, isRecoverySubmission } from './hoai-hook.mjs'
 import { GROUP_LANE_ENV, PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateTurnRecord, privateUnservedPath, recoveryPromptDecision, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 
 const envText = (env, name) => (env && typeof env[name] === 'string' ? env[name].trim() : '')
@@ -304,6 +305,13 @@ export async function main() {
     }
     let unserved = ''
     const recorded = recordPrivateBoundary(payload, process.env, (why) => { unserved = why })
+    const recovery = isRecoverySubmission(payload)
+    const decision = recorded && recorded.marker.live && String(payload.prompt).includes('<hoai-recovery agent="')
+      ? recoveryPromptDecision(payload.prompt, recorded.path, floorStateRoot(), recorded.marker.sessionId, recorded.marker.daemon?.pid)
+      : null
+    // The async forwarder leaves a single recovery to this hook. Publish its boundary
+    // after the release decision so intake can never consume an unseen offer.
+    if (recovery && (decision || !recorded)) appendEvent(payload)
     if (unserved) {
       // Exit 1: a non blocking error the CLI records with the prompt. The prompt runs; its private tools refuse.
       process.stderr.write(`HOAI wrote no private turn marker: ${unserved}. Private tools refuse this turn.\n`)
@@ -320,7 +328,6 @@ export async function main() {
         if (ready?.turnId === recorded.marker.turnId && ready.sessionId === recorded.marker.sessionId) break
         await new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.min(25, until - performance.now()))))
       }
-      const decision = recoveryPromptDecision(payload.prompt, recorded.path, floorStateRoot(), recorded.marker.sessionId, recorded.marker.daemon?.pid)
       if (decision) process.stdout.write(JSON.stringify(decision))
     }
   } catch {

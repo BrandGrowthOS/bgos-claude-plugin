@@ -456,12 +456,20 @@ export function parseStdinPayload(text) {
   }
 }
 
+// The synchronous hook forwards a recovered prompt after it has released the words.
+export function isRecoverySubmission(payload) {
+  if (payload?.hook_event_name !== 'UserPromptSubmit' || typeof payload.prompt !== 'string') return false
+  if (!payload.prompt.includes('<hoai-recovery agent="')) return false
+  const card = payload.prompt.trim().replace(/^<channel source="bgos"(?:\s+\w+="[^"]*")*>\s*([\s\S]*?)\s*<\/channel>$/, '$1')
+  return /^<hoai-recovery agent="[a-zA-Z0-9_-]{1,128}" offer="[a-f0-9]{64}"\/>\s*<hoai-private-turn id="[a-f0-9-]{36}"\/>$/.test(card)
+}
+
 /** Every path ends here: exit code 0, nothing on stdout. */
 export async function main(opts = {}) {
   try {
     const text = await readStdin(opts.stdin ?? process.stdin)
     const payload = parseStdinPayload(text)
-    if (payload !== null) appendEvent(payload, opts)
+    if (payload !== null && !isRecoverySubmission(payload)) appendEvent(payload, opts)
   } catch {
     // A hook that fails is a hook that logged nothing. It must not be a hook
     // that blocked a tool call.
