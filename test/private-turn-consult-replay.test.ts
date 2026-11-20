@@ -320,6 +320,23 @@ test('a reply recorded between recovery delivery and admission prevents a second
   assert.equal(next.call(), null)
 })
 
+test('retry admission requires its saved offer from this boot', t => {
+  const home = agentHome(t)
+  const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  const first = home.life()
+  first.submit(first.tracker.deliver(message))
+  const next = home.life()
+  const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+  const dir = join(dirname(home.firesPath), 'interrupted-turns')
+  const offers = fs.readdirSync(dir).filter(name => name.endsWith('.claimed'))
+  assert.equal(offers.length, 1)
+  fs.unlinkSync(join(dir, offers[0]!))
+  next.submit(card)
+  assert.equal(next.outcomes.at(-1), 'replayed')
+  assert.equal(next.call(), null)
+  assert.equal(home.life().tracker.canRecover(message.fireKey), true)
+})
+
 test('a locked open record lets the reply finish, logs once and stays closed on restart', t => {
   const home = agentHome(t)
   const first = home.life()
