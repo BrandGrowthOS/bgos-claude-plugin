@@ -244,6 +244,38 @@ test('boot cleans only recovery files older than seven days', (t) => {
   assert.ok(existsSync(join(dir, 'unrelated')))
 })
 
+for (const shape of ['held behind refused probe', 'expired before admission', 'ambiguous submission']) {
+  test(`an interrupted offer spends its chance at admission: ${shape}`, (t) => {
+    const home = agentHome(t)
+    const key = 'owner:1'
+    const message = { content: 'continue', actingUserId: OWNER, chatId: 'first', fireKey: key }
+    const original = home.life()
+    original.submit(original.tracker.deliver(message))
+    assert.equal(original.call(), OWNER)
+    const limited = home.life()
+    limited.submit('probe')
+    home.transcripts.set(limited.sessionId, JSON.stringify({ type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' }))
+    const held = limited.tracker.deliver({ ...message, recoveryWithoutReply: true })
+    if (shape === 'expired before admission') {
+      home.clock.now += 24 * 60 * 60_000
+      limited.submit(held)
+      assert.equal(limited.outcomes.at(-1), 'expired')
+    } else if (shape === 'ambiguous submission') {
+      limited.submit(held + held)
+      assert.equal(limited.outcomes.at(-1), 'ambiguous')
+    }
+    const working = home.life()
+    assert.equal(working.tracker.canRecover(key), true)
+    const retry = working.tracker.deliver({ ...message, recoveryWithoutReply: true })
+    assert.match(retry, /^\[Interrupted:/)
+    working.submit(retry)
+    assert.equal(working.call(), OWNER)
+    working.act('reply')
+    working.tracker.noteHandled('reply:1')
+    assert.equal(home.life().tracker.canRecover(key), false)
+  })
+}
+
 for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other error']) {
   test(`a refused recovery gives back its chance only for its own tool-free turn: ${work}`, (t) => {
     const home = agentHome(t)
@@ -268,9 +300,13 @@ for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other e
     assert.equal(next.tracker.canRecover(key), work === 'none')
     if (work !== 'none') return
     const retry = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
-    assert.equal(home.life().tracker.canRecover(key), false, 'a second boot cannot spend the same refusal twice')
+    const concurrent = home.life()
+    assert.equal(concurrent.tracker.canRecover(key), true, 'an unadmitted offer can survive another boot')
+    const competingOffer = concurrent.tracker.deliver({ ...message, recoveryWithoutReply: true })
     next.submit(retry)
     assert.equal(next.call(), OWNER)
+    concurrent.submit(competingOffer)
+    assert.equal(concurrent.call(), null, 'only one admission spends the same refusal')
     next.act('reply')
     next.tracker.noteHandled(`reply:${home.clock.now}`)
     next.stop()
