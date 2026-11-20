@@ -157,7 +157,7 @@ for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other e
   })
 }
 
-for (const action of ['react', 'call_owner', 'reply', 'stop', 'restart yourself']) {
+for (const action of ['react', 'call_owner', 'reply', 'meeting_reply', 'edit_message', 'ask_user_input', 'stop', 'restart yourself']) {
   test(`recovery excludes a message handled by ${action}`, (t) => {
     const home = agentHome(t)
     const message = { content: action === 'restart yourself' ? action : 'continue',
