@@ -27,7 +27,7 @@ import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 
 // Read through the module so this file loads on a head without the ledger (#227 alone): there the tests fail on the
 // behaviour they pin, not on an import.
-const createFireLedger: (options: { path: string, now?: () => number }) => any = (privateTurnModule as any).createFireLedger ?? (() => null)
+const createFireLedger: (options: { path: string, now?: () => number, readTranscript?: (session: string) => string }) => any = (privateTurnModule as any).createFireLedger ?? (() => null)
 const privateFiresPath: (root: string, id: string) => string =
   (privateTurnModule as any).privateFiresPath ?? ((root: string, id: string) => join(root, id, 'private-fires.json'))
 const privateReplayLine: (replay: Record<string, unknown>) => string =
@@ -59,6 +59,7 @@ function agentHome(t: any) {
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
   const firesPath = privateFiresPath(root, AGENT)
   const clock = { now: T0 }
+  const transcripts = new Map<string, string>()
   let session = 0
   function life() {
     const replays: string[] = []
@@ -67,7 +68,7 @@ function agentHome(t: any) {
     const tracker = createPrivateTurnTracker({
       now: () => clock.now,
       markerPaths,
-      fires: createFireLedger({ path: firesPath, now: () => clock.now }),
+      fires: createFireLedger({ path: firesPath, now: () => clock.now, readTranscript: id => transcripts.get(id) ?? '' }),
       onReplay: (replay) => replays.push(privateReplayLine(replay)),
       onRevoke: (info) => revokes.push(privateRevokeLine(info)),
     })
@@ -98,10 +99,10 @@ function agentHome(t: any) {
       tracker.end()
     }
     const act = (tool: string) => tracker.noteOutbound(tool, markerPaths)
-    return { tracker, submit, consult, wake, call, act, stop, replays, revokes, outcomes }
+    return { tracker, submit, consult, wake, call, act, stop, sessionId, replays, revokes, outcomes }
   }
   const ledgerKeys = (): string[] => { try { return Object.keys((JSON.parse(readFileSync(firesPath, 'utf8')) as any).fires) } catch { return [] } }
-  return { life, clock, ledgerKeys }
+  return { life, clock, ledgerKeys, transcripts }
 }
 
 test('restart recovery can answer a killed turn once, even after another boot', (t) => {
@@ -121,6 +122,40 @@ test('restart recovery can answer a killed turn once, even after another boot', 
   assert.equal(again.call(), null)
   assert.deepEqual(again.outcomes, ['replayed'])
 })
+
+for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other error']) {
+  test(`a refused recovery gives back its chance only for its own tool-free turn: ${work}`, (t) => {
+    const home = agentHome(t)
+    const key = `owner:${home.clock.now}`
+    const message = { content: 'continue', actingUserId: OWNER, chatId: 'chat', fireKey: key }
+    const first = home.life()
+    first.submit(first.tracker.deliver(message))
+    assert.equal(first.call(), OWNER)
+    const limited = home.life()
+    const card = limited.tracker.deliver({ ...message, recoveryWithoutReply: true })
+    limited.submit(card)
+    assert.equal(limited.call(), OWNER)
+    if (work === 'tool hook') limited.act('read')
+    const rows = [
+      { type: 'user', message: { content: work === 'other prompt' ? 'another request' : card } },
+      ...(work === 'tool record' ? [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'read' }] } }] : []),
+      { type: 'assistant', isApiErrorMessage: true, apiError: work === 'other error' ? 'authentication_failed' : 'usage_limit_reached' },
+    ]
+    home.transcripts.set(limited.sessionId, rows.map(row => JSON.stringify(row)).join('\n'))
+    limited.stop()
+    const next = home.life()
+    assert.equal(next.tracker.canRecover(key), work === 'none')
+    if (work !== 'none') return
+    const retry = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+    assert.equal(home.life().tracker.canRecover(key), false, 'a second boot cannot spend the same refusal twice')
+    next.submit(retry)
+    assert.equal(next.call(), OWNER)
+    next.act('reply')
+    next.tracker.noteHandled(`reply:${home.clock.now}`)
+    next.stop()
+    assert.equal(home.life().tracker.canRecover(key), false)
+  })
+}
 
 for (const action of ['react', 'call_owner', 'reply', 'stop', 'restart yourself']) {
   test(`recovery excludes a message handled by ${action}`, (t) => {

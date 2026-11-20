@@ -179,7 +179,7 @@ import {
 } from './lib/export-pack.js'
 import { UsageTracker } from './lib/usage-report.js'
 import { SessionTranscriptBinder, claudeProjectCwd } from './lib/session-binding.js'
-import { AgentSessionLibrary } from './lib/session-library.js'
+import { AgentSessionLibrary, NODE_SESSION_FS } from './lib/session-library.js'
 import {
   resolveTmuxTarget,
   buildProbeArgs,
@@ -11224,7 +11224,10 @@ function teachSessionIdle(): boolean {
 // The scheduled fires this agent opened a private turn for, in its own state folder (0.68.4): a fire that restart
 // recovery re-offers as backlog after a restart reaches the agent as text but opens no second turn. A person's own
 // message the same way, as owner:<message id>.
-const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
+const privateFires = createFireLedger({
+  path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID),
+  readTranscript: session => NODE_SESSION_FS.readTail(pathJoin(sessionBinder.projectDirectory, `${session}.jsonl`), 512 * 1024),
+})
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn(); quietTurns.recheck() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)), voiceCardsUntrusted: () => serverQuiet.on() })
 // A trusted turn is quiet (lib/quiet-turn.mjs, 2026-11-11): while the owner's own turn is bound in the tracker above (a
@@ -12058,6 +12061,7 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   // writes the agent's private turn marker (lib/floor-state.mjs findOwnAttachedKey, the third review of c69224fe), and
   // none once that session ended, so the first prompt of the session a /clear starts writes its own (the fourth).
   if (floorEntrySession(liveSessionId, hookEndedSessionId) !== floorEntrySessionWritten) markFloorAttachedIfHolder()
+  if (event.name === 'PreToolUse' || event.name === 'PostToolUse' || event.name === 'PostToolUseFailure') privateTurns.noteRetryTool(hookSessionId)
   if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt, startedAt: line?.startedAt })
   // The session that ran a granted scheduled run is gone: the run is over, and what waited is delivered.
   if (event.name === 'SessionEnd') scheduleGrantRuns.end('session ended')
@@ -13019,12 +13023,11 @@ async function pollChat(chatId: string): Promise<void> {
         const id = row.message.id
         const key = `owner:${id}`
         if (privateFires.handledAt(`reply:${id}`) !== null || privateFires.claimed(key)) return false
-        if (privateFires.handledAt(key) === null) return !previouslyForwarded.has(id) || id > lastReply
         if (id > lastReply && privateTurns.canRecover(key)) {
           recoveredWithoutReply.add(id)
           return true
         }
-        return false
+        return privateFires.handledAt(key) === null && (!previouslyForwarded.has(id) || id > lastReply)
       })
     }
 
