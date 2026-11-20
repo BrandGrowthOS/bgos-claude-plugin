@@ -23,6 +23,7 @@ import {
   PROBE_REQUEST_FILE,
   buildLivenessProbeNotification,
   probeRequestPath,
+  probeSaysAfterRestart,
   shouldSendLivenessProbe,
 } from '../lib/boot-hello.ts'
 
@@ -106,6 +107,20 @@ test('the channel_ack handler marks liveness, records the marker, answers ok, an
   assert.ok(tracked !== -1 && ack < tracked, 'the ack is not a tracked message operation (it must never block a drain)')
 })
 
+// Review of #396 (minor): the watcher also asks BEFORE an update, when
+// nothing was restarted, and the card said "after a restart" to a session
+// that had been running for days. The request says which question it is.
+test('probeSaysAfterRestart: the restart wording only for a request that is not the question before an update', () => {
+  assert.equal(probeSaysAfterRestart(JSON.stringify({ requestedAt: 'x', by: 'hoai-watcher', purpose: 'before_update' })), false)
+  // The watcher's verify after a restart, and every older watcher, write no purpose.
+  assert.equal(probeSaysAfterRestart(JSON.stringify({ requestedAt: 'x', by: 'hoai-watcher' })), true)
+  assert.equal(probeSaysAfterRestart(JSON.stringify({ purpose: 'after_restart' })), true)
+  // Unreadable, empty or junk: the card it always sent.
+  for (const raw of [null, undefined, '', 'junk', '[]', 'null']) {
+    assert.equal(probeSaysAfterRestart(raw as string | null), true, String(raw))
+  }
+})
+
 test('the probe poll: a 3s unref timer that rate-limits, unlinks the file, and pushes one channel notification', () => {
   const start = serverSource.indexOf('// Step 2.6: liveness probe')
   assert.notEqual(start, -1, 'the probe poll block must be labelled Step 2.6')
@@ -123,4 +138,9 @@ test('the probe poll: a 3s unref timer that rate-limits, unlinks the file, and p
   // The unlink happens BEFORE the push: a failed push must not loop forever
   // on the same file, the watcher rewrites it every 30s anyway.
   assert.ok(block.indexOf('unlinkSync(PROBE_REQUEST_PATH)') < block.indexOf('buildLivenessProbeNotification('))
+  // The request is read BEFORE it is unlinked, and its purpose decides the wording.
+  assert.ok(block.includes('probeSaysAfterRestart('), block)
+  assert.ok(block.indexOf('probeSaysAfterRestart(') < block.indexOf('unlinkSync(PROBE_REQUEST_PATH)'))
+  assert.ok(block.includes('afterRestart: saysAfterRestart'), block)
+  assert.ok(!block.includes('afterRestart: true'), 'never hard coded')
 })
