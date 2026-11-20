@@ -12990,7 +12990,7 @@ async function pollChat(chatId: string): Promise<void> {
           if (recovered.length) {
             // A system card between a request and an unthreaded reply can fool the
             // walk-back. Only override prior admission when no later reply exists.
-            const lastReply = ordered.findLast((row) => pollStoredSenderOf(row) === 'assistant')?.message.id ?? 0
+            const lastReply = ordered.reduce((id, row) => pollStoredSenderOf(row) === 'assistant' ? row.message.id : id, 0)
             for (const row of recovered) if (row.message.id > lastReply) recoveredWithoutReply.add(row.message.id)
             log(
               `Restart recovery: re-offering ${recovered.length} unanswered message(s) in chat ${chatId} (ids ${recovered
@@ -13009,6 +13009,13 @@ async function pollChat(chatId: string): Promise<void> {
           const t = sentDateToMs(m.message.sentDate)
           return t !== null && t < DAEMON_START_MS
         })
+    }
+
+    if (isBootPoll) {
+      // A confirmed send can outlive its cursor flush. Do not hand its request to
+      // the session again, even if a system card obscures the reply in chat history.
+      newUserMessages = newUserMessages.filter((row) =>
+        pollStoredSenderOf(row) !== 'user' || privateFires.handledAt(`reply:${row.message.id}`) === null)
     }
 
     // A marked room row on the poll uses the same settle wait and claim as

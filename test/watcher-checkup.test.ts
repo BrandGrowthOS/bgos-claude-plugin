@@ -1130,6 +1130,43 @@ function ownerRestartJob(rpcId = 'rst-1', body: Record<string, unknown> = {}) {
   }
 }
 
+test('checkup reports a held queue with a fresh beacon and a literal usage-limit tail', async () => {
+  const limit = limitEnvelope(T0 - MIN, T0 + MIN)
+  const queue = [enqueueLine(T0 - 5 * MIN), enqueueLine(T0 - 4 * MIN), enqueueLine(T0 - 2 * MIN)]
+  const tool = JSON.parse(assistantTurn(T0 - 6 * MIN))
+  tool.message.content = [{ type: 'tool_use', id: 'foreground' }]
+  const result = JSON.stringify({ type: 'user', timestamp: new Date(T0 - 6 * MIN).toISOString(),
+    message: { content: [{ type: 'tool_result', tool_use_id: 'foreground' }] } })
+  const remove = JSON.stringify({ ...JSON.parse(queue[0]!), operation: 'remove' })
+  for (const [lines, beat, held] of [
+    [[...queue, limit], T0, true],
+    [[JSON.stringify(tool), ...queue, limit], T0, false],
+    [[JSON.stringify(tool), result, ...queue, limit], T0, true],
+    [[...queue, remove, limit], T0, false],
+    [[...queue, limit, remove], T0, false],
+    [[...queue, limit], T0 - 10 * MIN, false],
+    [[enqueueLine(T0 - MIN), limit], T0, false],
+  ] as const) {
+    const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+    writeTranscript(fs, [...lines], T0)
+    const beacon = `${PLUGIN_STATE}/channel-beacon.json`
+    fs.writeFile(beacon, '{}')
+    fs.touch(beacon, beat)
+    const backend = fakeBackend(checkupJob())
+    const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912] })
+    await runWatcher(run.deps as any)
+    const report = terminalOf(backend)
+    const finding = report.findings.find((f: any) => f.cause === 'held_queue')
+    assert.equal(Boolean(finding), held)
+    if (held) {
+      assert.equal(finding.status, 'WARN')
+      assert.match(finding.detail, /limit_picker/)
+      assert.ok(report.actions.some((a: any) => a.cause === 'held_queue' && a.did === 'report'))
+    }
+    if (beat === T0) assert.equal(restartRequested(fs), false, report.message)
+  }
+})
+
 test('item 5: the owner Restart restarts an agent that looks healthy and busy: no health gate, no turn hold, same conversation', async () => {
   // Busy by every signal: a turn in flight, a reply owed, activity a minute ago, a job under claude.
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1, lastActivityAt: new Date(T0 - MIN).toISOString() }) })
@@ -1187,6 +1224,44 @@ test('owner restart recognizes a working turn before a late acknowledgement', as
   assert.equal(terminal.state, 'done', terminal.message)
   assert.match(terminal.message, /; back, catching up$/)
   assert.ok(clock.now() >= T0 + 27_000 && clock.now() < T0 + 75_000)
+})
+
+test('an owner can restart a limited held queue and a second press verifies the same restart', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  writeTranscript(fs, [enqueueLine(T0 - 5 * MIN), limitEnvelope(T0 - MIN, T0 + MIN)], T0)
+  const beacon = `${PLUGIN_STATE}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, T0)
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  daemonAnswersProbe(fs, clock)
+  for (const first of [true, false]) {
+    const job = ownerRestartJob()
+    const backend = fakeBackend(job)
+    const run = rig(fs, backend, clock, PS_912, { pidAlive: (pid: number) => live.has(pid) })
+    await runWatcher(run.deps as any)
+    const result = terminalOf(backend, job.frames[0]!.rpcId)
+    assert.equal(result.state, 'done', result.message)
+    assert.equal(restartRequested(fs), first)
+    fs.rm(`${STATE_DIR}/restart-requested.json`)
+  }
+})
+
+test('a checkup restarts a held queue after the reset without pressing a key', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1 }) })
+  writeTranscript(fs, [enqueueLine(T0 - 6 * MIN), limitEnvelope(T0 - 5 * MIN, T0 - MIN)], T0)
+  const beacon = `${PLUGIN_STATE}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, T0)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, PS_912, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  const result = terminalOf(backend)
+  assert.ok(result.actions.some((a: any) => a.cause === 'held_queue' && a.did === 'restart_agent' && a.outcome === 'fixed'), result.message)
+  assert.equal(restartRequested(fs), true)
+  assert.ok(!run.execCalls.some((call) => call.includes('send-keys')))
 })
 
 test('item 5: only an owner job, for exactly one agent on this computer; anything else is refused and touches nothing', async () => {

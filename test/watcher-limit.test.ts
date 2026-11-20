@@ -233,6 +233,36 @@ const noticeOf = (fs: MemoryFs, r: Rig) => {
 
 // -- the brief's cases ---------------------------------------------------------------------------------
 
+test('a held queue restarts through its launcher only after usage returns and spends the cooldown on disk', async () => {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  const clock = fakeClock(LIMIT_AT + MIN)
+  const tmux = fakeTmux(socketOf(r), () => picker())
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec, { hasTmux: true, hasScript: false })
+  const rows = listAgents({ ...ctx, now: clock.now() } as any)
+  const beacon = `${rows[0]!.pluginStateDir}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  const queue = JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: 'continue', timestamp: new Date(LIMIT_AT - 4 * MIN).toISOString() })
+  const run = async (at: number) => {
+    clock.set(at)
+    fs.touch(beacon, at)
+    return (await runLimitPass(ctx)).agents[0]!
+  }
+  writeTranscript(fs, r, [queue, limitRecord()])
+  assert.equal((await run(LIMIT_AT + MIN)).outcome, 'limited')
+  fs.touch(r.credentials, LIMIT_AT + MIN)
+  assert.equal((await run(LIMIT_AT + 2 * MIN)).outcome, 'restarted')
+  const marker = `${r.stateDir}/restart-requested.json`
+  assert.ok(fs.exists(marker))
+  fs.rm(marker)
+  writeTranscript(fs, r, [queue, limitRecord(LIMIT_AT + 3 * MIN)])
+  fs.touch(r.credentials, LIMIT_AT + 4 * MIN)
+  assert.equal((await run(LIMIT_AT + 31 * MIN)).outcome, 'waiting')
+  assert.equal(fs.exists(marker), false)
+  assert.equal((await run(LIMIT_AT + 32 * MIN)).outcome, 'restarted')
+  assert.deepEqual(tmux.calls, [])
+})
+
 test('a fake stuck screen, still limited: no key, and the screen is not even read', async () => {
   const r = linuxRig()
   const fs = agentFs(r)

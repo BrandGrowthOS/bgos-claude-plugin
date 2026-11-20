@@ -67,6 +67,19 @@ function fakeClock(start: number, onTick?: (nowMs: number, tick: number) => void
   }
 }
 
+test('owner verification waits for slow progress until the deadline and keeps the probe for the new daemon', async () => {
+  const fs = memoryFs()
+  const clock = fakeClock(T0)
+  const result = await verifyAgent(agentRow(), {
+    fs, restartedAtMs: T0, now: clock.now, sleep: clock.sleep, timeoutMs: 75_000, ownerProgress: () => 'new_daemon',
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.evidence.via, 'new_daemon')
+  assert.equal(result.message, 'back, catching up')
+  assert.equal(clock.now(), T0 + 75_000)
+  assert.equal(JSON.parse(fs.readFile(PROBE)!).afterBootMs, T0)
+})
+
 test('parseLiveMarker mirrors lib/boot-hello.ts (both fields, one field, junk)', () => {
   assert.deepEqual(parseLiveMarker(JSON.stringify({ firstLiveAt: 'a', lastLiveAt: 'b' })), { firstLiveAt: 'a', lastLiveAt: 'b' })
   assert.deepEqual(parseLiveMarker(JSON.stringify({ lastLiveAt: 'b' })), { firstLiveAt: 'b', lastLiveAt: 'b' })
