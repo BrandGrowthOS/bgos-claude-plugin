@@ -154,17 +154,24 @@ const checkReactions = (memberOnly: boolean) => async () => {
       send("owner", member, "room_member");
       await until(() => cards.length === 1);
       assert.equal(cards[0].meta.user_id, member);
+      const refusals = [];
+      for (const name of ["list_chats", "call_owner"]) {
+        const result = await client.callTool({ name, arguments: {} });
+        refusals.push({
+          name,
+          refused: result.isError === true,
+          sharedPerson: JSON.stringify(result.content).includes(
+            "came from a person this agent is shared with",
+          ),
+        });
+      }
+      assert.deepEqual(refusals, [
+        { name: "list_chats", refused: true, sharedPerson: true },
+        { name: "call_owner", refused: true, sharedPerson: true },
+      ]);
       const tracker = createPrivateTurnTracker({ ownerUserId: owner });
       tracker.rawCard(cards[0].content, cards[0].meta);
       assert.deepEqual(tracker.turnSenders().people, [member]);
-      for (const name of ["list_chats", "call_owner"]) {
-        const result = await client.callTool({ name, arguments: {} });
-        assert.equal(result.isError, true);
-        assert.match(
-          JSON.stringify(result.content),
-          /came from a person this agent is shared with/,
-        );
-      }
       return;
     }
     const session = randomUUID();
