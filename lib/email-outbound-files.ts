@@ -1153,7 +1153,7 @@ export async function readOutboundFile(path: unknown, ctx: OutboundFileCtx = {})
     // The handle must be the file just checked: a swap between the stat and the open is refused, and so is anything
     // but a regular file (a FIFO), before a byte is read.
     const opened = readStat(await handle.stat(FILE_NUMBERS_AS_BIGINT))
-    const changed = `${shown(path)} changed while HOAI read it, so it is not attached.`
+    const changed = `${shown(path)} was changing while we tried to attach it. Wait a moment and try again.`
     // Compared by device and file number where the system gives both (a zero is none), else by size and times (sameFileAs).
     const sameFile = sameFileAs(stat, opened)
     if (!opened.isFile() || !sameFile) {
