@@ -1131,21 +1131,22 @@ function ownerRestartJob(rpcId = 'rst-1', body: Record<string, unknown> = {}) {
 }
 
 test('checkup reports a held queue with a fresh beacon and a literal usage-limit tail', async () => {
-  const limit = limitEnvelope(T0 - MIN, T0 + MIN)
+  const limit = limitEnvelope(T0 - 7 * MIN, T0 + MIN)
   const queue = [enqueueLine(T0 - 5 * MIN), enqueueLine(T0 - 4 * MIN), enqueueLine(T0 - 2 * MIN)]
-  const tool = JSON.parse(assistantTurn(T0 - 6 * MIN))
+  const tool = JSON.parse(assistantTurn(T0 - 8 * MIN))
   tool.message.content = [{ type: 'tool_use', id: 'foreground' }]
   const result = JSON.stringify({ type: 'user', timestamp: new Date(T0 - 6 * MIN).toISOString(),
     message: { content: [{ type: 'tool_result', tool_use_id: 'foreground' }] } })
   const remove = JSON.stringify({ ...JSON.parse(queue[0]!), operation: 'remove' })
   for (const [lines, beat, held] of [
-    [[...queue, limit], T0, true],
-    [[JSON.stringify(tool), ...queue, limit], T0, false],
-    [[JSON.stringify(tool), result, ...queue, limit], T0, true],
-    [[...queue, remove, limit], T0, false],
-    [[...queue, limit, remove], T0, false],
-    [[...queue, limit], T0 - 10 * MIN, false],
-    [[enqueueLine(T0 - MIN), limit], T0, false],
+    [[limit, ...queue], T0, true],
+    [[limit, ...queue, ownerMessage(T0 - MIN)], T0, true],
+    [[JSON.stringify(tool), limit, ...queue], T0, false],
+    [[JSON.stringify(tool), result, limit, ...queue], T0, true],
+    [[limit, ...queue, remove], T0, false],
+    [[limit, ...queue, JSON.stringify({ ...JSON.parse(remove), operation: 'dequeue' })], T0, false],
+    [[limit, ...queue], T0 - 10 * MIN, false],
+    [[limit, enqueueLine(T0 - MIN)], T0, false],
   ] as const) {
     const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
     writeTranscript(fs, [...lines], T0)
@@ -1233,7 +1234,7 @@ for (const limited of [false, true]) test(limited ? 'owner restart into a still 
 
 test('a second press on a held queue cannot use an earlier restart or answer', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
-  writeTranscript(fs, [enqueueLine(T0 - 5 * MIN), limitEnvelope(T0 - MIN, T0 + MIN)], T0)
+  writeTranscript(fs, [limitEnvelope(T0 - 6 * MIN, T0 + MIN), enqueueLine(T0 - 5 * MIN)], T0)
   const beacon = `${PLUGIN_STATE}/channel-beacon.json`
   fs.writeFile(beacon, '{}')
   fs.touch(beacon, T0)
@@ -1255,7 +1256,7 @@ test('a second press on a held queue cannot use an earlier restart or answer', a
 
 test('a checkup restarts a held queue after the reset without pressing a key', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1 }) })
-  writeTranscript(fs, [enqueueLine(T0 - 6 * MIN), limitEnvelope(T0 - 5 * MIN, T0 - MIN)], T0)
+  writeTranscript(fs, [limitEnvelope(T0 - 7 * MIN, T0 - MIN), enqueueLine(T0 - 6 * MIN)], T0)
   const beacon = `${PLUGIN_STATE}/channel-beacon.json`
   fs.writeFile(beacon, '{}')
   fs.touch(beacon, T0)
