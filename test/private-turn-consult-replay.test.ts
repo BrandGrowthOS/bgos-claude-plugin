@@ -111,6 +111,22 @@ function agentHome(t: any) {
   return { life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs }
 }
 
+for (const [card, action] of [['peer', 'call_owner'], ['other chat', 'meeting_reply'], ['meeting', 'send_to_peer']]) {
+  test(`a live delivery tag ties ${action} to its request after a ${card} card`, t => {
+    const home = agentHome(t)
+    const first = home.life()
+    const key = 'owner:1'
+    first.submit(first.tracker.deliver({ content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: key }))
+    assert.equal(first.call(), OWNER)
+    if (card === 'peer') first.tracker.deliver({ content: 'update', chatId: 'first', peerSourceAssistantId: 'peer' })
+    else if (card === 'meeting') first.tracker.noteUntracked({ chatId: 'first' })
+    else first.tracker.deliver({ content: 'update', chatId: 'second', actingUserId: OWNER })
+    assert.equal(first.call(), null)
+    first.act(action!)
+    assert.equal(home.life().tracker.canRecover(key), false)
+  })
+}
+
 test('a normal stop closes an admitted message even after its private authority was revoked', (t) => {
   const home = agentHome(t)
   const first = home.life()
