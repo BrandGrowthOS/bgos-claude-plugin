@@ -365,7 +365,22 @@ for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other e
   })
 }
 
-for (const action of ['react', 'call_owner', 'reply', 'meeting_reply', 'edit_message', 'ask_user_input', 'stop', 'restart yourself']) {
+test('a reaction acknowledges the request and leaves its answer due', t => {
+  const home = agentHome(t)
+  const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  const first = home.life()
+  first.submit(first.tracker.deliver(message))
+  assert.equal(first.call(), OWNER)
+  first.act('react')
+  const next = home.life()
+  assert.equal(next.tracker.canRecover(message.fireKey), true)
+  next.submit(next.tracker.deliver({ ...message, recoveryWithoutReply: true }))
+  assert.equal(next.call(), OWNER)
+  next.act('reply')
+  assert.equal(home.life().tracker.canRecover(message.fireKey), false)
+})
+
+for (const action of ['call_owner', 'reply', 'meeting_reply', 'edit_message', 'ask_user_input', 'stop', 'restart yourself']) {
   test(`recovery excludes a message handled by ${action}`, (t) => {
     const home = agentHome(t)
     const message = { content: action === 'restart yourself' ? action : 'continue',
