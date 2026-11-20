@@ -560,7 +560,7 @@ test('only successful changes close the delivery tagged when the tool started', 
 })
 
 for (const action of ['email_send', 'email_draft', 'artifact_create', 'artifact_update', 'boards_insert',
-  'vault_request_login', 'schedule', 'set_status', 'show_component', 'create_mission']) {
+  'vault_request_login', 'schedule', 'show_component', 'create_mission']) {
   test(`a confirmed ${action} closes its message before Stop`, t => {
     const home = agentHome(t)
     const first = home.life()
@@ -699,7 +699,7 @@ test('an explicit reply to an earlier request leaves the current question open',
   assert.equal(next.tracker.canRecover('owner:2'), true)
 })
 
-for (const read of ['boards_download', 'vault_fill_prepare', 'unlisted_tool']) {
+for (const read of ['boards_download', 'vault_fill_prepare', 'unlisted_tool', 'set_status', 'set_goal_working', 'set_goal_waiting']) {
   test(`a request interrupted after ${read} receives one answer on restart`, t => {
     const home = agentHome(t)
     const first = home.life()
