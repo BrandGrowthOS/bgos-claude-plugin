@@ -765,6 +765,26 @@ for (const limited of [false, true]) {
   })
 }
 
+for (const tool of ['send_to_peer', 'boards_update', 'artifact_update']) {
+  test(`an unaddressed ${tool} before a limit without Stop can credit the wrong request`, t => {
+    const home = agentHome(t)
+    const first = home.life()
+    const one = { content: 'do the work', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+    const two = { ...one, content: 'another question', chatId: 'second', fireKey: 'owner:2' }
+    const rows = [one, two].map(request => {
+      const card = first.tracker.deliver(request)
+      first.submit(card)
+      return JSON.stringify({ type: 'user', message: { content: card } })
+    })
+    const answers = [0, 0]
+    first.act(tool)
+    answers[0]++
+    home.transcripts.set(first.sessionId, [...rows, limitRecord].join('\n'))
+    answerAfterRestart(home, [one, two], answers)
+    assert.deepEqual(answers, [2, 0])
+  })
+}
+
 test('the end of a later prompt leaves a refused message available', t => {
   const home = agentHome(t)
   const first = home.life()
