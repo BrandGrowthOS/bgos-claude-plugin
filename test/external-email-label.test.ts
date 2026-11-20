@@ -1320,6 +1320,8 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
   }
   const clock = { now: 1_000_000, stepMs: 0 }
   const deadlines: Array<number | undefined> = []
+  // Every download this harness started and has not seen end.
+  const downloads = new Set<Promise<unknown>>()
   const chatLastSeen = new Map([[CHAT, 9000]])
   const shared = {
     emailCursorHolds: ef.createEmailCursorHolds?.() ?? { hold: () => undefined, release: () => null, clamp: (_c: string, id: number) => id },
@@ -1332,7 +1334,10 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
     emailFilesWanted: emailFiles.emailFilesWanted,
     prepareEmailFiles: async (o: Parameters<typeof emailFiles.prepareEmailFiles>[0]) => {
       deadlines.push(o.deadlineMs)
-      const saves = await emailFiles.prepareEmailFiles({ ...o, fetchImpl: fetchImpl as never })
+      const download = emailFiles.prepareEmailFiles({ ...o, fetchImpl: fetchImpl as never })
+      downloads.add(download)
+      void download.then(() => downloads.delete(download), () => downloads.delete(download))
+      const saves = await download
       clock.now += clock.stepMs
       return saves
     },
@@ -1346,6 +1351,11 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
   try {
     return await fn({ root, fetched, open: () => open(), clock, chatLastSeen, shared, saver, saverScope, saverLogs: saverRun.logs, deadlines })
   } finally {
+    // Let held downloads go and wait for every one to end before removing
+    // their folder: a write into it during the removal failed the rmdir on
+    // Windows (ENOTEMPTY), and one after it put the folder back.
+    open()
+    while (downloads.size > 0) await Promise.allSettled([...downloads])
     await rm(dir, { recursive: true, force: true })
   }
 }
