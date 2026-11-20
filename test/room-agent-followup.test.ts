@@ -947,6 +947,18 @@ test('restart offers a held request once per boot until its first answer', async
   }
 })
 
+test('an unsaved recovery claim skips delivery and logs one error', async () => {
+  const error = 'Could not save the recovery claim. Skipped the interrupted message.'
+  const lane = pollLane([{ message: { id: 1, sender: 'user', senderUserId: PERSON, text: 'Request', sentDate: new Date().toISOString() }, messageFiles: [] }], {
+    chatLastSeen: new Map([[CHAT, 1]]), chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10,
+    privateTurns: { canRecover: () => true, deliver: () => { throw new Error(error) } },
+  })
+  await lane.fn(CHAT)
+  await lane.clock.elapse()
+  assert.equal(lane.run.notifications.length, 0)
+  assert.equal(lane.run.logs.filter(line => line.includes(error)).length, 1, lane.run.logs.join('\n'))
+})
+
 test('a missing cursor preserves a new request and recovers only an open unclaimed turn', async () => {
   const id = 1
   for (const [admitted, open, claimed, answered, count, resume] of [

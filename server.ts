@@ -13700,7 +13700,7 @@ async function pollChat(chatId: string): Promise<void> {
       // the run when the card goes out and holds every other card while the run is live.
       const pollActor = privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta })
       const pollGrant = scheduleGrantOf({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, actingUserId: pollActor, chatId })
-      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : channelNotify(() => ({
+      const humanHandoff = trackMessageOperation(async () => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : channelNotify(() => ({
           content: privateTurns.deliver({ content, chatId, recoveryWithoutReply: recoveredWithoutReply.has(msg.message.id), peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: pollSenderType, agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta, messageId: msg.message.id, backlog: isBacklog }), fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
           meta: finalInboundMeta(
             pollChannel.meta,
@@ -19382,7 +19382,7 @@ function connectWebsocket(): void {
       )
       const wsActor = privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta })
       const wsGrant = scheduleGrantOf({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, actingUserId: wsActor, chatId })
-      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId }) ? Promise.resolve() : channelNotify(() => ({
+      const humanHandoff = trackMessageOperation(async () => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId }) ? Promise.resolve() : channelNotify(() => ({
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: wsSenderType, agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId, backlog: sentBeforeStart(payload?.sentDate ?? payload?.sent_date, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId }), actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
           meta: finalInboundMeta(
             wsChannel.meta,

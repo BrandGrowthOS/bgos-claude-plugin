@@ -17,9 +17,10 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import fs, { existsSync, utimesSync, writeFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { syncBuiltinESMExports } from 'node:module'
 import * as privateTurnModule from '../lib/private-turn.mjs'
 import { createPrivateTurnTracker, privateMarkerPath, privateRevokeLine, requirePrivateTurn, voiceConsultActor } from '../lib/private-turn.mjs'
 import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
@@ -102,7 +103,7 @@ function agentHome(t: any) {
     return { tracker, submit, consult, wake, call, act, stop, sessionId, replays, revokes, outcomes }
   }
   const ledgerKeys = (): string[] => { try { return Object.keys((JSON.parse(readFileSync(firesPath, 'utf8')) as any).fires) } catch { return [] } }
-  return { life, clock, ledgerKeys, transcripts }
+  return { life, clock, ledgerKeys, transcripts, firesPath }
 }
 
 test('restart recovery can answer a killed turn once, even after another boot', (t) => {
@@ -121,6 +122,54 @@ test('restart recovery can answer a killed turn once, even after another boot', 
   again.submit(again.tracker.deliver({ ...message, recoveryWithoutReply: true }))
   assert.equal(again.call(), null)
   assert.deepEqual(again.outcomes, ['replayed'])
+})
+
+test('a claim write error skips delivery without calling the message handled', (t) => {
+  const home = agentHome(t)
+  const message = { content: 'continue', actingUserId: OWNER, chatId: 'chat', fireKey: `owner:${home.clock.now}` }
+  const first = home.life()
+  first.submit(first.tracker.deliver(message))
+  assert.equal(first.call(), OWNER)
+  const next = home.life()
+  const original = fs.writeFileSync
+  const fault = t.mock.method(fs, 'writeFileSync', (...args: Parameters<typeof original>) => {
+    if (String(args[0]).endsWith('.claimed')) throw new Error('fixture write failure')
+    return original(...args)
+  })
+  syncBuiltinESMExports()
+  try {
+    assert.throws(() => next.tracker.deliver({ ...message, recoveryWithoutReply: true }), {
+      message: 'Could not save the recovery claim. Skipped the interrupted message.',
+    })
+    assert.equal(next.call(), null)
+    assert.deepEqual(next.replays, [])
+  } finally {
+    fault.mock.restore()
+    syncBuiltinESMExports()
+  }
+})
+
+test('boot cleans only recovery files older than seven days', (t) => {
+  const home = agentHome(t)
+  const dir = join(dirname(home.firesPath), 'interrupted-turns')
+  mkdirSync(dir, { recursive: true })
+  const cutoff = home.clock.now - 7 * 24 * 3600_000
+  for (const [name, at] of [
+    ['a'.repeat(64) + '.open', cutoff - 1000],
+    ['a'.repeat(64) + '.claimed', cutoff - 1000],
+    ['a'.repeat(64) + '.attempt', cutoff - 1000],
+    ['a'.repeat(64) + '.tool', cutoff - 1000],
+    ['b'.repeat(64) + '.claimed', cutoff],
+    ['unrelated', cutoff - 1000],
+  ] as const) {
+    const path = join(dir, name)
+    writeFileSync(path, '')
+    utimesSync(path, new Date(at), new Date(at))
+  }
+  home.life()
+  for (const suffix of ['open', 'claimed', 'attempt', 'tool']) assert.equal(existsSync(join(dir, 'a'.repeat(64) + '.' + suffix)), false)
+  assert.ok(existsSync(join(dir, 'b'.repeat(64) + '.claimed')))
+  assert.ok(existsSync(join(dir, 'unrelated')))
 })
 
 for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other error']) {
