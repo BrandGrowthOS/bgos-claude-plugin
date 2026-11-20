@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -27,17 +27,24 @@ function fixture(t: any) {
     accountId: null as string | null,
     sessionId: randomUUID(),
     ready: true,
-    limited: false,
+    limit: null as null | { atMs: number; resetsAtMs: number; model: string | null; agentModel: string | null },
     model: 'opus',
   }
   let returns = true
+  const atLimit: boolean[] = []
+  const holds = { count: 0 }
   const deps = {
     home,
     credentials,
     now: () => now,
     inventory: async () => [row],
     measure: async (account: any) => readings.get(account.id) ?? { signedIn: false, usage: null },
-    restart: async (r: any, choice: string | null) => {
+    restart: async (r: any, choice: string | null, opts: any = {}) => {
+      if (holds.count > 0) {
+        holds.count--
+        return { started: false, wait: true }
+      }
+      atLimit.push(opts.atLimit === true)
       restarts.push({ id: r.assistantId, choice, sessionId: r.sessionId })
       if (returns || choice === null) row.accountId = choice
       return returns || choice === null
@@ -73,6 +80,16 @@ function fixture(t: any) {
     sign,
     readings,
     restarts,
+    atLimit,
+    holds,
+    // The capkeeper statusline sample of one saved login, as its tap writes it.
+    week: (id: string, used: number) => {
+      const dir = join(home, '.bgos-agent', 'helper-accounts', id, 'state', 'usage')
+      mkdirSync(dir, { recursive: true })
+      const file = join(dir, 'last-status.json')
+      writeFileSync(file, JSON.stringify({ rate_limits: { seven_day: { used_percentage: used, resets_at: Math.floor((now + 86400000) / 1000) } } }))
+      utimesSync(file, new Date(now - 60000), new Date(now - 60000))
+    },
     failStart: () => {
       returns = false
     },
@@ -105,28 +122,113 @@ test('one agent finishes its turn and returns through its watcher on the same pi
   assert.equal((await f.watcher.snapshot()).status, 'back_online')
 })
 
-test('a quota limit never authorizes a change of identity', async (t) => {
+const HOUR = 3600000
+const limitAt = (atMs: number, model: string | null = null, resetsAtMs = now + 4 * HOUR) => ({ atMs, resetsAtMs, model, agentModel: 'opus' })
+const agentOf = async (f: any) => (await f.watcher.snapshot()).agents.find((a: any) => a.assistantId === 41)
+
+test('Switch at limit waits for the agent own limit line, then switches once and blocks the old account', async (t) => {
   const f = fixture(t)
   const a = await f.add('Primary'),
     b = await f.add('Reserve')
   f.sign(a, 10, 20, 30)
   f.sign(b, 5, 10, 20)
   f.row.accountId = a
-  await assert.rejects(f.assign('limit', b, 41))
-  f.sign(a, 10, 20, 100)
-  const restored = createHelperAccounts(f.deps)
-  await restored.tick()
-  assert.equal(f.row.accountId, a)
+  await f.assign('limit', b, 41)
+  assert.deepEqual(await agentOf(f), { assistantId: 41, accountId: a, status: 'waiting_for_limit', rule: { mode: 'limit', accountId: b } })
+  // A busy agent with no limit is never touched; neither is one whose usage only looks high.
+  f.row.ready = false
+  await f.watcher.tick()
   assert.equal(f.restarts.length, 0)
+  // Its own "You've hit your session limit" line: switch now, even mid turn (it cannot answer anyway).
+  f.row.limit = limitAt(now - 60000)
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [b])
+  assert.deepEqual(f.atLimit, [true])
+  assert.deepEqual(await agentOf(f), { assistantId: 41, accountId: b, status: 'back_online' })
+  const snap = await f.watcher.snapshot()
+  assert.deepEqual(snap.accounts.find((x: any) => x.id === a).limits, [{ model: null, until: new Date(now + 4 * HOUR).toISOString() }])
+  // The carried over conversation still ends in A's refusal: that is not B's limit, and the rule is spent.
+  await f.watcher.tick()
+  assert.equal(f.restarts.length, 1)
+  assert.equal(snap.accounts.find((x: any) => x.id === b).limits, undefined)
 })
 
-test('fresh capacity is reported, stale readings are withheld and Auto cannot start another login', async (t) => {
+test('Auto picks the most week room now and at each limit, never an account out of room for that model', async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B'),
+    c = await f.add('C')
+  for (const id of [a, b, c]) f.sign(id, 10, 10, 10)
+  f.week(a, 80)
+  f.week(b, 36)
+  f.week(c, 14)
+  f.row.accountId = a
+  await f.assign('auto', undefined, 41)
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [c])
+  assert.deepEqual(await agentOf(f), { assistantId: 41, accountId: c, status: 'back_online', rule: { mode: 'auto' } })
+  // C hits its Opus limit: C has no Opus room until the reset, B has the most week room left.
+  f.row.limit = limitAt(now + 1, 'opus')
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [c, b])
+  // B hits its session limit: only A is left with room for Opus.
+  f.row.limit = limitAt(now + 2)
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [c, b, a])
+  const limits = Object.fromEntries((await f.watcher.snapshot()).accounts.map((x: any) => [x.label, x.limits]))
+  assert.deepEqual(limits.C, [{ model: 'opus', until: new Date(now + 4 * HOUR).toISOString() }])
+  assert.deepEqual(limits.B, [{ model: null, until: new Date(now + 4 * HOUR).toISOString() }])
+  // A hits its limit too: nothing has room, so Auto waits instead of switching back.
+  f.row.limit = limitAt(now + 3)
+  await f.watcher.tick()
+  assert.equal(f.restarts.length, 3)
+  assert.equal((await agentOf(f)).status, 'waiting_for_room')
+  assert.deepEqual(f.atLimit, [false, true, true])
+})
+
+test('a switch at limit that is not safe yet waits and is tried again for the same limit', async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B')
+  f.sign(a, 1, 1, 1)
+  f.sign(b, 1, 1, 1)
+  f.row.accountId = a
+  await f.assign('limit', b, 41)
+  f.row.limit = limitAt(now - 1000)
+  f.holds.count = 1
+  await f.watcher.tick()
+  assert.equal(f.restarts.length, 0)
+  assert.equal((await agentOf(f)).status, 'waiting_for_turn')
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [b])
+})
+
+test('Turn Auto off clears the rule; the timings are refused where they make no sense', async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A')
+  f.sign(a, 1, 1, 1)
+  f.row.accountId = a
+  await f.assign('auto', undefined, 41)
+  assert.deepEqual((await agentOf(f)).rule, { mode: 'auto' })
+  await f.job({ action: 'clear', assistantId: 41 })
+  assert.deepEqual(await agentOf(f), { assistantId: 41, accountId: a, status: 'saved' })
+  f.row.limit = limitAt(now + 5)
+  await f.watcher.tick()
+  assert.equal(f.restarts.length, 0)
+  // No rule left to clear, a computer wide rule, Auto with an account, Switch at limit without one.
+  await assert.rejects(f.job({ action: 'clear', assistantId: 41 }))
+  await assert.rejects(f.assign('limit', a))
+  await assert.rejects(f.assign('auto'))
+  await assert.rejects(f.job({ action: 'assign', mode: 'auto', accountId: a, assistantId: 41 }))
+  await assert.rejects(f.job({ action: 'assign', mode: 'limit', assistantId: 41 }))
+  assert.deepEqual((await f.watcher.snapshot()).modes, ['now', 'limit', 'auto'])
+})
+
+test('fresh capacity is reported and stale readings are withheld', async (t) => {
   const f = fixture(t)
   const a = await f.add('A'),
     b = await f.add('B')
   f.sign(a, 10, 14, 74)
   f.sign(b, 12, 36, 32)
-  await assert.rejects(f.assign('auto', undefined, 41))
   assert.deepEqual((await f.watcher.snapshot()).accounts[1].usage, usage(12, 36, 32))
   f.readings.get(a).usage.readAt = '2026-01-01T00:00:00Z'
   f.sign(b, 100, 36, 32)

@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { applyHelperAccount, profileEnvOf } from '../lib/helper-account-launch.mjs'
 import { readAccountRegistry } from '../lib/helper-accounts.mjs'
-import { createAccountWatcher } from '../lib/helper-account-watcher.mjs'
+import { atLimitSafe, createAccountWatcher } from '../lib/helper-account-watcher.mjs'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 import { nodeFs } from '../lib/watcher-bundle.mjs'
 
@@ -130,6 +130,23 @@ test('F3 a damaged registry or a lost profile never stops agents it does not own
   // The owner's own choice for THIS agent is still never silently replaced by another login.
   m.registry({ targets: { '41': { pairingId: 13, choice: m.a } } })
   assert.throws(() => m.apply({}), /account_profile_unavailable/)
+})
+
+test('an automatic switch at a limit never cuts a permission question, thread work or a background job', () => {
+  const now = Date.now()
+  const state = { turnInFlight: true, pendingMessages: 2, activeOperations: 1, pendingPermissions: 0, threadWork: 0, turnSignal: 'hooks' }
+  const seen = (extra: object = {}, stateExtra: object = {}) => ({
+    claudeAlive: true, stateFresh: true, descendants: [], agentState: { ...state, ...stateExtra }, ...extra,
+  })
+  // Held only by the limit: the owed message and the picker's turn flag do not stop it.
+  assert.equal(atLimitSafe(seen(), now), true)
+  assert.equal(atLimitSafe({ claudeAlive: false }, now), true)
+  assert.equal(atLimitSafe(seen({}, { pendingPermissions: 1 }), now), false)
+  assert.equal(atLimitSafe(seen({}, { threadWork: 1 }), now), false)
+  assert.equal(atLimitSafe(seen({ descendants: ['bash -c source ~/.claude/shell-snapshots/snapshot-zsh-1.sh && sleep 900'] }), now), false)
+  assert.equal(atLimitSafe(seen({ descendants: null }), now), false)
+  assert.equal(atLimitSafe(seen({ stateFresh: false }), now), false)
+  assert.equal(atLimitSafe(seen({ claudeAlive: null }), now), false)
 })
 
 test('F4 the sign-in check never runs from inside a saved login folder', async (t) => {
