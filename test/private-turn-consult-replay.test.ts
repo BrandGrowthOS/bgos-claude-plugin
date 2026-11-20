@@ -119,7 +119,7 @@ function agentHome(t: any) {
     assert.equal(child.status, 0, child.stderr)
     return child.stdout.trim() ? JSON.parse(child.stdout) : null
   }
-  return { runPromptHook, paths: markerPaths, life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs }
+  return { runPromptHook, paths: markerPaths, life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs, markerPath: markerPaths[0]! }
 }
 
 for (const [card, action] of [['peer', 'call_owner'], ['other chat', 'meeting_reply'], ['meeting', 'send_to_peer']]) {
@@ -300,6 +300,44 @@ for (const shape of ['held behind refused probe', 'expired before admission', 'a
     assert.equal(home.life().tracker.canRecover(key), false)
   })
 }
+
+test('an older live marker without tags closes only its adopted request', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  const marker = JSON.parse(readFileSync(home.markerPath, 'utf8'))
+  delete marker.tags
+  delete marker.cliTurn
+  writeFileSync(home.markerPath, JSON.stringify(marker))
+  assert.equal(first.call(), OWNER)
+  first.act('call_owner')
+  assert.equal(home.life().tracker.canRecover(message.fireKey), false)
+})
+
+test('a late Stop from another session cannot close the matching turn', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  first.stopHook()
+  home.startupPrompt(first.sessionId)
+  const path = home.markerPath + '.stopped'
+  const saved = JSON.parse(readFileSync(path, 'utf8'))
+  writeFileSync(path, JSON.stringify({ ...saved, sessionId: 'other' }))
+  first.tracker.end()
+  assert.equal(home.life().tracker.canRecover(message.fireKey), true)
+})
+
+test('an unrelated claim filename cannot suppress an ordinary delivery', t => {
+  const home = agentHome(t)
+  const key = 'owner:1'
+  const dir = join(dirname(home.firesPath), 'interrupted-turns')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, privateTurnModule.privatePromptHash(key) + '.claimed'), '')
+  const ledger = createFireLedger({ path: home.firesPath })
+  assert.equal(ledger.claimed(key), false)
+})
 
 test('a late Stop drained after the next prompt closes only its original message', t => {
   const home = agentHome(t)
