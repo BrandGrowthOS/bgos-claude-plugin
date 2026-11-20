@@ -1241,7 +1241,7 @@ for (const limited of [false, true]) test(limited ? 'owner restart into a still 
   const terminal = terminalOf(backend, job.frames[0]!.rpcId)
   if (limited) {
     assert.equal(terminal.state, 'failed', terminal.message)
-    assert.match(terminal.message, /^Restarted, but it is still on the Claude usage limit\. Reset: /)
+    assert.equal(terminal.message, `not back: restarted via marker; still on the Claude usage limit, resets at ${new Date(T0 + 3600_000).toISOString()}`)
     return
   }
   assert.equal(terminal.state, 'done', terminal.message)
@@ -1265,7 +1265,7 @@ test('a second press on a held queue cannot use an earlier restart or answer', a
     await runWatcher(run.deps as any)
     const result = terminalOf(backend, job.frames[0]!.rpcId)
     assert.equal(result.state, first ? 'done' : 'failed', result.message)
-    if (!first) assert.match(result.message, /^Restarted, but it is still on the Claude usage limit\./)
+    if (!first) assert.equal(result.message, `The agent is still on the Claude usage limit, resets at ${new Date(T0 + MIN).toISOString()}`)
     assert.equal(restartRequested(fs), first)
     fs.rm(`${STATE_DIR}/restart-requested.json`)
   }
@@ -1359,7 +1359,7 @@ test('item 5: a reconcile frame carrying the restart intent is the owner Restart
   assert.equal(planned, false)
 })
 
-test('item 5: a frozen claude is woken and ended, and when the launcher does not bring it back the agent is started again', async () => {
+for (const limited of [false, true]) test(limited ? 'a fallback start reports a usage refusal without a known reset' : 'item 5: a frozen claude is woken and ended, and when the launcher does not bring it back the agent is started again', async () => {
   // The launcher has used its 3 relaunches this hour and ignores the marker: claude stays frozen.
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1 }) })
   writeTranscript(fs, [assistantTurn(T0 - 30 * MIN), ownerMessage(T0 - 20 * MIN)], T0 - 20 * MIN)
@@ -1386,11 +1386,25 @@ test('item 5: a frozen claude is woken and ended, and when the launcher does not
   // Only a session started by the second step answers the probe.
   clock.onSleep((_ms, nowMs) => {
     if (run.spawns.length > 0 && fs.files.has(`${STATE_DIR}/probe-requested.json`)) {
+      if (limited) {
+        const state = JSON.parse(agentState({ updatedAt: new Date(nowMs).toISOString() }))
+        live.add(state.pid)
+        fs.writeFile(`${HOME}/.bgos-agent/credentials-${state.assistantId}.json.lock`, JSON.stringify({ pid: state.pid, bootedAt: nowMs - 1, heartbeatAt: nowMs }))
+        fs.writeFile(`${PLUGIN_STATE}/agent-state.json`, JSON.stringify(state))
+        writeTranscript(fs, [apiError(nowMs, 'rate_limit', 'Usage limit reached')], nowMs)
+        return
+      }
       fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
     }
   })
   await runWatcher(run.deps as any)
   const terminal = terminalOf(backend, 'rst-1')
+  if (limited) {
+    assert.equal(terminal.state, 'failed', terminal.message)
+    const start = terminal.steps.find((step: any) => step.kind === 'start_agent')
+    assert.equal(terminal.message, `not back: started again ${start.message}; still on the Claude usage limit`)
+    return
+  }
   assert.equal(terminal.state, 'done', JSON.stringify(terminal))
   assert.deepEqual(terminal.steps.map((s: any) => `${s.kind}:${s.state}`), ['observe:ok', 'restart_agent:ok', 'verify_agent:skipped', 'start_agent:ok', 'verify_agent:ok'])
   assert.deepEqual(run.kills, [
