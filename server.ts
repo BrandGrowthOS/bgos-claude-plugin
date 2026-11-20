@@ -7354,7 +7354,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         // (message_id: N)...") verbatim into THIS session's transcript, so
         // the minted id is positive proof of which transcript is ours.
         if (msgId != null) sessionBinder.recordReplyMessageId(msgId)
-        const answered = reply_to_id ?? answeringInboundId
+        const answered = reply_to_id
         if (replyChatId === String(resolvedChatId) && typeof answered === 'number' && Number.isSafeInteger(answered) && answered > 0) {
           privateTurns.noteHandled(`reply:${answered}`)
         }
