@@ -308,7 +308,7 @@ test('a failed tool marker logs once, allows the tool and keeps the attempt spen
   assert.equal(home.life().tracker.canRecover(key), false)
 })
 
-for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other error']) {
+for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other error', 'tool after task notification', 'tool in a later chat']) {
   test(`a refused recovery gives back its chance only for its own tool-free turn: ${work}`, (t) => {
     const home = agentHome(t)
     const key = `owner:${home.clock.now}`
@@ -326,11 +326,19 @@ for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other e
       ...(work === 'tool record' ? [{ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'read' }] } }] : []),
       { type: 'assistant', isApiErrorMessage: true, apiError: work === 'other error' ? 'authentication_failed' : 'usage_limit_reached' },
     ]
-    home.transcripts.set(limited.sessionId, rows.map(row => JSON.stringify(row)).join('\n'))
+    const later: unknown[] = []
+    if (work === 'tool after task notification' || work === 'tool in a later chat') {
+      const another = limited.tracker.deliver({ content: 'next', actingUserId: OWNER, chatId: 'other' })
+      later.push({ type: 'user', message: { content: work === 'tool in a later chat'
+        ? `<channel message_id="2">\n${another}</channel>` : '<task-notification>background task finished</task-notification>' } },
+        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'read' }] } })
+    }
+    home.transcripts.set(limited.sessionId, [...rows, ...later].map(row => JSON.stringify(row)).join('\n'))
     limited.stop()
     const next = home.life()
-    assert.equal(next.tracker.canRecover(key), work === 'none')
-    if (work !== 'none') return
+    const mayRetry = work === 'none' || work === 'tool in a later chat'
+    assert.equal(next.tracker.canRecover(key), mayRetry)
+    if (!mayRetry) return
     const retry = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
     const concurrent = home.life()
     assert.equal(concurrent.tracker.canRecover(key), true, 'an unadmitted offer can survive another boot')
