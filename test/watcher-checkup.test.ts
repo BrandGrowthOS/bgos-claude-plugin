@@ -1231,7 +1231,7 @@ for (const limited of [false, true]) test(limited ? 'owner restart into a still 
   assert.ok(clock.now() >= T0 + 27_000 && clock.now() < T0 + 75_000)
 })
 
-test('an owner can restart a limited held queue and a second press verifies the same restart', async () => {
+test('a second press on a held queue cannot use an earlier restart or answer', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
   writeTranscript(fs, [enqueueLine(T0 - 5 * MIN), limitEnvelope(T0 - MIN, T0 + MIN)], T0)
   const beacon = `${PLUGIN_STATE}/channel-beacon.json`
@@ -1246,7 +1246,8 @@ test('an owner can restart a limited held queue and a second press verifies the 
     const run = rig(fs, backend, clock, PS_912, { pidAlive: (pid: number) => live.has(pid) })
     await runWatcher(run.deps as any)
     const result = terminalOf(backend, job.frames[0]!.rpcId)
-    assert.equal(result.state, 'done', result.message)
+    assert.equal(result.state, first ? 'done' : 'failed', result.message)
+    if (!first) assert.match(result.message, /^Restarted, but it is still on the Claude usage limit\./)
     assert.equal(restartRequested(fs), first)
     fs.rm(`${STATE_DIR}/restart-requested.json`)
   }
