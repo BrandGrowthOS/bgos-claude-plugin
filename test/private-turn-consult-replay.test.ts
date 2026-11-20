@@ -465,6 +465,23 @@ for (const action of ['email_send', 'email_draft', 'artifact_create', 'artifact_
   })
 }
 
+test('a confirmed action after revocation keeps a refused recovery spent', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  const retry = home.life()
+  const card = retry.tracker.deliver({ ...message, recoveryWithoutReply: true })
+  retry.submit(card)
+  retry.tracker.noteUntracked({ chatId: 'second' })
+  retry.act('send_to_peer')
+  home.transcripts.set(retry.sessionId, [
+    { type: 'user', message: { content: card } },
+    { type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' },
+  ].map(row => JSON.stringify(row)).join('\n'))
+  assert.equal(home.life().tracker.canRecover(message.fireKey), false)
+})
+
 test('plain reads leave their request open', t => {
   const home = agentHome(t)
   const first = home.life()
