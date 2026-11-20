@@ -9,32 +9,59 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   EXIT_CODE,
+  changelogHeadVersion,
   decideVersionBump,
   isAdvance,
   isShippingPath,
   parseSemver,
+  shippedVersions,
+  versionDisagreements,
 } from '../scripts/check-version-bump.mjs'
 // The gate is only useful if it accepts what the machines can act on, so the
 // parity test below compares it against the real runtime parser rather than
 // against a copy of the regex that could drift out from under it.
 import { parseSemver as runtimeParseSemver } from '../lib/update-planner.mjs'
 
-test('the two shipped manifests really do agree, not just the gate logic', () => {
+test('every place the repo keeps the version really does agree, not just the gate logic', () => {
   // Everything else in this file drives the decision function on literals.
   // This one reads the files a release actually ships: Claude Code loads the
   // plugin manifest and npm loads package.json, so a bump applied to one of
   // them gives the owner an update whose two halves disagree about what they
   // are, and the CI gate only catches it on a pull request that touches code.
-  const read = (name: string): string =>
-    JSON.parse(readFileSync(new URL(`../${name}`, import.meta.url), 'utf8')).version
-  const pkg = read('package.json')
-  const manifest = read('.claude-plugin/plugin.json')
-  assert.equal(
-    manifest,
-    pkg,
-    'package.json and .claude-plugin/plugin.json must be bumped together',
-  )
+  // The lock file keeps the version twice and the newest CHANGELOG heading
+  // names it, so a bump that misses any of those five is caught here too.
+  const text = (name: string): string => readFileSync(new URL(`../${name}`, import.meta.url), 'utf8')
+  const versions = shippedVersions({
+    pkg: text('package.json'),
+    manifest: text('.claude-plugin/plugin.json'),
+    lock: text('package-lock.json'),
+    changelog: text('CHANGELOG.md'),
+  })
+  assert.deepEqual(versionDisagreements(versions), [], `the version files disagree: ${JSON.stringify(versions)}`)
+  const pkg = versions['package.json']
   assert.ok(parseSemver(pkg), `${pkg} is not a version the daemons can act on`)
+})
+
+test('the version check names each of the five places that drifts, and a place it cannot read', () => {
+  const pkg = JSON.stringify({ version: '1.2.3' })
+  const lock = (root: string, entry: string): string =>
+    JSON.stringify({ name: 'x', version: root, packages: { '': { name: 'x', version: entry } } })
+  const changelog = (v: string): string => `# Changelog\n\n## Unreleased\n\nsoon\n\n## ${v} (2026-01-02)\n\ndone\n\n## 1.2.2 (2026-01-01)\n`
+  const all = { pkg, manifest: pkg, lock: lock('1.2.3', '1.2.3'), changelog: changelog('1.2.3') }
+  assert.deepEqual(versionDisagreements(shippedVersions(all)), [])
+  assert.deepEqual(versionDisagreements(shippedVersions({ ...all, manifest: JSON.stringify({ version: '1.2.4' }) })), ['.claude-plugin/plugin.json'])
+  assert.deepEqual(versionDisagreements(shippedVersions({ ...all, lock: lock('1.2.2', '1.2.3') })), ['package-lock.json version'])
+  assert.deepEqual(versionDisagreements(shippedVersions({ ...all, lock: lock('1.2.3', '1.2.2') })), ['package-lock.json packages[""].version'])
+  assert.deepEqual(versionDisagreements(shippedVersions({ ...all, changelog: changelog('1.2.4') })), ['CHANGELOG.md newest heading'])
+  assert.deepEqual(versionDisagreements(shippedVersions({ ...all, lock: 'not json' })), ['package-lock.json version', 'package-lock.json packages[""].version'])
+  assert.deepEqual(versionDisagreements(shippedVersions({ ...all, pkg: '{}', manifest: '{}' })), ['package.json', '.claude-plugin/plugin.json', 'package-lock.json version', 'package-lock.json packages[""].version', 'CHANGELOG.md newest heading'])
+})
+
+test('the newest CHANGELOG heading is the first one that names a version, not Unreleased', () => {
+  assert.equal(changelogHeadVersion('# Changelog\n\n## Unreleased\n\n## 0.90.15 (2026-11-20)\n\n## 0.90.14 (2026-11-20)\n'), '0.90.15')
+  assert.equal(changelogHeadVersion('## 2.0.0\n'), '2.0.0')
+  assert.equal(changelogHeadVersion('# Changelog\n\n## Unreleased\n\nno release yet\n'), null)
+  assert.equal(changelogHeadVersion('text that mentions ## 9.9.9 (x) mid line\n## 1.0.0 (y)\n'), '1.0.0')
 })
 
 test('passes when the version advances and both manifests agree', () => {
