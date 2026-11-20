@@ -453,7 +453,7 @@ test('only successful changes close the delivery tagged when the tool started', 
   assert.equal(home.life().tracker.canRecover(other.fireKey), true)
 })
 
-for (const action of ['email_send', 'email_draft', 'artifact_create', 'artifact_update', 'boards_insert', 'boards_download',
+for (const action of ['email_send', 'email_draft', 'artifact_create', 'artifact_update', 'boards_insert',
   'vault_request_login', 'schedule', 'set_status', 'show_component', 'create_mission']) {
   test(`a confirmed ${action} closes its message before Stop`, t => {
     const home = agentHome(t)
@@ -481,6 +481,24 @@ test('a confirmed action after revocation keeps a refused recovery spent', t => 
   ].map(row => JSON.stringify(row)).join('\n'))
   assert.equal(home.life().tracker.canRecover(message.fireKey), false)
 })
+
+for (const read of ['boards_download', 'vault_fill_prepare', 'unlisted_tool']) {
+  test(`a request interrupted after ${read} receives one answer on restart`, t => {
+    const home = agentHome(t)
+    const first = home.life()
+    const message = { content: 'summarize the document', chatId: 'chat', actingUserId: OWNER, fireKey: 'owner:1' }
+    first.submit(first.tracker.deliver(message))
+    first.act(read)
+    home.transcripts.set(first.sessionId, JSON.stringify({ type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' }))
+
+    const next = home.life()
+    assert.equal(next.tracker.canRecover(message.fireKey), true)
+    next.submit(next.tracker.deliver({ ...message, recoveryWithoutReply: true }))
+    assert.equal(next.call(), OWNER)
+    next.act('reply')
+    assert.equal(home.life().tracker.canRecover(message.fireKey), false)
+  })
+}
 
 test('plain reads leave their request open', t => {
   const home = agentHome(t)
