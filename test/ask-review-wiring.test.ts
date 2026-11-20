@@ -163,7 +163,7 @@ test('gaps after #284, gap 1: every tool result of this daemon carries the ask_w
   const dispatch = server.indexOf('\n  return trackMessageOperation(async () => {\n  const rawArgs', handlerAt)
   assert.ok(handlerAt > 0 && dispatch > handlerAt, 'the dispatch of every tool')
   // With the call's own signal: a cancelled call's result is dropped by the SDK, so it carries no note (review, Important 2).
-  const then = '\n  }).then((result) => {\n    completeOutbound?.(result)\n    return withRetiredOwnAskNotes(result, extra.signal)\n  })'
+  const then = '\n  }).then((result) => {\n    completeOutbound?.(result, confirmedReplyChat)\n    return withRetiredOwnAskNotes(result, extra.signal)\n  })'
   const end = server.indexOf(`${then}\n})\n`, dispatch)
   assert.ok(end > dispatch, 'the dispatch result goes through withRetiredOwnAskNotes')
   // The first top level close after the dispatch is the handler's own, right after the then.
