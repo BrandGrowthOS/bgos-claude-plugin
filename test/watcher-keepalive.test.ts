@@ -408,8 +408,9 @@ test('disabled: the switch off means NO act at all (no install, no restart, no k
   const clock = fakeClock()
   const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive: consent({ enabled: false, enabledAt: null, assistantIds: [912] }).fetchKeepAlive })
   const report = await runKeepAliveSweep(ctx as any)
-  // The only claude here is not proven 912's, so the look settles that 912 is not deaf and names it.
-  assert.deepEqual(report, { enabled: false, source: 'live', agents: [], looked: ['912'], showAgentWindows: false })
+  // The only claude here is not proven 912's, nor proven anybody else's: the look cannot be sure 912 runs
+  // none, so it names nobody as looked at.
+  assert.deepEqual(report, { enabled: false, source: 'live', agents: [], showAgentWindows: false })
   // Every agent is looked at for a deaf channel, switch on or off. That look reads the
   // process table once and touches nothing; the list the answer carried is not acted on while off.
   assert.deepEqual(rec.calls.map((c) => c.file), ['ps'])
@@ -424,7 +425,7 @@ test('consent: a failed fetch with no cache is OFF; with a cache younger than 24
   const clock = fakeClock()
   const down = consent(null, false, 0)
   const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive: down.fetchKeepAlive })
-  assert.deepEqual(await runKeepAliveSweep(ctx as any), { enabled: false, source: 'none', agents: [], looked: ['912'], showAgentWindows: false })
+  assert.deepEqual(await runKeepAliveSweep(ctx as any), { enabled: false, source: 'none', agents: [], showAgentWindows: false })
   // Nothing but the deaf watch's read only process listing.
   assert.deepEqual(rec.calls.filter((c) => c.file !== 'ps'), [])
   // A 404 (backend not deployed yet) is the same: off, unless a fresh cache exists.
@@ -445,7 +446,7 @@ test('consent: a 401 or 403 (the pairing was revoked) is a definitive OFF, never
     const clock = fakeClock()
     const refused = consent({ message: 'Invalid pairing token' }, false, status)
     const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { fetchKeepAlive: refused.fetchKeepAlive }).ctx as any)
-    assert.deepEqual(report, { enabled: false, source: 'refused', agents: [], looked: ['912'], showAgentWindows: false }, String(status))
+    assert.deepEqual(report, { enabled: false, source: 'refused', agents: [], showAgentWindows: false }, String(status))
     assert.deepEqual(rec.calls.filter((c) => c.file !== 'ps'), [], `${status}: no install, no restart, no task start`)
     assert.equal(JSON.parse(fs.files.get(keepAliveCachePath(HOME))!).enabled, false, `${status}: the ON cache is gone`)
     // The network then goes down: the cache bridges the outage as OFF.
@@ -3212,8 +3213,9 @@ test('deafwatch for every agent: the sweep names in `looked` the agents it looke
   const fs = retestScene()
   const rec = recorder({ ps: retestPs() })
   const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive: onlyOneKept(), pidAlive: retestAlive })
-  // 300 beats fresh and 301 runs no claude at all: both looked at, neither deaf. 913 is deaf, one look so far.
-  assert.deepEqual((await runKeepAliveSweep(ctx as any)).looked, ['300', '301'])
+  // 300 beats fresh: seen fine. 301 has no claude of its own, but the other agents' bare claudes here are
+  // not proven anyone's, so the look cannot be sure 301 runs none, and does not name it. 913 is deaf, one look so far.
+  assert.deepEqual((await runKeepAliveSweep(ctx as any)).looked, ['300'])
   let report: any
   for (let i = 0; i < CHANNEL_DEAF_CONFIRM_MS / MIN; i++) {
     clock.advance(MIN)
@@ -3222,23 +3224,26 @@ test('deafwatch for every agent: the sweep names in `looked` the agents it looke
     report = await runKeepAliveSweep(ctx as any)
   }
   assert.deepEqual(watchedOf(report), [['913', 'failed', NOT_KEPT]])
-  assert.deepEqual(report.looked, ['300', '301'])
+  assert.deepEqual(report.looked, ['300'])
 })
 
-test('deafwatch for every agent: with the switch off for the whole computer nothing is kept, so every agent the sweep finds not deaf is named in `looked`', async () => {
+test('deafwatch for every agent: with the switch off for the whole computer nothing is kept, so every agent the sweep saw fine is named in `looked`', async () => {
   const fs = retestScene()
   const rec = recorder({ ps: retestPs() })
   const report: any = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { fetchKeepAlive: switchOff(), pidAlive: retestAlive }).ctx as any)
   assert.equal(report.enabled, false)
-  assert.deepEqual(report.looked, ['7', '300', '301'])
+  assert.deepEqual(report.looked, ['7', '300'])
 })
 
-test('deafwatch for every agent: only a look that settles it names an agent in `looked`. A fresh beacon, no claude of the agent, a claude not proven the agent\'s and a claude that only names its folder do; a daemon that never beaconed, a slow start, an unreadable listing and a look that throws never do', async () => {
+test('deafwatch for every agent: only a look that saw the agent fine names it in `looked`. A fresh beacon and a listing with no claude at all do; a claude not proven the agent\'s, a claude that only names its folder, a daemon of record running with no claude above it, a daemon that never beaconed, a slow start, an unreadable listing and a look that throws never do', async () => {
   const cases: Array<{ name: string; fs: MemoryFs; ps: string | null; alive: number[]; looked: string[] }> = [
     { name: 'healthy', fs: deafMachine({ freshState: true, beaconAt: T0 - 5_000 }), ps: deafPs(T0 - 3 * 60 * MIN, { mcp: true }), alive: [4912, 5912, 4100], looked: ['912'] },
     { name: 'no claude of the agent', fs: deafMachine({ beaconAt: T0 - 20 * MIN }), ps: psLine(1, 0, '/sbin/launchd'), alive: [], looked: ['912'] },
-    { name: 'not proven the agent\'s', fs: deafMachine({ beaconAt: T0 - 20 * MIN }), ps: deafPs(T0 - 3 * 60 * MIN, { pin: false }), alive: [5912, 4100], looked: ['912'] },
-    { name: 'a claude that only names the agent\'s folder', fs: deafMachine({ beaconAt: T0 - 20 * MIN }), ps: [psLine(1, 0, '/sbin/launchd'), psLine(800, 1, `claude --add-dir ${AVA}`, lstartOf(T0 - 10 * MIN))].join('\n'), alive: [800], looked: ['912'] },
+    // Round 5: a claude the look cannot prove is the agent's, or anybody else's, may be the agent's.
+    { name: 'not proven the agent\'s', fs: deafMachine({ beaconAt: T0 - 20 * MIN }), ps: deafPs(T0 - 3 * 60 * MIN, { pin: false }), alive: [5912, 4100], looked: [] },
+    { name: 'a claude that only names the agent\'s folder', fs: deafMachine({ beaconAt: T0 - 20 * MIN }), ps: [psLine(1, 0, '/sbin/launchd'), psLine(800, 1, `claude --add-dir ${AVA}`, lstartOf(T0 - 10 * MIN))].join('\n'), alive: [800], looked: [] },
+    // The daemon its own state names still runs, with no claude visible above it: a claude this watcher cannot see.
+    { name: 'a daemon of record running with no claude above it', fs: deafMachine({ freshState: true }), ps: [psLine(1, 0, '/sbin/launchd'), psLine(4912, 1, `node ${ROOT}/bin/bgos-launch.mjs ${ROOT}/server.ts`, lstartOf(T0 - 60 * MIN))].join('\n'), alive: [4912], looked: [] },
     { name: 'no beacon yet', fs: deafMachine({ freshState: true }), ps: deafPs(T0 - 3 * 60 * MIN, { mcp: true }), alive: [4912, 5912, 4100], looked: [] },
     { name: 'a slow start', fs: deafMachine({ beaconAt: T0 - 20 * MIN }), ps: deafPs(T0 - 2 * MIN), alive: [5912, 4100], looked: [] },
     { name: 'an unreadable listing', fs: deafMachine({ beaconAt: T0 - 20 * MIN }), ps: null, alive: [5912, 4100], looked: [] },
@@ -3257,8 +3262,24 @@ test('deafwatch for every agent: only a look that settles it names an agent in `
     return stat(path)
   }) as typeof fs.stat
   const report: any = await runKeepAliveSweep(ctxFor(fs, recorder({ ps: retestPs() }), fakeClock(), { fetchKeepAlive: onlyOneKept(), pidAlive: retestAlive }).ctx as any)
-  assert.deepEqual(report.looked, ['301'])
+  // 301 is not sure either (see the retest above): nobody is named.
+  assert.deepEqual(report.looked ?? [], [])
 })
+
+test('deafwatch for every agent: on Windows a command line the watcher cannot read (an elevated claude.exe shows none) may be the agent\'s, so the agent is not named in `looked`', async () => {
+  const listing = (hidden: boolean) =>
+    JSON.stringify([
+      { ProcessId: 4100, ParentProcessId: 1, CreationDate: T0 - 120 * MIN, CommandLine: 'C:\\Windows\\System32\\cmd.exe' },
+      { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: hidden ? null : 'C:\\Windows\\System32\\conhost.exe' },
+    ])
+  for (const hidden of [false, true]) {
+    const ctx = windowsCtx(windowsMachine(), recorder({ win32Ps: listing(hidden) }), { fetchKeepAlive: switchOff(), pidAlive: () => false })
+    const report: any = await runKeepAliveSweep(ctx as any)
+    // Every command line readable and none a claude: 912 surely runs none. One hidden: not sure.
+    assert.deepEqual(report.looked ?? [], hidden ? [] : ['912'], `hidden ${hidden}`)
+  }
+})
+
 
 test('deafwatch for every agent: the boot read never names an agent as looked at. Only a look of this process can', () => {
   const fs = retestScene()
