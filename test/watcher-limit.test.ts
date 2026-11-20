@@ -285,6 +285,29 @@ test('a held queue restarts through its launcher only after usage returns and sp
   assert.deepEqual(tmux.calls, [])
 })
 
+test('the sweep uses the current launch when an anonymous dequeue follows a restart', async () => {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  const launch = `${r.stateDir}/launch.json`
+  fs.writeFile(launch, JSON.stringify({ ...JSON.parse(fs.readFile(launch)!), startedAt: new Date(LIMIT_AT - 10 * MIN).toISOString() }))
+  const queue = (operation: string, at: number, content?: string) =>
+    JSON.stringify({ type: 'queue-operation', operation, content, timestamp: new Date(at).toISOString() })
+  writeTranscript(fs, r, [queue('enqueue', LIMIT_AT - 20 * MIN, 'old peer card'), queue('enqueue', LIMIT_AT - 4 * MIN, 'new card'),
+    queue('dequeue', LIMIT_AT - 100), limitRecord()])
+  switchAccount(fs, r, SWAP_AT)
+  const clock = fakeClock(SWAP_AT + MIN)
+  const tmux = fakeTmux(socketOf(r), s => s.entered ? IDLE : picker())
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  const [row] = listAgents({ ...ctx, now: clock.now() } as any)
+  const beacon = `${row!.pluginStateDir}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, clock.now())
+  clock.onSleep(at => { if (tmux.state.entered) appendTranscript(fs, r, assistantTurn(at)) })
+  assert.equal((await runLimitPass(ctx)).agents[0]!.outcome, 'freed')
+  assert.equal(enters(tmux.calls).length, 1)
+  assert.equal(fs.exists(`${r.stateDir}/restart-requested.json`), false)
+})
+
 test('an automatic sweep skips a held queue when only the owner fallback is writable', async () => {
   const r = linuxRig()
   const fs = agentFs(r)

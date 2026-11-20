@@ -1155,6 +1155,21 @@ test('an older model record appended to a refused session preserves its waiting 
   assert.equal(parseTranscriptTail([...records, assistantTurn(at + 1)].join('\n'), T0).heldQueue, false)
 })
 
+test('a resumed queue never spends its dequeue on an orphan from the old CLI', () => {
+  const old = enqueueLine(T0 - 65 * MIN, 'peer card')
+  const fresh = enqueueLine(T0 - 6 * MIN, 'fresh')
+  const dequeue = JSON.stringify({ type: 'queue-operation', operation: 'dequeue', timestamp: new Date(T0 - 6 * MIN + 100).toISOString() })
+  const refusal = limitEnvelope(T0 - 6 * MIN + 600, T0 + MIN)
+  const before = limitEnvelope(T0 - 70 * MIN, T0 - 45 * MIN)
+  const resumed = assistantTurn(T0 - 30 * MIN)
+  const parse = (rows: string[], boot?: number) => parseTranscriptTail(rows.join('\n'), T0, false, boot).heldQueue
+  assert.equal(parse([before, old, resumed, fresh, dequeue, refusal]), false)
+  assert.equal(parse([old, fresh, dequeue, refusal], T0 - 40 * MIN), false)
+  assert.equal(parse([old, fresh, dequeue, refusal], T0 - 80 * MIN), true, 'both entries belong to this CLI')
+  assert.equal(parse([before, old, fresh], T0 - 40 * MIN), false, 'the resumed CLI has no refusal')
+  assert.equal(parse([before, old, resumed, fresh, refusal], T0 - 40 * MIN), true)
+})
+
 test('a contentless dequeue takes the oldest entry even across a model turn', () => {
   const refusal = limitEnvelope(T0 - 4 * MIN, T0 + MIN)
   const dequeue = JSON.stringify({ type: 'queue-operation', operation: 'dequeue', timestamp: new Date(T0 - 5 * MIN).toISOString() })
