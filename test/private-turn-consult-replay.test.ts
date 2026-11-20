@@ -799,6 +799,27 @@ test('the end of a later prompt leaves a refused message available', t => {
   assert.equal(boot.tracker.canRecover('owner:2'), false)
 })
 
+for (const repeated of [false, true]) {
+  test(`a batch after a refusal keeps the original request due only when the batch excludes it (repeated: ${repeated})`, t => {
+    const home = agentHome(t)
+    const first = home.life()
+    const request = { content: 'first question', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+    const original = first.tracker.deliver(request)
+    first.submit(original)
+    const nextCard = first.tracker.deliver({ ...request, chatId: 'second', fireKey: 'owner:2' })
+    const lastCard = repeated ? original : first.tracker.deliver({ ...request, chatId: 'second', fireKey: 'owner:3' })
+    const batch = `<channel message_id="2">${nextCard}</channel>\n<channel message_id="${repeated ? 1 : 3}">${lastCard}</channel>`
+    first.submit(batch)
+    home.transcripts.set(first.sessionId, [
+      JSON.stringify({ type: 'user', message: { content: original } }), limitRecord,
+      JSON.stringify({ type: 'user', message: { content: batch } }),
+      JSON.stringify({ type: 'assistant', message: { content: 'finished the batch' } }),
+    ].join('\n'))
+    first.stop()
+    assert.equal(home.life().tracker.canRecover(request.fireKey), !repeated)
+  })
+}
+
 test('a tool in the next prompt cannot spend the earlier refused retry', t => {
   const home = agentHome(t)
   const first = home.life()
