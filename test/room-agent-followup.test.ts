@@ -58,6 +58,9 @@ import * as pollCore from '../lib/poll-core.ts'
 import * as meetingCard from '../lib/meeting-card.ts'
 import * as streamApply from '../lib/stream-apply.ts'
 import { senderUserIdCandidate, parsePermissionChoice } from '../lib/permission-relay.ts'
+import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
+import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
+import * as missionEvents from '../lib/mission-events.ts'
 import * as privateTurnModule from '../lib/private-turn.mjs'
 import { privateActor, privateSenderUserId } from '../lib/private-turn.mjs'
 import { ownerLaneVerdict } from '../lib/lane-core.mjs'
@@ -928,14 +931,74 @@ test('first read paging: our reply across room context stops older reads at the 
   assert.equal(needsOlder([rows[0]!, { ...rows[1]!, sender: 'system' }, rows[2]!]), true, 'system traffic still separates a proactive assistant')
 })
 
+function recoverySession(root: string, cwd: string, session: string, transcript: string[]) {
+  const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
+  const paths = [privateTurnModule.privateMarkerPath(root, floorKey(cwd))]
+  const fires = privateTurnModule.createFireLedger({ path: privateTurnModule.privateFiresPath(root, 'agent'), readTranscript: () => transcript.join('\n') })
+  const tracker = privateTurnModule.createPrivateTurnTracker({ markerPaths: paths, fires, ownerUserId: OWNER })
+  const submit = (card: string) => {
+    recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: session, cwd, prompt: card }, env)
+    assert.equal(tracker.begin({ prompt: card, sessionId: session }), 'opened')
+    return privateTurnModule.requirePrivateTurn(tracker, paths, OWNER).actingUserId
+  }
+  return { fires, tracker, paths, submit }
+}
+
+for (const toolRan of [false, true]) {
+  test(`mission_created leaves the request due at boot after a usage refusal (planning tool ran: ${toolRan})`, async t => {
+    const fs = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'mission-recovery-')))
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    const cwd = join(root, 'agent')
+    fs.mkdirSync(cwd)
+    markFloorAttached({ root, folders: [cwd] })
+    const row = { id: 1, sender: 'user', senderUserId: OWNER, text: 'prepare the report', sentDate: new Date().toISOString() }
+    const transcript: string[] = []
+    const first = recoverySession(root, cwd, 'first', transcript)
+    const card = first.tracker.deliver({ content: row.text, actingUserId: OWNER, chatId: CHAT, fireKey: 'owner:1' })
+    assert.equal(first.submit(card), OWNER)
+    if (toolRan) first.tracker.noteOutbound('create_mission', first.paths)
+    const seen = new Set<string>()
+    const event = compile(serverFunction('function handleMissionEvent('), 'handleMissionEvent', {
+      ...missionEvents, privateTurns: first.tracker, privateFires: first.fires, missionFramesSeen: seen,
+      missionSelfWrites: missionEvents.createMissionSelfWriteLedger(), missionChatId: () => CHAT,
+    })
+    event.fn('mission_created', { assistant_id: ASSISTANT_ID, chat_id: CHAT,
+      mission: { id: 1, title: 'prepare the report', chatId: Number(CHAT), createdByAssistant: true } })
+    assert.equal(seen.size, 1)
+    assert.deepEqual(event.run.logs, [])
+    assert.deepEqual(event.run.notifications, [])
+    transcript.push(JSON.stringify({ type: 'user', message: { content: card } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' }))
+
+    let answers = 0
+    for (const session of ['restart', 'next']) {
+      const next = recoverySession(root, cwd, session, transcript)
+      // Creating a mission emits its own event. Only the user request is in chat history.
+      const lane = pollLane([{ message: row, messageFiles: [] }], { chatLastSeen: new Map([[CHAT, row.id]]),
+        chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10, privateTurns: next.tracker, privateFires: next.fires })
+      await lane.fn(CHAT)
+      await lane.clock.elapse()
+      for (const offered of lane.run.notifications) {
+        const release = privateTurnModule.recoveryPromptDecision(offered.content, next.paths[0], root, session, process.pid)
+        assert.ok(release?.hookSpecificOutput?.additionalContext.includes(row.text))
+        assert.equal(next.submit(offered.content), OWNER)
+        next.tracker.noteOutbound('reply', next.paths, CHAT)
+        next.tracker.noteHandled('reply:1')
+        answers++
+      }
+    }
+    assert.equal(answers, 1)
+  })
+}
+
 test('incident replay integrates the usage refusal, resumed prompt, boot poll and confirmed answer', async (t) => {
   const fs = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
-  const { floorKey, markFloorAttached } = await import('../lib/floor-state.mjs')
-  const { recordPrivateBoundary } = await import('../bin/hoai-private-turn-hook.mjs')
   const { parseTranscriptTail } = await import('../lib/watcher-checkup.mjs')
-  const { createFireLedger, createPrivateTurnTracker, privateFiresPath, privateMarkerPath, requirePrivateTurn } = privateTurnModule
   const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'incident-')))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const cwd = join(root, 'agent')
@@ -948,22 +1011,13 @@ test('incident replay integrates the usage refusal, resumed prompt, boot poll an
   t.after(() => { old.stdin.end() })
   await once(old, 'spawn')
   markFloorAttached({ root, folders: [cwd], pid: old.pid })
-  const paths = [privateMarkerPath(root, floorKey(cwd))]
+  const paths = [privateTurnModule.privateMarkerPath(root, floorKey(cwd))]
   const start = Date.parse('2026-11-20T11:18:00Z')
   let now = start - 5 * 60_000
   t.mock.method(Date, 'now', () => now)
   const session = 'resumed'
   const transcript: string[] = []
-  function boot() {
-    const fires = createFireLedger({ path: privateFiresPath(root, 'agent'), readTranscript: () => transcript.join('\n') })
-    const tracker = createPrivateTurnTracker({ markerPaths: paths, fires, ownerUserId: OWNER })
-    const submit = (card: string) => {
-      recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: session, cwd, prompt: card }, env)
-      assert.equal(tracker.begin({ prompt: card, sessionId: session }), 'opened')
-      return requirePrivateTurn(tracker, paths, OWNER).actingUserId
-    }
-    return { fires, tracker, submit }
-  }
+  const boot = () => recoverySession(root, cwd, session, transcript)
   const a = boot()
   const row = { id: 1, sender: 'user', senderUserId: OWNER, text: 'Carry on', sentDate: new Date(now).toISOString() }
   const card = a.tracker.deliver({ content: row.text, actingUserId: OWNER, chatId: CHAT, fireKey: 'owner:1' })

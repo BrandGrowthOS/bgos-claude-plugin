@@ -671,7 +671,7 @@ test('only successful changes close the delivery tagged when the tool started', 
 })
 
 for (const action of ['email_send', 'email_draft', 'artifact_create', 'artifact_update', 'boards_insert',
-  'vault_request_login', 'schedule', 'show_component', 'create_mission']) {
+  'vault_request_login', 'schedule', 'show_component']) {
   test(`a confirmed ${action} closes its message before Stop`, t => {
     const home = agentHome(t)
     const first = home.life()
@@ -838,6 +838,37 @@ for (const read of ['boards_download', 'vault_fill_prepare', 'unlisted_tool', 's
     assert.equal(next.call(), OWNER)
     next.act('reply')
     assert.equal(home.life().tracker.canRecover(message.fireKey), false)
+  })
+}
+
+type RestartRequest = { content: string; chatId: string; actingUserId: string; fireKey: string }
+
+function answerAfterRestart(home: ReturnType<typeof agentHome>, requests: RestartRequest[], answers: number[]) {
+  for (let boot = 0; boot < 2; boot++) {
+    const next = home.life()
+    for (const [index, request] of requests.entries()) {
+      if (!next.tracker.canRecover(request.fireKey)) continue
+      next.submit(next.tracker.deliver({ ...request, recoveryWithoutReply: true }))
+      assert.equal(next.call(), OWNER)
+      next.act('reply', request.chatId)
+      next.tracker.noteHandled(`reply:${request.fireKey.slice(6)}`)
+      answers[index]++
+    }
+  }
+}
+
+for (const tool of ['create_mission', 'set_mission_goals', 'add_mission_goals', 'tick_mini_goal']) {
+  test(`planning with ${tool} before a usage refusal leaves exactly one answer due`, t => {
+    const home = agentHome(t)
+    const request = { content: 'prepare the report', chatId: 'chat', actingUserId: OWNER, fireKey: 'owner:1' }
+    const first = home.life()
+    const card = first.tracker.deliver(request)
+    first.submit(card)
+    first.act(tool)
+    home.transcripts.set(first.sessionId, [JSON.stringify({ type: 'user', message: { content: card } }), limitRecord].join('\n'))
+    const answers = [0]
+    answerAfterRestart(home, [request], answers)
+    assert.deepEqual(answers, [1])
   })
 }
 
