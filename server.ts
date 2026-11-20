@@ -12850,6 +12850,7 @@ async function pollChat(chatId: string): Promise<void> {
     )
 
     let newUserMessages: ChatMessage[]
+    const previouslyForwarded = new Set<number>()
     const recoveredWithoutReply = new Set<number>()
     let readIsBacklog = false
     if (lastSeen === 0) {
@@ -12989,12 +12990,7 @@ async function pollChat(chatId: string): Promise<void> {
             (m) => recoveredIds.has(m.message.id) && !already.has(m.message.id),
           )
           if (recovered.length) {
-            // A system card between a request and an unthreaded reply can fool the
-            // walk-back. Only override prior admission when no later reply exists.
-            const lastReply = ordered.reduce((id, row) => pollStoredSenderOf(row) === 'assistant' ? row.message.id : id, 0)
-            for (const row of recovered) {
-              if (row.message.id > lastReply && privateTurns.canRecover(`owner:${row.message.id}`)) recoveredWithoutReply.add(row.message.id)
-            }
+            for (const row of recovered) previouslyForwarded.add(row.message.id)
             log(
               `Restart recovery: re-offering ${recovered.length} unanswered message(s) in chat ${chatId} (ids ${recovered
                 .map((m) => m.message.id)
@@ -13002,7 +12998,7 @@ async function pollChat(chatId: string): Promise<void> {
             )
             // Oldest first, and BEFORE the delta rows, so the agent reads the
             // conversation in the order it happened.
-            newUserMessages = [...recovered.filter((row) => pollStoredSenderOf(row) !== 'user' || recoveredWithoutReply.has(row.message.id)), ...newUserMessages]
+            newUserMessages = [...recovered, ...newUserMessages]
           }
         }
       }
@@ -13015,10 +13011,21 @@ async function pollChat(chatId: string): Promise<void> {
     }
 
     if (isBootPoll) {
-      // A confirmed send can outlive its cursor flush. Do not hand its request to
-      // the session again, even if a system card obscures the reply in chat history.
-      newUserMessages = newUserMessages.filter((row) =>
-        pollStoredSenderOf(row) !== 'user' || privateFires.handledAt(`reply:${row.message.id}`) === null)
+      // Admission and confirmed sends can both outlive the cursor flush. Apply the same
+      // recovery proof to a previously admitted message even when its cursor was lost.
+      const lastReply = ordered.reduce((id, row) => pollStoredSenderOf(row) === 'assistant' ? row.message.id : id, 0)
+      newUserMessages = newUserMessages.filter((row) => {
+        if (pollStoredSenderOf(row) !== 'user') return true
+        const id = row.message.id
+        const key = `owner:${id}`
+        if (privateFires.handledAt(`reply:${id}`) !== null || privateFires.claimed(key)) return false
+        if (!previouslyForwarded.has(id) && privateFires.handledAt(key) === null) return true
+        if (id > lastReply && privateTurns.canRecover(key)) {
+          recoveredWithoutReply.add(id)
+          return true
+        }
+        return false
+      })
     }
 
     // A marked room row on the poll uses the same settle wait and claim as

@@ -237,7 +237,9 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     senderUserIdCandidate,
     parsePermissionChoice,
     senderUserIdOf: (m: unknown) => senderUserIdCandidate(m) ?? OWNER,
+    privateFires: { handledAt: () => null, claimed: () => false },
     privateTurns: {
+      canRecover: () => true,
       deliver: (d: Record<string, any>) => (run.deliveries.push(d), d.content),
       noteUntracked: () => undefined,
     },
@@ -926,6 +928,28 @@ test('first read paging: our reply across room context stops older reads at the 
   assert.equal(needsOlder([rows[0]!, { ...rows[1]!, sender: 'system' }, rows[2]!]), true, 'system traffic still separates a proactive assistant')
 })
 
+test('a missing cursor preserves a new request and recovers only an open unclaimed turn', async () => {
+  const id = 1
+  for (const [admitted, open, claimed, answered, count, resume] of [
+    [false, false, false, false, 1, false],
+    [true, false, false, false, 0, false],
+    [true, true, false, false, 1, true],
+    [true, true, true, false, 0, false],
+    [true, true, false, true, 0, false],
+  ] as const) {
+    const deliveries: any[] = []
+    const lane = pollLane([{ message: { id, sender: 'user', senderUserId: PERSON, text: 'Request', sentDate: new Date().toISOString() }, messageFiles: [] }], {
+      chatLastSeen: new Map([[CHAT, 0]]), chatsPolledSinceBoot: new Set(),
+      privateFires: { handledAt: (key: string) => (key.startsWith('reply:') ? answered : admitted) ? 1 : null, claimed: () => claimed },
+      privateTurns: { canRecover: () => open, deliver: (d: any) => (deliveries.push(d), d.content) },
+    })
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.length, count)
+    if (count) assert.equal(deliveries[0].recoveryWithoutReply, resume)
+  }
+})
+
 // Each row is the same boundary rule under a different collection policy.
 const answeredTurnCases = [
   { name: 'human alone', senders: ['user'], human: [0], context: [0], older: true },
@@ -962,7 +986,11 @@ for (const c of answeredTurnCases) {
       })
       await lane.fn(CHAT)
       await lane.clock.elapse()
-      assert.deepEqual(lane.run.notifications.map((n) => Number(n.meta.message_id)), ids(restart ? c.human : c.context), restart ? 'restart integration' : 'first-read integration')
+      // Already-forwarded human messages use the stricter interruption proof. A later
+      // assistant row rules out reopening one, including across a proactive system turn.
+      const lastReply = c.senders.lastIndexOf('assistant')
+      const expected = restart ? c.human.filter(i => c.senders[i] !== 'user' || i > lastReply) : c.context
+      assert.deepEqual(lane.run.notifications.map((n) => Number(n.meta.message_id)), ids(expected), restart ? 'restart integration' : 'first-read integration')
     }
   })
 }
