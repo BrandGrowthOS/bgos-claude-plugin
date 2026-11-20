@@ -568,7 +568,8 @@ async function postOpenCard(w: World): Promise<void> {
   // direct read, or empties this card's options, must not race it. On a slow
   // runner it was still in flight, took the failure meant for the sign-in
   // card, and kept the chat off the cached read the 503 case waits for.
-  const card = w.backend.rows.filter((r) => r.text === OPEN_CARD_TEXT).at(-1)!
+  const card = w.backend.rows.filter((r) => r.text === OPEN_CARD_TEXT).at(-1)
+  assert.ok(card, `the stand-in stored the open card "${OPEN_CARD_TEXT}"`)
   await waitFor(() => w.backend.anchoredReads.some((r) => r.id === card.id), 'the daemon\'s own direct read of the open card')
 }
 
