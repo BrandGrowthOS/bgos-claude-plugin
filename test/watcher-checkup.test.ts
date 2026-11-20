@@ -1134,6 +1134,19 @@ function ownerRestartJob(rpcId = 'rst-1', body: Record<string, unknown> = {}) {
   }
 }
 
+test('a usage refusal wins a timestamp tie until a strictly later model turn', () => {
+  const at = T0 - 4 * MIN
+  const refusal = limitEnvelope(at, T0 + MIN)
+  const turn = assistantTurn(at)
+  const queue = enqueueLine(at - MIN)
+  for (const records of [[queue, turn, refusal], [queue, refusal, turn]]) {
+    const tail = parseTranscriptTail(records.join('\n'), T0)
+    assert.equal(tail.heldQueue, true)
+    assert.equal(tail.error?.kind, 'rate_limit')
+    assert.equal(parseTranscriptTail([...records, assistantTurn(at + 1)].join('\n'), T0).heldQueue, false)
+  }
+})
+
 test('one queue removal preserves the wait of the other message', () => {
   const limit = limitEnvelope(T0 - 6 * MIN, T0 + MIN)
   const first = enqueueLine(T0 - 4 * MIN, 'first')

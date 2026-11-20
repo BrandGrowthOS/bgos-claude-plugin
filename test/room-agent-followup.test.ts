@@ -947,6 +947,23 @@ test('restart offers a held request once per boot until its first answer', async
   }
 })
 
+test('a later assistant reply closes an admitted turn across a system message', async () => {
+  const sentDate = new Date().toISOString()
+  const rows = [
+    { message: { id: 1, sender: 'user', senderUserId: PERSON, text: 'Request', sentDate }, messageFiles: [] },
+    { message: { id: 2, sender: 'system', text: 'Update', sentDate }, messageFiles: [] },
+    pollAgentRow({ id: 3, senderAssistantId: ASSISTANT_ID, sentDate }),
+  ]
+  const lane = pollLane(rows, {
+    chatLastSeen: new Map([[CHAT, 3]]), chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10,
+    privateFires: { handledAt: (key: string) => key === 'owner:1' ? 1 : null, claimed: () => false },
+    privateTurns: { canRecover: () => true, deliver: (d: { content: string }) => d.content },
+  })
+  await lane.fn(CHAT)
+  await lane.clock.elapse()
+  assert.ok(lane.run.notifications.every(n => Number(n.meta.message_id) !== 1))
+})
+
 test('an unsaved recovery claim skips delivery and logs one error', async () => {
   const error = 'Could not save the recovery claim. Skipped the interrupted message.'
   const lane = pollLane([{ message: { id: 1, sender: 'user', senderUserId: PERSON, text: 'Request', sentDate: new Date().toISOString() }, messageFiles: [] }], {

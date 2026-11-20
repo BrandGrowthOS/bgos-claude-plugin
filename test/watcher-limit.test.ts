@@ -285,6 +285,29 @@ test('a held queue restarts through its launcher only after usage returns and sp
   assert.deepEqual(tmux.calls, [])
 })
 
+test('an automatic sweep skips a held queue when only the owner fallback is writable', async () => {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  const clock = fakeClock(RESETS_AT + 2 * MIN)
+  const tmux = fakeTmux(socketOf(r), () => picker())
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  const [agent] = listAgents({ ...ctx, now: clock.now() } as any)
+  const beacon = `${agent!.pluginStateDir}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, clock.now())
+  writeTranscript(fs, r, [limitRecord(), JSON.stringify({
+    type: 'queue-operation', operation: 'enqueue', content: 'continue', timestamp: new Date(RESETS_AT - 4 * MIN).toISOString(),
+  })])
+  const watch = join(r, 'watcher', LIMIT_WATCH_FILE_NAME)
+  fs.writeFile(watch, '{}')
+  const read = fs.readFile.bind(fs)
+  fs.readFile = path => path === watch ? null : read(path)
+  assert.equal((await runLimitPass(ctx)).agents[0]!.outcome, 'record_unsaved')
+  assert.equal(fs.exists(`${r.stateDir}/owner-queue-restart.json`), false)
+  assert.equal(fs.exists(`${r.stateDir}/restart-requested.json`), false)
+  assert.deepEqual(tmux.calls, [])
+})
+
 test('a fake stuck screen, still limited: no key, and the screen is not even read', async () => {
   const r = linuxRig()
   const fs = agentFs(r)
