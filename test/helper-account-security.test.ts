@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { applyHelperAccount, profileEnvOf } from '../lib/helper-account-launch.mjs'
+import { applyHelperAccount, prepareHelperTranscript, profileEnvOf } from '../lib/helper-account-launch.mjs'
 import { readAccountRegistry } from '../lib/helper-accounts.mjs'
 import { atLimitSafe, createAccountWatcher } from '../lib/helper-account-watcher.mjs'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
@@ -142,6 +142,28 @@ test('review #4: the launcher never takes a login from a registry another backen
   const other: any = {}
   assert.equal(m.apply(other), false)
   assert.equal(other.CLAUDE_CONFIG_DIR, undefined)
+})
+
+test('the linked conversation is refused when another file already sits at its place in the new login', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'acct-sec-link-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const cwd = join(home, 'work')
+  const pin = randomUUID()
+  const from = join(home, 'login-a'),
+    to = join(home, 'login-b')
+  mkdirSync(from, { recursive: true })
+  mkdirSync(to, { recursive: true })
+  const path = (base: string) => sessionTranscriptPath(home, cwd, pin, base)
+  write(path(from), 'first turn\n')
+  const link = () => prepareHelperTranscript({ home, cwd, sessionId: pin, from, to, sessionTranscriptPath, required: true })
+  // First time: linked, and linking again over the same file is fine.
+  link()
+  assert.equal(readFileSync(path(to), 'utf8'), 'first turn\n')
+  link()
+  // A different file where the conversation belongs is never overwritten or taken as it.
+  rmSync(path(to))
+  write(path(to), 'someone else\n')
+  assert.throws(link, /account_session_conflict/)
 })
 
 test('an automatic switch at a limit never cuts a permission question, thread work or a background job', () => {
