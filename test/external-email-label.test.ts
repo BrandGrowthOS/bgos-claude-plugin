@@ -1302,6 +1302,27 @@ interface LaneState {
  * a storage host the test opens when it likes (`slow`) and a clock each
  * download moves by `clock.stepMs`.
  */
+/**
+ * Wait for every download to end. Bounded: a download that never ends fails
+ * the run here, by its email, instead of hanging it with no message. Not a
+ * retry, the downloads are only waited for.
+ */
+async function downloadsEnded(downloads: Map<Promise<unknown>, string>): Promise<void> {
+  const deadlineMs = 10_000
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const stuck = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`the lane harness: a download never ended (${[...downloads.values()].join(', ')}), so its folder was not removed`)),
+      deadlineMs,
+    )
+  })
+  try {
+    while (downloads.size > 0) await Promise.race([Promise.allSettled([...downloads.keys()]), stuck])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, fn: (h: LaneState) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'email-hold-'))
   const root = emailFiles.emailFilesRoot(dir)
@@ -1320,8 +1341,9 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
   }
   const clock = { now: 1_000_000, stepMs: 0 }
   const deadlines: Array<number | undefined> = []
-  // Every download this harness started and has not seen end.
-  const downloads = new Set<Promise<unknown>>()
+  // Every download this harness started and has not seen end, with the email
+  // it is for, so a stuck one can be named.
+  const downloads = new Map<Promise<unknown>, string>()
   const chatLastSeen = new Map([[CHAT, 9000]])
   const shared = {
     emailCursorHolds: ef.createEmailCursorHolds?.() ?? { hold: () => undefined, release: () => null, clamp: (_c: string, id: number) => id },
@@ -1335,7 +1357,8 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
     prepareEmailFiles: async (o: Parameters<typeof emailFiles.prepareEmailFiles>[0]) => {
       deadlines.push(o.deadlineMs)
       const download = emailFiles.prepareEmailFiles({ ...o, fetchImpl: fetchImpl as never })
-      downloads.add(download)
+      const email = (o.record as { externalEmail?: { emailId?: unknown } } | null)?.externalEmail?.emailId
+      downloads.set(download, `email ${String(email ?? 'without an id')}`)
       void download.then(() => downloads.delete(download), () => downloads.delete(download))
       const saves = await download
       clock.now += clock.stepMs
@@ -1355,7 +1378,7 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
     // their folder: a write into it during the removal failed the rmdir on
     // Windows (ENOTEMPTY), and one after it put the folder back.
     open()
-    while (downloads.size > 0) await Promise.allSettled([...downloads])
+    await downloadsEnded(downloads)
     await rm(dir, { recursive: true, force: true })
   }
 }
