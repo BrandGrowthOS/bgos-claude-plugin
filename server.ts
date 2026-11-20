@@ -7353,6 +7353,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         // (message_id: N)...") verbatim into THIS session's transcript, so
         // the minted id is positive proof of which transcript is ours.
         if (msgId != null) sessionBinder.recordReplyMessageId(msgId)
+        const answered = reply_to_id ?? answeringInboundId
+        if (replyChatId === String(resolvedChatId) && typeof answered === 'number' && Number.isSafeInteger(answered) && answered > 0) {
+          privateTurns.noteHandled(`reply:${answered}`)
+        }
         // Fast-poll scope for the tap (0.38.26). Without the Agent Update
         // Stream a click reaches this daemon only on the chat sweep, and the
         // WS-healthy sweep is five minutes; a fresh prompt puts its chat on the
@@ -12845,6 +12849,7 @@ async function pollChat(chatId: string): Promise<void> {
     )
 
     let newUserMessages: ChatMessage[]
+    const recoveredWithoutReply = new Set<number>()
     let readIsBacklog = false
     if (lastSeen === 0) {
       // First poll for a chat with no cursor: forward user messages that
@@ -12983,6 +12988,10 @@ async function pollChat(chatId: string): Promise<void> {
             (m) => recoveredIds.has(m.message.id) && !already.has(m.message.id),
           )
           if (recovered.length) {
+            // A system card between a request and an unthreaded reply can fool the
+            // walk-back. Only override prior admission when no later reply exists.
+            const lastReply = ordered.findLast((row) => pollStoredSenderOf(row) === 'assistant')?.message.id ?? 0
+            for (const row of recovered) if (row.message.id > lastReply) recoveredWithoutReply.add(row.message.id)
             log(
               `Restart recovery: re-offering ${recovered.length} unanswered message(s) in chat ${chatId} (ids ${recovered
                 .map((m) => m.message.id)
@@ -13672,7 +13681,7 @@ async function pollChat(chatId: string): Promise<void> {
       const pollActor = privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta })
       const pollGrant = scheduleGrantOf({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, actingUserId: pollActor, chatId })
       const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : channelNotify(() => ({
-          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: pollSenderType, agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta, messageId: msg.message.id, backlog: isBacklog }), fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
+          content: privateTurns.deliver({ content, chatId, recoveryWithoutReply: recoveredWithoutReply.has(msg.message.id), peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: pollSenderType, agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta, messageId: msg.message.id, backlog: isBacklog }), fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
           meta: finalInboundMeta(
             pollChannel.meta,
             slashDelivery ? slashDelivery.meta : null,

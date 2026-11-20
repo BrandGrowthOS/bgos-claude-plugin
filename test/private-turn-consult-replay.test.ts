@@ -102,6 +102,25 @@ function agentHome(t: any) {
   return { life, clock, ledgerKeys }
 }
 
+test('restart recovery can answer a killed turn once, even after another boot', (t) => {
+  const home = agentHome(t)
+  const id = home.clock.now
+  const message = { content: 'continue', actingUserId: OWNER, chatId: 'chat', fireKey: `owner:${id}` }
+  const first = home.life()
+  first.submit(first.tracker.deliver(message))
+  assert.equal(first.call(), OWNER)
+  const recovered = home.life()
+  const prompt = recovered.tracker.deliver({ ...message, recoveryWithoutReply: true })
+  assert.doesNotMatch(prompt, /already handled/)
+  recovered.submit(prompt)
+  assert.equal(recovered.call(), OWNER)
+  recovered.tracker.noteHandled(`reply:${id}`)
+  const again = home.life()
+  again.submit(again.tracker.deliver({ ...message, recoveryWithoutReply: true }))
+  assert.equal(again.call(), null)
+  assert.deepEqual(again.outcomes, ['replayed'])
+})
+
 test('a replayed fire opens no turn even when its delivery carries a consult stamp', (t) => {
   const home = agentHome(t)
   const first = home.life()
