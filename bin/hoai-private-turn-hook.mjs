@@ -195,6 +195,10 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
     // privateMarkerWrittenAt, board row 495d73c1). Taken last, right before the write.
     writtenAt: Date.now(),
   }
+  if (marker.stoppedTags?.length) {
+    // A prompt can replace the marker before the daemon receives this Stop line.
+    try { writePrivateJson(`${path}.stopped`, { sessionId, turnId, tags: marker.stoppedTags }) } catch { /* The current marker still carries the Stop. */ }
+  }
   writePrivateJson(path, marker)
   if (event === 'SessionEnd') {
     if (fileSafeSession(sessionId)) {

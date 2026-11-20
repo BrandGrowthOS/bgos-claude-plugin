@@ -96,13 +96,14 @@ function agentHome(t: any) {
     } as any)
     /** The daemon's answer to the model's first private call: the acting user, or null when refused. */
     const call = () => { try { return requirePrivateTurn(tracker, markerPaths, OWNER).actingUserId } catch { return null } }
+    const stopHook = () => recordPrivateBoundary({ hook_event_name: 'Stop', session_id: sessionId, cwd }, env)
     const stop = () => {
-      recordPrivateBoundary({ hook_event_name: 'Stop', session_id: sessionId, cwd }, env)
+      stopHook()
       tracker.end()
     }
     const act = (tool: string) => tracker.noteOutbound(tool, markerPaths)
     const dispatch = (tool: string) => tracker.outboundCompletion(tool, markerPaths)
-    return { tracker, dispatch, submit, consult, wake, call, act, stop, sessionId, replays, revokes, outcomes }
+    return { tracker, stopHook, dispatch, submit, consult, wake, call, act, stop, sessionId, replays, revokes, outcomes }
   }
   const ledgerKeys = (): string[] => { try { return Object.keys((JSON.parse(readFileSync(firesPath, 'utf8')) as any).fires) } catch { return [] } }
   const startupPrompt = (sessionId: string) => recordPrivateBoundary({
@@ -289,6 +290,22 @@ for (const shape of ['held behind refused probe', 'expired before admission', 'a
     assert.equal(home.life().tracker.canRecover(key), false)
   })
 }
+
+test('a late Stop drained after the next prompt closes only its original message', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  assert.equal(first.call(), OWNER)
+  first.stopHook()
+  home.startupPrompt(first.sessionId)
+  const next = { ...message, fireKey: 'owner:2' }
+  first.submit(first.tracker.deliver(next))
+  first.tracker.end()
+  const boot = home.life()
+  assert.equal(boot.tracker.canRecover(message.fireKey), false)
+  assert.equal(boot.tracker.canRecover(next.fireKey), true)
+})
 
 test('a locked open record lets the reply finish, logs once and stays closed on restart', t => {
   const home = agentHome(t)
