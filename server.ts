@@ -370,7 +370,7 @@ import {
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { PRIVATE_HOOK_MISSING_REFUSAL, createPrivateHookLiveness, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
 import { registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
-import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
+import { peerRefusalReport, recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
   applyGoalRecords,
@@ -2142,6 +2142,21 @@ async function bgosPost(
       return answer
     },
   )
+}
+
+/**
+ * The server's copy of one refused peer request (lib/peer-refusal-counter.mjs peerRefusalReport; Captain
+ * 2026-11-20, "start counting"): the peer's id and the tool's name, nothing else. Pairing mode only (the route is
+ * pairing scoped, like the heartbeat). Never awaited and never throws, so it cannot hold up or change the refusal;
+ * a failure is one log line with the status, never the body.
+ */
+function reportPeerRefusal(input: { tool: string; delegate: string }): void {
+  if (AUTH.mode !== 'pairing') return
+  const report = peerRefusalReport({ assistantId: ASSISTANT_ID, delegate: input.delegate, tool: input.tool })
+  if (!report) return
+  void bgosPost(report.path, report.body).catch((err) => {
+    log(`peer refusal count not sent to the server (${httpStatusOf(err) ?? 'no answer'}); the local count has it`)
+  })
 }
 
 // `privateHeaders` (here, on bgosPut and on bgosDelete) is a private turn's
@@ -7007,10 +7022,14 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     catch (err) {
       // A refused call on a PEER agent's turn is counted (ids and the tool's name only, no content), so the
       // question of letting a trusted agent's request run private tools is decided on numbers
-      // (docs/proposals/peer-delegation-private-tools.md). It never changes the refusal.
+      // (docs/proposals/peer-delegation-private-tools.md). It never changes the refusal. The server keeps a copy
+      // (reportPeerRefusal, never awaited) so every agent's refusals are one query for Data (Captain 2026-11-20).
       try {
         const peer = (privateTurns as { peerTurn?: () => { sourceAssistantId: string } | null }).peerTurn?.()
-        if (peer) log(recordPeerRefusal({ dir: pathDirname(CURSOR_FILE_PATH), tool: req.params.name, delegate: peer.sourceAssistantId, target: ASSISTANT_ID }).line)
+        if (peer) {
+          try { log(recordPeerRefusal({ dir: pathDirname(CURSOR_FILE_PATH), tool: req.params.name, delegate: peer.sourceAssistantId, target: ASSISTANT_ID }).line) } catch { /* the local file is best effort */ }
+          reportPeerRefusal({ tool: req.params.name, delegate: peer.sourceAssistantId })
+        }
       } catch { /* counting is best effort */ }
       // Still refused. With no hook registered the sender is not the problem, so say that. Either way the log names
       // the check that failed, marker by marker (the refusal text the model sees stays the same).
@@ -11347,6 +11366,8 @@ function publishBrowserPrivateTurn(): void {
       secret: AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey,
       assistantId: ASSISTANT_ID, ownerUserId: USER_ID, claudePid: agentClaudePid(),
       turn,
+      // Counting only (Captain 2026-11-20): the shim counts a browser refusal against this peer. Never an actor.
+      peerAssistantId: turn ? null : privateTurns.peerTurn()?.sourceAssistantId ?? null,
     })
   } catch { /* An absent or expired context refuses private tools. */ }
 }

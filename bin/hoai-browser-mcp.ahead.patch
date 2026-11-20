@@ -1,11 +1,54 @@
 --- a/frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs
 +++ b/frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs
-@@ -756,13 +756,41 @@
-   for (const [pattern, replacement] of rewrites) out = out.replace(pattern, replacement);
-   out = out.replace(/\s*\([^()]*\b(?:preview|signed-in)\b[^()]*\)/gi, "");
-   return out.split("\n").map(line => line.split(SENTENCE_END).filter(sentence => !PROFILE_CHOICE.test(sentence)).join(" ")).join("\n");
+@@ -264,6 +264,35 @@
+   finally { if (fd !== undefined) fs.closeSync(fd); }
+ }
+ 
++// A PEER agent's request reached the agent and no turn is verified (Captain 2026-11-20, "start counting"): the daemon
++// signed the peer's id into a context with no turn. Called only once the signature is verified. Still refused with the
++// same words; the refusal only carries the id, so the call is counted on the server (reportPeerRefusal). Anything
++// stale, live, another session's or not an agent id is the plain refusal.
++function peerContextRefusal(context) {
++  const peer = context?.peerAssistantId;
++  const age = Date.now() - context?.updatedAt;
++  if (context?.schemaVersion !== 1 || context.live !== false || context.actingUserId !== null ||
++      String(context.assistantId) !== RELAY?.assistantId || context.ownerUserId !== process.env.HOAI_RELAY_OWNER_USER_ID ||
++      context.claudePid !== Number(process.env.HOAI_RELAY_CLIENT_PID) || !Number.isFinite(context.updatedAt) || age < -5000 || age > 60000 ||
++      typeof peer !== "string" || !/^[1-9][0-9]{0,15}$/.test(peer) || peer === RELAY.assistantId) return CONTEXT_REFUSAL;
++  return Object.freeze({ ...CONTEXT_REFUSAL, peerAssistantId: peer });
 +}
 +
++// The server's copy of one refused peer request: the peer's id and the tool's name, nothing else, with this agent's
++// pairing (the route is pairing scoped). Never awaited, and a failure is silent: it can never change the refusal.
++function reportPeerRefusal(peerAssistantId, tool) {
++  const pairing = RELAY?.headers["X-BGOS-Pairing"];
++  if (!pairing || !RELAY.assistantId || typeof tool !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(tool)) return;
++  try {
++    fetch(`${RELAY.backendUrl}/api/v1/integrations/assistants/${encodeURIComponent(RELAY.assistantId)}/peer-refusals`, {
++      method: "POST",
++      headers: { "Content-Type": "application/json", "X-BGOS-Pairing": pairing },
++      body: JSON.stringify({ peerAssistantId: Number(peerAssistantId), tool }),
++      signal: AbortSignal.timeout(10_000),
++    }).then(res => res.body?.cancel(), () => {});
++  } catch { /* counting never changes the refusal */ }
++}
++
+ // A managed shim may never infer the owner from absent or stale turn metadata.
+ // The synchronous marker closes the interval before the daemon processes a new
+ // prompt. Only the daemon signs the actor; marker contents alone grant nothing.
+@@ -285,7 +314,7 @@
+         !identifier(context.chatId) || !/^[1-9][0-9]*$/.test(context.chatId) || !identifier(context.turnId) || !identifier(context.sessionId) ||
+         !pid(context.claudePid) || context.claudePid !== Number(process.env.HOAI_RELAY_CLIENT_PID) || !pid(context.pid) ||
+         !Number.isFinite(context.updatedAt) || age < -5000 || age > 60000 ||
+-        typeof context.markerPath !== "string" || !context.markerPath || typeof context.promptHash !== "string" || !/^[a-f0-9]{64}$/.test(context.promptHash)) return CONTEXT_REFUSAL;
++        typeof context.markerPath !== "string" || !context.markerPath || typeof context.promptHash !== "string" || !/^[a-f0-9]{64}$/.test(context.promptHash)) return peerContextRefusal(context);
+     process.kill(context.pid, 0);
+     const marker = boundedJson(context.markerPath, 2048);
+     if (marker?.schemaVersion !== 1 || marker.live !== true || marker.turnId !== context.turnId || marker.sessionId !== context.sessionId || marker.promptHash !== context.promptHash) return CONTEXT_REFUSAL;
+@@ -758,11 +787,39 @@
+   return out.split("\n").map(line => line.split(SENTENCE_END).filter(sentence => !PROFILE_CHOICE.test(sentence)).join(" ")).join("\n");
+ }
+ 
 +const FORM_CLICK_REQUIRED = "Fill only enters text. To submit a form, make a separate browser_click on its current submit control, with its own approval and exact target check.";
 +function refusesCompositeAction(name, args = {}) {
 +  if (name === "browser_press_sequentially") return true;
@@ -32,8 +75,8 @@
 +  const { submit: _submit, slowly: _slowly, ...properties } = schema.properties || {};
 +  return { ...tool, description: tool.name === "browser_type" ? "Fill text into an editable element. " + FORM_CLICK_REQUIRED : "Press a non-activating key, optionally preceded by Alt, Control, ControlOrMeta, Meta or Shift modifiers. Enter, Return and Space are unavailable in any chord position. " + FORM_CLICK_REQUIRED,
 +    inputSchema: { ...schema, properties, ...(Array.isArray(schema.required) ? { required: schema.required.filter(key => key !== "submit" && key !== "slowly") } : {}) } };
- }
- 
++}
++
  /** A host's tool list with no profile choice: hoai_browser_open_session loses its profile argument and says why. */
  function withoutProfileTools(message, route) {
    const tools = message?.result?.tools;
@@ -43,7 +86,7 @@
      if (!tool || typeof tool.name !== "string" || !tool.name.startsWith("hoai_browser_")) return tool;
      const copy = { ...tool, description: withoutProfileChoice(tool.description) };
      if (tool.name === "hoai_browser_open_session") {
-@@ -914,11 +942,12 @@
+@@ -914,11 +971,12 @@
      const instructions = r.mode === "local" ? withoutProfileChoice(r.up.instructions, LOCAL_INSTRUCTION_REWRITES) : r.mode === "relay" ? withoutProfileChoice(r.relay.instructions, INSTRUCTION_REWRITES) : "";
      // A profile refusal comes from a browser that answered, so it is not told as an unreachable desktop app.
      const lead = r.refusal?.profile ? "HOAI Agent Browser: your default browser. " : "HOAI Agent Browser: your default browser once the Home of Agents desktop app is reachable. ";
@@ -57,11 +100,18 @@
      });
    }
    if (method && method.startsWith("notifications/")) return; // no reply to notifications
-@@ -943,6 +972,7 @@
+@@ -943,8 +1001,13 @@
      return send({ ...withoutProfileTools(res.message, "relay"), id });
    }
    if (method === "tools/call") {
 +    if (refusesCompositeAction(params?.name, params?.arguments || {})) return reply({ content: [{ type: "text", text: FORM_CLICK_REQUIRED }], isError: true });
      const r = await resolveRequestMode();
-     if (r.mode === "offline") return reply({ content: [{ type: "text", text: offlineText(r.refusal, context) }], isError: params?.name !== "hoai_browser_status" });
+-    if (r.mode === "offline") return reply({ content: [{ type: "text", text: offlineText(r.refusal, context) }], isError: params?.name !== "hoai_browser_status" });
++    if (r.mode === "offline") {
++      // Counted, never lifted: a refused call on a signed peer context (peerContextRefusal). The answer is unchanged.
++      if (r.refusal?.peerAssistantId && params?.name !== "hoai_browser_status") reportPeerRefusal(r.refusal.peerAssistantId, params?.name);
++      return reply({ content: [{ type: "text", text: offlineText(r.refusal, context) }], isError: params?.name !== "hoai_browser_status" });
++    }
      if (r.mode === "local") {
+       const res = await localRequest({ jsonrpc: "2.0", id, method, params: ownBrowserCall(params, "local") }, r.up);
+       if (!res?.payload) {

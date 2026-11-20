@@ -134,13 +134,15 @@ test('with no private turn hook registered the call is still refused, and says w
 
 test('a refused private call on a peer turn is counted with the tool name and the peer id, and is still refused', async () => {
   const recorded: Array<Record<string, unknown>> = []
+  const reported: Array<Record<string, unknown>> = []
   const logs: string[] = []
-  const run = (peer: { sourceAssistantId: string } | null) =>
+  const run = (peer: { sourceAssistantId: string } | null, reportPeerRefusal: (input: Record<string, unknown>) => void = (input) => { reported.push(input) }) =>
     execute(admissionSource + '\nreturn privateCall;', {
       req: { params: { name: 'boards_query' } }, lockHeld: true, USER_ID: 'user_owner', PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing',
       privateTurns: { peerTurn: () => peer, explain: () => 'no private turn is open (stub)' },
       requirePrivateTurn: () => { throw new Error('private action did not start') }, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
       recordPeerRefusal: (input: Record<string, unknown>) => { recorded.push(input); return { line: 'peer private call refused' } },
+      reportPeerRefusal,
       log: (line: string) => logs.push(line),
       pathDirname: () => '/state/1050', CURSOR_FILE_PATH: '/state/1050/cursor.json', ASSISTANT_ID: 1050,
     })
@@ -148,11 +150,65 @@ test('a refused private call on a peer turn is counted with the tool name and th
   assert.equal(refused.isError, true)
   assert.match(refused.content[0].text, /did not start/)
   assert.deepEqual(recorded, [{ dir: '/state/1050', tool: 'boards_query', delegate: '888', target: 1050 }])
+  // The server's copy (Captain 2026-11-20, "start counting"): the peer and the tool, nothing else.
+  assert.deepEqual(reported, [{ tool: 'boards_query', delegate: '888' }])
   assert.deepEqual(logs, ['peer private call refused', 'private turn: refused boards_query: no private turn is open (stub)'])
 
-  // A human turn that is refused is not a peer refusal: nothing is counted.
+  // Counting changes nothing about the refusal: a report that throws leaves the same answer and the same log.
+  const before = JSON.stringify(refused)
+  logs.length = 0
+  const failing = await run({ sourceAssistantId: '888' }, () => { throw new Error('ECONNREFUSED') })
+  assert.equal(JSON.stringify(failing), before)
+  assert.deepEqual(logs, ['peer private call refused', 'private turn: refused boards_query: no private turn is open (stub)'])
+
+  // A local count that fails still reports to the server, and still refuses the same way.
+  reported.length = 0
+  logs.length = 0
+  const localFails = await execute(admissionSource + '\nreturn privateCall;', {
+    req: { params: { name: 'boards_query' } }, lockHeld: true, USER_ID: 'user_owner', PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing',
+    privateTurns: { peerTurn: () => ({ sourceAssistantId: '888' }), explain: () => 'no private turn is open (stub)' },
+    requirePrivateTurn: () => { throw new Error('private action did not start') }, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
+    recordPeerRefusal: () => { throw new Error('EROFS') }, reportPeerRefusal: (input: { tool: string; delegate: string }) => { reported.push(input) },
+    log: (line: string) => logs.push(line), pathDirname: () => '/state/1050', CURSOR_FILE_PATH: '/state/1050/cursor.json', ASSISTANT_ID: 1050,
+  })
+  assert.equal(JSON.stringify(localFails), before)
+  assert.deepEqual(reported, [{ tool: 'boards_query', delegate: '888' }])
+
+  // A human turn that is refused is not a peer refusal: nothing is counted or reported.
   recorded.length = 0
+  reported.length = 0
   const human = await run(null)
   assert.equal(human.isError, true)
   assert.deepEqual(recorded, [])
+  assert.deepEqual(reported, [])
+})
+
+// The function itself, sliced from server.ts: one POST of the peer and the tool in pairing mode, none with an API
+// key (the route is pairing scoped), none for a report that is not ids and a tool name, and a failed POST is one
+// log line, never a throw.
+const reportStart = source.indexOf('function reportPeerRefusal(')
+const reportSource = source.slice(reportStart, source.indexOf('\n}\n', reportStart) + 2)
+test('reportPeerRefusal posts only the peer id and the tool, in pairing mode, and never throws', async () => {
+  assert.ok(reportStart > 0, 'server.ts defines reportPeerRefusal')
+  const { peerRefusalReport } = await import('../lib/peer-refusal-counter.mjs')
+  const run = (mode: string, post: (path: string, body: unknown) => Promise<unknown>, input = { tool: 'schedule', delegate: '888' }) => {
+    const logs: string[] = []
+    execute(reportSource + '\nreportPeerRefusal(input);', {
+      input, AUTH: { mode }, ASSISTANT_ID: 1050, peerRefusalReport, bgosPost: post, log: (line: string) => logs.push(line),
+      httpStatusOf: (err: any) => err?.status ?? null,
+    })
+    return logs
+  }
+  const posts: Array<[string, unknown]> = []
+  const post = async (path: string, body: unknown) => { posts.push([path, body]); return { received: true } }
+  run('pairing', post)
+  assert.deepEqual(posts, [['integrations/assistants/1050/peer-refusals', { peerAssistantId: 888, tool: 'schedule' }]])
+  posts.length = 0
+  run('apikey', post)
+  run('pairing', post, { tool: 'move the meeting', delegate: '888' })
+  run('pairing', post, { tool: 'schedule', delegate: 'Mark' })
+  assert.deepEqual(posts, [])
+  const logs = run('pairing', () => Promise.reject(Object.assign(new Error('POST 503: busy'), { status: 503 })))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(logs, ['peer refusal count not sent to the server (503); the local count has it'])
 })

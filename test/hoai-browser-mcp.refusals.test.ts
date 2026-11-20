@@ -223,7 +223,7 @@ async function rig(t: TestContext, options: { actor?: string; profileSync?: bool
     rmSync(home, { recursive: true, force: true })
   })
   await request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'refusal-fixture', version: '1' } })
-  return { backend, frames, responses, request, call, publish }
+  return { backend, frames, responses, request, call, publish, contextFile, markerFile }
 }
 
 const textOf = (result: Json) => (result?.content ?? []).filter((item: Json) => item.type === 'text').map((item: Json) => item.text).join('\n')
@@ -729,6 +729,50 @@ test('the signed turn context still gates the open call: no verified sender, not
   assert.equal(result.isError, true)
   assert.match(textOf(result), /current sender could not be verified/)
   assert.deepEqual(f.frames, [], 'no request left the shim')
+})
+
+// A PEER agent's request reached this agent and no verified turn is open (Captain 2026-11-20, "start counting"): the
+// daemon signs a context with no turn and the peer's id (publishPrivateContext peerAssistantId). The browser call is
+// refused exactly as before, and the shim posts ONE count to the server: the peer's id and the tool's name, nothing
+// else. It never lifts the refusal.
+const COUNT_PATH = '/api/v1/integrations/assistants/42/peer-refusals'
+function signPeerContext(f: { contextFile: string; markerFile: string }, over: Json = {}, secret = SECRET) {
+  const context = { schemaVersion: 1, assistantId: '42', ownerUserId: OWNER, actingUserId: null, chatId: null, turnId: null, sessionId: null, markerPath: null, promptHash: null, claudePid: process.pid, pid: process.pid, updatedAt: Date.now(), live: false, peerAssistantId: '888', ...over }
+  writeFileSync(f.contextFile, JSON.stringify({ context, signature: createHmac('sha256', secret).update(JSON.stringify(context)).digest('hex') }))
+}
+
+test('a browser call refused on a peer turn is counted once on the server, with the peer and the tool only, and is still refused', async t => {
+  const f = await rig(t)
+  const unverified = await (async () => { const g = await rig(t, { managedContext: false }); return g.call('browser_navigate', { url: 'https://example.com' }) })()
+  signPeerContext(f)
+  f.frames.length = 0
+  const result = await f.call('browser_navigate', { url: 'https://example.com/private' })
+  assert.deepEqual(result, unverified, 'the refusal is the same answer as any unverified sender')
+  await until(() => f.frames.some(frame => frame.path === COUNT_PATH), 'the count POST')
+  await wait(100)
+  assert.deepEqual(f.frames.map(frame => frame.path), [COUNT_PATH], 'the count is the only request')
+  assert.deepEqual(f.frames[0].body, { peerAssistantId: 888, tool: 'browser_navigate' })
+  assert.equal(f.frames[0].headers['x-bgos-pairing'], SECRET)
+  assert.equal(f.frames[0].headers['x-bgos-acting-user'], undefined)
+})
+
+test('no count without a signed peer context: a status call, a forged signature, a stale context, a junk id, an owner turn', async t => {
+  const f = await rig(t)
+  const cases: Array<[string, () => void, string]> = [
+    ['status', () => signPeerContext(f), 'hoai_browser_status'],
+    ['forged', () => signPeerContext(f, {}, 'not-the-pairing'), 'browser_navigate'],
+    ['stale', () => signPeerContext(f, { updatedAt: Date.now() - 120_000 }), 'browser_navigate'],
+    ['junk id', () => signPeerContext(f, { peerAssistantId: 'Mark' }), 'browser_navigate'],
+    ['this agent', () => signPeerContext(f, { peerAssistantId: '42' }), 'browser_navigate'],
+    ['no peer', () => signPeerContext(f, { peerAssistantId: undefined }), 'browser_navigate'],
+  ]
+  for (const [label, arrange, tool] of cases) {
+    arrange()
+    f.frames.length = 0
+    await f.call(tool, {})
+    await wait(150)
+    assert.deepEqual(f.frames.filter(frame => frame.path === COUNT_PATH), [], label)
+  }
 })
 
 test("on this computer's loopback door the words say the browser is temporary, never that it is remembered", async t => {

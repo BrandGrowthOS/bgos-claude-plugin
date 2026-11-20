@@ -344,6 +344,31 @@ test('a peer turn is remembered for counting and still has no actor: the gate st
   assert.equal(tracker.peerTurn(), null)
 })
 
+// Captain 2026-11-20 ("start counting"): the browser shim is a separate process, so the daemon's signed context names
+// the peer behind a turn that has NO verified sender, for counting only. It is never an actor and never live.
+test('the signed browser context names the peer only when no turn is open, and only an agent id', () => {
+  const root = scratchDir('peer-context-')
+  const path = privateContextPath(root, '1050')
+  const base = { path, secret: 'k', assistantId: '1050', ownerUserId: 'user_owner', claudePid: 4242, pid: 4243, now: 1_000 }
+  const read = () => (readPrivateJson(path) as any).context
+  publishPrivateContext({ ...base, turn: null, peerAssistantId: '888' })
+  assert.equal(read().peerAssistantId, '888')
+  assert.equal(read().live, false)
+  assert.equal(read().actingUserId, null)
+  const signed = readPrivateJson(path) as any
+  assert.equal(signed.signature, createHmac('sha256', 'k').update(JSON.stringify(signed.context)).digest('hex'), 'the peer is under the signature')
+  // A verified turn is never also a peer turn: the field is absent, so the context is byte for byte what it was.
+  const turn = { actingUserId: 'user_owner', chatId: '1', turnId: 't', sessionId: 's', markerPath: join(root, 'm.json'), promptHash: 'a'.repeat(64) }
+  publishPrivateContext({ ...base, turn, peerAssistantId: '888' })
+  assert.equal('peerAssistantId' in read(), false)
+  for (const junk of [null, undefined, '', 'Mark', '0', '888 ', 888.5, '1050']) {
+    publishPrivateContext({ ...base, turn: null, peerAssistantId: junk as any })
+    assert.equal('peerAssistantId' in read(), false, String(junk))
+  }
+  publishPrivateContext({ ...base, turn: null })
+  assert.equal('peerAssistantId' in read(), false, 'no peer named, no field')
+})
+
 test('a human turn, a scheduler card and the next prompt are not peer turns', () => {
   let n = 0
   const tracker = createPrivateTurnTracker({ randomId: () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}` })

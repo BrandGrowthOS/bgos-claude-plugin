@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { PEER_REFUSAL_FILE_NAME, PEER_REFUSAL_KEEP_DAYS, dayKey, readPeerRefusals, recordPeerRefusal } from '../lib/peer-refusal-counter.mjs'
+import { PEER_REFUSAL_FILE_NAME, PEER_REFUSAL_KEEP_DAYS, dayKey, peerRefusalReport, readPeerRefusals, recordPeerRefusal } from '../lib/peer-refusal-counter.mjs'
 import { scratchDir } from './helpers/scratch-dirs'
 
 const T0 = Date.UTC(2026, 9, 12, 8, 0, 0)
@@ -69,4 +69,29 @@ test('a junk file is started again and a write that fails never throws or change
   }
   const out = recordPeerRefusal({ dir: d, tool: 'schedule', delegate: 888, target: 1050, now: T0, fs: broken })
   assert.match(out.line, /tool=schedule delegate=888 target=1050/)
+})
+
+// The server's copy of the count (BGOS POST /api/v1/integrations/assistants/:id/peer-refusals, Captain 2026-11-20:
+// "start counting"), so every agent's refusals are one query for Data. The body is the peer's id and the tool's
+// name, exactly the two fields the backend takes; it refuses any other field whole.
+test('the report to the server names this agent in the path and only the peer id and the tool in the body', () => {
+  assert.deepEqual(peerRefusalReport({ assistantId: 1050, delegate: '888', tool: 'boards_query' }), {
+    path: 'integrations/assistants/1050/peer-refusals',
+    body: { peerAssistantId: 888, tool: 'boards_query' },
+  })
+  assert.deepEqual(peerRefusalReport({ assistantId: '1050', delegate: 910, tool: 'browser_navigate' })?.body, { peerAssistantId: 910, tool: 'browser_navigate' })
+})
+
+test('a report is not built from anything that is not an agent id or a tool name', () => {
+  for (const input of [
+    { assistantId: 1050, delegate: 'Mark', tool: 'boards_query' },
+    { assistantId: 1050, delegate: '0', tool: 'boards_query' },
+    { assistantId: 1050, delegate: '888', tool: 'move my meeting to 3pm' },
+    { assistantId: 1050, delegate: '888', tool: '' },
+    { assistantId: 'me', delegate: '888', tool: 'boards_query' },
+    { assistantId: 1050, delegate: '1050', tool: 'boards_query' },
+    { assistantId: 1050, delegate: undefined, tool: 'boards_query' },
+  ]) {
+    assert.equal(peerRefusalReport(input as any), null, JSON.stringify(input))
+  }
 })
