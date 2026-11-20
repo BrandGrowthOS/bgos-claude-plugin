@@ -613,11 +613,54 @@ for (const sender of ['owner', 'peer']) {
   })
 }
 
+const limitRecord = JSON.stringify({ type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' })
+
+for (const limited of [false, true]) {
+  test(`a peer send for an earlier request and a later reply each count once after Stop (refused first: ${limited})`, t => {
+    const home = agentHome(t)
+    home.clock.now = Date.now()
+    const first = home.life()
+    const one = { content: 'ask the peer', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+    const two = { ...one, content: 'second question', chatId: 'second', fireKey: 'owner:2' }
+    const answers = [0, 0]
+    const submit = (message: typeof one) => {
+      const card = first.tracker.deliver(message)
+      first.submit(card)
+      return JSON.stringify({ type: 'user', message: { content: `<channel message_id="${message.fireKey.slice(6)}">${card}</channel>` } })
+    }
+    const tail = [submit(one)]
+    if (limited) tail.push(limitRecord)
+    tail.push(submit(two))
+    first.act('send_to_peer')
+    answers[0]++
+    first.act('reply')
+    first.tracker.noteHandled('reply:2')
+    answers[1]++
+    home.transcripts.set(first.sessionId, tail.join('\n'))
+    first.stop()
+    for (let boot = 0; boot < 2; boot++) {
+      const resumed = home.life()
+      for (const [index, request] of [one, two].entries()) {
+        if (!resumed.tracker.canRecover(request.fireKey)) continue
+        const card = resumed.tracker.deliver({ ...request, recoveryWithoutReply: true })
+        assert.ok(home.runPromptHook(resumed.sessionId, card)?.hookSpecificOutput.additionalContext.includes(request.content))
+        resumed.submit(card)
+        assert.equal(resumed.call(), OWNER)
+        resumed.act('reply')
+        answers[index]++
+      }
+    }
+    assert.deepEqual(answers, [1, 1])
+  })
+}
+
 test('the end of a later prompt leaves a refused message available', t => {
   const home = agentHome(t)
   const first = home.life()
   const message = { content: 'first question', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
-  first.submit(first.tracker.deliver(message))
+  const card = first.tracker.deliver(message)
+  first.submit(card)
+  home.transcripts.set(first.sessionId, [JSON.stringify({ type: 'user', message: { content: card } }), limitRecord].join('\n'))
   first.submit(first.tracker.deliver({ ...message, content: 'next question', chatId: 'second', fireKey: 'owner:2' }))
   first.stop()
   const boot = home.life()
