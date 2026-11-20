@@ -28,7 +28,7 @@ import { channelNotifyFor, scheduleGrantRunsForTest } from './helpers/channel-no
 import { scheduleGrantOf } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1302,6 +1302,27 @@ interface LaneState {
  * a storage host the test opens when it likes (`slow`) and a clock each
  * download moves by `clock.stepMs`.
  */
+/**
+ * Wait for every download to end. Bounded: a download that never ends fails
+ * the run here, by its email, instead of hanging it with no message. Not a
+ * retry, the downloads are only waited for.
+ */
+async function downloadsEnded(downloads: Map<Promise<unknown>, string>): Promise<void> {
+  const deadlineMs = 10_000
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const stuck = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`the lane harness: a download never ended (${[...downloads.values()].join(', ')}), so its folder was not removed`)),
+      deadlineMs,
+    )
+  })
+  try {
+    while (downloads.size > 0) await Promise.race([Promise.allSettled([...downloads.keys()]), stuck])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, fn: (h: LaneState) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'email-hold-'))
   const root = emailFiles.emailFilesRoot(dir)
@@ -1320,6 +1341,9 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
   }
   const clock = { now: 1_000_000, stepMs: 0 }
   const deadlines: Array<number | undefined> = []
+  // Every download this harness started and has not seen end, with the email
+  // it is for, so a stuck one can be named.
+  const downloads = new Map<Promise<unknown>, string>()
   const chatLastSeen = new Map([[CHAT, 9000]])
   const shared = {
     emailCursorHolds: ef.createEmailCursorHolds?.() ?? { hold: () => undefined, release: () => null, clamp: (_c: string, id: number) => id },
@@ -1332,7 +1356,11 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
     emailFilesWanted: emailFiles.emailFilesWanted,
     prepareEmailFiles: async (o: Parameters<typeof emailFiles.prepareEmailFiles>[0]) => {
       deadlines.push(o.deadlineMs)
-      const saves = await emailFiles.prepareEmailFiles({ ...o, fetchImpl: fetchImpl as never })
+      const download = emailFiles.prepareEmailFiles({ ...o, fetchImpl: fetchImpl as never })
+      const email = (o.record as { externalEmail?: { emailId?: unknown } } | null)?.externalEmail?.emailId
+      downloads.set(download, `email ${String(email ?? 'without an id')}`)
+      void download.then(() => downloads.delete(download), () => downloads.delete(download))
+      const saves = await download
       clock.now += clock.stepMs
       return saves
     },
@@ -1346,9 +1374,34 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
   try {
     return await fn({ root, fetched, open: () => open(), clock, chatLastSeen, shared, saver, saverScope, saverLogs: saverRun.logs, deadlines })
   } finally {
+    // Let held downloads go and wait for every one to end before removing
+    // their folder: a write into it during the removal failed the rmdir on
+    // Windows (ENOTEMPTY), and one after it put the folder back.
+    open()
+    await downloadsEnded(downloads)
     await rm(dir, { recursive: true, force: true })
   }
 }
+
+// The harness removes its folder only once every download it started has
+// ended. A download the test left held, or still writing when the test body
+// returned, used to race that removal: on a slow Windows runner the rmdir of
+// an email's folder met a file written into it (ENOTEMPTY), and elsewhere the
+// late write put the folder back after it was removed.
+test('read attachments, the lane harness: its folder is removed after the downloads it started end, never under one', async () => {
+  let root = ''
+  let download: Promise<unknown> | null = null
+  await withLaneState({ slow: true }, async (h) => {
+    root = h.root
+    download = (h.saver as (r: unknown, f: unknown) => Promise<unknown>)(wsEmail(ON), [WS_FILE])
+    await until(() => h.fetched.length === 1, 'the download is under way, held at the storage host')
+    // The body returns with the download still held; the storage host
+    // answers only after that.
+    setImmediate(() => h.open())
+  })
+  await download
+  assert.equal(existsSync(root), false, 'nothing was written back after the folder was removed')
+})
 
 async function until(cond: () => boolean, what: string): Promise<void> {
   for (let i = 0; i < 200 && !cond(); i++) await sleep(10)
