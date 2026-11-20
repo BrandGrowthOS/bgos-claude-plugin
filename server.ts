@@ -13019,7 +13019,7 @@ async function pollChat(chatId: string): Promise<void> {
         const id = row.message.id
         const key = `owner:${id}`
         if (privateFires.handledAt(`reply:${id}`) !== null || privateFires.claimed(key)) return false
-        if (!previouslyForwarded.has(id) && privateFires.handledAt(key) === null) return true
+        if (privateFires.handledAt(key) === null) return !previouslyForwarded.has(id) || id > lastReply
         if (id > lastReply && privateTurns.canRecover(key)) {
           recoveredWithoutReply.add(id)
           return true

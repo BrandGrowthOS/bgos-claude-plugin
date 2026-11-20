@@ -239,7 +239,7 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     senderUserIdOf: (m: unknown) => senderUserIdCandidate(m) ?? OWNER,
     privateFires: { handledAt: () => null, claimed: () => false },
     privateTurns: {
-      canRecover: () => true,
+      canRecover: () => false,
       deliver: (d: Record<string, any>) => (run.deliveries.push(d), d.content),
       noteUntracked: () => undefined,
     },
@@ -926,6 +926,25 @@ test('first read paging: our reply across room context stops older reads at the 
   assert.equal(needsOlder(rows.slice(0, 2)), true, 'another agent alone cannot stop paging')
   assert.equal(needsOlder(rows.slice(1)), true, 'keep paging when the human may be on an older page')
   assert.equal(needsOlder([rows[0]!, { ...rows[1]!, sender: 'system' }, rows[2]!]), true, 'system traffic still separates a proactive assistant')
+})
+
+test('restart offers a held request once per boot until its first answer', async () => {
+  const id = 1
+  const rows = [{ message: { id, sender: 'user', senderUserId: PERSON, text: 'Request', sentDate: new Date().toISOString() }, messageFiles: [] }]
+  const replies = new Set<string>()
+  for (const boot of [1, 2, 3]) {
+    const lane = pollLane(rows, {
+      chatLastSeen: new Map([[CHAT, id]]), chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10,
+      privateFires: { handledAt: (key: string) => replies.has(key) ? 1 : null, claimed: () => false },
+    })
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.length, boot < 3 ? 1 : 0)
+    if (boot < 3) assert.equal(lane.run.deliveries[0]!.recoveryWithoutReply, false)
+    if (boot === 2) replies.add(`reply:${id}`)
+  }
 })
 
 test('a missing cursor preserves a new request and recovers only an open unclaimed turn', async () => {
