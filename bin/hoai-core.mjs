@@ -63,7 +63,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { applyHelperAccount, isManagedProfile } from '../lib/helper-account-launch.mjs'
+import { applyHelperAccount, isManagedProfile, profileEnvOf } from '../lib/helper-account-launch.mjs'
 import { probeClaudeSignedIn } from '../lib/claude-subscription-status.mjs'
 import { randomUUID } from 'node:crypto'
 import {
@@ -3358,15 +3358,20 @@ export async function superviseClaude(args, opts = {}) {
   // Read the owner's selection at a new start and after a marker handoff,
   // when the preceding child has exited and its transcript is complete.
   let helperSelected = false
+  // The login and provider settings this supervisor was launched with. A saved login
+  // replaces them only while it is assigned; every other start gets them back.
+  const launchEnv = profileEnvOf(env)
+  let helperApplied = false
   const readSelection = (sessionId, previousConfigDir) => {
     if (env.HOAI_HELPER_ACCOUNTS === 'false') return
     const registry = joinDir(joinDir(agentDir(home), 'helper-accounts'), 'registry.json')
-    if (!exists(registry) && !isManagedProfile(home, env.CLAUDE_CONFIG_DIR)) return
+    if (!helperApplied && !exists(registry) && !isManagedProfile(home, env.CLAUDE_CONFIG_DIR)) return
     const before = env.CLAUDE_CONFIG_DIR
     helperSelected = applyHelperAccount({
-      home, cwd, env, assistantId: id, sessionId, sessionTranscriptPath, previousConfigDir, scriptDir,
+      home, cwd, env, assistantId: id, sessionId, sessionTranscriptPath, previousConfigDir, scriptDir, launchEnv,
     })
-    if (helperSelected && env.CLAUDE_CONFIG_DIR !== before) {
+    helperApplied = true
+    if (env.CLAUDE_CONFIG_DIR !== before) {
       loginStore.configDir = claudeConfigDir({ env, home })
       signedInSince = createLoginCheck()
       loginFailure = null
