@@ -103,7 +103,8 @@ function agentHome(t: any) {
       stopHook()
       tracker.end()
     }
-    const act = (tool: string) => tracker.noteOutbound(tool, markerPaths)
+    const act = (tool: string, chat?: string) => tracker.noteOutbound(tool, markerPaths,
+      chat ?? (tool === 'reply' ? tracker.current({ markerPaths })?.chatId : undefined))
     const dispatch = (tool: string) => tracker.outboundCompletion(tool, markerPaths)
     return { tracker, stopHook, dispatch, submit, consult, wake, call, act, stop, sessionId, replays, revokes, outcomes }
   }
@@ -601,7 +602,7 @@ for (const sender of ['owner', 'peer']) {
       ? { content: 'next question', chatId: 'second', actingUserId: OWNER, fireKey: 'owner:2' }
       : { content: 'peer question', chatId: 'first', peerSourceAssistantId: 'peer' }
     first.submit(first.tracker.deliver(other))
-    first.act(sender === 'owner' ? 'reply' : 'send_to_peer')
+    first.act(sender === 'owner' ? 'reply' : 'send_to_peer', other.chatId)
     home.transcripts.set(first.sessionId, [refused, refused].join('\n'))
     const next = home.life()
     assert.equal(next.tracker.canRecover('owner:2'), false)
@@ -633,7 +634,7 @@ for (const limited of [false, true]) {
     tail.push(submit(two))
     first.act('send_to_peer')
     answers[0]++
-    first.act('reply')
+    first.act('reply', two.chatId)
     first.tracker.noteHandled('reply:2')
     answers[1]++
     home.transcripts.set(first.sessionId, tail.join('\n'))
@@ -684,6 +685,19 @@ test('a tool in the next prompt cannot spend the earlier refused retry', t => {
     { type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' },
   ].map(row => JSON.stringify(row)).join('\n'))
   assert.equal(home.life().tracker.canRecover(message.fireKey), true)
+})
+
+test('a parentless reply to another chat leaves the live request open', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const request = { content: 'first question', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(request))
+  first.submit(first.tracker.deliver({ ...request, content: 'next question', chatId: 'second', fireKey: 'owner:2' }))
+  const complete = first.tracker.outboundCompletion('reply', home.paths)
+  complete?.({}, 'first')
+  assert.equal(home.life().tracker.canRecover('owner:2'), true)
+  complete?.({}, 'second')
+  assert.equal(home.life().tracker.canRecover('owner:2'), false)
 })
 
 test('an explicit reply to an earlier request leaves the current question open', t => {

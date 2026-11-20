@@ -6993,6 +6993,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       isError: true,
     })
   }
+  let confirmedReplyChat: string | undefined
   const replyTo = req.params.name === 'reply' ? req.params.arguments?.reply_to_id : null
   let completeOutbound = privateTurns.outboundCompletion(req.params.name, PRIVATE_MARKER_PATHS, typeof replyTo === 'number' ? replyTo : null)
   // Freeze private authority at request admission, before any awaited work.
@@ -7356,6 +7357,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         // (message_id: N)...") verbatim into THIS session's transcript, so
         // the minted id is positive proof of which transcript is ours.
         if (msgId != null) sessionBinder.recordReplyMessageId(msgId)
+        confirmedReplyChat = replyChatId
         const answered = reply_to_id
         if (replyChatId === String(resolvedChatId) && typeof answered === 'number' && Number.isSafeInteger(answered) && answered > 0) {
           privateTurns.noteHandled(`reply:${answered}`)
@@ -9591,7 +9593,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       throw new Error(`Unknown tool: ${req.params.name}`)
   }
   }).then((result) => {
-    completeOutbound?.(result)
+    completeOutbound?.(result, confirmedReplyChat)
     return withRetiredOwnAskNotes(result, extra.signal)
   })
 })
