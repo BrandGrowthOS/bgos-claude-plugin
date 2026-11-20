@@ -6993,7 +6993,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       isError: true,
     })
   }
-  privateTurns.noteOutbound(req.params.name, PRIVATE_MARKER_PATHS)
+  let completeOutbound = privateTurns.outboundCompletion(req.params.name, PRIVATE_MARKER_PATHS)
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
   if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
@@ -7131,13 +7131,14 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const reply_to_id = rawArgs.reply_to_id as number | undefined
 
       if (!chat_id) {
-        return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
+        return { content: [{ type: 'text', text: 'Error: chat_id is required' }], isError: true }
       }
       if (!text && !filesInput?.length && !buttonsInput?.length) {
         return {
           content: [
             { type: 'text', text: 'Error: at least one of text, files, or buttons is required' },
           ],
+          isError: true,
         }
       }
 
@@ -7733,7 +7734,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const chat_id = rawArgs.chat_id as string | undefined
       const title = rawArgs.title as string | undefined
       if (!chat_id || !title) {
-        return { content: [{ type: 'text', text: 'Error: chat_id and title required' }] }
+        return { content: [{ type: 'text', text: 'Error: chat_id and title required' }], isError: true }
       }
       // Membership check before forwarding the agent-supplied chat_id.
       const renameAuth = resolveAuthorizedChat(chat_id)
@@ -7804,7 +7805,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const askWait = askWaitSeconds(rawArgs)
 
       if (!chat_id) {
-        return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
+        return { content: [{ type: 'text', text: 'Error: chat_id is required' }], isError: true }
       }
       // Only the daemon holding this agent's connection delivers answers, and a
       // card's answers go only to the session that asked it (lib/ask-tracker.ts
@@ -7858,6 +7859,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       if (!questions?.length) {
         return {
           content: [{ type: 'text', text: 'Error: at least one question is required' }],
+          isError: true,
         }
       }
       const questionsError = askQuestionsError(questions)
@@ -8078,6 +8080,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       // Its ask_answered already went out (a delivery in flight cannot be
       // recalled): say so, instead of promising that no event will come.
       if (askDelivering.has(askId)) {
+        completeOutbound = undefined
         return {
           content: [
             {
@@ -8233,6 +8236,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             { ok: true, payload: { text: answer } },
           )) as { taskId?: string | null } | undefined
           const landed = res && typeof res === 'object' && res.taskId
+          if (!landed) completeOutbound = undefined
           return {
             content: [
               {
@@ -8257,6 +8261,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         }
       }
       if (status === 'late') {
+        completeOutbound = undefined
         return {
           content: [
             {
@@ -9584,7 +9589,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     default:
       throw new Error(`Unknown tool: ${req.params.name}`)
   }
-  }).then((result) => withRetiredOwnAskNotes(result, extra.signal))
+  }).then((result) => {
+    completeOutbound?.(result)
+    return withRetiredOwnAskNotes(result, extra.signal)
+  })
 })
 
 // ── Chat Polling ─────────────────────────────────────────────────────────────

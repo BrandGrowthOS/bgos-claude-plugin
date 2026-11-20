@@ -985,7 +985,7 @@ async function serverCallTool(
   // The dispatch ends by passing its result through withRetiredOwnAskNotes (an
   // asker's retired card, lib/ask-retired-tell.ts, with its own tests): here it
   // hands the result back as it is.
-  const handlerEnd = '\n  }).then((result) => withRetiredOwnAskNotes(result, extra.signal))\n'
+  const handlerEnd = '\n  }).then((result) => {\n    completeOutbound?.(result)\n    return withRetiredOwnAskNotes(result, extra.signal)\n  })\n'
   const handler = serverSlice('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {', `${handlerEnd}})\n`)
     .replace('mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {', 'const callTool = (req, extra) => {')
     .replace(`${handlerEnd}})\n`, `${handlerEnd}}\n`)

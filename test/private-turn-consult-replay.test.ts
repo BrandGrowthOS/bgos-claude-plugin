@@ -101,7 +101,8 @@ function agentHome(t: any) {
       tracker.end()
     }
     const act = (tool: string) => tracker.noteOutbound(tool, markerPaths)
-    return { tracker, submit, consult, wake, call, act, stop, sessionId, replays, revokes, outcomes }
+    const dispatch = (tool: string) => tracker.outboundCompletion(tool, markerPaths)
+    return { tracker, dispatch, submit, consult, wake, call, act, stop, sessionId, replays, revokes, outcomes }
   }
   const ledgerKeys = (): string[] => { try { return Object.keys((JSON.parse(readFileSync(firesPath, 'utf8')) as any).fires) } catch { return [] } }
   const startupPrompt = (sessionId: string) => recordPrivateBoundary({
@@ -364,6 +365,46 @@ for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other e
     assert.equal(home.life().tracker.canRecover(key), false)
   })
 }
+
+test('only successful changes close the delivery tagged when the tool started', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  const failed = first.dispatch('email_send')
+  failed?.({ isError: true })
+  assert.equal(home.life().tracker.canRecover(message.fireKey), true)
+  const sent = first.dispatch('email_send')
+  first.stop()
+  const other = { ...message, fireKey: 'owner:2' }
+  first.submit(first.tracker.deliver(other))
+  sent?.({})
+  assert.equal(home.life().tracker.canRecover(other.fireKey), true)
+})
+
+for (const action of ['email_send', 'email_draft', 'artifact_create', 'artifact_update', 'boards_insert', 'boards_download',
+  'vault_request_login', 'schedule', 'set_status', 'show_component', 'create_mission']) {
+  test(`a confirmed ${action} closes its message before Stop`, t => {
+    const home = agentHome(t)
+    const first = home.life()
+    const key = 'owner:1'
+    first.submit(first.tracker.deliver({ content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: key }))
+    first.act(action)
+    assert.equal(home.life().tracker.canRecover(key), false)
+  })
+}
+
+test('plain reads leave their request open', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const key = 'owner:1'
+  first.submit(first.tracker.deliver({ content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: key }))
+  for (const read of ['artifact_list', 'artifact_read', 'artifact_versions', 'boards_query', 'boards_get_row', 'vault_items',
+    'list_schedules', 'list_peers', 'list_chats', 'peer_status', 'list_health_events', 'bgos_capabilities']) {
+    first.act(read)
+    assert.equal(home.life().tracker.canRecover(key), true, read)
+  }
+})
 
 test('a reaction acknowledges the request and leaves its answer due', t => {
   const home = agentHome(t)
