@@ -20,10 +20,10 @@ Before, when an agent kept running but stopped getting messages, the Helper noti
 
 - An agent on the keep-alive list is brought back, as before.
 - Any other agent is left alone: nothing is restarted, installed or changed for it. The Helper tells the app, which can say the agent is not kept running and offer to keep it running. Once the owner says yes, the agent is brought back.
-- An agent you did not keep running is no longer restarted by itself when it stops getting messages.
+- Once the app update that reads this report is out, an agent you did not keep running is no longer restarted by itself when it stops getting messages.
 - A computer with more than 64 agents still reports, naming 64 of them.
 
-An app that does not know the new report ignores it, so nothing already installed changes.
+An app that does not know the new report ignores it, so nothing already installed changes until that app update is out.
 
 ## 0.90.14 (2026-11-20)
 
