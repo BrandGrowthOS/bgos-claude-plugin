@@ -1656,6 +1656,71 @@ test('runWatcher: a computer with more than 64 agents sends 64 ids, its kept and
   assert.equal(logs.filter((l) => l.includes('65 agents')).length, 1)
 })
 
+/** Each poll moves the clock on by the next of `steps` (ms) and answers no frames; past the last one the poll fails and the loop stops at its back off. */
+function steppedBackend(clock: ReturnType<typeof fakeClock>, steps: number[]) {
+  const calls: Call[] = []
+  let polls = 0
+  const fetch = async (url: string, init: any) => {
+    const u = new URL(url)
+    calls.push({ method: init?.method ?? 'GET', path: u.pathname + u.search, body: init?.body ? JSON.parse(init.body) : undefined, headers: init?.headers ?? {} })
+    if (u.pathname.endsWith('/machine-rpc/pending')) {
+      const step = steps[polls]
+      polls += 1
+      if (step === undefined) throw new Error('ECONNRESET')
+      clock.advance(step)
+      return { ok: true, status: 200, text: async () => JSON.stringify({ frames: [] }) }
+    }
+    return { ok: true, status: 200, text: async () => '{}' }
+  }
+  return { calls, fetch }
+}
+
+/** The watcher loop with a sweep that answers `reports` in turn (a throw for an Error) and stops at the first back off. */
+async function loopedBeats(steps: number[], reports: Array<any>) {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = steppedBackend(clock, steps)
+  let sweeps = 0
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => {
+      const r = reports[Math.min(sweeps++, reports.length - 1)]
+      if (r instanceof Error) throw r
+      return r
+    },
+    limitPass: async () => ({ agents: [] }),
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  return backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat')).map((c) => c.body.env.watcherHealth.keepAlive)
+}
+
+test('runWatcher: the agents the last sweep looked at ride the next heartbeat in `keepAlive.looked`; the first heartbeat of a process, before any sweep, names none', async () => {
+  const beats = await loopedBeats([61_000], [{ enabled: false, agents: [], looked: ['300', '301'] }])
+  assert.equal(beats.length, 2)
+  assert.equal('looked' in beats[0]!, false, 'the boot heartbeat goes out before the first look')
+  assert.deepEqual(beats[1]!.looked, ['300', '301'])
+})
+
+test('runWatcher: a heartbeat that goes out more than 3 minutes after the sweep that looked names no agent as looked at (a sleep, a long job)', async () => {
+  const beats = await loopedBeats([61_000, 4 * 60_000], [{ enabled: false, agents: [], looked: ['300'] }])
+  assert.equal(beats.length, 3)
+  assert.deepEqual(beats[1]!.looked, ['300'], 'a minute after its sweep')
+  assert.equal('looked' in beats[2]!, false, 'four minutes after its sweep')
+})
+
+test('runWatcher: a sweep that fails leaves no agent looked at, though the list it last sent is still young', async () => {
+  const beats = await loopedBeats([61_000, 61_000], [{ enabled: false, agents: [], looked: ['300'] }, new Error('boom')])
+  assert.equal(beats.length, 3)
+  assert.deepEqual(beats[1]!.looked, ['300'])
+  assert.equal('looked' in beats[2]!, false)
+})
+
 test('runWatcher: after a restart every saved watched finding rides the first heartbeat, whatever its age, until the first sweep replaces it', async () => {
   const fs = machineFs()
   manifestFor(fs)

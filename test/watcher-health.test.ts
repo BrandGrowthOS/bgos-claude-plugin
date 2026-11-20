@@ -96,6 +96,15 @@ test('recordBoot: boots.json is a ring of the last 20 starts {startedAt, pid, ve
   assert.deepEqual(readBoots('/home/kc', fs), [])
 })
 
+test('buildWatcherHealth: keepAlive.looked keeps the ids the sweep looked at, as non empty strings, at most 64, and is absent when there are none', () => {
+  const ids = Array.from({ length: 70 }, (_, i) => String(1000 + i))
+  const h = buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: [], looked: ['7', '', 8, null, { id: '9' }, ...ids] } as any })
+  assert.deepEqual(h.keepAlive!.looked, ['7', ...ids].slice(0, 64))
+  assert.equal('looked' in buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: [], looked: [] } as any }).keepAlive!, false)
+  assert.equal('looked' in buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: [] } }).keepAlive!, false)
+  assert.equal('looked' in buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: [], looked: 'all' } as any }).keepAlive!, false)
+})
+
 test('buildWatcherHealth: ok, degraded after a recent fatal or 3+ boots in the hour; strings bounded to 120, agents to 64', () => {
   assert.deepEqual(buildWatcherHealth({ boots: [boot(T0 - 2 * 60 * MIN)], crash: null, now: T0 }), { status: 'ok', bootsLastHour: 0 })
   const crash = { at: new Date(T0 - 10 * MIN).toISOString(), message: `Cannot find module ${'x'.repeat(300)}` }
