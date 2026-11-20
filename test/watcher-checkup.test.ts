@@ -1155,6 +1155,19 @@ test('an older model record appended to a refused session preserves its waiting 
   assert.equal(parseTranscriptTail([...records, assistantTurn(at + 1)].join('\n'), T0).heldQueue, false)
 })
 
+test('a contentless dequeue takes the oldest entry even across a model turn', () => {
+  const refusal = limitEnvelope(T0 - 4 * MIN, T0 + MIN)
+  const dequeue = JSON.stringify({ type: 'queue-operation', operation: 'dequeue', timestamp: new Date(T0 - 5 * MIN).toISOString() })
+  const first = enqueueLine(T0 - 9 * MIN, 'first')
+  const second = enqueueLine(T0 - 7 * MIN, 'second')
+  const start = assistantTurn(T0 - 10 * MIN)
+  const progress = assistantTurn(T0 - 8 * MIN)
+  const held = (rows: string[]) => parseTranscriptTail([...rows, refusal].join('\n'), T0).heldQueue
+  assert.equal(held([first, dequeue]), false, 'a consumed entry cannot trip the watcher')
+  assert.equal(held([start, first, progress, second, dequeue]), true, 'the second entry still waits')
+  assert.equal(held([start, first, progress, second, dequeue, dequeue]), false)
+})
+
 test('one queue removal preserves the wait of the other message', () => {
   const limit = limitEnvelope(T0 - 6 * MIN, T0 + MIN)
   const first = enqueueLine(T0 - 4 * MIN, 'first')
