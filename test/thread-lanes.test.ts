@@ -190,6 +190,8 @@ const wt = (root: string) => join(AGENT, '.hoai', 'threads', root)
 const turn = (rootId: string, over: Partial<ThreadTurnInput> = {}): ThreadTurnInput => ({
   chatId: '55', rootId, replyId: `${rootId}0`, mode: 'start', text: `work on ${rootId}`, title: `T${rootId}`, rootText: `root ${rootId}`, ...over,
 })
+/** What a reply turn writes to the lane: the reply rule, then the person's words (THREADLEN). */
+const replyLine = (text: string) => userMessageLine(threadTurnPrompt({ mode: 'reply', text, title: '', rootText: '' }))
 /** Lets pending promise steps run without waiting on work that waits for a process exit. */
 const flush = async () => { for (let i = 0; i < 20; i++) await new Promise((done) => setImmediate(done)) }
 const statePosts = (r: ReturnType<typeof rig>) => r.posts.filter((p) => p.path === 'integrations/threads/state').map((p) => `${p.body.rootId}:${p.body.state}`)
@@ -275,7 +277,7 @@ test('each result is posted as one thread reply, final unless it ends asking a q
   await r.manager.idle()
   r.manager.turn(turn('101', { mode: 'reply', replyId: '1011', text: 'and the docs?' }))
   await r.manager.idle()
-  assert.equal(c.stdin[1], userMessageLine('and the docs?'))
+  assert.equal(c.stdin[1], replyLine('and the docs?'))
   c.result('Shall I update the README too?')
   await r.manager.idle()
   const replies = r.posts.filter((p) => p.path === 'integrations/threads/reply').map((p) => p.body)
@@ -353,7 +355,7 @@ test('turns for one thread are serialized: the second waits for the first result
   c.result('first answer.')
   await r.manager.idle()
   assert.equal(c.stdin.length, 2)
-  assert.equal(c.stdin[1], userMessageLine('also this'))
+  assert.equal(c.stdin[1], replyLine('also this'))
   assert.equal(r.spawned.length, 1, 'the same lane, never a second process')
 })
 
@@ -804,7 +806,7 @@ test('reconcile runs a reply turn for each pending thread and skips one already 
   assert.equal(ran, 1)
   assert.equal(r.spawned.length, 2)
   assert.equal(r.spawned[1]!.cwd, wt('102'))
-  assert.equal(r.spawned[1]!.child.stdin[0], userMessageLine('pending one'))
+  assert.equal(r.spawned[1]!.child.stdin[0], replyLine('pending one'))
 })
 
 test('stopAll stops every lane on daemon shutdown', async () => {
@@ -853,7 +855,7 @@ test('a turn that arrives while the idle stop is under way runs on a new process
   assert.equal(r.posts.filter((p) => p.path === 'integrations/threads/reply').length, 1)
   assert.equal(r.spawned.length, 2)
   const next = r.spawned[1]!.child
-  assert.deepEqual(next.stdin, [userMessageLine('one more')])
+  assert.deepEqual(next.stdin, [replyLine('one more')])
   assert.equal(r.manager.runningCount(), 1)
   next.result('the second answer.')
   await r.manager.idle()
@@ -936,6 +938,36 @@ test('a reply longer than the server holds is cut to 20,000 characters with a pl
   const text = String(r.posts.find((p) => p.path === 'integrations/threads/reply')!.body.text)
   assert.equal(text.length, THREAD_TEXT_MAX)
   assert.match(text, /cut here/)
+})
+
+test('THREADLEN: a reply over 600 characters is posted unchanged and logged once, even when its post is retried', async () => {
+  let failures = 1
+  const r = rig({ failPosts: (path) => path === 'integrations/threads/reply' && failures-- > 0 })
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  const long = `${'word '.repeat(140)}done.`
+  assert.equal(long.length, 705)
+  r.spawned[0]!.child.result(long)
+  await new Promise((done) => setImmediate(done))
+  const wait = r.live(THREAD_POST_RETRY_MS[0]!)
+  assert.equal(wait.length, 1, 'the first post failed and waits to try again')
+  r.fire(wait[0]!)
+  await r.manager.idle()
+  assert.equal(r.failedPosts.length, 1)
+  const replies = r.posts.filter((p) => p.path === 'integrations/threads/reply')
+  assert.equal(replies.length, 1, 'the retried post landed once')
+  assert.equal(replies[0]!.body.text, long, 'not one word cut or changed')
+  assert.deepEqual(r.logs.filter((l) => /over 600/.test(l)), ['threads: thread 101 reply is 705 characters, over 600, posted unchanged'])
+})
+
+test('THREADLEN: a reply within 600 characters logs no length line', async () => {
+  const r = rig()
+  r.manager.turn(turn('101'))
+  await r.manager.idle()
+  r.spawned[0]!.child.result('a'.repeat(600))
+  await r.manager.idle()
+  assert.equal(r.posts.find((p) => p.path === 'integrations/threads/reply')!.body.text, 'a'.repeat(600))
+  assert.deepEqual(r.logs.filter((l) => /characters, over/.test(l)), [])
 })
 
 test('a failed reply post is retried with backoff and lands', async () => {
@@ -1229,7 +1261,7 @@ test('a new reply listed while the last answer is still being posted runs once t
   r.fire(r.live(THREAD_POST_RETRY_MS[0]!)[0]!)
   assert.equal(await pending, 1)
   await r.manager.idle()
-  assert.deepEqual(c.stdin, [c.stdin[0], userMessageLine('and more')])
+  assert.deepEqual(c.stdin, [c.stdin[0], replyLine('and more')])
 })
 
 test('after a daemon restart a listed turn that already finished is never run again: the thread goes back to open', async () => {

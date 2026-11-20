@@ -71,6 +71,7 @@ import {
   THREAD_LANE_REF_DIRS,
   threadLaneArgs,
   threadLaneTranscript,
+  threadReplyLengthLine,
   threadTurnPrompt,
   type ThreadLaneConfinement,
   type ThreadTurnMode,
@@ -827,6 +828,9 @@ export class ThreadLaneManager {
         refused,
       )
     } else {
+      // Counted once per answer, before the post and its retries; the text is posted as is.
+      const over = threadReplyLengthLine(turn.rootId, raw)
+      if (over) this.deps.log(over)
       this.post(
         lane,
         'integrations/threads/reply',

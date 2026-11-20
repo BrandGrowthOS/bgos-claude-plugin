@@ -19,6 +19,8 @@ import {
   THREAD_LANE_FORBIDDEN_FLAGS,
   THREAD_LANE_READ_ONLY_TOOLS,
   THREAD_LANE_TOOLS,
+  THREAD_REPLY_RULE,
+  THREAD_REPLY_SOFT_MAX,
   THREAD_TEXT_CLIPPED_NOTE,
   THREAD_TEXT_MAX,
   ASIDE_SETTINGS,
@@ -34,8 +36,12 @@ import {
   threadLaneSettings,
   threadLaneHooks,
   threadLaneTools,
+  threadReplyLengthLine,
   threadTurnPrompt,
 } from '../lib/thread-lane-args.ts'
+
+/** The reply rule as THREADLEN wrote it, the same rule as a main chat reply. */
+const RULE = '[How to write your reply in this thread: plain words, the answer first, at most 600 characters. If more is needed, say what it is and offer to put it on a page. No em or en dashes.]'
 
 import { laneShellSandboxAvailable } from '../lib/lane-policy.mjs'
 
@@ -275,7 +281,7 @@ test('a thread start tells the lane it is a separate conversation in its own fol
   const text = threadTurnPrompt({ mode: 'start', text: 'Look at the flaky test.', title: 'Flaky test', rootText: 'CI is red again.' })
   assert.equal(
     text,
-    '[You are now working in a thread of this chat titled "Flaky test". It is a separate conversation about this message: CI is red again. Work on it in this folder only. The main conversation continues without you. Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\nLook at the flaky test.',
+    '[You are now working in a thread of this chat titled "Flaky test". It is a separate conversation about this message: CI is red again. Work on it in this folder only. The main conversation continues without you. Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\n' + RULE + '\n\nLook at the flaky test.',
   )
 })
 
@@ -287,11 +293,33 @@ test('a read only thread start says so', () => {
 
 test('a read only thread on a large repository names the agent folder as the place to read', () => {
   const text = threadTurnPrompt({ mode: 'start', text: 'What does server.ts do?', title: 'Code', rootText: 'Read the code.', readOnly: true, agentFolder: '/work/large repo' })
-  assert.equal(text, '[You are now working in a thread of this chat titled "Code". It is a separate conversation about this message: Read the code. This thread is read only: read files in the agent folder "/work/large repo" and do not edit files. The main conversation continues without you. Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\nWhat does server.ts do?')
+  assert.equal(text, '[You are now working in a thread of this chat titled "Code". It is a separate conversation about this message: Read the code. This thread is read only: read files in the agent folder "/work/large repo" and do not edit files. The main conversation continues without you. Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\n' + RULE + '\n\nWhat does server.ts do?')
 })
 
-test('a thread reply is the text as is, and a summary asks for the summary only', () => {
-  assert.equal(threadTurnPrompt({ mode: 'reply', text: 'And the logs?', title: 't', rootText: 'r' }), 'And the logs?')
+test('THREADLEN: every start and reply turn carries the main chat reply rule, a summary does not', () => {
+  // Written out, not imported: removing or loosening the rule fails here.
+  assert.equal(THREAD_REPLY_RULE, RULE)
+  assert.equal(THREAD_REPLY_SOFT_MAX, 600)
+  assert.match(RULE, /the answer first/)
+  assert.match(RULE, /at most 600 characters/)
+  assert.match(RULE, /offer to put it on a page/)
+  assert.match(RULE, /No em or en dashes/)
+  assert.doesNotMatch(RULE, /[–—]/, 'the rule itself has no em or en dash')
+  for (const readOnly of [false, true]) {
+    const start = threadTurnPrompt({ mode: 'start', text: 'Q', title: 't', rootText: 'r', readOnly })
+    assert.ok(start.includes(`\n\n${RULE}\n\nQ`), 'the start turn carries the rule just before the question')
+  }
+  assert.equal(threadTurnPrompt({ mode: 'reply', text: 'And the logs?', title: 't', rootText: 'r' }), `${RULE}\n\nAnd the logs?`)
+  assert.ok(!threadTurnPrompt({ mode: 'summary', text: 'x', title: 't', rootText: 'r' }).includes(RULE))
+})
+
+test('THREADLEN: a reply over 600 characters gets one length line, one within gets none', () => {
+  assert.equal(threadReplyLengthLine('101', 'a'.repeat(600)), null)
+  assert.equal(threadReplyLengthLine('101', 'short'), null)
+  assert.equal(threadReplyLengthLine('101', 'a'.repeat(601)), 'threads: thread 101 reply is 601 characters, over 600, posted unchanged')
+})
+
+test('a thread reply is the text after the reply rule, and a summary asks for the summary only', () => {
   assert.equal(threadTurnPrompt({ mode: 'summary', text: 'ignored', title: 't', rootText: 'r' }), SUMMARY_INSTRUCTION)
   assert.equal(
     SUMMARY_INSTRUCTION,

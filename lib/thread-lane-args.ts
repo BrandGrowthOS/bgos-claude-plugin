@@ -151,6 +151,38 @@ export const ASIDE_INSTRUCTION =
 export const SUMMARY_INSTRUCTION =
   '[Write a short summary of this thread for the main chat: what was asked, what you did, the outcome and any open point. Markdown bullets, at most 8 lines. Reply with the summary only.]'
 
+/**
+ * The length a thread reply to the owner should stay within, the same rule as
+ * a main chat reply (THREADLEN, GST 2026-11-20: 4 of the 5 messages over 600
+ * characters in one owner chat were thread replies). A longer reply is still
+ * posted whole; it is only counted (threadReplyLengthLine).
+ */
+export const THREAD_REPLY_SOFT_MAX = 600
+
+/**
+ * The reply rule every start and reply turn carries in its user message.
+ * Not `--append-system-prompt`: the CLI records the system prompt once per
+ * conversation (--system-prompt-snapshot, on by default) and a fork reuses
+ * the parent's record, so an appended prompt on `--resume <main>
+ * --fork-session` is dropped without a word (measured on CLI 2.1.330: the
+ * fork kept the parent's appended instruction and ignored its own). The user
+ * message is the one place a lane always reads, also a lane forked before
+ * this rule existed.
+ */
+export const THREAD_REPLY_RULE =
+  `[How to write your reply in this thread: plain words, the answer first, at most ${THREAD_REPLY_SOFT_MAX} characters. ` +
+  'If more is needed, say what it is and offer to put it on a page. No em or en dashes.]'
+
+/**
+ * One log line when a thread reply is over THREAD_REPLY_SOFT_MAX, so the
+ * nightly measurement can count it; null when it is within. The reply itself
+ * is never changed for its length.
+ */
+export function threadReplyLengthLine(rootId: string, text: string): string | null {
+  if (text.length <= THREAD_REPLY_SOFT_MAX) return null
+  return `threads: thread ${rootId} reply is ${text.length} characters, over ${THREAD_REPLY_SOFT_MAX}, posted unchanged`
+}
+
 export type ThreadTurnMode = 'start' | 'reply' | 'summary'
 
 export function isSessionId(value: unknown): value is string {
@@ -490,7 +522,7 @@ export function threadTurnPrompt(input: {
   agentFolder?: string
 }): string {
   if (input.mode === 'summary') return SUMMARY_INSTRUCTION
-  if (input.mode === 'reply') return input.text
+  if (input.mode === 'reply') return `${THREAD_REPLY_RULE}\n\n${input.text}`
   const folderInstruction = input.readOnly === true
     ? input.agentFolder
       ? `This thread is read only: read files in the agent folder ${JSON.stringify(input.agentFolder)} and do not edit files.`
@@ -504,6 +536,7 @@ export function threadTurnPrompt(input: {
     `It is a separate conversation about this message: ${rootSentence} ` +
     `${folderInstruction} The main conversation continues without you. ` +
     'Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\n' +
+    `${THREAD_REPLY_RULE}\n\n` +
     input.text
   )
 }
