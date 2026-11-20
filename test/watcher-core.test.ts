@@ -1608,15 +1608,20 @@ test('runWatcher: a reconcile job restart hands the injected kill to the restart
   const clock = fakeClock()
   const kills: Array<[number, string]> = []
   const plan = () => ({ verdict: 'plan', targetVersion: null, steps: [{ id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' }] })
+  // The rows below carry this process's uid, and so must the watcher: the
+  // fresh check refuses a row of another owner. baseDeps' default (501) only
+  // matched it on a Mac whose user is 501, so CI on Linux and Windows was red.
+  const uid = process.getuid?.() ?? 0
   const { deps } = baseDeps(fs, backend, clock, {
     modules: stubModules({ plan }),
+    uid,
     pidAlive: (pid: number) => pid === 4242 || pid === 5151,
     // claude 5151 runs under its keepalive script 4242: provably the script's (F6).
     execSync: (file: string, args: string[]) =>
       file === 'ps' && args[1] === 'comm='
         ? { code: 0, stdout: 'claude\n' }
         : file === 'ps' && args[0] === '-A'
-          ? { code: 0, stdout: `4242 1 ${process.getuid?.() ?? 0} 01:00:00\n5151 4242 ${process.getuid?.() ?? 0} 10:00\n` }
+          ? { code: 0, stdout: `4242 1 ${uid} 01:00:00\n5151 4242 ${uid} 10:00\n` }
           : { code: 1, stdout: '' },
     kill: (pid: number, signal: string) => void kills.push([pid, signal]),
     keepAliveSweep: async () => ({ enabled: false, agents: [] }),
@@ -1655,6 +1660,8 @@ for (const after of ['relaunched', 'reused'] as const) {
       ],
     })
     const { deps, logs } = baseDeps(fs, backend, fakeClock(), {
+      // The watcher's uid is the rows' uid (see the reconcile case above).
+      uid,
       modules: stubModules({ plan }),
       pidAlive: (pid: number) => pid === 4242 || pid === claude,
       execSync: (file: string, args: string[]) =>
