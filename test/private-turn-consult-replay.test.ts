@@ -28,7 +28,7 @@ import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 
 // Read through the module so this file loads on a head without the ledger (#227 alone): there the tests fail on the
 // behaviour they pin, not on an import.
-const createFireLedger: (options: { path: string, now?: () => number, readTranscript?: (session: string) => string }) => any = (privateTurnModule as any).createFireLedger ?? (() => null)
+const createFireLedger: (options: { path: string, now?: () => number, readTranscript?: (session: string) => string, log?: (line: string) => void }) => any = (privateTurnModule as any).createFireLedger ?? (() => null)
 const privateFiresPath: (root: string, id: string) => string =
   (privateTurnModule as any).privateFiresPath ?? ((root: string, id: string) => join(root, id, 'private-fires.json'))
 const privateReplayLine: (replay: Record<string, unknown>) => string =
@@ -61,6 +61,7 @@ function agentHome(t: any) {
   const firesPath = privateFiresPath(root, AGENT)
   const clock = { now: T0 }
   const transcripts = new Map<string, string>()
+  const logs: string[] = []
   let session = 0
   function life() {
     const replays: string[] = []
@@ -69,7 +70,7 @@ function agentHome(t: any) {
     const tracker = createPrivateTurnTracker({
       now: () => clock.now,
       markerPaths,
-      fires: createFireLedger({ path: firesPath, now: () => clock.now, readTranscript: id => transcripts.get(id) ?? '' }),
+      fires: createFireLedger({ path: firesPath, now: () => clock.now, readTranscript: id => transcripts.get(id) ?? '', log: line => logs.push(line) }),
       onReplay: (replay) => replays.push(privateReplayLine(replay)),
       onRevoke: (info) => revokes.push(privateRevokeLine(info)),
     })
@@ -107,7 +108,7 @@ function agentHome(t: any) {
     hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd,
     prompt: '<task-notification><status>killed</status></task-notification>',
   }, env)
-  return { life, clock, ledgerKeys, transcripts, firesPath, startupPrompt }
+  return { life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs }
 }
 
 test('a normal stop closes an admitted message even after its private authority was revoked', (t) => {
@@ -275,6 +276,37 @@ for (const shape of ['held behind refused probe', 'expired before admission', 'a
     assert.equal(home.life().tracker.canRecover(key), false)
   })
 }
+
+test('a failed tool marker logs once, allows the tool and keeps the attempt spent', (t) => {
+  const home = agentHome(t)
+  const key = 'owner:1'
+  const message = { content: 'continue', actingUserId: OWNER, chatId: 'first', fireKey: key }
+  const first = home.life()
+  first.submit(first.tracker.deliver(message))
+  const next = home.life()
+  const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+  next.submit(card)
+  assert.equal(next.call(), OWNER)
+  const write = fs.writeFileSync
+  const fault = t.mock.method(fs, 'writeFileSync', (...args: Parameters<typeof write>) => {
+    if (String(args[0]).includes('.tool')) throw new Error('fixture write failure')
+    return write(...args)
+  })
+  syncBuiltinESMExports()
+  try {
+    assert.doesNotThrow(() => next.tracker.noteRetryTool(next.sessionId))
+    assert.doesNotThrow(() => next.act('read'))
+  } finally {
+    fault.mock.restore()
+    syncBuiltinESMExports()
+  }
+  assert.deepEqual(home.logs, ['Could not save the tool record for the interrupted message.'])
+  home.transcripts.set(next.sessionId, [
+    { type: 'user', message: { content: card } },
+    { type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' },
+  ].map(row => JSON.stringify(row)).join('\n'))
+  assert.equal(home.life().tracker.canRecover(key), false)
+})
 
 for (const work of ['none', 'tool record', 'tool hook', 'other prompt', 'other error']) {
   test(`a refused recovery gives back its chance only for its own tool-free turn: ${work}`, (t) => {

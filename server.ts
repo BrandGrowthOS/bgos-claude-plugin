@@ -11227,6 +11227,7 @@ function teachSessionIdle(): boolean {
 const privateFires = createFireLedger({
   path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID),
   readTranscript: session => NODE_SESSION_FS.readTail(pathJoin(sessionBinder.projectDirectory, `${session}.jsonl`), 512 * 1024),
+  log,
 })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn(); quietTurns.recheck() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)), voiceCardsUntrusted: () => serverQuiet.on() })
