@@ -6993,6 +6993,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       isError: true,
     })
   }
+  privateTurns.noteOutbound(req.params.name, PRIVATE_MARKER_PATHS)
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
   if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
@@ -12991,7 +12992,9 @@ async function pollChat(chatId: string): Promise<void> {
             // A system card between a request and an unthreaded reply can fool the
             // walk-back. Only override prior admission when no later reply exists.
             const lastReply = ordered.reduce((id, row) => pollStoredSenderOf(row) === 'assistant' ? row.message.id : id, 0)
-            for (const row of recovered) if (row.message.id > lastReply) recoveredWithoutReply.add(row.message.id)
+            for (const row of recovered) {
+              if (row.message.id > lastReply && privateTurns.canRecover(`owner:${row.message.id}`)) recoveredWithoutReply.add(row.message.id)
+            }
             log(
               `Restart recovery: re-offering ${recovered.length} unanswered message(s) in chat ${chatId} (ids ${recovered
                 .map((m) => m.message.id)
@@ -12999,7 +13002,7 @@ async function pollChat(chatId: string): Promise<void> {
             )
             // Oldest first, and BEFORE the delta rows, so the agent reads the
             // conversation in the order it happened.
-            newUserMessages = [...recovered, ...newUserMessages]
+            newUserMessages = [...recovered.filter((row) => pollStoredSenderOf(row) !== 'user' || recoveredWithoutReply.has(row.message.id)), ...newUserMessages]
           }
         }
       }

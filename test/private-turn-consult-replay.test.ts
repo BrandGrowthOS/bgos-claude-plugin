@@ -66,6 +66,7 @@ function agentHome(t: any) {
     const outcomes: string[] = []
     const tracker = createPrivateTurnTracker({
       now: () => clock.now,
+      markerPaths,
       fires: createFireLedger({ path: firesPath, now: () => clock.now }),
       onReplay: (replay) => replays.push(privateReplayLine(replay)),
       onRevoke: (info) => revokes.push(privateRevokeLine(info)),
@@ -96,7 +97,8 @@ function agentHome(t: any) {
       recordPrivateBoundary({ hook_event_name: 'Stop', session_id: sessionId, cwd }, env)
       tracker.end()
     }
-    return { tracker, submit, consult, wake, call, stop, replays, revokes, outcomes }
+    const act = (tool: string) => tracker.noteOutbound(tool, markerPaths)
+    return { tracker, submit, consult, wake, call, act, stop, replays, revokes, outcomes }
   }
   const ledgerKeys = (): string[] => { try { return Object.keys((JSON.parse(readFileSync(firesPath, 'utf8')) as any).fires) } catch { return [] } }
   return { life, clock, ledgerKeys }
@@ -111,15 +113,31 @@ test('restart recovery can answer a killed turn once, even after another boot', 
   assert.equal(first.call(), OWNER)
   const recovered = home.life()
   const prompt = recovered.tracker.deliver({ ...message, recoveryWithoutReply: true })
-  assert.doesNotMatch(prompt, /already handled/)
+  assert.match(prompt, /^\[Interrupted: check what you already did before acting again\.\]/)
   recovered.submit(prompt)
   assert.equal(recovered.call(), OWNER)
-  recovered.tracker.noteHandled(`reply:${id}`)
   const again = home.life()
   again.submit(again.tracker.deliver({ ...message, recoveryWithoutReply: true }))
   assert.equal(again.call(), null)
   assert.deepEqual(again.outcomes, ['replayed'])
 })
+
+for (const action of ['react', 'call_owner', 'reply', 'stop', 'restart yourself']) {
+  test(`recovery excludes a message handled by ${action}`, (t) => {
+    const home = agentHome(t)
+    const message = { content: action === 'restart yourself' ? action : 'continue',
+      actingUserId: OWNER, chatId: 'chat', fireKey: `owner:${home.clock.now}` }
+    const first = home.life()
+    first.submit(first.tracker.deliver(message))
+    assert.equal(first.call(), OWNER)
+    if (action === 'stop') first.stop()
+    else if (action !== 'restart yourself') first.act(action)
+    const next = home.life()
+    next.submit(next.tracker.deliver({ ...message, recoveryWithoutReply: true }))
+    assert.equal(next.call(), null)
+    assert.deepEqual(next.outcomes, ['replayed'])
+  })
+}
 
 test('a replayed fire opens no turn even when its delivery carries a consult stamp', (t) => {
   const home = agentHome(t)
