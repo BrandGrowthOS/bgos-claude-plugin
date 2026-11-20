@@ -110,7 +110,7 @@ function agentHome(t: any) {
     hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd,
     prompt: '<task-notification><status>killed</status></task-notification>',
   }, env)
-  return { life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs }
+  return { paths: markerPaths, life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs }
 }
 
 for (const [card, action] of [['peer', 'call_owner'], ['other chat', 'meeting_reply'], ['meeting', 'send_to_peer']]) {
@@ -480,6 +480,74 @@ test('a confirmed action after revocation keeps a refused recovery spent', t => 
     { type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' },
   ].map(row => JSON.stringify(row)).join('\n'))
   assert.equal(home.life().tracker.canRecover(message.fireKey), false)
+})
+
+for (const sender of ['owner', 'peer']) {
+  test(`a reply for a later ${sender} prompt keeps the refused request open`, t => {
+    const home = agentHome(t)
+    const first = home.life()
+    const request = { content: 'first question', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+    first.submit(first.tracker.deliver(request))
+    assert.equal(first.call(), OWNER)
+    const refused = JSON.stringify({ type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' })
+    home.transcripts.set(first.sessionId, refused)
+    const other = sender === 'owner'
+      ? { content: 'next question', chatId: 'second', actingUserId: OWNER, fireKey: 'owner:2' }
+      : { content: 'peer question', chatId: 'first', peerSourceAssistantId: 'peer' }
+    first.submit(first.tracker.deliver(other))
+    first.act(sender === 'owner' ? 'reply' : 'send_to_peer')
+    home.transcripts.set(first.sessionId, [refused, refused].join('\n'))
+    const next = home.life()
+    assert.equal(next.tracker.canRecover('owner:2'), false)
+    assert.equal(next.tracker.canRecover(request.fireKey), true)
+    next.submit(next.tracker.deliver({ ...request, recoveryWithoutReply: true }))
+    assert.equal(next.call(), OWNER)
+    next.act('reply')
+    assert.equal(home.life().tracker.canRecover(request.fireKey), false)
+  })
+}
+
+test('the end of a later prompt leaves a refused message available', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const message = { content: 'first question', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  first.submit(first.tracker.deliver({ ...message, content: 'next question', chatId: 'second', fireKey: 'owner:2' }))
+  first.stop()
+  const boot = home.life()
+  assert.equal(boot.tracker.canRecover(message.fireKey), true)
+  assert.equal(boot.tracker.canRecover('owner:2'), false)
+})
+
+test('a tool in the next prompt cannot spend the earlier refused retry', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const message = { content: 'first question', chatId: 'chat', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  const next = home.life()
+  const retry = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
+  next.submit(retry)
+  next.submit(next.tracker.deliver({ ...message, content: 'second question', fireKey: 'owner:2' }))
+  next.tracker.noteRetryTool(next.sessionId)
+  next.act('reply')
+  home.transcripts.set(next.sessionId, [
+    { type: 'user', message: { content: retry } },
+    { type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' },
+  ].map(row => JSON.stringify(row)).join('\n'))
+  assert.equal(home.life().tracker.canRecover(message.fireKey), true)
+})
+
+test('an explicit reply to an earlier request leaves the current question open', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const message = { content: 'question', chatId: 'chat', actingUserId: OWNER, fireKey: 'owner:1' }
+  first.submit(first.tracker.deliver(message))
+  first.submit(first.tracker.deliver({ ...message, fireKey: 'owner:2' }))
+  first.tracker.outboundCompletion('reply', home.paths, 1)?.({})
+  first.tracker.noteHandled('reply:1')
+  const next = home.life()
+  assert.equal(next.tracker.canRecover(message.fireKey), false)
+  assert.equal(next.tracker.canRecover('owner:2'), true)
 })
 
 for (const read of ['boards_download', 'vault_fill_prepare', 'unlisted_tool']) {

@@ -188,7 +188,8 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
     promptHash: privatePromptHash(payload.prompt), live: event === 'UserPromptSubmit',
     ...(promptId ? { promptId } : {}),
     ...record,
-    ...(stopping?.live === true && stopping.sessionId === sessionId && Array.isArray(stopping.tags) ? { stoppedTags: stopping.tags } : {}),
+    ...(stopping?.live === true && stopping.sessionId === sessionId && Array.isArray(stopping.tags)
+      ? { stoppedTags: stopping.tags, stoppedPromptHash: stopping.promptHash } : {}),
     ...(ended ? { ended } : {}),
     // When this marker was written, on the clock the daemon's own moments are on: the daemon orders the marker by it,
     // never by the file's modification time, which a file clock ahead of the real one moves (lib/private-turn.mjs
@@ -197,7 +198,7 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
   }
   if (marker.stoppedTags?.length) {
     // A prompt can replace the marker before the daemon receives this Stop line.
-    try { writePrivateJson(`${path}.stopped`, { sessionId, turnId, tags: marker.stoppedTags }) } catch { /* The current marker still carries the Stop. */ }
+    try { writePrivateJson(`${path}.stopped`, { sessionId, turnId, tags: marker.stoppedTags, promptHash: marker.stoppedPromptHash }) } catch { /* The current marker still carries the Stop. */ }
   }
   writePrivateJson(path, marker)
   if (event === 'SessionEnd') {

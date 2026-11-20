@@ -6993,7 +6993,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       isError: true,
     })
   }
-  let completeOutbound = privateTurns.outboundCompletion(req.params.name, PRIVATE_MARKER_PATHS)
+  const replyTo = req.params.name === 'reply' ? req.params.arguments?.reply_to_id : null
+  let completeOutbound = privateTurns.outboundCompletion(req.params.name, PRIVATE_MARKER_PATHS, typeof replyTo === 'number' ? replyTo : null)
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
   if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
