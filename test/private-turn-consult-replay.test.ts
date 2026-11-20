@@ -241,6 +241,7 @@ test('boot cleans only recovery files older than seven days', (t) => {
   const cutoff = home.clock.now - 7 * 24 * 3600_000
   for (const [name, at] of [
     ['a'.repeat(64) + '.open', cutoff - 1000],
+    ['a'.repeat(64) + '.closed', cutoff - 1000],
     ['a'.repeat(64) + '.claimed', cutoff - 1000],
     ['a'.repeat(64) + '.attempt', cutoff - 1000],
     ['a'.repeat(64) + '.tool', cutoff - 1000],
@@ -252,7 +253,7 @@ test('boot cleans only recovery files older than seven days', (t) => {
     utimesSync(path, new Date(at), new Date(at))
   }
   home.life()
-  for (const suffix of ['open', 'claimed', 'attempt', 'tool']) assert.equal(existsSync(join(dir, 'a'.repeat(64) + '.' + suffix)), false)
+  for (const suffix of ['open', 'closed', 'claimed', 'attempt', 'tool']) assert.equal(existsSync(join(dir, 'a'.repeat(64) + '.' + suffix)), false)
   assert.ok(existsSync(join(dir, 'b'.repeat(64) + '.claimed')))
   assert.ok(existsSync(join(dir, 'unrelated')))
 })
@@ -288,6 +289,29 @@ for (const shape of ['held behind refused probe', 'expired before admission', 'a
     assert.equal(home.life().tracker.canRecover(key), false)
   })
 }
+
+test('a locked open record lets the reply finish, logs once and stays closed on restart', t => {
+  const home = agentHome(t)
+  const first = home.life()
+  const key = 'owner:1'
+  first.submit(first.tracker.deliver({ content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: key }))
+  assert.equal(first.call(), OWNER)
+  const unlink = fs.unlinkSync
+  const fault = t.mock.method(fs, 'unlinkSync', (path: Parameters<typeof unlink>[0]) => {
+    if (String(path).endsWith('.open')) throw Object.assign(new Error('file is busy'), { code: 'EPERM' })
+    unlink(path)
+  })
+  syncBuiltinESMExports()
+  try {
+    assert.doesNotThrow(() => first.act('reply'))
+    assert.doesNotThrow(() => first.act('reply'))
+    assert.equal(home.life().tracker.canRecover(key), false)
+    assert.deepEqual(home.logs, ['Could not remove the completed message record.'])
+  } finally {
+    fault.mock.restore()
+    syncBuiltinESMExports()
+  }
+})
 
 test('a failed tool marker logs once, allows the tool and keeps the attempt spent', (t) => {
   const home = agentHome(t)
