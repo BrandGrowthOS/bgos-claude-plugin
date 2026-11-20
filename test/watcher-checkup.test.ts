@@ -1143,8 +1143,16 @@ test('a usage refusal wins a timestamp tie until a strictly later model turn', (
     const tail = parseTranscriptTail(records.join('\n'), T0)
     assert.equal(tail.heldQueue, true)
     assert.equal(tail.error?.kind, 'rate_limit')
+    assert.equal(parseTranscriptTail(records.slice(1).join('\n'), T0).error?.kind, 'rate_limit')
     assert.equal(parseTranscriptTail([...records, assistantTurn(at + 1)].join('\n'), T0).heldQueue, false)
   }
+})
+
+test('an older model record appended to a refused session preserves its waiting message', () => {
+  const at = T0 - 4 * MIN
+  const records = [limitEnvelope(at, T0 + MIN), enqueueLine(at), assistantTurn(at - 1)]
+  assert.equal(parseTranscriptTail(records.join('\n'), T0).heldQueue, true)
+  assert.equal(parseTranscriptTail([...records, assistantTurn(at + 1)].join('\n'), T0).heldQueue, false)
 })
 
 test('one queue removal preserves the wait of the other message', () => {
