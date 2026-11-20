@@ -28,7 +28,7 @@ import { channelNotifyFor, scheduleGrantRunsForTest } from './helpers/channel-no
 import { scheduleGrantOf } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1349,6 +1349,26 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
     await rm(dir, { recursive: true, force: true })
   }
 }
+
+// The harness removes its folder only once every download it started has
+// ended. A download the test left held, or still writing when the test body
+// returned, used to race that removal: on a slow Windows runner the rmdir of
+// an email's folder met a file written into it (ENOTEMPTY), and elsewhere the
+// late write put the folder back after it was removed.
+test('read attachments, the lane harness: its folder is removed after the downloads it started end, never under one', async () => {
+  let root = ''
+  let download: Promise<unknown> | null = null
+  await withLaneState({ slow: true }, async (h) => {
+    root = h.root
+    download = (h.saver as (r: unknown, f: unknown) => Promise<unknown>)(wsEmail(ON), [WS_FILE])
+    await until(() => h.fetched.length === 1, 'the download is under way, held at the storage host')
+    // The body returns with the download still held; the storage host
+    // answers only after that.
+    setImmediate(() => h.open())
+  })
+  await download
+  assert.equal(existsSync(root), false, 'nothing was written back after the folder was removed')
+})
 
 async function until(cond: () => boolean, what: string): Promise<void> {
   for (let i = 0; i < 200 && !cond(); i++) await sleep(10)
