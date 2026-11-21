@@ -12,7 +12,7 @@
  */
 
 import { cardAnswerClickOf, cardAnswerText } from './lib/card-answer.ts'
-import { groupReactionKey, groupReactionText, reactionCard, REACTION_GUIDANCE } from './lib/heard-reaction.ts'
+import { groupReactionKey, groupReactionText, reactionCard, REACTION_GUIDANCE, HEARD_REACTIONS_CAPABILITY } from './lib/heard-reaction.ts'
 import { REACT_TOOL, handleReactTool } from './lib/react-tool.ts'
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
@@ -3574,7 +3574,6 @@ const mcp = new Server(
       },
     },
     instructions: [
-      REACTION_GUIDANCE,
       'Messages from the BGOS chat app arrive as <channel source="bgos"> events.',
       'Each message includes chat_id and message_id attributes.',
       '',
@@ -18542,7 +18541,7 @@ function connectWebsocket(): void {
     // Person lanes (P5): this socket declares lane memory in its OWN
     // handshake, which is what the server routes a stopped lane's memory
     // frame by (pairing only; nothing else in the handshake changes).
-    ...wsAuthOptions(AUTH, laneSupport().ok ? [LANE_MEMORY_RPC_TOKEN] : []),
+    ...wsAuthOptions(AUTH, [HEARD_REACTIONS_CAPABILITY, ...(laneSupport().ok ? [LANE_MEMORY_RPC_TOKEN] : [])]),
   })
   watchSocketLiveness(realtimeSocket.io, log)
 

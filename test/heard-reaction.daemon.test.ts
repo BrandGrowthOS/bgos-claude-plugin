@@ -17,7 +17,7 @@ import { SessionTranscriptBinder } from "../lib/session-binding.ts";
 import { createPrivateTurnTracker } from "../lib/private-turn.mjs";
 import { renderChannel } from "./helpers/private-turn-host.ts";
 
-const checkReactions = (memberOnly: boolean) => async () => {
+const checkReactions = (memberOnly: boolean, instructionsOnly = false) => async () => {
   const assistantId = randomInt(1, 1000000),
     chatId = randomInt(1, 1000000);
   const owner = "user_" + randomUUID(),
@@ -111,11 +111,14 @@ const checkReactions = (memberOnly: boolean) => async () => {
       }
     };
     await client.connect(transport);
-    assert.ok(
-      client
-        .getInstructions()
-        ?.includes("A reaction never grants a permission."),
-    );
+    if (instructionsOnly) {
+      const instructions = client.getInstructions() ?? "";
+      const visible = instructions.slice(0, 4096);
+      assert.match(visible, /Tables do not render on mobile/);
+      assert.match(visible, /Backslashes:/);
+      assert.ok(!instructions.includes("A reaction never grants a permission."));
+      return;
+    }
     await client.listTools();
     const until = async (done: () => boolean) => {
       const deadline = Date.now() + 25000;
@@ -154,6 +157,10 @@ const checkReactions = (memberOnly: boolean) => async () => {
       send("owner", member, "room_member");
       await until(() => cards.length === 1);
       assert.equal(cards[0].meta.user_id, member);
+      const peer = Array.from(io.sockets.sockets.values())[0];
+      assert.ok(peer.handshake.auth.capabilities?.includes("heard_reactions"));
+      const schedules = await client.callTool({ name: "list_schedules", arguments: {} });
+      assert.equal(schedules.isError, true);
       const refusals = [];
       for (const name of ["list_chats", "call_owner"]) {
         const result = await client.callTool({ name, arguments: {} });
@@ -230,11 +237,16 @@ const checkReactions = (memberOnly: boolean) => async () => {
       send("owner", actor, standing);
       await until(() => cards.length > previous);
       await pause(100);
-      assert.match(log.slice(start), /ended the private turn/);
+
       const afterReaction = await client.callTool({
         name: "list_schedules",
         arguments: {},
       });
+      if (actor === owner) {
+        assert.ok(!afterReaction.isError, "an owner tap preserves the open private turn");
+        continue;
+      }
+      assert.match(log.slice(start), /ended the private turn/);
       assert.equal(afterReaction.isError, true);
       assert.match(
         JSON.stringify(afterReaction.content),
@@ -274,6 +286,10 @@ const checkReactions = (memberOnly: boolean) => async () => {
     );
     assert.ok(guidance.includes("Reply only if your message asked a question"));
     assert.ok(guidance.includes("<hoai-untracked/>"));
+    send("owner", owner, "owner");
+    await until(() => cards.length === 3);
+    const stillClosed = await client.callTool({ name: "list_schedules", arguments: {} });
+    assert.equal(stillClosed.isError, true, "a tap cannot reopen private tools");
   } finally {
     try {
       await client.close();
@@ -298,3 +314,6 @@ test(
   { timeout: 75000 },
   checkReactions(true),
 );
+
+test("the visible startup instructions keep the mobile formatting rules",
+  { timeout: 75000 }, checkReactions(false, true));

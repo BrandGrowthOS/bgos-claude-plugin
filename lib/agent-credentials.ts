@@ -23,6 +23,7 @@
  * never logs or echoes any credential.
  */
 
+import { HEARD_REACTIONS_CAPABILITY } from './heard-reaction.ts'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { resolveAuth as resolveAuthRuntime, resolveCredentialsSelection as resolveCredentialsSelectionRuntime } from './agent-credentials-core.mjs'
@@ -328,21 +329,23 @@ export function authHeaders(auth: ResolvedAuth): Record<string, string> {
  * auth.apiKey + auth.assistantId.
  *
  * `capabilities` (person lanes P5): what THIS socket declares in its own
- * handshake (`auth.capabilities`), which the server reads per socket, never
- * from the pairing's last heartbeat. Pairing only, and only when non empty,
- * so every other handshake is byte for byte today's.
+ * handshake (`auth.capabilities`), which the server reads per socket. Omit
+ * the field when the caller declares no capabilities.
  */
 export function wsAuthOptions(
   auth: ResolvedAuth,
   capabilities: readonly string[] = [],
-): { query?: { pairingToken: string }; auth?: { apiKey: string; assistantId: string } | { capabilities: string[] } } {
+): { query?: { pairingToken: string }; auth?: { apiKey: string; assistantId: string; capabilities?: string[] } | { capabilities: string[] } } {
   if (auth.mode === 'pairing') {
     return {
       query: { pairingToken: auth.pairingToken },
       ...(capabilities.length > 0 ? { auth: { capabilities: [...capabilities] } } : {}),
     }
   }
-  return { auth: { apiKey: auth.apiKey, assistantId: auth.assistantId } }
+  return { auth: {
+    apiKey: auth.apiKey, assistantId: auth.assistantId,
+    ...(capabilities.includes(HEARD_REACTIONS_CAPABILITY) ? { capabilities: [HEARD_REACTIONS_CAPABILITY] } : {}),
+  } }
 }
 
 /** A friendly, secret free message when creds are incomplete. */

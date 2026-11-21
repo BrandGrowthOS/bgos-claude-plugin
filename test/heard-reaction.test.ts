@@ -209,6 +209,7 @@ test("the guidance explains corrections, the marker and private tools", () => {
     "one correction",
     "came from someone who is not your owner",
     "private tools",
+    "A thumbs up says yes. Taking it back is best effort. To stop an agent, send a message.",
   ]) {
     assert.ok(REACTION_GUIDANCE.includes(words), words);
   }

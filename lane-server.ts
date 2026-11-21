@@ -69,7 +69,7 @@ import {
   LANE_MEMORY_RPC_TOKEN,
   LANE_TURN_STUCK_MS,
 } from './lib/lane-core.mjs'
-import { reactionCard, REACTION_GUIDANCE } from './lib/heard-reaction.ts'
+import { HEARD_REACTIONS_CAPABILITY, reactionCard, REACTION_GUIDANCE } from './lib/heard-reaction.ts'
 import { heartbeatToolPolicy, laneMePolicy, readLaneChoices, readToolPolicy } from './lib/lane-policy.mjs'
 import {
   laneChoiceQuestionFor,
@@ -800,7 +800,7 @@ function connectSocket(): void {
     // the credential that acts as the owner).
     // P5: and `lane_memory_rpc`, declared in THIS socket's own handshake,
     // which is what the server routes the person's memory frames by.
-    auth: (cb: (auth: Record<string, unknown>) => void) => cb({ laneSession: session?.sessionToken ?? '', capabilities: [LANE_MEMORY_RPC_TOKEN] }),
+    auth: (cb: (auth: Record<string, unknown>) => void) => cb({ laneSession: session?.sessionToken ?? '', capabilities: [LANE_MEMORY_RPC_TOKEN, HEARD_REACTIONS_CAPABILITY] }),
   })
   socket.on('connect', () => {
     log('lane socket connected')
