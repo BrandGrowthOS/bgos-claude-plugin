@@ -527,6 +527,17 @@ export function detectInstallMethod({
     reason,
   })
 
+  // A saved Helper login can use the installed marketplace code at its
+  // original location. This profile's own installed record must identify
+  // exactly the executing plugin. Other profiles keep the normal resolution.
+  const config = claudeConfigDir({env,home})
+  if (isUnderDir(config, joinUnder(home,'.bgos-agent','helper-accounts')) && executionRoot) {
+    const registered = readInstalledHoaiPlugins({configDir:config,readFile,exists})
+      .find(entry => entry.installPath === executionRoot)
+    if (registered) return {...base,method:'marketplace',channelSpec:marketplaceChannelSpec(registered.marketplace),
+      pluginRoot:executionRoot,marketplace:registered.marketplace,evidence:'installed-plugins',reason:''}
+  }
+
   // 1. Claude Code's own statement about the plugin it loaded.
   const envRoot = String(env?.CLAUDE_PLUGIN_ROOT ?? '').trim()
   if (envRoot && !isEphemeralExecutionRoot(envRoot, { env, tempRoots })) {

@@ -12,6 +12,33 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+Saved Claude accounts (Helper Accounts). The version these notes ship in is set when the plugin release chain reaches them; they were written as 0.91.1 to 0.91.5 on their branch.
+
+**feat(watcher): saved Claude accounts, switched now, at the limit, or by Auto.** The owner saves Claude logins per computer (each in its own folder under `~/.bgos-agent/helper-accounts/`) and assigns one to the computer's new starts or to one agent from HOAI Helper. Switch now waits for the agent's turn and restarts it in the same conversation. Switch at limit keeps the current login until the agent's own "You've hit your ... limit" line appears in its transcript (any model, read the way capkeeper reads it; the statusline has no per model usage), then switches once. Auto switches now to the saved login with the most week room (capkeeper's statusline sample, up to a day old; a tie keeps the current login) and picks again at each limit. A login whose agent just hit a model limit has no room for that model until the reset Claude gave; a session or weekly limit blocks it for every model. With no login left with room, the agent waits. At a limit the switch does not wait for the turn (the agent cannot answer anyway), but never cuts a permission question, thread work or a background job (`atLimitSafe`). The refused message is not sent again by itself.
+
+Security round (acctbuild3): a saved login now mirrors the source login's `permissions`, `hooks`, `sandbox` and `disableAllHooks` settings and its global `CLAUDE.md` at every start, and a source it cannot read stops the start; a rollback or an unassigned start gets the supervisor's own launch login and provider settings back; one bad registry entry hides that login only, and an unreadable registry or a lost computer default no longer stops other agents; the sign in check runs from home, never inside a saved login folder.
+
+**fix(watcher): Helper Accounts review findings (REVIEW-rvacctbuild).**
+- #1: a recovered switch rolls back only the conversation it was made for, never one the owner opened since.
+- #3: a rollback held by a safety check waits and runs, instead of being dropped.
+- #4: the registry is bound to the backend that issued it, and another deployment sees and uses nothing.
+- #7: a Switch now waiting for its turn is cancelled (`clear`), never silently replaced.
+- #9: a provably stopped agent takes the new login at its next start.
+- #10: a job that threw is recorded as failed under its own id, and statuses name their account.
+- #11: `rebind` brings a re-enrolled watcher's logins back for the same owner without a slot.
+- #14: a test now pins that no restart is requested without the pinned transcript.
+
+**fix(watcher): the independent verification of the review fixes.**
+- A refused or thrown account job is published by its id (`refusedRpcIds`, memory only), even with no registry and without overwriting a change still waiting.
+- A rollback held by a safety check gives up after 30 minutes.
+- New tests drive the real stopped-agent reading and the frame handler's failure hook.
+
+**fix(launcher): the linked conversation's identity check reads file numbers safely.** A saved login's transcript link compared plain device and inode numbers, which the file identity guard refuses: on some drives a number is 0 (unknown), and a large id loses precision as a plain number. It now compares bigint "dev:ino" identities, and an unknown identity is never taken as the conversation (the link is refused). The full suite found it (`test/file-identity.guard.test.ts`), and a new test pins the conflict.
+
+**test(launcher): the unknown file identity case is pinned.** The identity decision is now the exported pure `sameKnownFile`. A test shows an unknown identity (null) never matches, not even another unknown one, and the `a === b` mutant fails it.
+
+**test(launcher): the supervisor keeps its launch login across a rollback.** A keep-alive supervisor runs its first child in a saved login, the owner moves the computer back to the agent's own login, and the relaunch must carry the launch's `ANTHROPIC_BASE_URL` and key again (`test/helper-account-security.test.ts`). With the supervisor's `launchEnv` wiring removed it fails.
+
 ## 0.90.16 (2026-11-20)
 
 **fix(keep-alive): the Helper now notices when any agent on the computer stops getting messages, not only the agents it keeps running.**
