@@ -80,7 +80,8 @@ jobs:
   test-windows:
     name: test (windows)
     runs-on: windows-latest
-    timeout-minutes: 30
+    # 45, not 30: the suite alone takes 26 to 29.5 min on a hosted Windows runner, so a slow runner was cut before 16 files started (PR 351, 2026-11-09).
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash

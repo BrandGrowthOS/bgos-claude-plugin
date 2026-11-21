@@ -3,6 +3,7 @@
  * Without a verified turn, another person's content cannot grant owner authority.
  * The owner's supported continuation policy and gated tool checks remain enforced.
  */
+import { createScheduleGrantRuns, requireBoardsTurn } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -153,7 +154,7 @@ function admit(name: string, tracker: unknown, lockHeld = true) {
     req: { params: { name } }, lockHeld, privateTurns: tracker, PRIVATE_MARKER_PATHS: [],
     PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: OWNER, log: () => {},
     requirePrivateTurn: (...args: any[]) => { strictCalls++; return (privateTurn as any).requirePrivateTurn(...args) },
-    turnAwarePrivateTurn,
+    turnAwarePrivateTurn, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
     recordPeerRefusal: () => ({ line: '' }), pathDirname: () => '/s', CURSOR_FILE_PATH: '/s/c', ASSISTANT_ID: 900,
   })
   return { result, strictCalls }

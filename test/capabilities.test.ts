@@ -244,6 +244,7 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'skills_list',
     'skills_receive',
     'ui_card',
+    'ui_card_answers',
     'ask_answered',
     'ask_multi_select',
     'email_label',

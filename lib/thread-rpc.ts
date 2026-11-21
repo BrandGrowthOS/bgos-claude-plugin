@@ -9,6 +9,8 @@
  *   thread_close {chatId, rootId, removeWorktree} -> {stopped:true}
  *   aside        {chatId, asideId, questionId, question, quote, history}
  *                -> progress frames {seq, delta}, then {text}
+ *   group_thread_end {chatId, reason} -> {ok:true, summary?} (group threads)
+ *   group_thread_level {chatId, level} -> {ok:true} (group threads)
  *
  * This file turns a frame's payload into the lanes' and the aside's input, and
  * a refusal into the code BGOS passes on (bad_request, unsupported,
@@ -17,16 +19,21 @@
 
 import { AsideError, type AsideInput } from './aside-fork.ts'
 import { ThreadLaneError, type ThreadTurnInput } from './thread-lanes.ts'
+import { GroupLaneError } from './group-lanes.ts'
 import type { AsideExchange, ThreadTurnMode } from './thread-lane-args.ts'
 
 export const THREAD_TURN = 'thread_turn'
 export const THREAD_CLOSE = 'thread_close'
 export const ASIDE = 'aside'
-export const THREAD_OPS = Object.freeze([THREAD_TURN, THREAD_CLOSE, ASIDE] as const)
+/** Group threads: the server ends a group's thread (owner ended, left, removed, group deleted). */
+export const GROUP_THREAD_END = 'group_thread_end'
+/** Group threads: the owner changed a group's level. */
+export const GROUP_THREAD_LEVEL = 'group_thread_level'
+export const THREAD_OPS = Object.freeze([THREAD_TURN, THREAD_CLOSE, ASIDE, GROUP_THREAD_END, GROUP_THREAD_LEVEL] as const)
 export type ThreadOp = (typeof THREAD_OPS)[number]
 
 export function isThreadOp(op: unknown): op is ThreadOp {
-  return op === THREAD_TURN || op === THREAD_CLOSE || op === ASIDE
+  return op === THREAD_TURN || op === THREAD_CLOSE || op === ASIDE || op === GROUP_THREAD_END || op === GROUP_THREAD_LEVEL
 }
 
 /** What the voice_rpc handler needs from the lanes and the aside runner. */
@@ -34,6 +41,10 @@ export interface ThreadRpcDeps {
   turn(input: ThreadTurnInput): { accepted: true; state: 'working' | 'waiting' } | Promise<{ accepted: true; state: 'working' | 'waiting' }>
   close(input: { rootId: string; removeWorktree: boolean }): Promise<{ stopped: true }>
   aside(input: AsideInput, onDelta: (seq: number, text: string) => void): Promise<{ text: string }>
+  /** group_thread_end (lib/group-lanes.ts GroupLaneManager.end). Absent, it answers unsupported. */
+  groupEnd?(input: { chatId: string; reason: string }): Promise<{ ok: true; summary?: string }>
+  /** group_thread_level (lib/group-lanes.ts GroupLaneManager.setLevel). Absent, it answers unsupported. */
+  groupLevel?(input: { chatId: string; level: 'talk' | 'approvals' | 'full' }): Promise<{ ok: true }>
 }
 
 export class ThreadRpcError extends Error {
@@ -88,9 +99,23 @@ export function asidePayload(payload: Record<string, unknown>): AsideInput {
   return { question, quote: str(payload.quote), history }
 }
 
+export function groupThreadEndPayload(payload: Record<string, unknown>, frameChatId: string | number | null): { chatId: string; reason: string } {
+  const chatId = str(payload.chatId) || str(frameChatId)
+  if (!/^[1-9][0-9]{0,18}$/.test(chatId)) throw new ThreadRpcError('bad_request', 'Ending a group thread needs its chat.')
+  return { chatId, reason: str(payload.reason) }
+}
+
+export function groupThreadLevelPayload(payload: Record<string, unknown>, frameChatId: string | number | null): { chatId: string; level: 'talk' | 'approvals' | 'full' } {
+  const chatId = str(payload.chatId) || str(frameChatId)
+  if (!/^[1-9][0-9]{0,18}$/.test(chatId)) throw new ThreadRpcError('bad_request', 'A group level needs its chat.')
+  const level = payload.level
+  if (level !== 'talk' && level !== 'approvals' && level !== 'full') throw new ThreadRpcError('bad_request', 'A group level is talk, approvals or full.')
+  return { chatId, level }
+}
+
 /** A refusal that carries a code BGOS can pass on, or null for anything else (answered failed). */
 export function threadRefusal(err: unknown): { code: string; message: string } | null {
-  if (err instanceof ThreadRpcError || err instanceof ThreadLaneError || err instanceof AsideError) {
+  if (err instanceof ThreadRpcError || err instanceof ThreadLaneError || err instanceof AsideError || err instanceof GroupLaneError) {
     return { code: err.code, message: err.message }
   }
   return null

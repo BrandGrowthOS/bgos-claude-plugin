@@ -113,6 +113,58 @@ test('Windows permission protection awaits both ACL steps before caching success
   assert.equal(calls, 2, 'a failed check must not cache the replacement folder')
 })
 
+// A copy of the module no other test has run PowerShell through, so its first start is still its first.
+let freshCopies = 0
+const freshVault = async () => import(new URL(`../lib/agent-browser-vault.mjs?first-start=${++freshCopies}`, import.meta.url).href)
+
+// A PowerShell that answers `afterMs` after it is started (on the mocked clock), or never.
+function slowPowershell(afterMs: number | null) {
+  let killed = 0
+  const spawn = () => {
+    const child: any = new EventEmitter()
+    child.stdout = new PassThrough()
+    child.kill = () => { killed++; return true }
+    if (afterMs !== null) setTimeout(() => { child.stdout.end('{"set":true}'); child.emit('close', 0, null) }, afterMs)
+    return child
+  }
+  return { spawn, killed: () => killed }
+}
+
+test('a first PowerShell start slower than 10 s still protects the profile, and a later start keeps the 10 s limit', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const mod = await freshVault()
+  const protect = (ino: number, ps: ReturnType<typeof slowPowershell>) =>
+    mod.protectWindowsDirectory('C:\\fixture-first-start', { ino }, (script: string) => mod.runWindowsAclScript(script, { env: { SystemRoot: 'C:\\Windows' }, spawnImpl: ps.spawn }))
+  // A cold runner: the first PowerShell of the process takes 15 s to answer.
+  const cold = slowPowershell(15_000)
+  const first = protect(1, cold)
+  t.mock.timers.tick(15_000)
+  await first
+  assert.equal(cold.killed(), 0)
+  // PowerShell has answered once, so a start that takes as long now is a hang: 10 s, as before.
+  const later = slowPowershell(15_000)
+  const second = protect(2, later)
+  t.mock.timers.tick(15_000)
+  await assert.rejects(second, (error: any) => error.code === 'unsafe_profile' && error.reason === 'acl_step_failed' && /within 10000 ms/.test(error.detail ?? error.message))
+  assert.equal(later.killed(), 1)
+})
+
+test('a first PowerShell start that never answers is still cut off, and the next start is still treated as a first', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const mod = await freshVault()
+  const env = { SystemRoot: 'C:\\Windows' }
+  const stalled = slowPowershell(null)
+  const answer = mod.runWindowsAclScript('fixture', { env, spawnImpl: stalled.spawn })
+  t.mock.timers.tick(30_000)
+  assert.match((await answer).failed, /PowerShell did not finish within 30000 ms/)
+  assert.equal(stalled.killed(), 1)
+  // No PowerShell has answered yet in this process, so the next one gets the first start's time too.
+  const cold = slowPowershell(15_000)
+  const next = mod.runWindowsAclScript('fixture', { env, spawnImpl: cold.spawn })
+  t.mock.timers.tick(15_000)
+  assert.deepEqual(await next, { set: true })
+})
+
 test('Chrome startup waits for profile protection and stays closed on an asynchronous refusal', async t => {
   let refuse: (error: Error) => void = () => {}
   const pending = new Promise<never>((_, reject) => { refuse = reject })

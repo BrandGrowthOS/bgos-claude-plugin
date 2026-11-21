@@ -24,7 +24,7 @@ exit=1
 test at test/catch-up-after-deploy.e2e.test.ts:3:22965
 ✖ a walk that outlasts the lock's 15 seconds inside a tick keeps the lock fresh (34691.254345ms)
   AssertionError [ERR_ASSERTION]: the lock's heartbeat was 21776 ms old, and it goes stale at 15000
-      at TestContext.<anonymous> (/home/karim/lane-tmp/d041/mut/m11-no-keepalive.0eimhl9b/test/catch-up-after-deploy.e2e.test.ts:1137:14)
+      at TestContext.<anonymous> (/home/you/lane-tmp/d041/mut/m11-no-keepalive.0eimhl9b/test/catch-up-after-deploy.e2e.test.ts:1137:14)
       at async Test.run (node:internal/test_runner/test:1409:7)
       at async Promise.all (index 0)
       at async Suite.run (node:internal/test_runner/test:1905:7)

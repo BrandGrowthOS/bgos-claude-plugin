@@ -31,6 +31,7 @@ import {
   readModelEffortCatalog,
   MODEL_EFFORT_MODEL_PATTERN,
   PICKER_RUNTIME,
+  parseHelpCatalog,
 } from '../lib/model-effort-catalog.ts'
 import {
   APPLY_MODEL_EFFORT,
@@ -86,6 +87,16 @@ test('BGOS\'s reader accepts what the daemon builds, unchanged', () => {
   assert.deepEqual(built!.current, { model: 'opus', effort: 'high' }, 'current names the picker row, so the app highlights it')
   assert.deepEqual(built!.models.map((m) => m.id), ['fable', 'opus', 'sonnet'])
   assert.deepEqual(built!.models.map((m) => m.label), ['Fable', 'Opus', 'Sonnet'])
+})
+
+test('exact version rows and current ids survive the picker contract unchanged', () => {
+  const catalog = parseHelpCatalog("  --model <model> Model 'opus' 'sonnet'\n  --effort <level> Effort (high, max)", '2.1.319')
+  const built = buildPickerCatalog({ catalog, observation: observation(), sessionId: SID })!
+  assert.deepEqual(built.current, { model: 'claude-opus-5-5', effort: 'high' })
+  assert.ok(built.models.some((m) => m.id === 'claude-opus-5-5'))
+  assert.ok(built.models.some((m) => m.id === 'claude-opus-5'))
+  assert.ok(built.models.some((m) => m.id === 'claude-haiku-4-5'))
+  assert.deepEqual(readModelEffortCatalog(JSON.parse(JSON.stringify(built))), built)
 })
 
 test('every effort the CLI offers is enabled; Ultra Code is listed disabled with the host\'s reason', () => {

@@ -446,7 +446,7 @@ test('server.ts routes poll, stream and ws delivery through the steer gate', () 
   const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
   const count = (re: RegExp) => (server.match(re) ?? []).length
   assert.equal(count(/const steerPlan = slashRoute\.kind === 'steer'/g), 3, 'one steer plan per rail')
-  assert.equal(count(/deliverInbound\(steerPlan, \(interrupted\) => humanMessageEdits\.isDeleted\([^\n]+\) \? Promise\.resolve\(\) : mcp\.notification\(/g), 3)
+  assert.equal(count(/deliverInbound\(steerPlan, \(interrupted\) => humanMessageEdits\.isDeleted\([^\n]+\) \? Promise\.resolve\(\) : channelNotify\(/g), 3)
   assert.equal(count(/interrupted \? STEER_INTERRUPTED_META : null,/g), 3, 'the marker only when pressed')
   assert.equal(count(/slashRoute\.kind === 'directive' \|\| slashRoute\.kind === 'steer'/g), 3)
   assert.match(server, /messageId: msg\.message\.id,\n\s*payload: msg\.message,\n\s*sentDate: msg\.message\.sentDate,\n\s*backlog: isBacklog,/)

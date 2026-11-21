@@ -24,9 +24,11 @@
  * New exports are read through namespace imports, so on a build without them
  * only the tests that need them fail and every control still runs.
  */
+import { channelNotifyFor, scheduleGrantRunsForTest } from './helpers/channel-notify.ts'
+import { scheduleGrantOf } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -725,6 +727,8 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     isPendingEmptySystem: () => false,
     trackMessageOperation: (op: () => unknown) => op(),
     deliverInbound: (_steer: unknown, deliver: (interrupted: boolean) => Promise<void>) => deliver(false),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: { params: { content: string; meta: Record<string, string> } }) => {
         run.notifications.push({ content: n.params.content, meta: n.params.meta })
@@ -1298,6 +1302,27 @@ interface LaneState {
  * a storage host the test opens when it likes (`slow`) and a clock each
  * download moves by `clock.stepMs`.
  */
+/**
+ * Wait for every download to end. Bounded: a download that never ends fails
+ * the run here, by its email, instead of hanging it with no message. Not a
+ * retry, the downloads are only waited for.
+ */
+async function downloadsEnded(downloads: Map<Promise<unknown>, string>): Promise<void> {
+  const deadlineMs = 10_000
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const stuck = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`the lane harness: a download never ended (${[...downloads.values()].join(', ')}), so its folder was not removed`)),
+      deadlineMs,
+    )
+  })
+  try {
+    while (downloads.size > 0) await Promise.race([Promise.allSettled([...downloads.keys()]), stuck])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, fn: (h: LaneState) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'email-hold-'))
   const root = emailFiles.emailFilesRoot(dir)
@@ -1316,6 +1341,9 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
   }
   const clock = { now: 1_000_000, stepMs: 0 }
   const deadlines: Array<number | undefined> = []
+  // Every download this harness started and has not seen end, with the email
+  // it is for, so a stuck one can be named.
+  const downloads = new Map<Promise<unknown>, string>()
   const chatLastSeen = new Map([[CHAT, 9000]])
   const shared = {
     emailCursorHolds: ef.createEmailCursorHolds?.() ?? { hold: () => undefined, release: () => null, clamp: (_c: string, id: number) => id },
@@ -1328,7 +1356,11 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
     emailFilesWanted: emailFiles.emailFilesWanted,
     prepareEmailFiles: async (o: Parameters<typeof emailFiles.prepareEmailFiles>[0]) => {
       deadlines.push(o.deadlineMs)
-      const saves = await emailFiles.prepareEmailFiles({ ...o, fetchImpl: fetchImpl as never })
+      const download = emailFiles.prepareEmailFiles({ ...o, fetchImpl: fetchImpl as never })
+      const email = (o.record as { externalEmail?: { emailId?: unknown } } | null)?.externalEmail?.emailId
+      downloads.set(download, `email ${String(email ?? 'without an id')}`)
+      void download.then(() => downloads.delete(download), () => downloads.delete(download))
+      const saves = await download
       clock.now += clock.stepMs
       return saves
     },
@@ -1342,9 +1374,34 @@ async function withLaneState<T>(opts: { slow?: boolean; keepalive?: unknown }, f
   try {
     return await fn({ root, fetched, open: () => open(), clock, chatLastSeen, shared, saver, saverScope, saverLogs: saverRun.logs, deadlines })
   } finally {
+    // Let held downloads go and wait for every one to end before removing
+    // their folder: a write into it during the removal failed the rmdir on
+    // Windows (ENOTEMPTY), and one after it put the folder back.
+    open()
+    await downloadsEnded(downloads)
     await rm(dir, { recursive: true, force: true })
   }
 }
+
+// The harness removes its folder only once every download it started has
+// ended. A download the test left held, or still writing when the test body
+// returned, used to race that removal: on a slow Windows runner the rmdir of
+// an email's folder met a file written into it (ENOTEMPTY), and elsewhere the
+// late write put the folder back after it was removed.
+test('read attachments, the lane harness: its folder is removed after the downloads it started end, never under one', async () => {
+  let root = ''
+  let download: Promise<unknown> | null = null
+  await withLaneState({ slow: true }, async (h) => {
+    root = h.root
+    download = (h.saver as (r: unknown, f: unknown) => Promise<unknown>)(wsEmail(ON), [WS_FILE])
+    await until(() => h.fetched.length === 1, 'the download is under way, held at the storage host')
+    // The body returns with the download still held; the storage host
+    // answers only after that.
+    setImmediate(() => h.open())
+  })
+  await download
+  assert.equal(existsSync(root), false, 'nothing was written back after the folder was removed')
+})
 
 async function until(cond: () => boolean, what: string): Promise<void> {
   for (let i = 0; i < 200 && !cond(); i++) await sleep(10)
@@ -1793,7 +1850,11 @@ test('read attachments, re-armed: an email nobody delivered keeps the cursor bel
     ws.scope.channelArmed = false
     h.saverScope.lockHeld = false
     h.open()
-    await sleep(60)
+    // Wait for the socket's own decision, not a fixed time: it lets go of its hold, undelivered, only after the file is
+    // saved, and on a slow disk (a loaded Windows runner) that took longer than the 60 ms this test used to sleep. The
+    // re-arm below then came first, the email was never owed, and the chat was not read (PR #376, run 43586786959).
+    const holds = h.shared.emailCursorHolds as ReturnType<typeof emailFiles.createEmailCursorHolds>
+    await until(() => holds.held(CHAT).length === 0 && holds.owes(CHAT), 'the socket refused the email and let go of its hold undelivered')
     assert.equal(forwarded.has(9001), false)
     // The rival dies before reading the chat; this daemon re-arms by the short path (no poll).
     ws.scope.channelArmed = true
@@ -1863,7 +1924,9 @@ test('read attachments, the meeting lane: stood down while the files downloaded,
     meeting.scope.channelArmed = false
     h.saverScope.lockHeld = false
     h.open()
-    await sleep(60)
+    // Wait for the lane's own decision, not a fixed time: it un-claims the email only after the file is saved, which on
+    // a slow disk (a loaded Windows runner) takes longer than the 60 ms this test used to sleep.
+    await until(() => !forwarded.has(9001), 'the stood down meeting lane un-claimed the email once its file was saved')
     assert.equal(meeting.run.notifications.length, 0)
     assert.equal(forwarded.has(9001), false, 'un-claimed: the holder, or this daemon re-armed, delivers it')
   })
@@ -1890,4 +1953,83 @@ test('read attachments: every stream catch up (boot, reconnect, WS down) gives i
   await (fn as (c: unknown, r: string) => Promise<string>)(consumer, 'reconnect')
   assert.equal(seen[1], outer)
   assert.equal(scope.streamEmailBudget, outer)
+})
+
+// ── the scheduled run hold, on the REAL lanes (0.86.20 round 4, F4) ──────────────────────────────────────────────────
+// The socket, poll and stream lanes of server.ts, compiled as above, send through the real hold (the shared run store
+// of test/helpers/channel-notify.ts). While a granted run is live, a group member's message on any lane is not handed
+// to the private turn tracker or the model; it goes out once the run's turn ends. And a granted wake on any lane opens
+// its run.
+const RUN_TOKEN = '11111111-2222-4333-8444-555555555555'
+const MEMBER = 'user_member'
+function grantedWakeMeta(task: number, firedAt: number) {
+  return {
+    source: 'scheduler', title: 'Nightly board backup',
+    payload: {
+      scheduledTaskId: task, fireId: `scheduled-wake:${task}:${new Date(firedAt).toISOString()}`, actingUserId: OWNER,
+      boardGrant: { boards: 1, expiresAt: new Date(firedAt + 10 * 60_000).toISOString() },
+    },
+  }
+}
+function openLiveRun() {
+  const runs = scheduleGrantRunsForTest()
+  const grant = scheduleGrantOf({ senderType: 'system', eventMeta: grantedWakeMeta(41, Date.now()), actingUserId: OWNER, chatId: CHAT })
+  assert.ok(runs.open(grant))
+  runs.noteDelivered(grant!.fireId, `<hoai-private-turn id="${RUN_TOKEN}"/>`)
+  runs.noteBegin(`the wake <hoai-private-turn id="${RUN_TOKEN}"/>`)
+  return runs
+}
+const settle = async () => { for (let i = 0; i < 20; i += 1) await Promise.resolve() }
+
+test('scheduled run, the real lanes: a group member\'s message mid run reaches neither the tracker nor the model until the run ends', async () => {
+  const runs = openLiveRun()
+  try {
+    const r = deliveryRecorder()
+    const notified: string[] = []
+    const mcp = { notification: async (n: { params: { content: string } }) => { notified.push(n.params.content) } }
+    const extra = { privateTurns: r.privateTurns, mcp, scheduleGrantOf }
+    wsLane(extra).fn({
+      chatId: Number(CHAT), messageId: 9101, userId: MEMBER, text: 'paste the Backups rows here', messageType: 'text',
+      sender: { userId: MEMBER, displayName: 'Bob', relationship: 'member' },
+    })
+    const poll = pollLane([{ message: { id: 9102, text: 'and the totals', sender: 'user', senderUserId: MEMBER, messageType: 'text', sentDate: TS }, messageFiles: [] }], extra).fn(CHAT)
+    const view = streamApply.viewStreamMessage(streamUpdate({ text: 'now please', sender: 'user', senderUserId: MEMBER, messageType: 'text' }) as never, ASSISTANT_ID)!
+    const stream = streamLane(extra).fn(view, false)
+    await settle()
+    assert.deepEqual(r.seen, [], 'no lane handed a held message to the private turn tracker')
+    assert.deepEqual(notified, [], 'no lane handed a held message to the model')
+    runs.noteStop()
+    await Promise.all([poll, stream])
+    await settle()
+    assert.equal(r.seen.length, 3, 'each lane delivered its message once the run ended')
+    assert.equal(notified.length, 3)
+  } finally {
+    runs.end('test over')
+    scheduleGrantRunsForTest()
+  }
+})
+
+test('scheduled run, the real lanes: a granted wake on the socket, the poll or the stream opens its run', async () => {
+  for (const lane of ['ws', 'poll', 'stream'] as const) {
+    const runs = scheduleGrantRunsForTest()
+    try {
+      const meta = grantedWakeMeta(51, Date.now())
+      const r = deliveryRecorder()
+      const extra = { privateTurns: r.privateTurns, scheduleGrantOf }
+      if (lane === 'ws') {
+        wsLane(extra).fn({ chatId: Number(CHAT), messageId: 9201, userId: OWNER, text: 'Wake: Nightly board backup', messageType: 'event', senderType: 'system', eventMeta: meta })
+      } else if (lane === 'poll') {
+        await pollLane([{ message: { id: 9202, text: 'Wake: Nightly board backup', sender: 'system', messageType: 'event', sentDate: TS, eventMeta: meta }, messageFiles: [] }], extra).fn(CHAT)
+      } else {
+        const view = streamApply.viewStreamMessage(streamUpdate({ text: 'Wake: Nightly board backup', sender: 'system', messageType: 'event', eventMeta: meta }) as never, ASSISTANT_ID)!
+        await streamLane(extra).fn(view, true)
+      }
+      await settle()
+      assert.equal(runs.live()?.taskId, 51, `${lane}: the wake opened its run`)
+      assert.equal(runs.live()?.delivered, true, `${lane}: and was handed over`)
+    } finally {
+      runs.end('test over')
+      scheduleGrantRunsForTest()
+    }
+  }
 })

@@ -34,8 +34,8 @@ import {
 } from '../lib/watcher-bundle.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 
-const HOME = '/home/kc'
-const ROOT = '/home/kc/.claude/plugins/cache/hoai/hoai/0.38.3'
+const HOME = '/home/person'
+const ROOT = '/home/person/.claude/plugins/cache/hoai/hoai/0.38.3'
 
 function pluginRootFiles(root: string, marker = 'v1') {
   const files: Record<string, string> = { [`${root}/package.json`]: JSON.stringify({ name: 'x', version: '0.38.3' }) }
@@ -79,6 +79,9 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/keepalive-plan.mjs',
     'lib/watcher-checkup.mjs',
     'lib/agent-checkup.mjs',
+    // A lost login file named as such (board row 23415823): watcher-core imports it, so a bundle
+    // without it is an import error at the watcher's first check up.
+    'lib/lost-login.mjs',
     // The limit watch (Kc 2026-11-01): the pass, its key module, its pure rules, the Windows helper.
     'lib/watcher-limit.mjs',
     'lib/limit-keys.mjs',
@@ -103,10 +106,10 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
 })
 
 test('layout: watcher home, log, state, manifest paths (separator preserving)', () => {
-  assert.equal(watcherHome(HOME), '/home/kc/.bgos-agent/watcher')
-  assert.equal(watcherHome('C:\\Users\\kc'), 'C:\\Users\\kc\\.bgos-agent\\watcher')
-  assert.equal(watcherLogPath(HOME), '/home/kc/.bgos-agent/watcher/logs/watcher.log')
-  assert.equal(watcherStatePath(HOME), '/home/kc/.bgos-agent/watcher/state.json')
+  assert.equal(watcherHome(HOME), '/home/person/.bgos-agent/watcher')
+  assert.equal(watcherHome('C:\\Users\\person'), 'C:\\Users\\person\\.bgos-agent\\watcher')
+  assert.equal(watcherLogPath(HOME), '/home/person/.bgos-agent/watcher/logs/watcher.log')
+  assert.equal(watcherStatePath(HOME), '/home/person/.bgos-agent/watcher/state.json')
   assert.equal(MANIFEST_FILE_NAME, 'manifest.json')
 })
 
@@ -134,14 +137,14 @@ test('installWatcherBundle: copies bin/ + lib/ preserving layout, writes the man
     fs,
     now: () => Date.parse('2026-08-25T01:02:03.000Z'),
   })
-  assert.equal(result.bundleDir, '/home/kc/.bgos-agent/watcher')
+  assert.equal(result.bundleDir, '/home/person/.bgos-agent/watcher')
   assert.equal(result.version, '0.38.3', 'version read from the plugin package.json when not given')
   assert.deepEqual(result.files, [...WATCHER_BUNDLE_FILES])
   assert.equal(result.fingerprint, bundleFingerprint(ROOT, fs))
   for (const rel of WATCHER_BUNDLE_FILES) {
-    assert.equal(fs.files.get(`/home/kc/.bgos-agent/watcher/${rel}`), `// ${rel} v1\n`)
+    assert.equal(fs.files.get(`/home/person/.bgos-agent/watcher/${rel}`), `// ${rel} v1\n`)
   }
-  const manifest = JSON.parse(fs.files.get('/home/kc/.bgos-agent/watcher/manifest.json')!)
+  const manifest = JSON.parse(fs.files.get('/home/person/.bgos-agent/watcher/manifest.json')!)
   assert.deepEqual(manifest, {
     version: '0.38.3',
     fingerprint: result.fingerprint,
@@ -152,7 +155,7 @@ test('installWatcherBundle: copies bin/ + lib/ preserving layout, writes the man
   })
   assert.deepEqual(readBundleManifest(HOME, fs), manifest)
   // The bundle's own copies fingerprint the same as the source.
-  assert.equal(bundleFingerprint('/home/kc/.bgos-agent/watcher', fs), result.fingerprint)
+  assert.equal(bundleFingerprint('/home/person/.bgos-agent/watcher', fs), result.fingerprint)
 })
 
 test('installWatcherBundle: the ROOT\'s own package.json version wins over the caller\'s; the caller\'s fills in only when the root has none; a missing bundle file is a named failure, nothing half-written', async () => {
@@ -173,7 +176,7 @@ test('installWatcherBundle: the ROOT\'s own package.json version wins over the c
     () => installWatcherBundle({ pluginRoot: ROOT, home: HOME, fs: broken }),
     /bundle file missing: lib\/update-executor\.mjs/,
   )
-  assert.equal([...broken.files.keys()].some((k) => k.startsWith('/home/kc/.bgos-agent/watcher/')), false)
+  assert.equal([...broken.files.keys()].some((k) => k.startsWith('/home/person/.bgos-agent/watcher/')), false)
 })
 
 test('installWatcherBundle: targetDir stages into <watcherHome>/next without touching the live bundle', async () => {
@@ -183,30 +186,30 @@ test('installWatcherBundle: targetDir stages into <watcherHome>/next without tou
     pluginRoot: '/new-root',
     home: HOME,
     fs,
-    targetDir: '/home/kc/.bgos-agent/watcher/next',
+    targetDir: '/home/person/.bgos-agent/watcher/next',
   })
-  assert.equal(staged.bundleDir, '/home/kc/.bgos-agent/watcher/next')
-  assert.equal(fs.files.get('/home/kc/.bgos-agent/watcher/lib/watcher-core.mjs'), '// lib/watcher-core.mjs v1\n')
-  assert.equal(fs.files.get('/home/kc/.bgos-agent/watcher/next/lib/watcher-core.mjs'), '// lib/watcher-core.mjs v2\n')
+  assert.equal(staged.bundleDir, '/home/person/.bgos-agent/watcher/next')
+  assert.equal(fs.files.get('/home/person/.bgos-agent/watcher/lib/watcher-core.mjs'), '// lib/watcher-core.mjs v1\n')
+  assert.equal(fs.files.get('/home/person/.bgos-agent/watcher/next/lib/watcher-core.mjs'), '// lib/watcher-core.mjs v2\n')
 })
 
 test('swapStagedBundle: next/ replaces bin/, lib/ and the manifest; credentials, state and logs are untouched; staging dirs are gone', async () => {
   const fs = memoryFs({ ...pluginRootFiles(ROOT), ...pluginRootFiles('/new-root', 'v2') })
   await installWatcherBundle({ pluginRoot: ROOT, home: HOME, fs })
-  fs.files.set('/home/kc/.bgos-agent/watcher/credentials.json', '{"token":"t"}')
-  fs.files.set('/home/kc/.bgos-agent/watcher/state.json', '{}')
-  fs.files.set('/home/kc/.bgos-agent/watcher/logs/watcher.log', 'line\n')
-  const staged = await installWatcherBundle({ pluginRoot: '/new-root', home: HOME, fs, targetDir: '/home/kc/.bgos-agent/watcher/next' })
+  fs.files.set('/home/person/.bgos-agent/watcher/credentials.json', '{"token":"t"}')
+  fs.files.set('/home/person/.bgos-agent/watcher/state.json', '{}')
+  fs.files.set('/home/person/.bgos-agent/watcher/logs/watcher.log', 'line\n')
+  const staged = await installWatcherBundle({ pluginRoot: '/new-root', home: HOME, fs, targetDir: '/home/person/.bgos-agent/watcher/next' })
   const result = swapStagedBundle({ home: HOME, fs })
   assert.deepEqual(result, { ok: true, swapped: ['bin', 'lib', 'manifest.json'], message: 'swapped' })
   for (const rel of WATCHER_BUNDLE_FILES) {
-    assert.equal(fs.files.get(`/home/kc/.bgos-agent/watcher/${rel}`), `// ${rel} v2\n`)
+    assert.equal(fs.files.get(`/home/person/.bgos-agent/watcher/${rel}`), `// ${rel} v2\n`)
   }
   assert.equal(readBundleManifest(HOME, fs)?.fingerprint, staged.fingerprint)
   assert.equal(readBundleManifest(HOME, fs)?.pluginRoot, '/new-root')
-  assert.equal(fs.files.get('/home/kc/.bgos-agent/watcher/credentials.json'), '{"token":"t"}')
-  assert.equal(fs.files.get('/home/kc/.bgos-agent/watcher/state.json'), '{}')
-  assert.equal(fs.files.get('/home/kc/.bgos-agent/watcher/logs/watcher.log'), 'line\n')
+  assert.equal(fs.files.get('/home/person/.bgos-agent/watcher/credentials.json'), '{"token":"t"}')
+  assert.equal(fs.files.get('/home/person/.bgos-agent/watcher/state.json'), '{}')
+  assert.equal(fs.files.get('/home/person/.bgos-agent/watcher/logs/watcher.log'), 'line\n')
   assert.equal([...fs.files.keys()].some((k) => k.includes('/watcher/next/') || k.includes('/watcher/prev/')), false)
 })
 
@@ -216,7 +219,7 @@ test('swapStagedBundle: nothing staged is a named no-op; a failed rename restore
   assert.deepEqual(swapStagedBundle({ home: HOME, fs }), { ok: false, swapped: [], message: 'nothing_staged' })
   const staged = memoryFs({ ...pluginRootFiles(ROOT), ...pluginRootFiles('/new-root', 'v2') })
   await installWatcherBundle({ pluginRoot: ROOT, home: HOME, fs: staged })
-  await installWatcherBundle({ pluginRoot: '/new-root', home: HOME, fs: staged, targetDir: '/home/kc/.bgos-agent/watcher/next' })
+  await installWatcherBundle({ pluginRoot: '/new-root', home: HOME, fs: staged, targetDir: '/home/person/.bgos-agent/watcher/next' })
   const before = new Map(staged.files)
   let renames = 0
   const flaky = {
@@ -233,19 +236,19 @@ test('swapStagedBundle: nothing staged is a named no-op; a failed rename restore
   assert.match(result.message, /EACCES/)
   // Restored: every live bundle file is the v1 copy again.
   for (const rel of WATCHER_BUNDLE_FILES) {
-    assert.equal(staged.files.get(`/home/kc/.bgos-agent/watcher/${rel}`), before.get(`/home/kc/.bgos-agent/watcher/${rel}`))
+    assert.equal(staged.files.get(`/home/person/.bgos-agent/watcher/${rel}`), before.get(`/home/person/.bgos-agent/watcher/${rel}`))
   }
 })
 
 test('readBundleManifest: null for absent or junk or a non-semver version', () => {
   assert.equal(readBundleManifest(HOME, memoryFs({})), null)
-  assert.equal(readBundleManifest(HOME, memoryFs({ '/home/kc/.bgos-agent/watcher/manifest.json': 'junk' })), null)
+  assert.equal(readBundleManifest(HOME, memoryFs({ '/home/person/.bgos-agent/watcher/manifest.json': 'junk' })), null)
   assert.equal(
-    readBundleManifest(HOME, memoryFs({ '/home/kc/.bgos-agent/watcher/manifest.json': JSON.stringify({ version: 'latest', fingerprint: 'x' }) })),
+    readBundleManifest(HOME, memoryFs({ '/home/person/.bgos-agent/watcher/manifest.json': JSON.stringify({ version: 'latest', fingerprint: 'x' }) })),
     null,
   )
   assert.deepEqual(
-    readBundleManifest(HOME, memoryFs({ '/home/kc/.bgos-agent/watcher/manifest.json': JSON.stringify({ version: '0.38.3-e2e.1', fingerprint: 'abc', claudeConfigDir: null }) })),
+    readBundleManifest(HOME, memoryFs({ '/home/person/.bgos-agent/watcher/manifest.json': JSON.stringify({ version: '0.38.3-e2e.1', fingerprint: 'abc', claudeConfigDir: null }) })),
     { version: '0.38.3-e2e.1', fingerprint: 'abc', installedAt: null, pluginRoot: null, claudeConfigDir: null, files: [] },
   )
 })

@@ -117,7 +117,8 @@ test('every inbound rail reports an owner message, after its content guard and b
     assert.ok(guard > rail.start, `${rail.name}: the content guard moved`)
     const call = calls.find((c) => c > guard)
     assert.ok(call !== undefined, `${rail.name}: no owner message report after the content guard`)
-    const delivery = server.indexOf("method: 'notifications/claude/channel'", guard)
+    // A channel card is sent through channelNotify since 0.86.20.
+    const delivery = server.indexOf('channelNotify(() =>', guard)
     assert.ok(call! < delivery, `${rail.name}: the report must come before the delivery`)
     // Nothing between the guard and the report returns early.
     const between = server.slice(guard + rail.guard.length, call)

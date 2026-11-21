@@ -16,7 +16,7 @@ test at test/message-edits.test.ts:4:15117
 
   2 !== 1
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbeditdrop/test/message-edits.test.ts:609:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbeditdrop/test/message-edits.test.ts:609:12)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
     generatedMessage: false,

@@ -406,7 +406,7 @@
   "independentReview": "Root independently reviewed fixture source and cookie fix. Separate reviewer closed automatic backup receipt and positive cleanup; this does not extend to website navigation.",
   "composed": {
     "ok": true,
-    "out": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1",
+    "out": "C:\\Users\\you\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1",
     "source": {
       "kind": "Actual desktop lifecycle source for a fresh Linux companion",
       "processId": 88612,
@@ -1113,12 +1113,12 @@
       ],
       "screenshots": [
         {
-          "file": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1\\lifecycle-live-1.png",
+          "file": "C:\\Users\\you\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1\\lifecycle-live-1.png",
           "tick": "Live tick 1",
           "sha256": "caf378788d7d22a1f279e580136f909fd454056d4b9d7c1003fc6dcb73b82253"
         },
         {
-          "file": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1\\lifecycle-live-2.png",
+          "file": "C:\\Users\\you\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1\\lifecycle-live-2.png",
           "tick": "Live tick 4",
           "sha256": "a5796315eb09a3ca89cb191db554ef61dc1231bd03e3a0a47708b05ef1b19263"
         }
@@ -1150,7 +1150,7 @@
         }
       ],
       "phase": "source",
-      "stateDir": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1",
+      "stateDir": "C:\\Users\\you\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1",
       "backupExtras": [
         {
           "at": 1792043902371,
@@ -2218,7 +2218,7 @@
     },
     "composed": {
       "ok": true,
-      "out": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542",
+      "out": "C:\\Users\\you\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542",
       "source": {
         "kind": "Actual desktop lifecycle source for a fresh Linux companion",
         "processId": 85912,
@@ -2937,12 +2937,12 @@
         ],
         "screenshots": [
           {
-            "file": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542\\lifecycle-live-1.png",
+            "file": "C:\\Users\\you\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542\\lifecycle-live-1.png",
             "tick": "Live tick 1",
             "sha256": "ef55fdab1cb49e0339587237caae2b16c7e0a4699b4309c9eebaaa100ba5b20b"
           },
           {
-            "file": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542\\lifecycle-live-2.png",
+            "file": "C:\\Users\\you\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542\\lifecycle-live-2.png",
             "tick": "Live tick 4",
             "sha256": "5032534cae5f2aa3c14d3ef18727b1c8ad5ae6d34b7cb0815a690271e4da0232"
           }
@@ -2974,7 +2974,7 @@
           }
         ],
         "phase": "source",
-        "stateDir": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542",
+        "stateDir": "C:\\Users\\you\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542",
         "backupExtras": [
           {
             "at": 1792044626082,

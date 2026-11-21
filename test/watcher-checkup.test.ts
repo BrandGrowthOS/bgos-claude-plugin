@@ -26,16 +26,17 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { freeLimitResult, runWatcher } from '../lib/watcher-core.mjs'
-import { checkupTarget, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
+import { checkupTarget, endOldClaudes, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
 import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
+import { CHANNEL_CORE_FILES } from '../lib/keepalive-plan.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
-const HOME = '/home/kc'
+const HOME = '/home/person'
 const USER = 'kc'
 const TOKEN = 'bgp_' + 'S3cretPairingTokenValue0123456789'
-const CONFIG = '/home/kc/.claude'
+const CONFIG = '/home/person/.claude'
 const ROOT = `${CONFIG}/plugins/cache/hoai/hoai/0.38.4`
 const T0 = Date.parse('2026-08-25T12:00:00.000Z')
 const MIN = 60_000
@@ -78,7 +79,7 @@ function fakeClock(start = T0) {
 type Call = { method: string; path: string; body: any }
 
 /** An in-process fake backend: serves the given frames once, the job bodies, records every call. */
-function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any> } = {}) {
+function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any>; keepAlive?: any } = {}) {
   const calls: Call[] = []
   let served = false
   const respond = (status: number, json: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(json) })
@@ -91,6 +92,8 @@ function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any> } = {}) 
       served = true
       return respond(200, { frames: opts.frames ?? [] })
     }
+    // The keep-alive answer (GET integrations/watchers/keep-alive), only when a test gives one.
+    if (opts.keepAlive !== undefined && u.pathname.endsWith('/integrations/watchers/keep-alive')) return respond(200, opts.keepAlive)
     const m = /\/machine-rpc\/([^/]+)$/.exec(u.pathname)
     if (m && init?.method === 'GET') return respond(200, opts.jobs?.[decodeURIComponent(m[1]!)] ?? {})
     return respond(200, {})
@@ -113,6 +116,8 @@ function agentFs(extra: Record<string, string> = {}): MemoryFs {
       [`${STATE_DIR}/supervisor.json`]: supervisorFileBody(4242, 'x'),
       [`${STATE_DIR}/session-id`]: `${SID}\n`,
       [`${AVA}/.bgos-agent-id`]: '912\n',
+      // A whole plugin root: every file the channel starts from is there (deafwatch names a missing one).
+      ...Object.fromEntries(CHANNEL_CORE_FILES.map((rel) => [`${ROOT}/${rel}`, rel.endsWith('.json') ? '{"name":"hoai"}' : '// x\n'])),
       ...extra,
     },
     [AVA],
@@ -154,6 +159,9 @@ function writeTranscript(fs: MemoryFs, lines: string[], mtimeMs: number) {
   fs.writeFile(TRANSCRIPT, `${lines.join('\n')}\n`)
   fs.touch(TRANSCRIPT, mtimeMs)
 }
+
+/** The server's keep-alive answer to this watcher, placing exactly these agents on this computer (agentWindows). */
+const keepAliveAnswer = (ids: string[]) => ({ enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, agentWindows: Object.fromEntries(ids.map((id) => [id, false])) })
 
 /** The checkup job as the backend enqueues it (P1: op reconcile, intent checkup, one target, a numeric id). */
 function checkupJob(rpcId = 'chk-1', targets: any[] = [{ pairingId: 3, assistantId: 912 }]) {
@@ -228,7 +236,7 @@ function rig(fs: MemoryFs, backend: ReturnType<typeof fakeBackend>, clock: Retur
 function daemonAnswersProbe(fs: MemoryFs, clock: ReturnType<typeof fakeClock>) {
   clock.onSleep((_ms, nowMs) => {
     if (fs.files.has(`${STATE_DIR}/probe-requested.json`)) {
-      fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString() }))
+      fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
     }
   })
 }
@@ -357,7 +365,8 @@ test('a wedged session inside the safe window is restarted ONCE; the next pass i
   assert.equal(keepAliveRecord(fs).attempts, 1)
 
   // The same tap again a minute later: still wedged in the fixture, but the budget (one restart per
-  // agent per 30 min) holds it. Skipped with the reason, nothing written.
+  // agent per 30 min) holds it. Not fixed yet, with the reason, nothing written (helperwedge finding 2:
+  // a held fix is never a result the app reads as healthy).
   fs.rm(`${STATE_DIR}/restart-requested.json`)
   fs.writeFile(`${PLUGIN_STATE}/agent-state.json`, agentState({ updatedAt: new Date(clock.now() + MIN - 5_000).toISOString() }))
   fs.writeFile(`${PLUGIN_STATE}/channel-beacon.json`, '{}')
@@ -368,20 +377,25 @@ test('a wedged session inside the safe window is restarted ONCE; the next pass i
   await runWatcher(second.deps as any)
   const held = terminalOf(again, 'chk-2')
   assert.equal(held.state, 'done')
-  assert.deepEqual(held.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['wedged_session', 'restart_agent', 'skipped']])
-  assert.match(held.actions[0].detail, /restart_rate_limited/)
+  assert.deepEqual(held.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['wedged_session', 'restart_agent', 'not_fixed']])
+  assert.match(held.actions[0].detail, /^Not fixed yet \(restart_rate_limited: /)
+  assert.match(held.message, /not fixed yet 1 \(held: restart_rate_limited\)/)
   assert.equal(restartRequested(fs), false, 'restarted once, not twice')
   assert.equal(keepAliveRecord(fs).attempts, 1)
   assertDtoShape([...backend.progress('chk-1'), ...again.progress('chk-2')])
 })
 
 test('a wedged session outside the safe window waits with the reason, and nothing is touched', async () => {
+  // Outside the safe window for a WEDGE means still making progress (a hook event 2 min ago) or a job
+  // under claude: a turn flag alone no longer holds it (helperwedge finding 1).
   for (const [reason, stateOver, extraPs] of [
     ['turn_in_flight', { turnInFlight: true }, ''],
     ['background_job', {}, `\n${psLine(6000, 5912, `/bin/zsh -c source ${HOME}/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'python monitor.py'`)}`],
   ] as const) {
     const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState(stateOver) })
     writeTranscript(fs, [assistantTurn(T0 - 20 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
+    fs.writeFile(`${HOME}/.bgos-plugin-state/hooks/${SID}/events.jsonl`, '{}\n')
+    fs.touch(`${HOME}/.bgos-plugin-state/hooks/${SID}/events.jsonl`, T0 - 2 * MIN)
     const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n') + extraPs
     const backend = fakeBackend(checkupJob())
     const clock = fakeClock()
@@ -390,9 +404,9 @@ test('a wedged session outside the safe window waits with the reason, and nothin
     const terminal = terminalOf(backend)
     assert.equal(terminal.state, 'done', reason)
     assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['wedged_session'], reason)
-    assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['wedged_session', 'restart_agent', 'skipped']], reason)
-    assert.match(terminal.actions[0].detail, new RegExp(reason))
-    assert.match(terminal.actions[0].detail, /did not interrupt/)
+    assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['wedged_session', 'restart_agent', 'not_fixed']], reason)
+    assert.match(terminal.actions[0].detail, new RegExp(`^Not fixed yet \\(${reason}: `))
+    assert.match(terminal.actions[0].detail, /Nothing was restarted/)
     assert.equal(restartRequested(fs), false, reason)
     assert.equal(fs.files.has(`${STATE_DIR}/probe-requested.json`), false, `${reason}: no verify without a restart`)
     assert.equal(keepAliveRecord(fs), null, `${reason}: no attempt spent`)
@@ -609,6 +623,41 @@ test('a checkup with no agent, or with several, is refused by name and touches n
   }
 })
 
+test('board row 23415823: an agent whose login file is gone but whose records are here is a lost login, reported in the DTO shape and never restarted', async () => {
+  // The 13 Nov wipe: credentials-912.json deleted, everything else of agent 912 left in place.
+  const fs = agentFs()
+  fs.rm(`${HOME}/.bgos-agent/credentials-912.json`)
+  // The server places agent 912's pairing on this computer (its keep-alive map for this watcher).
+  const backend = fakeBackend({ ...checkupJob(), keepAlive: keepAliveAnswer(['912']) })
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, psLine(1, 0, '/sbin/init'))
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.match(terminal.message, /found login_file_missing/)
+  assert.deepEqual(terminal.findings.map((f: any) => [f.cause, f.status, f.target, f.fix]), [['login_file_missing', 'FAIL', '912', "This agent's login file is missing on this computer. Pair it again to fix it."]])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['login_file_missing', 'report', 'not_fixed']])
+  assertDtoShape(backend.progress('chk-1'))
+  assertNoSecrets(backend.progress('chk-1').map((b) => JSON.stringify(b)), 'the lost login report')
+  assert.equal(restartRequested(fs), false)
+  assert.deepEqual(run.spawns, [])
+  assert.equal(fs.files.has(`${HOME}/.bgos-agent/credentials-912.json`), false)
+})
+
+test('board row 23415823, round 2: the same records with the pairing moved to another computer (the server places it elsewhere) stay agent_not_on_this_machine', async () => {
+  const fs = agentFs()
+  fs.rm(`${HOME}/.bgos-agent/credentials-912.json`)
+  const backend = fakeBackend({ ...checkupJob(), keepAlive: keepAliveAnswer(['913']) })
+  const run = rig(fs, backend, fakeClock(), psLine(1, 0, '/sbin/init'))
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'failed')
+  assert.equal(terminal.message, 'agent_not_on_this_machine:912')
+  assert.equal(JSON.stringify(backend.progress('chk-1')).includes('login_file_missing'), false)
+  assert.ok(backend.calls.some((c) => c.method === 'GET' && c.path.endsWith('/integrations/watchers/keep-alive')), 'the server was asked')
+  assert.equal(restartRequested(fs), false)
+})
+
 test('the op checkup is a checkup too', async () => {
   const fs = agentFs()
   const backend = fakeBackend({ frames: [{ rpcId: 'chk-1', op: 'checkup' }], jobs: { 'chk-1': { op: 'checkup', targets: [] } } })
@@ -642,6 +691,47 @@ test('a dead session with a supervisor is started and verified; a named launch f
   assert.match(t2.findings[0].fix, /exited-during-startup/)
   assert.deepEqual(t2.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['dead_session', 'report', 'not_fixed']])
   assert.deepEqual(run2.spawns, [])
+})
+
+test('an agent nobody keeps running, deaf for 20 minutes, and the watcher down 5 minutes then back: its first heartbeat still names the finding, so no check up comes and nothing is restarted', async () => {
+  const fs = agentFs()
+  writeTranscript(fs, [assistantTurn(T0 - 50 * MIN)], T0 - 50 * MIN)
+  // What the watcher saved before it stopped: 912 deaf for 20 minutes and not kept running,
+  // last looked at 5 minutes ago, when the watcher went down.
+  const since = new Date(T0 - 20 * MIN).toISOString()
+  const seen = new Date(T0 - 5 * MIN).toISOString()
+  fs.writeFile(
+    `${HOME}/.bgos-agent/watcher/keepalive-state.json`,
+    JSON.stringify({
+      schemaVersion: 1,
+      enabled: false,
+      agents: {},
+      watched: { '912': { state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since, deafSince: since, deafSeenAt: seen } },
+    }),
+  )
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`)].join('\n')
+  // The server as its rule reads (the app's Helper table, round 2): an agent offline for more than
+  // 15 minutes gets an automatic check up, unless the heartbeat names it as a deaf agent nobody
+  // keeps running. The desktop's check up reaches this watcher on its next poll.
+  const backend = fakeBackend(checkupJob())
+  let firstBeatNamesIt: boolean | null = null
+  const fetch = async (url: string, init: any) => {
+    const path = new URL(url).pathname
+    if (path.endsWith('/integrations/heartbeat') && firstBeatNamesIt === null) {
+      const watched = JSON.parse(init.body)?.env?.watcherHealth?.keepAlive?.watched ?? []
+      firstBeatNamesIt = watched.some((w: any) => w.id === '912' && w.state === 'failed' && String(w.reason).includes('no-channel-heartbeat'))
+    }
+    if (path.endsWith('/machine-rpc/pending') && firstBeatNamesIt === true) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ frames: [] }) }
+    }
+    return backend.fetch(url, init)
+  }
+  const run = rig(fs, backend, fakeClock(), ps, { alive: [3000, 5912], fetch })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(backend.progress('chk-1'), [], 'no check up ran')
+  assert.deepEqual(run.kills, [], 'nothing was ended')
+  assert.deepEqual(run.spawns, [], 'nothing was started')
+  assert.equal(firstBeatNamesIt, true, 'the first heartbeat after the restart names the deaf agent nobody keeps running')
 })
 
 test('the pass deadline bounds the verify: a deaf agent is not_fixed inside 75 s, never a 120 s wait', async () => {
@@ -826,4 +916,637 @@ test('checkupTarget: exactly one agent, by number or by digits string', () => {
   assert.equal(checkupTarget({ targets: [] }).ok, false)
   assert.equal(checkupTarget({}).ok, false)
   assert.equal(checkupTarget({ targets: [{ assistantId: '../x' }] }).ok, false)
+})
+
+// -- helperwedge: the production test on KC's MacBook (2026-11-12, REPORT-HELPERTESTMAC-1112.md) ------
+//
+// Findings 1 to 3 of that report, and item 5 (KC, msg 1048 220142: a Restart the owner can always run).
+
+const SPOOL = `${HOME}/.bgos-plugin-state/hooks/${SID}/events.jsonl`
+const BUSY_TOKENS = new Set(['turn_in_flight', 'pending_messages', 'background_job', 'recent_activity'])
+const HELD_TOKEN = /\(([a-z][a-z0-9_]{0,39}):/
+
+/**
+ * Mirror of the backend's readCheckup (BGOS backend src/integrations/helper/helper-state.ts): a
+ * finished pass whose open causes are all fixed, or one that holds a step because it SAW the agent
+ * at work (a busy token in a skipped action), reads as clean. A clean row loses its break signature,
+ * and the app then pops "<name> is running again." (helperLoopModel.ts, note "fixed").
+ */
+function appSaysRunningAgain(terminal: any): boolean {
+  const fixed = new Set(terminal.actions.filter((a: any) => a.outcome === 'fixed').map((a: any) => a.cause))
+  const open = terminal.findings.filter((f: any) => !fixed.has(f.cause))
+  const holds = terminal.actions.filter((a: any) => a.outcome === 'skipped').map((a: any) => HELD_TOKEN.exec(a.detail)?.[1] ?? null)
+  if (holds.some((t: string | null) => t !== null && BUSY_TOKENS.has(t))) return true
+  return terminal.state === 'done' && open.length === 0
+}
+
+/** Claude Code 2.1.322's queue line for a message it took in, written about 100 ms before its user entry. */
+const enqueueLine = (atMs: number, content = `<channel source="bgos" chat_id="c1" message_id="9" sender_type="user">\nare you there?\n</channel>`) =>
+  JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: new Date(atMs).toISOString(), sessionId: SID, content })
+
+const PS_912 = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
+
+/** Run C of step 4: the owner message is in the transcript, claude froze 0.3 s later, the daemon owes the reply. */
+function runCFs(stateOver: Record<string, unknown> = {}) {
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1, activeOperations: 1, lastActivityAt: new Date(T0 - 15 * MIN).toISOString(), ...stateOver }),
+  })
+  writeTranscript(fs, [assistantTurn(T0 - 16 * MIN), enqueueLine(T0 - 15 * MIN - 100), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
+  fs.writeFile(SPOOL, '{"hook_event_name":"UserPromptSubmit"}\n')
+  fs.touch(SPOOL, T0 - 15 * MIN)
+  fs.writeFile(`${PLUGIN_STATE}/channel-beacon.json`, '{}')
+  fs.touch(`${PLUGIN_STATE}/channel-beacon.json`, T0 - 5_000)
+  return fs
+}
+
+/** pidAlive over a set the test controls; the launcher hook ends claude once it sees the restart marker. */
+function liveSet(fs: MemoryFs, clock: ReturnType<typeof fakeClock>, opts: { launcherEndsClaude: boolean }) {
+  const live = new Set([4242, 3000, 5912, 4912])
+  clock.onSleep(() => {
+    if (opts.launcherEndsClaude && fs.files.has(`${STATE_DIR}/restart-requested.json`)) {
+      live.delete(5912)
+      live.delete(4912)
+    }
+  })
+  return live
+}
+
+test('finding 1 (run C): a wedged session is restarted in the same conversation, never held for turn_in_flight', async () => {
+  const fs = runCFs()
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, PS_912, { pidAlive: (pid: number) => live.has(pid) })
+  await runWatcher(run.deps as any)
+
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['wedged_session'])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['wedged_session', 'restart_agent', 'fixed']])
+  // The launcher's marker: it relaunches claude RESUMING the agent's pinned session.
+  assert.equal(restartRequested(fs), true)
+  assert.equal(fs.readFile(`${STATE_DIR}/session-id`)?.trim(), SID)
+  // A stopped claude never acts on the launcher's SIGTERM: it is woken first. Only its claude.
+  assert.deepEqual(run.kills, [[5912, 'SIGCONT']])
+  assert.equal(appSaysRunningAgain(terminal), true, 'fixed and verified: running again is the truth here')
+  assertDtoShape(backend.progress('chk-1'))
+})
+
+test('finding 1: a wedged claude that does not end for the launcher is ended (SIGKILL), and only that claude', async () => {
+  const fs = runCFs()
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: false })
+  // The relaunched session answers the probe once the old claude is gone.
+  clock.onSleep((_ms, nowMs) => {
+    if (!live.has(5912) && fs.files.has(`${STATE_DIR}/probe-requested.json`)) {
+      fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
+    }
+  })
+  const run = rig(fs, backend, clock, PS_912, {
+    pidAlive: (pid: number) => live.has(pid),
+    kill: (pid: number, signal: string) => {
+      run.kills.push([pid, signal])
+      if (signal === 'SIGKILL') live.delete(pid)
+    },
+  })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['wedged_session', 'restart_agent', 'fixed']])
+  assert.deepEqual(run.kills, [
+    [5912, 'SIGCONT'],
+    [5912, 'SIGCONT'],
+    [5912, 'SIGKILL'],
+  ])
+})
+
+test('finding 1: a turn that is still making progress keeps the hold', async () => {
+  const fs = runCFs()
+  fs.touch(SPOOL, T0 - 2 * MIN) // a hook event 2 minutes ago: a subagent or a tool is working
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, PS_912, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['wedged_session'])
+  assert.equal(restartRequested(fs), false)
+  assert.deepEqual(run.kills, [])
+  assert.match(terminal.actions[0].detail, /turn_in_flight/)
+})
+
+test('finding 2: a held check up reports "not fixed yet", never a result the app reads as running again', async () => {
+  const cases: Array<[string, () => { fs: MemoryFs; ps: string; alive: number[] }]> = [
+    [
+      'a wedge whose turn still makes progress',
+      () => {
+        const fs = runCFs()
+        fs.touch(SPOOL, T0 - 2 * MIN)
+        return { fs, ps: PS_912, alive: [3000, 5912, 4912] }
+      },
+    ],
+    [
+      'a wedge with a job under claude',
+      () => ({
+        fs: runCFs(),
+        ps: `${PS_912}\n${psLine(6000, 5912, `/bin/zsh -c source ${HOME}/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'npm test'`)}`,
+        alive: [3000, 5912, 4912, 6000],
+      }),
+    ],
+    [
+      // deafwatch (Ares 2026-11-13 17:29Z): a dead connector past the start grace is no longer held by
+      // recent session activity, which is how this case used to be held. A job under claude still holds it.
+      'a dead connector with a job under claude',
+      () => {
+        const fs = agentFs()
+        writeTranscript(fs, [assistantTurn(T0 - 5 * MIN)], T0 - 5 * MIN)
+        const ps = [
+          psLine(1, 0, '/sbin/init'),
+          psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`),
+          psLine(5912, 3000, `claude --resume ${SID}`),
+          psLine(6000, 5912, `/bin/zsh -c source ${HOME}/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'npm test'`),
+        ].join('\n')
+        return { fs, ps, alive: [3000, 5912, 6000] }
+      },
+    ],
+  ]
+  for (const [name, make] of cases) {
+    const { fs, ps, alive } = make()
+    const backend = fakeBackend(checkupJob())
+    const run = rig(fs, backend, fakeClock(), ps, { alive })
+    await runWatcher(run.deps as any)
+    const terminal = terminalOf(backend)
+    assert.equal(terminal.findings.length, 1, name)
+    const [held] = terminal.actions
+    assert.equal(held.outcome, 'not_fixed', `${name}: ${held.outcome}`)
+    assert.match(held.detail, /^Not fixed yet/, name)
+    assert.equal(appSaysRunningAgain(terminal), false, `${name}: the app would pop "running again"`)
+    assert.match(terminal.message, /not fixed yet 1/, name)
+    assert.equal(restartRequested(fs), false, name)
+    assertDtoShape(backend.progress('chk-1'))
+  }
+})
+
+test('finding 2: a hold the app shows as the owner step or as restarts used up stays a skipped step', async () => {
+  // pending_permission is the owner's question (the app shows it); attempts_exhausted offers "Restart once more".
+  for (const [reason, stateOver, attempts] of [
+    ['pending_permission', { pendingPermissions: 1 }, 0],
+    ['attempts_exhausted', {}, 3],
+  ] as const) {
+    const fs = runCFs(stateOver)
+    if (attempts) {
+      fs.writeFile(KEEPALIVE_STATE, JSON.stringify({ schemaVersion: 1, agents: { '912': { target: 'checkup', attempts, lastRestartAt: new Date(T0 - 60 * MIN).toISOString() } } }))
+    }
+    const backend = fakeBackend(checkupJob())
+    const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912] })
+    await runWatcher(run.deps as any)
+    const terminal = terminalOf(backend)
+    assert.deepEqual(terminal.actions.map((a: any) => [a.did, a.outcome]), [['restart_agent', 'skipped']], reason)
+    assert.equal(HELD_TOKEN.exec(terminal.actions[0].detail)?.[1], reason)
+    assert.equal(appSaysRunningAgain(terminal), false, reason)
+    assert.match(terminal.message, /not fixed yet 1/, reason)
+  }
+})
+
+test('finding 3: a message Claude Code queued (enqueue) but never turned into a user entry is a delivery', async () => {
+  // The hang between the queue line and the turn: no user entry, no turn flag, the reply owed.
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ pendingMessages: 1, lastActivityAt: new Date(T0 - 15 * MIN).toISOString() }) })
+  writeTranscript(fs, [assistantTurn(T0 - 20 * MIN), enqueueLine(T0 - 15 * MIN)], T0 - 15 * MIN)
+  fs.writeFile(SPOOL, '{"hook_event_name":"Stop"}\n')
+  fs.touch(SPOOL, T0 - 20 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, PS_912, { pidAlive: (pid: number) => live.has(pid) })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => [f.cause, f.detail]), [['wedged_session', 'no reply to a message delivered 15 min ago']])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['wedged_session', 'restart_agent', 'fixed']])
+})
+
+test('finding 3: stop then send (claude frozen before the message): the daemon says what it owes since when', async () => {
+  // Nothing in the transcript after the last turn: the frozen claude wrote neither line. The daemon
+  // pushed the owner message 15 min ago and still owes the reply.
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState({ pendingMessages: 1, lastActivityAt: new Date(T0 - 15 * MIN).toISOString(), ownerWaitingSince: new Date(T0 - 15 * MIN).toISOString() }),
+  })
+  writeTranscript(fs, [assistantTurn(T0 - 20 * MIN)], T0 - 20 * MIN)
+  // The previous turn's Stop hook: the spool was read, and the session did nothing since (review F1).
+  fs.writeFile(SPOOL, '{"hook_event_name":"Stop"}\n')
+  fs.touch(SPOOL, T0 - 20 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, PS_912, { pidAlive: (pid: number) => live.has(pid) })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['wedged_session'])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.did, a.outcome]), [['restart_agent', 'fixed']])
+})
+
+test('finding 3: parseTranscriptTail reads an owner enqueue as a delivery, and nothing else from the queue', () => {
+  const owner = enqueueLine(T0 - 10 * MIN)
+  assert.equal(parseTranscriptTail(owner, T0).ownerDeliveredAtMs, T0 - 10 * MIN)
+  for (const line of [
+    enqueueLine(T0 - 10 * MIN, '<task-notification>\n<task-id>x</task-id>\n</task-notification>'),
+    enqueueLine(T0 - 10 * MIN, `<channel source="bgos" chat_id="c1" event_type="reaction">x</channel>`),
+    enqueueLine(T0 - 10 * MIN, `<channel source="bgos" chat_id="c1" sender_type="agent">x</channel>`),
+    JSON.stringify({ type: 'queue-operation', operation: 'dequeue', timestamp: new Date(T0 - 10 * MIN).toISOString(), sessionId: SID }),
+    JSON.stringify({ type: 'queue-operation', operation: 'remove', timestamp: new Date(T0 - 10 * MIN).toISOString(), sessionId: SID, content: `<channel source="bgos" chat_id="c1" sender_type="user">x</channel>` }),
+  ]) {
+    assert.equal(parseTranscriptTail(line, T0).ownerDeliveredAtMs, null, line.slice(0, 120))
+  }
+  // A queue line is never model activity.
+  assert.equal(parseTranscriptTail(owner, T0).lastActivityAtMs, null)
+})
+
+// -- item 5: the owner's Restart, which the Helper always carries out ---------------------------------
+
+function ownerRestartJob(rpcId = 'rst-1', body: Record<string, unknown> = {}) {
+  return {
+    frames: [{ rpcId, op: 'restart_agent' }],
+    jobs: { [rpcId]: { rpcId, op: 'restart_agent', intent: 'restart_agent', machineId: MACHINE_ID, requestedBy: 'owner', targets: [{ pairingId: 3, assistantId: 912 }], ...body } },
+  }
+}
+
+test('item 5: the owner Restart restarts an agent that looks healthy and busy: no health gate, no turn hold, same conversation', async () => {
+  // Busy by every signal: a turn in flight, a reply owed, activity a minute ago, a job under claude.
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1, lastActivityAt: new Date(T0 - MIN).toISOString() }) })
+  writeTranscript(fs, [ownerMessage(T0 - 2 * MIN), assistantTurn(T0 - MIN)], T0 - MIN)
+  const ps = `${PS_912}\n${psLine(6000, 5912, `/bin/zsh -c source ${HOME}/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'npm run dev'`)}`
+  const backend = fakeBackend(ownerRestartJob())
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  daemonAnswersProbe(fs, clock)
+  let planned = false
+  const run = rig(fs, backend, clock, ps, { pidAlive: (pid: number) => live.has(pid), modules: stubModules({ onPlan: () => (planned = true) }) })
+  await runWatcher(run.deps as any)
+
+  const terminal = terminalOf(backend, 'rst-1')
+  assert.equal(terminal.state, 'done', JSON.stringify(terminal))
+  assert.deepEqual(terminal.steps.map((s: any) => `${s.kind}:${s.state}`), ['observe:ok', 'restart_agent:ok', 'verify_agent:ok'])
+  assert.match(terminal.message, /^restarted 912/)
+  assert.equal(restartRequested(fs), true, 'through the launcher, which resumes the pinned session')
+  assert.deepEqual(run.kills, [[5912, 'SIGCONT']])
+  assert.equal(planned, false, 'never the reconcile planner')
+  // Not a Helper restart: the budget the sweep and the check up share is not spent, but the sweep
+  // sees the restart so it does not add its own on top.
+  const record = keepAliveRecord(fs)
+  assert.equal(record.attempts ?? 0, 0)
+  assert.equal(record.lastRestartAt, new Date(T0).toISOString())
+  assert.equal(record.reason, 'owner_restart')
+  assertDtoShape(backend.progress('rst-1'))
+})
+
+test('item 5: only an owner job, for exactly one agent on this computer; anything else is refused and touches nothing', async () => {
+  const rows: Array<[string, Record<string, unknown>]> = [
+    ['restart_needs_owner', { requestedBy: undefined }],
+    ['restart_needs_owner', { requestedBy: 'helper' }],
+    ['restart_needs_one_agent:0', { targets: [] }],
+    ['restart_needs_one_agent:2', { targets: [{ assistantId: 912 }, { assistantId: 913 }] }],
+    ['agent_not_on_this_machine:999', { targets: [{ assistantId: 999 }] }],
+  ]
+  for (const [message, body] of rows) {
+    const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+    const backend = fakeBackend(ownerRestartJob('rst-1', body))
+    const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912] })
+    await runWatcher(run.deps as any)
+    const terminal = terminalOf(backend, 'rst-1')
+    assert.equal(terminal.state, 'failed', message)
+    assert.equal(terminal.message, message)
+    assert.equal(restartRequested(fs), false, message)
+    assert.deepEqual(run.kills, [], message)
+    assert.deepEqual(run.spawns, [], message)
+  }
+})
+
+test('item 5: a reconcile frame carrying the restart intent is the owner Restart too, never a reconcile of the computer', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  const backend = fakeBackend({ frames: [{ rpcId: 'rst-1', op: 'reconcile' }], jobs: { 'rst-1': { rpcId: 'rst-1', op: 'reconcile', intent: 'restart_agent', targets: [{ assistantId: 912 }] } } })
+  let planned = false
+  const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912], modules: stubModules({ onPlan: () => (planned = true) }) })
+  await runWatcher(run.deps as any)
+  assert.equal(terminalOf(backend, 'rst-1').message, 'restart_needs_owner')
+  assert.equal(planned, false)
+})
+
+test('item 5: a frozen claude is woken and ended, and when the launcher does not bring it back the agent is started again', async () => {
+  // The launcher has used its 3 relaunches this hour and ignores the marker: claude stays frozen.
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1 }) })
+  writeTranscript(fs, [assistantTurn(T0 - 30 * MIN), ownerMessage(T0 - 20 * MIN)], T0 - 20 * MIN)
+  const clock = fakeClock()
+  const live = new Set([4242, 3000, 5912, 4912])
+  let ps = PS_912
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, clock, ps, {
+    pidAlive: (pid: number) => live.has(pid),
+    exec: async (file: string, args: string[]) => {
+      if (file === 'ps') return { code: 0, stdout: `${ps}\n`, stderr: '', error: null, timedOut: false }
+      return { code: 1, stdout: '', stderr: '', error: null, timedOut: false }
+    },
+    kill: (pid: number, signal: string) => {
+      run.kills.push([pid, signal])
+      if (signal === 'SIGKILL' && pid === 5912) {
+        // claude ends; its daemon with it; the launcher sees a plain exit and stops supervising.
+        for (const gone of [5912, 4912, 3000, 4242]) live.delete(gone)
+        ps = psLine(1, 0, '/sbin/init')
+        fs.rm(`${STATE_DIR}/restart-requested.json`)
+      }
+    },
+  })
+  // Only a session started by the second step answers the probe.
+  clock.onSleep((_ms, nowMs) => {
+    if (run.spawns.length > 0 && fs.files.has(`${STATE_DIR}/probe-requested.json`)) {
+      fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
+    }
+  })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend, 'rst-1')
+  assert.equal(terminal.state, 'done', JSON.stringify(terminal))
+  assert.deepEqual(terminal.steps.map((s: any) => `${s.kind}:${s.state}`), ['observe:ok', 'restart_agent:ok', 'verify_agent:skipped', 'start_agent:ok', 'verify_agent:ok'])
+  assert.deepEqual(run.kills, [
+    [5912, 'SIGCONT'],
+    [5912, 'SIGCONT'],
+    [5912, 'SIGKILL'],
+  ])
+  // Started hidden from its recipe: hoai-core in the agent's folder, which resumes its pinned session.
+  assert.equal(run.spawns.length, 1)
+  assert.equal(run.spawns[0]!.file, 'tmux')
+  assert.ok(run.spawns[0]!.args.join(' ').includes(`${ROOT}/bin/hoai-core.mjs`))
+  assert.ok(run.spawns[0]!.args.includes(AVA))
+  assertDtoShape(backend.progress('rst-1'))
+})
+
+test('item 5: an agent that does not come back is reported failed, by name, inside the deadline', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  writeTranscript(fs, [assistantTurn(T0 - 30 * MIN)], T0 - 30 * MIN)
+  const backend = fakeBackend(ownerRestartJob())
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  const run = rig(fs, backend, clock, PS_912, { pidAlive: (pid: number) => live.has(pid) })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend, 'rst-1')
+  assert.equal(terminal.state, 'failed')
+  assert.match(terminal.message, /^not back: /)
+  assert.ok(clock.now() - T0 <= 180_000, `took ${clock.now() - T0} ms`)
+  assertDtoShape(backend.progress('rst-1'))
+})
+
+test('item 5: a restart nothing here can carry out leaves the session as it was and says so (never killed with nothing to start it)', async () => {
+  // No launcher, no service, no recipe: the restart ladder has no authority for this agent.
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  fs.rm(`${STATE_DIR}/launch.json`)
+  fs.rm(`${STATE_DIR}/supervisor.json`)
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend, 'rst-1')
+  assert.equal(terminal.state, 'failed')
+  assert.match(terminal.message, /^not back: the restart failed \(manual_restart_required/)
+  assert.deepEqual(run.kills, [[5912, 'SIGCONT']], 'woken, never ended')
+  assert.deepEqual(run.spawns, [])
+  assertDtoShape(backend.progress('rst-1'))
+})
+
+test('review F1: an owed reply with no readable transcript or spool is never a wedge restart (scenario A, the real job)', async () => {
+  // The daemon owes the owner since 25 min ago; the watcher finds no transcript and no hook spool.
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1, lastActivityAt: new Date(T0 - 25 * MIN).toISOString(), ownerWaitingSince: new Date(T0 - 25 * MIN).toISOString() }),
+  })
+  const backend = fakeBackend(checkupJob())
+  const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(restartRequested(fs), false, 'a working turn is never restarted on missing evidence')
+  assert.deepEqual(run.kills, [])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.did, a.outcome]), [['restart_agent', 'not_fixed']])
+  assert.match(terminal.actions[0].detail, /^Not fixed yet \(turn_in_flight: /)
+})
+
+// -- REVIEW-0432 F2: the guards on SIGKILL and on a second start, pinned ------------------------------
+
+test('review F2 (M8): SIGKILL only reaches the SAME claude: a reused pid or a changed command line is left alone', async () => {
+  const old = { pid: 5912, command: `claude --resume ${SID}`, startedAtMs: T0 - 60 * MIN }
+  const run = async (row: Record<string, unknown> | null) => {
+    const kills: Array<[number, string]> = []
+    const clock = fakeClock()
+    const out = await endOldClaudes({
+      claudes: [old],
+      kill: (pid: number, signal: string) => void kills.push([pid, signal]),
+      pidAlive: () => true,
+      sleep: clock.sleep,
+      now: clock.now,
+      relist: async () => (row ? [row as any] : []),
+      id: '912',
+      platform: 'linux',
+    })
+    return { kills, out }
+  }
+  const reused = await run({ pid: 5912, command: old.command, startedAtMs: T0 })
+  assert.deepEqual(reused.kills, [], 'a later start is another process on a reused pid')
+  const changed = await run({ pid: 5912, command: '/usr/bin/vim notes.md', startedAtMs: old.startedAtMs })
+  assert.deepEqual(changed.kills, [], 'another program on that pid')
+  assert.deepEqual((await run(null)).kills, [], 'gone from the listing')
+  const same = await run({ ...old })
+  assert.deepEqual(same.kills, [[5912, 'SIGCONT'], [5912, 'SIGKILL']])
+})
+
+test('review F2 (M10): a claude tied to the folder only by a cwd lookup (a person\'s own session) is never signalled', async () => {
+  // A hand-run `claude` in the agent's folder, no pin on its command line, no state naming it. An
+  // owner message 40 min ago is unanswered, so the check up restarts the agent; it must not touch 6100.
+  const fs = agentFs()
+  writeTranscript(fs, [assistantTurn(T0 - 45 * MIN), ownerMessage(T0 - 40 * MIN)], T0 - 40 * MIN)
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(6100, 900, 'claude')].join('\n')
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, ps, {
+    alive: [3000, 6100],
+    exec: async (file: string, args: string[]) => {
+      if (file === 'ps') return { code: 0, stdout: `${ps}\n`, stderr: '', error: null, timedOut: false }
+      if (file === 'readlink' && args[0] === '/proc/6100/cwd') return { code: 0, stdout: `${AVA}\n`, stderr: '', error: null, timedOut: false }
+      return { code: 1, stdout: '', stderr: '', error: null, timedOut: false }
+    },
+  })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['daemon_down', 'wedged_session'], JSON.stringify(terminal.findings))
+  assert.equal(restartRequested(fs), true, 'the agent itself is restarted through its launcher')
+  assert.deepEqual(run.kills, [], 'the cwd-only claude is never woken or killed')
+})
+
+/** Owner Restart where claude ends at its SIGKILL, the launcher stands down, and `after` says what is left. */
+async function ownerRestartWhenLeft(after: { daemonLives: boolean; psReadable: boolean }) {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true }) })
+  writeTranscript(fs, [assistantTurn(T0 - 30 * MIN)], T0 - 30 * MIN)
+  const clock = fakeClock()
+  const live = new Set([4242, 3000, 5912, 4912])
+  let ps = PS_912
+  let psOk = true
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, clock, ps, {
+    pidAlive: (pid: number) => live.has(pid),
+    exec: async (file: string) => {
+      if (file === 'ps') return psOk ? { code: 0, stdout: `${ps}\n`, stderr: '', error: null, timedOut: false } : { code: 1, stdout: '', stderr: 'ps: busy', error: null, timedOut: false }
+      return { code: 1, stdout: '', stderr: '', error: null, timedOut: false }
+    },
+    kill: (pid: number, signal: string) => {
+      run.kills.push([pid, signal])
+      if (signal === 'SIGKILL' && pid === 5912) {
+        for (const gone of [5912, 3000, 4242]) live.delete(gone)
+        fs.rm(`${STATE_DIR}/restart-requested.json`)
+        if (after.daemonLives) {
+          // The daemon outlived its claude (orphaned under init) and keeps its fresh state.
+          ps = [psLine(1, 0, '/sbin/init'), psLine(4912, 1, `node ${ROOT}/server.ts`)].join('\n')
+          clock.onSleep((_ms, nowMs) => fs.writeFile(`${PLUGIN_STATE}/agent-state.json`, agentState({ updatedAt: new Date(nowMs - 1_000).toISOString() })))
+        } else {
+          live.delete(4912)
+          ps = psLine(1, 0, '/sbin/init')
+        }
+        if (!after.psReadable) psOk = false
+      }
+    },
+  })
+  await runWatcher(run.deps as any)
+  return { terminal: terminalOf(backend, 'rst-1'), run }
+}
+
+test('review F2 (M15): the owner Restart never starts a second session beside a live daemon', async () => {
+  const { terminal, run } = await ownerRestartWhenLeft({ daemonLives: true, psReadable: true })
+  assert.equal(terminal.state, 'failed')
+  assert.match(terminal.message, /^not back: /)
+  assert.deepEqual(run.spawns, [], 'no start beside the live daemon')
+})
+
+test('review F2 (M15): the owner Restart never starts a session on a process table it could not read', async () => {
+  const { terminal, run } = await ownerRestartWhenLeft({ daemonLives: false, psReadable: false })
+  assert.equal(terminal.state, 'failed')
+  assert.deepEqual(run.spawns, [], 'unknown is not down')
+})
+
+test('review F2 (M18/M19): ownerWaitingSince from a stale state is no delivery', async () => {
+  // The state is 10 minutes old (its daemon gone): what it said it owed proves nothing now.
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState({ pendingMessages: 1, updatedAt: new Date(T0 - 10 * MIN).toISOString(), ownerWaitingSince: new Date(T0 - 15 * MIN).toISOString() }),
+  })
+  writeTranscript(fs, [assistantTurn(T0 - 20 * MIN)], T0 - 20 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.findings.some((f: any) => f.cause === 'wedged_session'), false, JSON.stringify(terminal.findings))
+})
+
+test('review F2 (M20): a fix held by the pass deadline is "Not fixed yet", never a skipped step', async () => {
+  const fs = runCFs()
+  const backend = fakeBackend(checkupJob())
+  const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912], checkupDeadlineMs: 10_000 })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['wedged_session', 'restart_agent', 'not_fixed']])
+  assert.match(terminal.actions[0].detail, /^Not fixed yet \(pass_deadline: /)
+  assert.match(terminal.message, /not fixed yet 1 \(held: pass_deadline\)/)
+  assert.equal(restartRequested(fs), false)
+})
+
+// -- deafwatch: a live claude whose channel never came up (mission 298 goal 21) -------------------
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+/** `ps -o lstart=` for an instant, in the local zone the listing parser reads it in. */
+function lstartOf(ms: number) {
+  const d = new Date(ms)
+  const two = (n: number) => String(n).padStart(2, '0')
+  return `${WEEKDAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${String(d.getDate()).padStart(2, ' ')} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())} ${d.getFullYear()}`
+}
+/** The launcher and the agent's claude on its pin, started at `startedAt`, with NO MCP server under it. */
+const deafPs = (startedAt: number) =>
+  [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`, lstartOf(startedAt - 1_000)), psLine(5912, 3000, `claude --resume ${SID}`, lstartOf(startedAt))].join('\n')
+
+test('deafwatch: a check up during a slow start (claude up 2 min, its MCP server not up yet) finds nothing and restarts nothing', async () => {
+  const fs = agentFs()
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, deafPs(T0 - 2 * MIN), { alive: [3000, 5912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.equal(terminal.state, 'done')
+  assert.deepEqual(terminal.findings, [], 'a launch still coming up is not a dead connector')
+  assert.equal(restartRequested(fs), false)
+  assert.equal(keepAliveRecord(fs), null, 'no restart spent')
+})
+
+test('deafwatch (Ares): past the grace with bin/bgos-launch.mjs removed, the check up names the missing file, restarts once, and reports not fixed while it stays deaf', async () => {
+  const fs = agentFs()
+  fs.rm(`${ROOT}/bin/bgos-launch.mjs`)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  const run = rig(fs, backend, clock, deafPs(T0 - 11 * 60 * MIN), { alive: [3000, 5912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => [f.cause, f.status, f.detail]), [['daemon_down', 'FAIL', 'claude is running and no daemon is; missing bin/bgos-launch.mjs']])
+  assert.equal(restartRequested(fs), true, 'restarted through the live launcher')
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['daemon_down', 'restart_agent', 'not_fixed']])
+  assert.match(terminal.actions[0].detail, /did not answer: agent_deaf_after_restart/)
+  assert.equal(terminal.state, 'failed')
+  assert.equal(keepAliveRecord(fs).state, 'failed')
+  assertDtoShape(backend.progress('chk-1'))
+  assertNoSecrets(backend.calls.map((c) => JSON.stringify(c.body ?? {})), 'request body')
+})
+
+test('deafwatch (Ares 17:29Z): a daemon down past the grace is restarted though the session was active a minute ago (never "not fixed yet: recent_activity")', async () => {
+  const fs = agentFs()
+  // The session touched its transcript a minute ago; its channel has been down since it started 20 min ago.
+  writeTranscript(fs, [assistantTurn(T0 - 1 * MIN)], T0 - 1 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, deafPs(T0 - 20 * MIN), { alive: [3000, 5912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['daemon_down'])
+  assert.equal(restartRequested(fs), true, 'restarted, not held')
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['daemon_down', 'restart_agent', 'fixed']])
+  assert.ok(!terminal.actions.some((a: any) => /recent_activity/.test(a.detail)), JSON.stringify(terminal.actions))
+  assert.equal(terminal.state, 'done')
+})
+
+test('deafwatch review F2 (red on 3b55728): hoai wrote claude-login-expired under THIS claude: the check up names the login and restarts nothing', async () => {
+  const fs = agentFs()
+  writeTranscript(fs, [assistantTurn(T0 - 1 * MIN)], T0 - 1 * MIN)
+  // bin/hoai-core.mjs, 3 min into the claude that started 20 min ago: no heartbeat, the shared login failed, no relaunch.
+  fs.writeFile(`${STATE_DIR}/launch-status`, '2026-10-06T18:43:00.000Z outcome=claude-login-expired waited=180s\n')
+  fs.touch(`${STATE_DIR}/launch-status`, T0 - 17 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, deafPs(T0 - 20 * MIN), { alive: [3000, 5912] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.ok(terminal.findings.some((f: any) => f.cause === 'login_expired'), JSON.stringify(terminal.findings))
+  assert.equal(restartRequested(fs), false, 'a restart meets the same login')
+  assert.ok(!terminal.actions.some((a: any) => a.did === 'restart_agent' && a.outcome === 'fixed'), JSON.stringify(terminal.actions))
+})
+
+test('deafwatch: a claude only a cwd lookup finds still gives its start time, so a deaf channel past the grace is restarted (Windows hand relaunch)', async () => {
+  const fs = agentFs()
+  writeTranscript(fs, [assistantTurn(T0 - 1 * MIN)], T0 - 1 * MIN)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  // A plain `claude` (no pin on its command line) in the agent's folder, under the live launcher.
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`, lstartOf(T0 - 21 * MIN)), psLine(5912, 3000, 'claude', lstartOf(T0 - 20 * MIN))].join('\n')
+  const run = rig(fs, backend, clock, ps, {
+    alive: [3000, 5912],
+    exec: async (file: string, args: string[]) => {
+      if (file === 'ps') return { code: 0, stdout: `${ps}\n`, stderr: '', error: null, timedOut: false }
+      if (file === 'readlink' && args[0] === '/proc/5912/cwd') return { code: 0, stdout: `${AVA}\n`, stderr: '', error: null, timedOut: false }
+      return { code: 1, stdout: '', stderr: '', error: null, timedOut: false }
+    },
+  })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.findings.map((f: any) => f.cause), ['daemon_down'])
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['daemon_down', 'restart_agent', 'fixed']])
 })

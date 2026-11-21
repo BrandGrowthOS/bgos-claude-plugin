@@ -1,0 +1,143 @@
+[
+  {
+    "at": "2026-11-14T02:44:35.569Z",
+    "mode": "round2",
+    "step": "before",
+    "owner": {
+      "id": "12",
+      "chatId": "1",
+      "sender": "user",
+      "text": "Please book the large room for the launch review.",
+      "editedAt": null
+    },
+    "sibling": {
+      "id": "13",
+      "chatId": "4",
+      "sender": "assistant",
+      "text": "Kite here: the budget sheet is ready for review.",
+      "editedAt": null
+    }
+  },
+  {
+    "at": "2026-11-14T02:44:46.683Z",
+    "mode": "round2",
+    "step": "tool",
+    "session": "A",
+    "name": "reply",
+    "arguments": {
+      "chat_id": "1",
+      "text": "Noted: I will book a room for the launch review."
+    },
+    "isError": false,
+    "text": "Sent (message_id: 14) Delivered to the main chat 1."
+  },
+  {
+    "at": "2026-11-14T02:44:46.692Z",
+    "mode": "round2",
+    "step": "tool",
+    "session": "A",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "14",
+      "text": "Booked: the large room, Friday at 14:00."
+    },
+    "isError": false,
+    "text": "Edited"
+  },
+  {
+    "at": "2026-11-14T02:44:46.693Z",
+    "mode": "round2",
+    "step": "tool",
+    "session": "A",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "12",
+      "text": "Never mind, any small room is fine."
+    },
+    "isError": true,
+    "text": "Error: edit_message edits only a message this agent sent, and message 12 is not one of them, so nothing was changed"
+  },
+  {
+    "at": "2026-11-14T02:44:46.694Z",
+    "mode": "round2",
+    "step": "tool",
+    "session": "A",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "13",
+      "text": "Kite here: the budget sheet is cancelled."
+    },
+    "isError": true,
+    "text": "Error: edit_message edits only a message this agent sent, and message 13 is not one of them, so nothing was changed"
+  },
+  {
+    "at": "2026-11-14T02:44:46.727Z",
+    "mode": "round2",
+    "step": "rows",
+    "own": {
+      "id": "14",
+      "chatId": "1",
+      "sender": "assistant",
+      "text": "Booked: the large room, Friday at 14:00.",
+      "editedAt": "2026-11-14T02:44:46.687Z"
+    },
+    "owner": {
+      "id": "12",
+      "chatId": "1",
+      "sender": "user",
+      "text": "Please book the large room for the launch review.",
+      "editedAt": null
+    },
+    "sibling": {
+      "id": "13",
+      "chatId": "4",
+      "sender": "assistant",
+      "text": "Kite here: the budget sheet is ready for review.",
+      "editedAt": null
+    }
+  },
+  {
+    "at": "2026-11-14T02:44:53.055Z",
+    "mode": "round2",
+    "step": "screenshot",
+    "file": "round2-1-atlas-chat.png"
+  },
+  {
+    "at": "2026-11-14T02:44:59.337Z",
+    "mode": "round2",
+    "step": "screenshot",
+    "file": "round2-2-kite-chat.png"
+  },
+  {
+    "at": "2026-11-14T02:45:03.739Z",
+    "mode": "round2",
+    "step": "tool",
+    "session": "B",
+    "name": "edit_message",
+    "arguments": {
+      "message_id": "14",
+      "text": "Booked: the large room, Friday at 14:00 (confirmed after a restart)."
+    },
+    "isError": false,
+    "text": "Edited"
+  },
+  {
+    "at": "2026-11-14T02:45:03.757Z",
+    "mode": "round2",
+    "step": "rows",
+    "after": "restart",
+    "own": {
+      "id": "14",
+      "chatId": "1",
+      "sender": "assistant",
+      "text": "Booked: the large room, Friday at 14:00 (confirmed after a restart).",
+      "editedAt": "2026-11-14T02:45:03.733Z"
+    }
+  },
+  {
+    "at": "2026-11-14T02:45:10.042Z",
+    "mode": "round2",
+    "step": "screenshot",
+    "file": "round2-3-after-restart.png"
+  }
+]

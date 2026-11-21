@@ -43,7 +43,7 @@ test at test/stream-json-child.test.ts:1:4419
   -   no_proxy: 'localhost .lower-internal.invalid'
     }
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:141:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:141:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -67,7 +67,7 @@ test at test/stream-json-child.test.ts:1:4889
   + undefined
   - 'http://user:fake-proxy-password@secure-proxy.invalid:8080'
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:174:12)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbthreads-plugin/test/stream-json-child.test.ts:174:12)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {

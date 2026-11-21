@@ -28,7 +28,7 @@ import {
   diagnoseAgent,
   planRepairs,
 } from '../lib/agent-checkup.mjs'
-import { MAX_ATTEMPTS_PER_TARGET, RESTART_MIN_INTERVAL_MS } from '../lib/keepalive-plan.mjs'
+import { CHANNEL_START_GRACE_MS, MAX_ATTEMPTS_PER_TARGET, RESTART_MIN_INTERVAL_MS } from '../lib/keepalive-plan.mjs'
 
 const NOW = Date.parse('2026-10-23T12:00:00Z')
 const MIN = 60_000
@@ -122,6 +122,29 @@ test('C3: a live claude with no live daemon is daemon_down, fixable', () => {
   assert.deepEqual(causes(findings), ['C3'])
   assert.equal(findings[0].code, 'daemon_down')
   assert.equal(findings[0].fixable, true)
+})
+
+test('C3 (deafwatch): a claude inside its start grace is a slow start, never daemon_down or beacon_stale; past it, both are found as before', () => {
+  // 2 min in: its MCP server and daemon are still coming up. Before, the check up restarted it.
+  for (const over of [{ daemonAlive: false }, { beaconHeartbeatAtMs: NOW - BEACON_STALE_MS - 1 }]) {
+    const slow = checkupPass(obs({ ...over, claudeStartedAtMs: NOW - 2 * MIN }))
+    assert.deepEqual(slow.findings, [], JSON.stringify(over))
+    assert.equal(plannedRestart(slow.actions), false, JSON.stringify(over))
+    // Past the grace: the same evidence is a finding again.
+    assert.deepEqual(causes(diagnoseAgent(obs({ ...over, claudeStartedAtMs: NOW - CHANNEL_START_GRACE_MS }))), ['C3'], JSON.stringify(over))
+  }
+  // An unknown start (a claude only the state or a cwd lookup found) is judged as before.
+  assert.deepEqual(causes(diagnoseAgent(obs({ daemonAlive: false, claudeStartedAtMs: null }))), ['C3'])
+})
+
+test('C3 (deafwatch): a plugin file the channel needs that is gone is named in the finding (Ares: antivirus removed bin/bgos-launch.mjs)', () => {
+  const findings = diagnoseAgent(obs({ daemonAlive: false, claudeStartedAtMs: NOW - 11 * 60 * MIN, missingPluginFiles: ['bin/bgos-launch.mjs', 'bin/hoai-core.mjs'] }))
+  assert.equal(findings[0].code, 'daemon_down')
+  assert.equal(findings[0].evidence, 'claude is running and no daemon is; missing bin/bgos-launch.mjs, bin/hoai-core.mjs')
+  const stale = diagnoseAgent(obs({ beaconHeartbeatAtMs: NOW - 20 * MIN, missingPluginFiles: ['server.ts'] }))
+  assert.equal(stale[0].evidence, 'the beacon last beat 20 min ago while claude runs; missing server.ts')
+  // Nothing missing, nothing added.
+  assert.equal(diagnoseAgent(obs({ daemonAlive: false, missingPluginFiles: [] }))[0].evidence, 'claude is running and no daemon is')
 })
 
 test('C3: a stale beacon heartbeat while claude runs is beacon_stale', () => {
@@ -624,6 +647,42 @@ for (const [reason, unsafe] of UNSAFE) {
   })
 }
 
+test('C3 (deafwatch, Ares 17:29Z): a daemon down past the start grace is restarted though the session was active minutes ago; never past a job or an unreadable tree', () => {
+  // What Ares's watcher logged: C3:daemon_down, plan=restart:skipped(recent_activity), not fixed yet.
+  const deaf = { daemonAlive: false, claudeStartedAtMs: NOW - 6 * MIN, activityMs: [NOW - 1 * MIN] }
+  const pass = checkupPass(obs(deaf))
+  assert.deepEqual(steps(pass.actions), ['restart:planned', 'verify:planned'])
+  // A silent channel under a running daemon (beacon_stale) past the grace: the same.
+  assert.equal(plannedRestart(checkupPass(obs({ claudeStartedAtMs: NOW - 6 * MIN, beaconHeartbeatAtMs: NOW - 20 * MIN, activityMs: [NOW - 1 * MIN] })).actions), true)
+  // Still never a kill of a job, nor on a tree it could not read.
+  for (const [reason, over] of [
+    ['background_job', { descendants: ['/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh && sleep 900'] }],
+    ['process_tree_unreadable', { descendants: null }],
+  ] as Array<[string, Record<string, any>]>) {
+    const held = checkupPass(obs({ ...deaf, ...over }))
+    assert.deepEqual(steps(held.actions), ['restart:skipped'], reason)
+    assert.equal(held.actions[0].reason, reason)
+  }
+  // A start the listing did not give proves no grace has passed: the activity hold stands (the UNSAFE table below).
+  assert.equal(checkupPass(obs({ ...deaf, claudeStartedAtMs: null })).actions[0].reason, 'recent_activity')
+})
+
+test('C8 (deafwatch review F2): the launcher found the shared Claude login failed under THIS claude, so the dead connector is the login: reported signed out, never restarted', () => {
+  // bin/hoai-core.mjs: the channel never beat and the login failed, so it wrote claude-login-expired and did not relaunch.
+  const loginFailed = { daemonAlive: false, claudeStartedAtMs: NOW - 20 * MIN, launchStatus: { outcome: 'claude-login-expired', atMs: NOW - 17 * MIN } }
+  const pass = checkupPass(obs(loginFailed))
+  const c8 = pass.findings.find((f: any) => f.cause === 'C8')
+  assert.ok(c8, 'named as the login')
+  assert.equal(c8.code, 'login_expired')
+  assert.match(c8.evidence, /claude-login-expired/)
+  assert.equal(plannedRestart(pass.actions), false, 'a restart meets the same login')
+  assert.equal(pass.actions.find((a: any) => a.action === 'restart')?.reason, 'blocked_by_login')
+  // A status an EARLIER launch wrote (before this claude started) says nothing about this one: C3 restarts as before.
+  const older = checkupPass(obs({ ...loginFailed, launchStatus: { outcome: 'claude-login-expired', atMs: NOW - 25 * MIN } }))
+  assert.equal(older.findings.some((f: any) => f.cause === 'C8'), false)
+  assert.equal(plannedRestart(older.actions), true)
+})
+
 test('a restart gate that says no is a skipped step with its reason and state', () => {
   const rateLimited = checkupPass(obs({ daemonAlive: false, lastRestartAtMs: NOW - RESTART_MIN_INTERVAL_MS + MIN }))
   assert.deepEqual(steps(rateLimited.actions), ['restart:skipped'])
@@ -774,4 +833,110 @@ test('every report string is bounded for the backend', () => {
   for (const a of pass.actions) {
     if (a.ownerAction) assert.ok(a.ownerAction.text.length <= 240, a.ownerAction.text)
   }
+})
+
+// -- helperwedge finding 1: a wedge is a turn in flight (production test, KC's MacBook, 2026-11-12) --
+//
+// Run C: the owner's message reached the transcript at 20:48:41, claude froze 0.3 s later, and the
+// check up 15 minutes on found C5:no_reply, then held the restart for turn_in_flight until the turn
+// would be 2 hours stale. The daemon also still owed the reply (pendingMessages 1). Progress is what
+// the SESSION did: its newest model turn and its newest hook event (`progressMs`).
+
+/** Run C, as the check up observed it: delivered 15 min ago, the turn flag up, the reply owed. */
+function runC(over: Record<string, any> = {}): any {
+  return obs({
+    messagesDeliveredAtMs: NOW - 15 * MIN,
+    lastTranscriptActivityAtMs: NOW - 16 * MIN,
+    stateFresh: true,
+    agentState: freshState({ turnInFlight: true, pendingMessages: 1, activeOperations: 1, lastActivityAtMs: NOW - 15 * MIN }),
+    // lastActivityAt, the hook spool, the transcript: every one of them at the delivery.
+    activityMs: [NOW - 15 * MIN, NOW - 15 * MIN, NOW - 15 * MIN],
+    // The session's own progress: its newest model turn, its newest hook event (UserPromptSubmit).
+    progressMs: [NOW - 16 * MIN, NOW - 15 * MIN],
+    ...over,
+  })
+}
+
+test('wedge: a turn in flight with no progress for the wedge window is restarted in this pass, never held for 2 hours', () => {
+  const pass = checkupPass(runC())
+  assert.deepEqual(causes(pass.findings), ['C5'])
+  assert.deepEqual(steps(pass.actions), ['restart:planned', 'verify:planned'])
+})
+
+test('wedge: the reply the daemon still owes and a newer owner message do not hold it (they are not progress)', () => {
+  // The owner wrote again 2 min ago: the daemon's lastActivityAt and the transcript mtime moved, the session did not.
+  const pass = checkupPass(
+    runC({
+      agentState: freshState({ turnInFlight: true, pendingMessages: 2, lastActivityAtMs: NOW - 2 * MIN }),
+      activityMs: [NOW - 2 * MIN, NOW - 15 * MIN, NOW - 2 * MIN],
+    }),
+  )
+  assert.deepEqual(steps(pass.actions), ['restart:planned', 'verify:planned'])
+})
+
+test('wedge: a turn that is still making progress keeps the hold (its hook events are inside the window)', () => {
+  const pass = checkupPass(runC({ progressMs: [NOW - 16 * MIN, NOW - 2 * MIN] }))
+  assert.deepEqual(steps(pass.actions), ['restart:skipped'])
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+})
+
+test('wedge: progress that was never read is unknown, and unknown keeps the hold', () => {
+  const pass = checkupPass(runC({ progressMs: undefined }))
+  assert.deepEqual(steps(pass.actions), ['restart:skipped'])
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+})
+
+test('wedge: a question for the owner, a job under claude, an unreadable tree and the budget still hold it', () => {
+  const rows: Array<[string, Record<string, any>]> = [
+    ['pending_permission', { agentState: freshState({ turnInFlight: true, pendingMessages: 1, pendingPermissions: 1 }) }],
+    ['background_job', { descendants: ['/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1.sh && npm test'] }],
+    ['process_tree_unreadable', { descendants: null }],
+    ['restart_rate_limited', { lastRestartAtMs: NOW - 5 * MIN }],
+    ['attempts_exhausted', { attempts: MAX_ATTEMPTS_PER_TARGET }],
+  ]
+  for (const [reason, over] of rows) {
+    const pass = checkupPass(runC(over))
+    assert.equal(plannedRestart(pass.actions), false, reason)
+    assert.equal(pass.actions.at(-1)!.reason, reason, reason)
+  }
+})
+
+test('wedge: only a wedge lifts the turn hold; a dead connector under a live turn still waits for it', () => {
+  const pass = checkupPass(runC({ messagesDeliveredAtMs: null, daemonAlive: false }))
+  assert.deepEqual(causes(pass.findings), ['C3'])
+  assert.deepEqual(steps(pass.actions), ['restart:skipped'])
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+})
+
+// -- REVIEW-0432 F1: the reviewer's two scenarios -----------------------------------------------------
+
+test('review F1 scenario A: a 25 minute task whose transcript and spool the watcher cannot read is never restarted', () => {
+  const pass = checkupPass(
+    obs({
+      messagesDeliveredAtMs: NOW - 25 * MIN, // the daemon owes the reply from minute 0
+      lastTranscriptActivityAtMs: null,
+      stateFresh: true,
+      agentState: freshState({ turnInFlight: true, pendingMessages: 1, lastActivityAtMs: NOW - 25 * MIN }),
+      activityMs: [NOW - 25 * MIN, null, null],
+      progressMs: [null, null],
+    }),
+  )
+  assert.deepEqual(causes(pass.findings), ['C5'])
+  assert.equal(plannedRestart(pass.actions), false)
+  assert.equal(pass.actions[0].reason, 'turn_in_flight')
+})
+
+test('review F1 scenario B: hooks that never reach the daemon, a long subagent and a queued follow-up are never restarted', () => {
+  const pass = checkupPass(
+    obs({
+      messagesDeliveredAtMs: NOW - 11 * MIN, // the follow-up's queue line
+      lastTranscriptActivityAtMs: NOW - 20 * MIN, // the Agent tool_use; sidechain entries are not read
+      stateFresh: true,
+      agentState: freshState({ turnInFlight: false, turnSignal: 'none', pendingMessages: 1, lastActivityAtMs: NOW - 11 * MIN }),
+      activityMs: [NOW - 11 * MIN, null, NOW - 11 * MIN],
+      progressMs: [NOW - 20 * MIN, null],
+    }),
+  )
+  assert.deepEqual(causes(pass.findings), ['C5'])
+  assert.equal(plannedRestart(pass.actions), false)
 })
