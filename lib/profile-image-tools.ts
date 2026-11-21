@@ -23,7 +23,8 @@
 //
 // Pure except the injected transports, so it is unit tested against the wire.
 
-import { readFile, stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { open } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { requirePrivateTurn } from './private-turn.mjs'
@@ -65,6 +66,71 @@ export const PROFILE_IMAGE_TYPE_REFUSAL =
 
 export const PROFILE_IMAGE_SIZE_REFUSAL = 'That image is larger than 5 MB. Make a smaller one.'
 
+export const PROFILE_IMAGE_NOT_FILE_REFUSAL =
+  'path must name an image file your image tool wrote, not a folder, a device or a pipe.'
+
+export const PROFILE_IMAGE_BASE64_REFUSAL =
+  'imageBase64 must be the image bytes as base64 and nothing else (an optional data:image/...;base64, prefix and line breaks are fine).'
+
+export const PROFILE_IMAGE_NO_AGENT_REFUSAL =
+  'This connection has no valid agent id of its own, so no picture is changed.'
+
+/**
+ * Whether the text is base64 and nothing else (standard or URL safe alphabet,
+ * up to two `=` at the end). The backend's isBase64Text, mirrored: Node's
+ * decoder silently skips any other character, so without this a model could
+ * smuggle text into the bytes that leave the computer. A loop, not a regular
+ * expression, for the same reason the backend gives (a multi MB string).
+ */
+export function isBase64Text(text: string): boolean {
+  let end = text.length
+  if (end > 0 && text.charCodeAt(end - 1) === 61) end--
+  if (end > 0 && text.charCodeAt(end - 1) === 61) end--
+  if (end === 0) return false
+  for (let i = 0; i < end; i++) {
+    const c = text.charCodeAt(i)
+    const ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 43 || c === 47 || c === 95 || c === 45
+    if (!ok) return false
+  }
+  return true
+}
+
+/** This agent's own id as the routes take it, or null when the connection has none. */
+export function ownAgentId(raw: string | number): number | null {
+  const text = String(raw ?? '').trim()
+  if (!/^[1-9]\d*$/.test(text)) return null
+  const id = Number(text)
+  return Number.isSafeInteger(id) ? id : null
+}
+
+class Refusal extends Error {}
+
+/**
+ * Read one REGULAR file, at most 5 MB + 1 bytes. Opened without blocking, so a
+ * named pipe is refused at once instead of waiting for a writer, and a folder
+ * or a device (which reports size 0 and never ends) is refused from fstat
+ * before a byte is read. The bounded read also covers a file that grows after
+ * its size was checked.
+ */
+async function readRegularImageFile(path: string): Promise<Uint8Array> {
+  const file = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0))
+  try {
+    const info = await file.stat()
+    if (!info.isFile()) throw new Refusal(PROFILE_IMAGE_NOT_FILE_REFUSAL)
+    if (info.size > PROFILE_IMAGE_MAX_BYTES) throw new Refusal(PROFILE_IMAGE_SIZE_REFUSAL)
+    const buffer = Buffer.alloc(PROFILE_IMAGE_MAX_BYTES + 1)
+    let size = 0
+    while (size < buffer.length) {
+      const { bytesRead } = await file.read(buffer, size, buffer.length - size, null)
+      if (bytesRead === 0) break
+      size += bytesRead
+    }
+    return buffer.subarray(0, size)
+  } finally {
+    await file.close()
+  }
+}
+
 const schema = z.strictObject({
   path: z.string().min(1).optional().describe('Absolute path of a local image file your own image tool wrote.'),
   imageBase64: z.string().min(1).optional().describe('The image bytes as base64, when you have no file.'),
@@ -90,6 +156,7 @@ export interface ProfileImageToolDeps {
   /** The acting person headers of the admitted turn ({} on the owner's turn). */
   privateHeaders: Record<string, string>
   bgosPut: (path: string, body: Record<string, unknown>, headers: Record<string, string>) => Promise<unknown>
+  /** Test seam: both given, they replace the regular file read (readRegularImageFile). */
   readBytes?: (path: string) => Promise<Uint8Array>
   fileSize?: (path: string) => Promise<number>
 }
@@ -123,6 +190,9 @@ export async function handleProfileImageTool(
   if (!deps.ownerUserId || deps.actingUserId !== deps.ownerUserId || Object.keys(headers).length > 0) {
     return fail(PROFILE_IMAGE_OWNER_ONLY)
   }
+  // The caller is this agent and no other: an id the connection does not have is never guessed or sent.
+  const assistantId = ownAgentId(deps.assistantId)
+  if (assistantId === null) return fail(PROFILE_IMAGE_NO_AGENT_REFUSAL)
   const parsed = schema.safeParse(rawArgs ?? {})
   if (!parsed.success) return fail(`Invalid arguments: ${parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`)
   const args = parsed.data
@@ -131,21 +201,26 @@ export async function handleProfileImageTool(
   let bytes: Uint8Array
   if (args.path !== undefined) {
     if (!isAbsolute(args.path)) return fail('path must be an absolute path.')
-    const sizeOf = deps.fileSize ?? (async (p: string) => (await stat(p)).size)
-    let size: number
-    try { size = await sizeOf(args.path) } catch { return fail(`Cannot read ${args.path}.`) }
-    if (size > PROFILE_IMAGE_MAX_BYTES) return fail(PROFILE_IMAGE_SIZE_REFUSAL)
-    try { bytes = await (deps.readBytes ?? readFile)(args.path) } catch { return fail(`Cannot read ${args.path}.`) }
+    if (deps.readBytes && deps.fileSize) {
+      let size: number
+      try { size = await deps.fileSize(args.path) } catch { return fail(`Cannot read ${args.path}.`) }
+      if (size > PROFILE_IMAGE_MAX_BYTES) return fail(PROFILE_IMAGE_SIZE_REFUSAL)
+      try { bytes = await deps.readBytes(args.path) } catch { return fail(`Cannot read ${args.path}.`) }
+    } else {
+      try { bytes = await readRegularImageFile(args.path) } catch (err) {
+        return fail(err instanceof Refusal ? err.message : `Cannot read ${args.path}.`)
+      }
+    }
   } else {
     const text = args.imageBase64!.replace(/^data:[^,]*,/, '').replace(/\s+/g, '')
     if (text.length > Math.ceil(PROFILE_IMAGE_MAX_BYTES / 3) * 4 + 4) return fail(PROFILE_IMAGE_SIZE_REFUSAL)
+    if (!isBase64Text(text)) return fail(PROFILE_IMAGE_BASE64_REFUSAL)
     bytes = Buffer.from(text, 'base64')
   }
   if (bytes.length > PROFILE_IMAGE_MAX_BYTES) return fail(PROFILE_IMAGE_SIZE_REFUSAL)
   if (!sniffImageType(bytes)) return fail(PROFILE_IMAGE_TYPE_REFUSAL)
 
   const imageBase64 = Buffer.from(bytes).toString('base64')
-  const assistantId = Number(deps.assistantId)
   try {
     if (args.groupChatId !== undefined) {
       const out = await deps.bgosPut(`agent-profile-image/groups/${args.groupChatId}`, { assistantId, imageBase64 }, headers)
