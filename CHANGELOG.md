@@ -14,7 +14,7 @@ Running commands is not available for people you share with yet. Your own tools 
 
 ## 0.90.18 (2026-11-21)
 
-Restart now reports when the agent is catching up, and an interrupted request can return after a usage limit even if the agent already changed a mission or renamed the chat. Editing a message, closing a peer thread or a side thread, and withdrawing a question also leave the request open for an answer.
+Restart now reports when the agent is catching up, and an interrupted request can return after a usage limit even if the agent already changed a mission or renamed the chat. Editing a message, closing a peer thread or a side thread, and withdrawing a question also leave the request open for an answer. When a recovered request arrives with new work, only one session receives its text.
 
 ## 0.90.16 (2026-11-20)
 

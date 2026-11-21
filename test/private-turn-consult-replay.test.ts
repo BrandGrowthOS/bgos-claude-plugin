@@ -17,7 +17,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import fs, { existsSync, utimesSync, writeFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -115,12 +115,16 @@ function agentHome(t: any, agentId = AGENT) {
     hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd,
     prompt: '<task-notification><status>killed</status></task-notification>',
   }, env)
-  const runPromptHook = (sessionId: string, prompt: string) => {
+  const runPromptHook = async (sessionId: string, prompt: string) => {
     const hook = fileURLToPath(new URL('../bin/hoai-private-turn-hook.mjs', import.meta.url))
-    const child = spawnSync(process.execPath, [hook], { env, encoding: 'utf8', windowsHide: true,
-      input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd, prompt }) })
-    assert.equal(child.status, 0, child.stderr)
-    return child.stdout.trim() ? JSON.parse(child.stdout) : null
+    const output = await new Promise<string>((resolve, reject) => {
+      const child = execFile(process.execPath, [hook], { env, encoding: 'utf8', windowsHide: true }, (error, stdout) => {
+        if (error) reject(error)
+        else resolve(stdout)
+      })
+      child.stdin!.end(JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd, prompt }))
+    })
+    return output.trim() ? JSON.parse(output) : null
   }
   const runUnservedHook = (sessionId: string, prompt: string) => {
     markFloorAttached({ root, folders: [cwd], sessionId: 'other-session' })
@@ -405,7 +409,7 @@ for (const guard of ['token', 'content', 'daemon', 'marker list', 'folder', 'key
   })
 }
 
-test('an answer before the recovery prompt removes the card before the model can reply', t => {
+test('an answer before the recovery prompt removes the card before the model can reply', async t => {
   const home = agentHome(t)
   home.clock.now = Date.now()
   const first = home.life()
@@ -415,7 +419,7 @@ test('an answer before the recovery prompt removes the card before the model can
   const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
   next.tracker.noteHandled('reply:1')
   let answers = 1
-  const decision = home.runPromptHook(next.sessionId, card)
+  const decision = await home.runPromptHook(next.sessionId, card)
   if (decision?.decision !== 'block') answers++
   assert.equal(answers, 1)
   const submission = { prompt: card, sessionId: next.sessionId, promptId: 'submission' }
@@ -426,24 +430,35 @@ test('an answer before the recovery prompt removes the card before the model can
   assert.equal(home.life().tracker.canRecover(message.fireKey), false)
 })
 
-test('showing a retry beside another prompt leaves its own admission unspent', t => {
-  const home = agentHome(t)
-  home.clock.now = Date.now()
-  const first = home.life()
-  const message = { content: 'summarize the document', chatId: 'chat', actingUserId: OWNER, fireKey: 'owner:1' }
-  first.submit(first.tracker.deliver(message))
-  const next = home.life()
-  const retry = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
-  const other = next.tracker.deliver({ content: 'new question', chatId: 'second', actingUserId: OWNER })
-  const batch = retry + '\n' + other
-  const shown = home.runPromptHook(next.sessionId, batch)
-  assert.match(shown?.hookSpecificOutput?.additionalContext ?? '', /summarize the document/)
-  next.submit(batch)
-  assert.equal(next.outcomes.at(-1), 'ambiguous')
-  assert.equal(home.life().tracker.canRecover(message.fireKey), true)
-})
+for (const sharedOffer of [true, false]) {
+  test(`two hooks release one recovered request in a mixed prompt (same offer: ${sharedOffer})`, async t => {
+    const home = agentHome(t, 'fixture-agent')
+    home.clock.now = Date.now()
+    const first = home.life()
+    const message = { content: 'summarize the document', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
+    first.submit(first.tracker.deliver(message))
+    const next = home.life()
+    const peer = home.life()
+    const request = { ...message, recoveryWithoutReply: true }
+    const offer = next.tracker.deliver(request)
+    const fresh = next.tracker.deliver({ content: 'new question', chatId: 'second', actingUserId: OWNER })
+    const batch = offer + '\n' + fresh
+    // Both processes can queue an offer before either hook releases the request.
+    const otherBatch = sharedOffer ? batch : peer.tracker.deliver(request) + '\n' + fresh
+    const decisions = await Promise.all([
+      home.runPromptHook(next.sessionId, batch),
+      home.runPromptHook(peer.sessionId, otherBatch),
+    ])
+    assert.equal(decisions.filter(d => d?.hookSpecificOutput?.additionalContext.includes(message.content)).length, 1)
+    for (const decision of decisions) assert.notEqual(decision?.decision, 'block')
+    next.submitWithoutRelease(batch)
+    assert.equal(next.outcomes.at(-1), 'ambiguous')
+    assert.equal(next.call(), null)
+    assert.equal(home.life().tracker.canRecover(message.fireKey), false)
+  })
+}
 
-test('the hook releases an unanswered retry once and keeps fresh work beside a cancelled retry', t => {
+test('the hook releases an unanswered retry once and keeps fresh work beside a cancelled retry', async t => {
   const home = agentHome(t)
   home.clock.now = Date.now()
   const first = home.life()
@@ -452,18 +467,18 @@ test('the hook releases an unanswered retry once and keeps fresh work beside a c
   const next = home.life()
   const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
   assert.doesNotMatch(card, /summarize the document/)
-  const opened = home.runPromptHook(next.sessionId, card)
+  const opened = await home.runPromptHook(next.sessionId, card)
   assert.match(opened?.hookSpecificOutput?.additionalContext ?? '', /summarize the document/)
   next.submit(card)
   assert.equal(next.call(), OWNER)
-  assert.equal(home.runPromptHook(next.sessionId, card), null)
+  assert.equal(await home.runPromptHook(next.sessionId, card), null)
   next.tracker.noteHandled('reply:1')
   const fresh = next.tracker.deliver({ ...message, content: 'fresh question', fireKey: 'owner:2' })
-  assert.equal(home.runPromptHook(next.sessionId, card + '\n' + fresh), null)
+  assert.equal(await home.runPromptHook(next.sessionId, card + '\n' + fresh), null)
   assert.equal(home.life().tracker.canRecover(message.fireKey), false)
 })
 
-test('a reply recorded between hook release and admission prevents a second answer', t => {
+test('a reply recorded between hook release and admission prevents a second answer', async t => {
   const home = agentHome(t)
   home.clock.now = Date.now()
   const message = { content: 'continue', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
@@ -471,7 +486,7 @@ test('a reply recorded between hook release and admission prevents a second answ
   first.submit(first.tracker.deliver(message))
   const next = home.life()
   const card = next.tracker.deliver({ ...message, recoveryWithoutReply: true })
-  assert.ok(home.runPromptHook(next.sessionId, card)?.hookSpecificOutput)
+  assert.ok((await home.runPromptHook(next.sessionId, card))?.hookSpecificOutput)
   next.tracker.noteHandled('reply:1')
   next.submitWithoutRelease(card)
   assert.equal(next.outcomes.at(-1), 'cancelled-retry')
@@ -499,7 +514,7 @@ for (const skipped of [false, true]) {
   })
 }
 
-test('the forwarder leaves an unreleased retry for the hook that shows its words', t => {
+test('the forwarder leaves an unreleased retry for the hook that shows its words', async t => {
   const home = agentHome(t)
   home.clock.now = Date.now()
   const first = home.life()
@@ -514,14 +529,14 @@ test('the forwarder leaves an unreleased retry for the hook that shows its words
   assert.equal(early.status, 0, early.stderr)
   const spool = spoolPath(next.sessionId, env)
   assert.equal(existsSync(spool), false)
-  assert.match(home.runPromptHook(next.sessionId, card)?.hookSpecificOutput.additionalContext, /summarize the document/)
+  assert.match((await home.runPromptHook(next.sessionId, card))?.hookSpecificOutput.additionalContext, /summarize the document/)
   const lines = readFileSync(spool, 'utf8').trim().split('\n')
   assert.equal(lines.length, 1)
   next.submitWithoutRelease(JSON.parse(lines[0]!).payload.prompt)
   assert.equal(next.call(), OWNER)
 })
 
-test('an unreleased retry with an attempt record but no shown record cannot open', t => {
+test('an unreleased retry with an attempt record but no shown record cannot open', async t => {
   const home = agentHome(t)
   home.clock.now = Date.now()
   const first = home.life()
@@ -529,7 +544,7 @@ test('an unreleased retry with an attempt record but no shown record cannot open
   first.submit(first.tracker.deliver(request))
   const retry = home.life()
   const card = retry.tracker.deliver({ ...request, recoveryWithoutReply: true })
-  assert.ok(home.runPromptHook(retry.sessionId, card)?.hookSpecificOutput)
+  assert.ok((await home.runPromptHook(retry.sessionId, card))?.hookSpecificOutput)
   const dir = join(dirname(home.firesPath), 'interrupted-turns')
   fs.unlinkSync(join(dir, fs.readdirSync(dir).find(name => name.endsWith('.shown'))!))
   retry.submitWithoutRelease(card)
@@ -727,7 +742,7 @@ for (const sender of ['owner', 'peer']) {
 const limitRecord = JSON.stringify({ type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' })
 
 for (const limited of [false, true]) {
-  test(`a peer send for an earlier request and a later reply each count once after Stop (refused first: ${limited})`, t => {
+  test(`a peer send for an earlier request and a later reply each count once after Stop (refused first: ${limited})`, async t => {
     const home = agentHome(t)
     home.clock.now = Date.now()
     const first = home.life()
@@ -754,7 +769,7 @@ for (const limited of [false, true]) {
       for (const [index, request] of [one, two].entries()) {
         if (!resumed.tracker.canRecover(request.fireKey)) continue
         const card = resumed.tracker.deliver({ ...request, recoveryWithoutReply: true })
-        assert.ok(home.runPromptHook(resumed.sessionId, card)?.hookSpecificOutput.additionalContext.includes(request.content))
+        assert.ok((await home.runPromptHook(resumed.sessionId, card))?.hookSpecificOutput.additionalContext.includes(request.content))
         resumed.submit(card)
         assert.equal(resumed.call(), OWNER)
         resumed.act('reply')
