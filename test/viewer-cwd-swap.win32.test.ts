@@ -14,6 +14,10 @@
  *   3. the real swap then goes through.
  * Only the two children this test starts are ever signalled.
  *
+ * Cleanup never decides the result: each child's exit event is awaited, then the temp folder is
+ * removed with retries (Windows lets go of a working folder a moment after the process ends), and
+ * a folder it still holds is only logged.
+ *
  * Run (Windows): npx tsx --test test/viewer-cwd-swap.win32.test.ts
  */
 
