@@ -171,7 +171,7 @@ export const THREAD_REPLY_SOFT_MAX = 600
  */
 export const THREAD_REPLY_RULE =
   `[How to write your reply in this thread: plain words, the answer first, at most ${THREAD_REPLY_SOFT_MAX} characters. ` +
-  'If more is needed, say what it is and offer to put it on a page. No em or en dashes.]'
+  'If more is needed, say what it is and say the main session can put it on a page. No em or en dashes.]'
 
 /**
  * One log line when a thread reply is over THREAD_REPLY_SOFT_MAX, so the
@@ -179,8 +179,10 @@ export const THREAD_REPLY_RULE =
  * is never changed for its length.
  */
 export function threadReplyLengthLine(rootId: string, text: string): string | null {
-  if (text.length <= THREAD_REPLY_SOFT_MAX) return null
-  return `threads: thread ${rootId} reply is ${text.length} characters, over ${THREAD_REPLY_SOFT_MAX}, posted unchanged`
+  // Characters by code point, as the nightly count reads them: an emoji is one, not two UTF-16 units.
+  const length = [...text].length
+  if (length <= THREAD_REPLY_SOFT_MAX) return null
+  return `threads: thread ${rootId} reply is ${length} characters, over ${THREAD_REPLY_SOFT_MAX}, posted unchanged`
 }
 
 export type ThreadTurnMode = 'start' | 'reply' | 'summary'

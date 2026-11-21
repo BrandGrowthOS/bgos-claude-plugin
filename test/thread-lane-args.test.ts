@@ -41,7 +41,7 @@ import {
 } from '../lib/thread-lane-args.ts'
 
 /** The reply rule as THREADLEN wrote it, the same rule as a main chat reply. */
-const RULE = '[How to write your reply in this thread: plain words, the answer first, at most 600 characters. If more is needed, say what it is and offer to put it on a page. No em or en dashes.]'
+const RULE = '[How to write your reply in this thread: plain words, the answer first, at most 600 characters. If more is needed, say what it is and say the main session can put it on a page. No em or en dashes.]'
 
 import { laneShellSandboxAvailable } from '../lib/lane-policy.mjs'
 
@@ -302,7 +302,9 @@ test('THREADLEN: every start and reply turn carries the main chat reply rule, a 
   assert.equal(THREAD_REPLY_SOFT_MAX, 600)
   assert.match(RULE, /the answer first/)
   assert.match(RULE, /at most 600 characters/)
-  assert.match(RULE, /offer to put it on a page/)
+  // A thread fork has no HOAI tools, so it cannot make a page itself: the main session can.
+  assert.match(RULE, /say the main session can put it on a page/)
+  assert.doesNotMatch(RULE, /offer to put it on a page/)
   assert.match(RULE, /No em or en dashes/)
   assert.doesNotMatch(RULE, /[–—]/, 'the rule itself has no em or en dash')
   for (const readOnly of [false, true]) {
@@ -317,6 +319,16 @@ test('THREADLEN: a reply over 600 characters gets one length line, one within ge
   assert.equal(threadReplyLengthLine('101', 'a'.repeat(600)), null)
   assert.equal(threadReplyLengthLine('101', 'short'), null)
   assert.equal(threadReplyLengthLine('101', 'a'.repeat(601)), 'threads: thread 101 reply is 601 characters, over 600, posted unchanged')
+})
+
+test('THREADLEN: the length counts characters by code point, as the nightly count does, so an emoji is one', () => {
+  const emoji = '\u{1F600}'
+  assert.equal(emoji.length, 2, 'one emoji is two UTF-16 units')
+  // 400 emoji are 800 UTF-16 units but 400 characters: within the rule.
+  assert.equal(threadReplyLengthLine('101', emoji.repeat(400)), null)
+  assert.equal(threadReplyLengthLine('101', emoji.repeat(600)), null)
+  assert.equal(threadReplyLengthLine('101', emoji.repeat(601)), 'threads: thread 101 reply is 601 characters, over 600, posted unchanged')
+  assert.equal(threadReplyLengthLine('101', `${'a'.repeat(599)}${emoji}${emoji}`), 'threads: thread 101 reply is 601 characters, over 600, posted unchanged')
 })
 
 test('a thread reply is the text after the reply rule, and a summary asks for the summary only', () => {
