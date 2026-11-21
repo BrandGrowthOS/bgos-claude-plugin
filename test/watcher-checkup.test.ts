@@ -697,6 +697,47 @@ test('a dead session with a supervisor is started and verified; a named launch f
   assert.deepEqual(run2.spawns, [])
 })
 
+test('an agent nobody keeps running, deaf for 20 minutes, and the watcher down 5 minutes then back: its first heartbeat still names the finding, so no check up comes and nothing is restarted', async () => {
+  const fs = agentFs()
+  writeTranscript(fs, [assistantTurn(T0 - 50 * MIN)], T0 - 50 * MIN)
+  // What the watcher saved before it stopped: 912 deaf for 20 minutes and not kept running,
+  // last looked at 5 minutes ago, when the watcher went down.
+  const since = new Date(T0 - 20 * MIN).toISOString()
+  const seen = new Date(T0 - 5 * MIN).toISOString()
+  fs.writeFile(
+    `${HOME}/.bgos-agent/watcher/keepalive-state.json`,
+    JSON.stringify({
+      schemaVersion: 1,
+      enabled: false,
+      agents: {},
+      watched: { '912': { state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since, deafSince: since, deafSeenAt: seen } },
+    }),
+  )
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`)].join('\n')
+  // The server as its rule reads (the app's Helper table, round 2): an agent offline for more than
+  // 15 minutes gets an automatic check up, unless the heartbeat names it as a deaf agent nobody
+  // keeps running. The desktop's check up reaches this watcher on its next poll.
+  const backend = fakeBackend(checkupJob())
+  let firstBeatNamesIt: boolean | null = null
+  const fetch = async (url: string, init: any) => {
+    const path = new URL(url).pathname
+    if (path.endsWith('/integrations/heartbeat') && firstBeatNamesIt === null) {
+      const watched = JSON.parse(init.body)?.env?.watcherHealth?.keepAlive?.watched ?? []
+      firstBeatNamesIt = watched.some((w: any) => w.id === '912' && w.state === 'failed' && String(w.reason).includes('no-channel-heartbeat'))
+    }
+    if (path.endsWith('/machine-rpc/pending') && firstBeatNamesIt === true) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ frames: [] }) }
+    }
+    return backend.fetch(url, init)
+  }
+  const run = rig(fs, backend, fakeClock(), ps, { alive: [3000, 5912], fetch })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(backend.progress('chk-1'), [], 'no check up ran')
+  assert.deepEqual(run.kills, [], 'nothing was ended')
+  assert.deepEqual(run.spawns, [], 'nothing was started')
+  assert.equal(firstBeatNamesIt, true, 'the first heartbeat after the restart names the deaf agent nobody keeps running')
+})
+
 test('the pass deadline bounds the verify: a deaf agent is not_fixed inside 75 s, never a 120 s wait', async () => {
   const fs = agentFs()
   writeTranscript(fs, [assistantTurn(T0 - 50 * MIN)], T0 - 50 * MIN)
