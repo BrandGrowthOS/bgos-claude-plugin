@@ -88,6 +88,9 @@ test('a report is not built from anything that is not an agent id or a tool name
     { assistantId: 1050, delegate: '0', tool: 'boards_query' },
     { assistantId: 1050, delegate: '888', tool: 'move my meeting to 3pm' },
     { assistantId: 1050, delegate: '888', tool: '' },
+    // Not a tool, though it starts like one: only the names of lib/peer-private-tools.json (trustcount2).
+    { assistantId: 1050, delegate: '888', tool: 'boards_made_up' },
+    { assistantId: 1050, delegate: '888', tool: 'hoai_browser_status' },
     { assistantId: 'me', delegate: '888', tool: 'boards_query' },
     { assistantId: 1050, delegate: '1050', tool: 'boards_query' },
     { assistantId: 1050, delegate: undefined, tool: 'boards_query' },

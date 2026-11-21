@@ -1,0 +1,10 @@
+{
+  "file": "lib/peer-private-tools.json",
+  "source": "BGOS: backend/src/peer-refusals/peer-private-tools.json",
+  "sha256": "d3f2878d8b9e7acf8cccca23edc6ac18f4fbebf012f4d24a375b6c5265d3402d",
+  "sourceCommit": "c700d7d257b7ca4c79d65472209b725a8a1b80c1",
+  "sourceBranch": "park/trustcount2",
+  "vendoredAt": "2026-11-21",
+  "why": "The one list of private tool names a refused peer request is counted under (BGOS trustcount2, security review finding 1). The backend counts only these names, under these kinds, and its table's CHECK names the same ones; lib/peer-refusal-counter.mjs sends only these names. Byte for byte the BGOS file at sourceCommit.",
+  "howToUpdate": "Change the BGOS file first (and its migration CHECK in a new dated migration), then copy it here byte for byte (cp, then cmp), set sha256 (shasum -a 256) and sourceCommit. test/peer-private-tools.vendor.test.ts fails on a drift; HOAI_PEER_TOOLS_SOURCE=<BGOS file> compares the bytes too."
+}

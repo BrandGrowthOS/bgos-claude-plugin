@@ -765,6 +765,9 @@ test('no count without a signed peer context: a status call, a forged signature,
     ['junk id', () => signPeerContext(f, { peerAssistantId: 'Mark' }), 'browser_navigate'],
     ['this agent', () => signPeerContext(f, { peerAssistantId: '42' }), 'browser_navigate'],
     ['no peer', () => signPeerContext(f, { peerAssistantId: undefined }), 'browser_navigate'],
+    // TRUSTCOUNT2 finding 4: peerContextRefusal's owner check is the only one on this path; a signed context naming
+    // another owner counts nothing (BGOS shim.managed-context.test.js carries the same case for the same bytes).
+    ['another owner', () => signPeerContext(f, { ownerUserId: 'user_someone_else' }), 'browser_navigate'],
   ]
   for (const [label, arrange, tool] of cases) {
     arrange()
