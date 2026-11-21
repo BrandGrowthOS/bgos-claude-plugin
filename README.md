@@ -171,6 +171,14 @@ launchd / systemd --user
   Windows that mirrors the agent's hidden console and cannot type into it.
   Closing a viewer, or turning the setting off, closes only the viewer; nothing
   restarts. A closed viewer stays closed until the agent's next start.
+  A viewer never blocks the watcher's own update (0.90.22): on Windows each
+  viewer runs from the home folder, never the watcher's `bin` folder (Windows
+  cannot rename a folder a process works in). Right before the watcher swaps in
+  a new copy of itself it closes the viewers it opened, by their process ids
+  (never another process, never by name), and the new watcher opens them again;
+  a move Windows still refuses (EBUSY or EPERM) is tried three more times, three
+  seconds apart, before the watcher waits an hour. A Windows PC already stuck on
+  an older watcher needs its viewer window closed once; then it updates.
 - **The installed plugin, at every launch.** `run.sh` resolves the plugin root
   each time it starts hoai: a marketplace agent reads its install record
   (`<config dir>/plugins/installed_plugins.json`, honouring `CLAUDE_CONFIG_DIR`),

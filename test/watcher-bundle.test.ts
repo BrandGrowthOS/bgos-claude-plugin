@@ -200,7 +200,7 @@ test('swapStagedBundle: next/ replaces bin/, lib/ and the manifest; credentials,
   fs.files.set('/home/person/.bgos-agent/watcher/state.json', '{}')
   fs.files.set('/home/person/.bgos-agent/watcher/logs/watcher.log', 'line\n')
   const staged = await installWatcherBundle({ pluginRoot: '/new-root', home: HOME, fs, targetDir: '/home/person/.bgos-agent/watcher/next' })
-  const result = swapStagedBundle({ home: HOME, fs })
+  const result = await swapStagedBundle({ home: HOME, fs })
   assert.deepEqual(result, { ok: true, swapped: ['bin', 'lib', 'manifest.json'], message: 'swapped' })
   for (const rel of WATCHER_BUNDLE_FILES) {
     assert.equal(fs.files.get(`/home/person/.bgos-agent/watcher/${rel}`), `// ${rel} v2\n`)
@@ -216,7 +216,7 @@ test('swapStagedBundle: next/ replaces bin/, lib/ and the manifest; credentials,
 test('swapStagedBundle: nothing staged is a named no-op; a failed rename restores the previous bundle', async () => {
   const fs = memoryFs(pluginRootFiles(ROOT))
   await installWatcherBundle({ pluginRoot: ROOT, home: HOME, fs })
-  assert.deepEqual(swapStagedBundle({ home: HOME, fs }), { ok: false, swapped: [], message: 'nothing_staged' })
+  assert.deepEqual(await swapStagedBundle({ home: HOME, fs }), { ok: false, swapped: [], message: 'nothing_staged' })
   const staged = memoryFs({ ...pluginRootFiles(ROOT), ...pluginRootFiles('/new-root', 'v2') })
   await installWatcherBundle({ pluginRoot: ROOT, home: HOME, fs: staged })
   await installWatcherBundle({ pluginRoot: '/new-root', home: HOME, fs: staged, targetDir: '/home/person/.bgos-agent/watcher/next' })
@@ -231,12 +231,57 @@ test('swapStagedBundle: nothing staged is a named no-op; a failed rename restore
       staged.rename(from, to)
     },
   }
-  const result = swapStagedBundle({ home: HOME, fs: flaky })
+  const result = await swapStagedBundle({ home: HOME, fs: flaky, sleep: async () => assert.fail('EACCES is never retried') })
   assert.equal(result.ok, false)
   assert.match(result.message, /EACCES/)
   // Restored: every live bundle file is the v1 copy again.
   for (const rel of WATCHER_BUNDLE_FILES) {
     assert.equal(staged.files.get(`/home/person/.bgos-agent/watcher/${rel}`), before.get(`/home/person/.bgos-agent/watcher/${rel}`))
+  }
+})
+
+/** A live bundle with v2 staged in next/, and a rename that throws `code` for the first `times` moves of the live bin/. */
+async function busyBin(code: string, times: number) {
+  const fs = memoryFs({ ...pluginRootFiles(ROOT), ...pluginRootFiles('/new-root', 'v2') })
+  await installWatcherBundle({ pluginRoot: ROOT, home: HOME, fs })
+  await installWatcherBundle({ pluginRoot: '/new-root', home: HOME, fs, targetDir: '/home/person/.bgos-agent/watcher/next' })
+  const before = new Map(fs.files)
+  const binMoves: string[] = []
+  const sleeps: number[] = []
+  const busy = {
+    ...fs,
+    rename: (from: string, to: string) => {
+      if (from === '/home/person/.bgos-agent/watcher/bin') {
+        binMoves.push(to)
+        if (binMoves.length <= times) throw Object.assign(new Error(`${code}: resource busy or locked, rename '${from}' -> '${to}'`), { code })
+      }
+      fs.rename(from, to)
+    },
+  }
+  return { fs, busy, before, binMoves, sleeps, sleep: async (ms: number) => void sleeps.push(ms) }
+}
+
+test('viewercwd: a rename Windows refuses with EBUSY or EPERM is tried again, up to three times a few seconds apart, and then the swap goes through', async () => {
+  for (const code of ['EBUSY', 'EPERM']) {
+    const m = await busyBin(code, 3)
+    const result = await swapStagedBundle({ home: HOME, fs: m.busy, sleep: m.sleep })
+    assert.deepEqual(result, { ok: true, swapped: ['bin', 'lib', 'manifest.json'], message: 'swapped' }, code)
+    assert.equal(m.binMoves.length, 4, `${code}: one try and three retries`)
+    assert.equal(m.sleeps.length, 3, code)
+    for (const ms of m.sleeps) assert.ok(ms >= 1_000 && ms <= 10_000, `${code}: a few seconds apart, not ${ms} ms`)
+    for (const rel of WATCHER_BUNDLE_FILES) assert.equal(m.fs.files.get(`/home/person/.bgos-agent/watcher/${rel}`), `// ${rel} v2\n`, `${code} ${rel}`)
+  }
+})
+
+test('viewercwd: still busy after three retries, the swap fails by name with the live bundle intact (the hour wait follows)', async () => {
+  const m = await busyBin('EBUSY', 99)
+  const result = await swapStagedBundle({ home: HOME, fs: m.busy, sleep: m.sleep })
+  assert.equal(result.ok, false)
+  assert.match(result.message, /^swap_failed: EBUSY/)
+  assert.equal(m.binMoves.length, 4, 'one try and three retries, no more')
+  assert.equal(m.sleeps.length, 3)
+  for (const rel of WATCHER_BUNDLE_FILES) {
+    assert.equal(m.fs.files.get(`/home/person/.bgos-agent/watcher/${rel}`), m.before.get(`/home/person/.bgos-agent/watcher/${rel}`), rel)
   }
 })
 

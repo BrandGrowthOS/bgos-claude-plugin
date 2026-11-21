@@ -12,6 +12,20 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.22 (2026-11-21)
+
+**fix(watcher): a viewer window on a Windows PC no longer stops the Helper from updating itself.**
+
+On Windows the watch only viewer (Show agent windows) was started with its working folder inside the Helper's own `bin` folder. Windows will not rename a folder that any program is working in, so while a viewer was open the Helper's hourly self update failed every time (EBUSY when it moved `bin` aside), even after a restart, because the viewers open again about 30 seconds after the Helper starts.
+
+- Every viewer, and the helper that hides a console in place, now runs from the home folder, never from inside the Helper's files.
+- Right before it swaps in its new copy, the Helper closes the viewer windows it opened itself, one by one by process id, and only while the process still has the same start time and still runs this Helper's own viewer script. It never closes a program by name, and never one it did not start. The new Helper opens the viewers again (they are not counted as windows you closed).
+- If Windows still refuses the move (EBUSY or EPERM), it is tried three more times, three seconds apart, before the Helper gives up and waits the usual hour.
+
+**A Windows PC that is already stuck needs its viewer window closed once, then it updates.** The Helper doing the update is the old one, which does not have this fix: close the agent's viewer window (or turn Show agent windows off for a moment) and the next attempt goes through. From then on the new Helper handles it by itself.
+
+Tests: `test/agent-windows.test.ts` (no viewer starts inside the bundle; the swap closes only known viewers; the successor reopens them), `test/watcher-bundle.test.ts` (EBUSY and EPERM retried three times), `test/watcher-self-refresh.test.ts` (the real loop with a viewer, and a program it did not start, holding `bin`), and `test/viewer-cwd-swap.win32.test.ts` (Windows only: a real process working in `bin` blocks the real rename; closed by pid, the swap goes through).
+
 ## 0.90.16 (2026-11-20)
 
 **fix(keep-alive): the Helper now notices when any agent on the computer stops getting messages, not only the agents it keeps running.**

@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url'
 import { EXIT_SELF_REFRESH, refreshWatcherIfStale } from '../lib/watcher-core.mjs'
 import { SWAPPABLE_ENTRIES, WATCHER_BUNDLE_FILES, installWatcherBundle, readBundleManifest, watcherImportClosure } from '../lib/watcher-bundle.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
+import { fakeWindowHost, viewerProcess } from './helpers/fake-window-host.ts'
 import {
   MACHINE_ID,
   MINUTE,
@@ -359,6 +360,79 @@ test('win32: when the successor did not start, this watcher stays up instead of 
   // Recorded as what happened, not as a refresh: the bundle on disk moved, the running code did not.
   assert.equal(stateOf(WINDOWS, fs).bundleRefresh?.outcome, 'watcher_bundle_refreshed:0.63.2:no_successor')
   assert.equal(stateOf(WINDOWS, fs).bundleRefresh?.ok, false)
+})
+
+// -- viewercwd: a viewer window holding bin never blocks the self refresh ----------------------
+//
+// Windows refuses to rename a folder that is any process's working folder, and viewers opened by
+// 0.90.21 and older ran in <watcher>\bin. The swap's first move (bin to prev\bin) then failed with
+// EBUSY at every hourly attempt, for as long as a viewer stayed open.
+
+const VIEWER_PID = 6001
+const PERSON_PID = 7001
+const VIEWER_STARTED = Date.parse('2026-10-11T07:00:00.000Z')
+
+/** A stale win32 machine whose state.json says this watcher keeps viewer 6001 for agent 912, and a
+ *  rename of the live bin that Windows refuses while any process in `holders` is still running. */
+async function heldBinMachine(holders: number[]) {
+  const { fs } = await staleMachine(WINDOWS)
+  fs.writeFile(
+    at(WINDOWS, watcherDir(WINDOWS), 'state.json'),
+    JSON.stringify({ viewers: { opened: { '912': 'pid:4242' }, closed: {}, lastOpenAt: {}, lastShow: true, viewerPids: [{ pid: VIEWER_PID, startedAtMs: VIEWER_STARTED, id: '912' }] } }),
+  )
+  const host = fakeWindowHost({
+    processes: [
+      viewerProcess({ pid: VIEWER_PID, assistantId: '912', consolePid: 4242, startedAtMs: VIEWER_STARTED }),
+      // A person's own shell, which the watcher did not start (in the second case it sits in bin).
+      { pid: PERSON_PID, ppid: 4, command: '"C:\\Windows\\System32\\cmd.exe"', startedAtMs: VIEWER_STARTED },
+    ],
+  })
+  const bin = at(WINDOWS, watcherDir(WINDOWS), 'bin')
+  const binMoves: number[] = []
+  const rename = fs.rename
+  fs.rename = (from: string, to: string) => {
+    if (from === bin) {
+      binMoves.push(Date.now())
+      const holder = holders.find((pid) => host.processes.has(pid))
+      if (holder) throw Object.assign(new Error(`EBUSY: resource busy or locked, rename '${from}' -> '${to}'`), { code: 'EBUSY' })
+    }
+    rename(from, to)
+  }
+  return { fs, host, binMoves }
+}
+
+test('viewercwd win32: a viewer this watcher opened holds bin; it is closed by pid before the swap, the swap goes through, and nothing the watcher did not start is touched', async () => {
+  const m = await heldBinMachine([VIEWER_PID])
+  const w = watcherRun(WINDOWS, m.fs, { host: m.host })
+  assert.equal(await w.run(), 0, 'swapped, successor spawned')
+  assert.equal(m.fs.readFile(liveEntry(WINDOWS)), '// bin/hoai-watcher.mjs 0.63.2\n')
+  assert.deepEqual(m.host.kills, [{ pid: VIEWER_PID, signal: 'SIGTERM' }], 'only the viewer, by pid')
+  assert.equal(m.host.processes.has(PERSON_PID), true, "the person's shell runs on")
+  assert.deepEqual(m.host.refused, [], 'no kill by name, nothing else run')
+  assert.equal(stateOf(WINDOWS, m.fs).bundleRefresh?.ok, true)
+  // The successor reads state.json: the closed viewer is not one the owner closed, so it reopens it.
+  const viewers = stateOf(WINDOWS, m.fs).viewers
+  assert.equal(viewers.opened['912'], undefined)
+  assert.equal(viewers.closed['912'], undefined)
+  assert.equal(viewers.lastOpenAt['912'], undefined)
+})
+
+test('viewercwd win32: a process the watcher did not start holds bin; it is never touched, the rename is tried four times a few seconds apart, then the swap fails by name and waits the hour', async () => {
+  const m = await heldBinMachine([VIEWER_PID, PERSON_PID])
+  const w = watcherRun(WINDOWS, m.fs, { host: m.host })
+  assert.equal(await w.run(), 0)
+  assert.equal(m.fs.readFile(liveEntry(WINDOWS)), '// bin/hoai-watcher.mjs 0.61.1\n', 'the live bundle is intact')
+  assert.equal(m.binMoves.length, 4, 'one try and three retries')
+  assert.equal(m.host.processes.has(PERSON_PID), true)
+  assert.equal(m.host.kills.some((k) => k.pid === PERSON_PID), false, "the person's shell is never signalled")
+  const state = stateOf(WINDOWS, m.fs)
+  assert.equal(state.bundleRefresh?.ok, false)
+  assert.match(state.bundleRefresh?.outcome ?? '', /^watcher_refresh_failed:swap_failed: EBUSY/)
+  assert.deepEqual(w.spawns, [], 'no successor')
+  // Half an hour later nothing is tried again; the hour wait holds.
+  const later = watcherRun(WINDOWS, m.fs, { host: m.host, now: T0 + 30 * MINUTE })
+  await later.run()
+  assert.equal(m.binMoves.length, 4)
 })
 
 test('an install the watcher cannot read as current is reported by reason: plugin not installed, install folder gone', async () => {

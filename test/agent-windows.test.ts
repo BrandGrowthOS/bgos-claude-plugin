@@ -41,6 +41,7 @@ import {
   TMUX_FIELD_SEPARATOR,
   VIEWER_LAUNCHER_FILE_NAME,
   VIEWER_SCRIPT_FILE_NAME,
+  closeViewersForSwap,
   findTool,
   hasUtf8Locale,
   runWindowsPass,
@@ -302,15 +303,15 @@ function proc(pid: number, ppid: number, command: string) {
 const viewerCommand = (consolePid: number, id: string) => `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -STA -File "${PS1}" -ConsolePid ${consolePid} -AssistantId ${id}`
 
 function winEffects(table: any[]) {
-  const execs: Array<{ file: string; args: string[] }> = []
+  const execs: Array<{ file: string; args: string[]; opts?: any }> = []
   const spawns: Array<{ file: string; args: string[]; opts: any }> = []
   const kills: Array<[number, string]> = []
   return {
     execs,
     spawns,
     kills,
-    exec: async (file: string, args: readonly string[]) => {
-      execs.push({ file, args: [...args] })
+    exec: async (file: string, args: readonly string[], opts?: any) => {
+      execs.push({ file, args: [...args], opts })
       if (file === 'powershell.exe' && args.includes('-Command')) return { code: 0, stdout: JSON.stringify(table), stderr: '', error: null, timedOut: false }
       return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
     },
@@ -502,6 +503,137 @@ test('runWindowsPass win32: an unreadable process table opens nothing (a second 
   const out = await runWindowsPass(winCtx(fx, fs, [winRow('912', 'C:\\a\\Wolf')], true) as any)
   assert.deepEqual(fx.spawns, [])
   assert.deepEqual(out.report, { mode: 'viewer', reason: 'open_failed' })
+})
+
+// -- a viewer never holds the bundle's folder (viewercwd) ---------------------------------------
+//
+// Windows refuses to rename a folder that is any process's working folder. A viewer spawned with
+// its working folder in the watcher's bin folder held it for as long as it stayed open, so every
+// self refresh failed to move bin aside (EBUSY), hour after hour, and again after a reboot (the
+// viewers reopen about 30 s after the watcher starts).
+
+const WATCHER = `${HOME}\\.bgos-agent\\watcher`
+
+/** True when `dir` is the watcher's folder for code (bin, lib, next, prev) or anything inside one. */
+function insideBundle(dir: unknown) {
+  const d = String(dir ?? '').replace(/[\\/]+$/, '').toLowerCase()
+  return ['bin', 'lib', 'next', 'prev'].some((name) => {
+    const root = `${WATCHER}\\${name}`.toLowerCase()
+    return d === root || d.startsWith(`${root}\\`) || d.startsWith(`${root}/`)
+  })
+}
+
+test('viewercwd: no viewer, and no viewer helper, is started with its working folder inside the watcher bundle (Windows, Linux)', async () => {
+  // Windows: a viewer opened, and a console hidden in place (the same script, hide mode).
+  const fs = winMachine({ '912': 4242, '2': 202 })
+  const rows = [winRow('912', 'C:\\Users\\kc\\hoai-agents\\Wolf'), winRow('2', 'C:\\a\\recipe')]
+  const fx = winEffects([proc(4242, 1, 'node hoai-core.mjs'), proc(22, 1, 'cmd  /k ""C:\\node.exe" "C:\\root\\bin\\hoai-core.mjs""'), proc(202, 22, '"C:\\node.exe" "C:\\root\\bin\\hoai-core.mjs"')])
+  await runWindowsPass(winCtx(fx, fs, rows, true) as any)
+  assert.equal(fx.spawns.length, 2, 'both agents got a viewer')
+  assert.equal(fx.execs.filter((c) => c.args.includes('hide')).length, 1, 'one console hidden in place')
+  for (const s of fx.spawns) {
+    assert.equal(typeof s.opts.cwd, 'string', 'a viewer names its working folder (else it inherits the watcher\'s)')
+    assert.equal(insideBundle(s.opts.cwd), false, `viewer working folder ${s.opts.cwd} is inside the bundle`)
+    assert.equal(s.opts.cwd, HOME)
+  }
+  for (const c of fx.execs) assert.equal(insideBundle(c.opts?.cwd), false, `${c.file} ${c.args.join(' ')} runs in ${c.opts?.cwd}`)
+  const hide = fx.execs.find((c) => c.args.includes('hide'))!
+  assert.equal(hide.opts?.cwd, HOME, 'the hide helper runs from the home folder too')
+
+  // Linux: the terminal running the read only attach.
+  const tmux = tmuxEffects({ 'hoai-912': { sessions: [['hoai-912', 1794600000]], clients: [] } })
+  const pfs = memoryFs()
+  await runWindowsPass({ ...posixCtx('linux', tmux, pfs, [posixRow('912', '/home/p/Wolf')], true, emptyViewerMemory(), { DISPLAY: ':0', PATH: '/usr/bin' }), hasCommand: (n: string) => n === 'xterm' } as any)
+  assert.ok(tmux.spawns.length >= 1, 'the Linux viewer opened')
+  for (const s of tmux.spawns) assert.equal(String(s.opts?.cwd ?? '').includes('.bgos-agent'), false, `Linux viewer runs in ${s.opts?.cwd}`)
+})
+
+test('viewercwd: each pass remembers the viewers it keeps (pid, start time, agent), and the memory survives a watcher restart', async () => {
+  const fs = winMachine({ '912': 4242 })
+  const rows = [winRow('912', 'C:\\Users\\kc\\hoai-agents\\Wolf')]
+  const fx = winEffects([proc(4242, 1, 'node hoai-core.mjs'), proc(6001, 1, viewerCommand(4242, '912'))])
+  const out = await runWindowsPass(winCtx(fx, fs, rows, true) as any)
+  assert.deepEqual(fx.spawns, [], 'the open viewer is adopted, none opened')
+  assert.deepEqual((out.memory as any).viewerPids, [{ pid: 6001, startedAtMs: T0 - 60_000, id: '912' }])
+  const restored = viewerMemoryFromState(JSON.parse(JSON.stringify(viewerMemoryForState(out.memory))))
+  assert.deepEqual((restored as any).viewerPids, [{ pid: 6001, startedAtMs: T0 - 60_000, id: '912' }])
+  // Junk in state.json is dropped, never read as a pid to close.
+  const junk = viewerMemoryFromState({ viewerPids: [{ pid: '6001', startedAtMs: 1, id: '912' }, { pid: 6002, startedAtMs: null, id: 'x' }, { pid: -1, startedAtMs: 1, id: '1' }, 'no', null] })
+  assert.deepEqual((junk as any).viewerPids, [])
+})
+
+test('viewercwd: before a bundle swap the watcher closes ONLY the viewers it knows (pid, start time and this bundle\'s viewer command all still match), by pid, and forgets them so the successor reopens them', async () => {
+  const known = [
+    { pid: 6001, startedAtMs: T0 - 60_000, id: '912' }, // this bundle's viewer, still running: closed
+    { pid: 6002, startedAtMs: T0 - 60_000, id: '912' }, // a viewer, but of another home's bundle (it cannot hold this bin): untouched
+    { pid: 6004, startedAtMs: T0 - 60_000, id: '7' }, // the pid now belongs to a person's PowerShell: untouched
+    { pid: 6005, startedAtMs: T0 - 5 * MIN, id: '8' }, // the same command, but a later process took the pid: untouched
+    { pid: 6006, startedAtMs: T0 - 60_000, id: '9' }, // gone: nothing to do
+  ]
+  const table = [
+    proc(4242, 1, 'node hoai-core.mjs'),
+    proc(6001, 1, viewerCommand(4242, '912')),
+    // Another home's viewer (its own bundle path), even of the same shape.
+    proc(6002, 1, `powershell.exe -NoProfile -File "D:\\Other\\.bgos-agent\\watcher\\bin\\${VIEWER_SCRIPT_FILE_NAME}" -ConsolePid 4242 -AssistantId 912`),
+    proc(6003, 1, 'powershell.exe -NoProfile'),
+    proc(6004, 1, 'powershell.exe -NoProfile -Command Get-Date'),
+    proc(6005, 1, viewerCommand(4343, '8')),
+  ]
+  const fx = winEffects(table)
+  const memory = { ...emptyViewerMemory(), lastShow: true, scanned: true, opened: { '912': 'pid:4242', '8': 'pid:4343', '5': 'pid:5050' }, lastOpenAt: { '912': T0 - MIN, '5': T0 - MIN }, viewerPids: known }
+  const logs: string[] = []
+  const out = await closeViewersForSwap({ platform: 'win32', env: {}, exec: fx.exec, kill: fx.kill, log: (l: string) => logs.push(l), viewerDir: VIEWER_DIR, memory } as any)
+  assert.deepEqual(fx.kills, [[6001, 'SIGTERM']], 'only the known viewer of this bundle')
+  assert.deepEqual(out.closed, [{ pid: 6001, id: '912' }])
+  assert.equal(fx.spawns.length, 0)
+  assert.equal(fx.execs.some((c) => /taskkill|Stop-Process/i.test([c.file, ...c.args].join(' '))), false, 'never a kill by name')
+  // Forgotten, so the successor does not read it as a viewer the owner closed, and no cool-down holds it back.
+  assert.equal(out.memory.opened['912'], undefined)
+  assert.equal(out.memory.lastOpenAt['912'], undefined)
+  assert.equal(out.memory.opened['5'], 'pid:5050', 'other agents keep their memory')
+  assert.equal(out.memory.lastOpenAt['5'], T0 - MIN)
+  assert.deepEqual((out.memory as any).viewerPids, [], 'closed, reused and gone pids are not kept')
+  assert.ok(logs.some((l) => l.includes('6001')), logs.join('\n'))
+})
+
+test('viewercwd: the successor reopens the viewers closed for the swap; a viewer the OWNER closed still stays closed', async () => {
+  const fs = winMachine({ '912': 4242 })
+  const rows = [winRow('912', 'C:\\Users\\kc\\hoai-agents\\Wolf')]
+  const memory = { ...emptyViewerMemory(), lastShow: true, scanned: true, opened: { '912': 'pid:4242' }, lastOpenAt: { '912': T0 - MIN }, viewerPids: [{ pid: 6001, startedAtMs: T0 - 60_000, id: '912' }] }
+  const before = winEffects([proc(4242, 1, 'node hoai-core.mjs'), proc(6001, 1, viewerCommand(4242, '912'))])
+  const released = await closeViewersForSwap({ platform: 'win32', env: {}, exec: before.exec, kill: before.kill, log: () => {}, viewerDir: VIEWER_DIR, memory } as any)
+  assert.deepEqual(before.kills, [[6001, 'SIGTERM']])
+  // The successor is a new process: it starts from state.json, and the viewer is gone from the table.
+  const successorMemory = viewerMemoryFromState(JSON.parse(JSON.stringify(viewerMemoryForState(released.memory))))
+  const after = winEffects([proc(4242, 1, 'node hoai-core.mjs')])
+  await runWindowsPass(winCtx(after, fs, rows, true, { ...successorMemory, scanned: true }, T0 + MIN) as any)
+  assert.deepEqual(after.spawns.map((s) => s.args.slice(2)), [['-ConsolePid', '4242', '-AssistantId', '912']], 'reopened by the successor')
+  // Control: the same viewer gone without the swap's release reads as the owner's close, and stays closed.
+  const owner = winEffects([proc(4242, 1, 'node hoai-core.mjs')])
+  await runWindowsPass(winCtx(owner, fs, rows, true, { ...viewerMemoryFromState(JSON.parse(JSON.stringify(viewerMemoryForState(memory as any)))), scanned: true }, T0 + MIN) as any)
+  assert.deepEqual(owner.spawns, [])
+})
+
+test('viewercwd: off Windows, or with no viewer known, the swap closes nothing and lists nothing', async () => {
+  const fx = winEffects([proc(6001, 1, viewerCommand(4242, '912'))])
+  const memory = { ...emptyViewerMemory(), viewerPids: [{ pid: 6001, startedAtMs: T0 - 60_000, id: '912' }] }
+  for (const platform of ['darwin', 'linux']) {
+    const out = await closeViewersForSwap({ platform, env: {}, exec: fx.exec, kill: fx.kill, log: () => {}, viewerDir: VIEWER_DIR, memory } as any)
+    assert.deepEqual(out.closed, [], platform)
+  }
+  const none = await closeViewersForSwap({ platform: 'win32', env: {}, exec: fx.exec, kill: fx.kill, log: () => {}, viewerDir: VIEWER_DIR, memory: emptyViewerMemory() } as any)
+  assert.deepEqual(none.closed, [])
+  assert.deepEqual(fx.execs, [], 'no process listing')
+  assert.deepEqual(fx.kills, [])
+  // An unreadable table closes nothing (a pid cannot be checked, so it is not touched).
+  const broken = winEffects([])
+  broken.exec = async (file: string, args: readonly string[]) => {
+    broken.execs.push({ file, args: [...args] })
+    return { code: 1, stdout: '', stderr: 'Access denied', error: null, timedOut: false }
+  }
+  const unread = await closeViewersForSwap({ platform: 'win32', env: {}, exec: broken.exec, kill: broken.kill, log: () => {}, viewerDir: VIEWER_DIR, memory } as any)
+  assert.deepEqual(unread.closed, [])
+  assert.deepEqual(broken.kills, [])
 })
 
 // -- runWindowsPass, Mac and Linux --------------------------------------------------------------
