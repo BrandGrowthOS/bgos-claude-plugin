@@ -285,7 +285,7 @@ test('boot cleans only recovery files older than seven days', (t) => {
 })
 
 for (const shape of ['held behind refused probe', 'expired before admission', 'ambiguous submission']) {
-  test(`an interrupted offer spends its chance at admission: ${shape}`, (t) => {
+  test(`an interrupted offer can return until the hook shows its words (${shape})`, (t) => {
     const home = agentHome(t)
     const key = 'owner:1'
     const message = { content: 'continue', actingUserId: OWNER, chatId: 'first', fireKey: key }
@@ -303,6 +303,9 @@ for (const shape of ['held behind refused probe', 'expired before admission', 'a
     } else if (shape === 'ambiguous submission') {
       limited.submit(held + held)
       assert.equal(limited.outcomes.at(-1), 'ambiguous')
+      assert.equal(limited.call(), null)
+      assert.equal(home.life().tracker.canRecover(key), false)
+      return
     }
     const working = home.life()
     assert.equal(working.tracker.canRecover(key), true)
