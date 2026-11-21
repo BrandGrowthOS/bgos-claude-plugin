@@ -44,6 +44,7 @@ import { BOARDS_TOOL_DECLS } from '../lib/boards-tools.ts'
 import { ARTIFACT_TOOL_DECLS } from '../lib/artifacts-tools.ts'
 import { VAULT_TOOL_DECLS } from '../lib/vault-tools.ts'
 import { EMAIL_TOOL_DECLS } from '../lib/agent-email-tools.ts'
+import { PROFILE_IMAGE_TOOL_DECLS } from '../lib/profile-image-tools.ts'
 
 import {
   CARD_OUTPUT_BUDGET,
@@ -355,7 +356,7 @@ function assertToolDrift(server: string, skipped: readonly string[], extraBindin
   assert.ok(ts.isObjectLiteralExpression(body))
   const tools = body.properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(ast) === 'tools')
   assert.ok(tools && ts.isPropertyAssignment(tools) && ts.isArrayLiteralExpression(tools.initializer))
-  const bindings: Record<string, unknown> = { REACT_TOOL, BOARDS_TOOL_DECLS, ARTIFACT_TOOL_DECLS, VAULT_TOOL_DECLS, EMAIL_TOOL_DECLS, ...extraBindings }
+  const bindings: Record<string, unknown> = { REACT_TOOL, BOARDS_TOOL_DECLS, ARTIFACT_TOOL_DECLS, VAULT_TOOL_DECLS, EMAIL_TOOL_DECLS, PROFILE_IMAGE_TOOL_DECLS, ...extraBindings }
   const declared = new Set<string>()
   const add = (value: unknown) => {
     assert.ok(value && typeof value === 'object' && !Array.isArray(value), 'each tool must be an object')
