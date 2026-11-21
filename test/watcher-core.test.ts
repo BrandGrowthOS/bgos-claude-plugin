@@ -1551,6 +1551,211 @@ test('runWatcher: a limit pass that throws is logged and the loop goes on pollin
   assert.ok(backend.calls.some((c) => c.path.includes('/machine-rpc/pending')))
 })
 
+// -- deafwatch for every agent: a deaf agent the sweep only watches is reported, never acted on.
+
+const WATCHED_913 = { id: '913', state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since: 'y' }
+
+test('runWatcher: a deaf agent the sweep only watches rides the NEXT heartbeat in its own list, never among the cleared ones, and is never handed to the limit watch', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const cleared = { id: '912', state: 'supervised', reason: 'canonical', since: 'x' }
+  const passes: any[] = []
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => ({ enabled: true, source: 'live', agents: [cleared], watched: [WATCHED_913] }),
+    limitPass: async (ctx: any) => {
+      passes.push(ctx.assistantIds)
+      return { agents: [] }
+    },
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.equal(beats.length, 2)
+  // The way the Helper already learns an agent's state, the heartbeat's keep-alive block, in a list of its own:
+  // `agents` stays exactly the agents the watcher keeps running.
+  assert.deepEqual(beats[1]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [cleared], watched: [WATCHED_913] })
+  // The limit watch presses a key for the agents the sweep cleared. A watched agent is not one of them.
+  assert.ok(passes.length >= 1)
+  for (const ids of passes) assert.deepEqual(ids, ['912'])
+})
+
+test('runWatcher: with the switch off a watched deaf agent still rides the heartbeat, in its own list', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => ({ enabled: false, source: 'live', agents: [], watched: [WATCHED_913] }),
+    limitPass: async () => ({ agents: [] }),
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.deepEqual(beats[1]!.body.env.watcherHealth.keepAlive, { enabled: false, agents: [], watched: [WATCHED_913] })
+  // The sweep that follows has nothing watched: the list leaves the block again.
+})
+
+test('runWatcher: the first heartbeat after a restart carries the watched findings the previous process persisted', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const since = new Date(T0 - 60_000).toISOString()
+  fs.writeFile(
+    `${HOME}/.bgos-agent/watcher/keepalive-state.json`,
+    JSON.stringify({ schemaVersion: 1, enabled: false, agents: {}, watched: { '913': { state: 'failed', reason: WATCHED_913.reason, since, deafSince: since, deafSeenAt: since }, '914': { deafSince: since, deafSeenAt: since } } }),
+  )
+  const backend = fakeBackend()
+  // The heartbeat's inventory never runs a real systemctl or ps.
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), execSync: () => ({ code: 1, stdout: '' }), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: false, agents: [], watched: [{ id: '913', state: 'failed', reason: WATCHED_913.reason, since }] })
+})
+
+test('runWatcher: a computer with more than 64 agents sends 64 ids, its kept and watched agents among them, and says so in the log once', async () => {
+  // The server takes at most 64 ids (heartbeat.dto.ts) and refuses the WHOLE heartbeat above that.
+  const extra: Record<string, string> = {}
+  for (let id = 1000; id <= 1062; id++) extra[`${HOME}/.bgos-agent/credentials-${id}.json`] = JSON.stringify({ pairingToken: `agent-secret-${id}`, backendUrl: 'x' })
+  const fs = machineFs(extra)
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const kept = { id: '1062', state: 'supervised', reason: 'canonical', since: 'x' }
+  const watched = { ...WATCHED_913, id: '1061' }
+  const { deps, logs } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => ({ enabled: true, source: 'live', agents: [kept], watched: [watched] }),
+    limitPass: async () => ({ agents: [] }),
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.equal(beats.length, 2)
+  // 65 agents on this computer: 7, 912 and 1000 to 1062.
+  assert.equal((beats[0]!.body.env.agents as string[]).length, 64)
+  const second = beats[1]!.body.env.agents as string[]
+  assert.equal(second.length, 64)
+  assert.ok(second.includes('1062'), 'the kept agent')
+  assert.ok(second.includes('1061'), 'the watched agent')
+  assert.equal(second.includes('1060'), false, 'the last of the others is the one left out')
+  assert.deepEqual(second, [...second].sort((a, b) => Number(a) - Number(b)))
+  assert.equal(logs.filter((l) => l.includes('65 agents')).length, 1)
+})
+
+/** Each poll moves the clock on by the next of `steps` (ms) and answers no frames; past the last one the poll fails and the loop stops at its back off. */
+function steppedBackend(clock: ReturnType<typeof fakeClock>, steps: number[]) {
+  const calls: Call[] = []
+  let polls = 0
+  const fetch = async (url: string, init: any) => {
+    const u = new URL(url)
+    calls.push({ method: init?.method ?? 'GET', path: u.pathname + u.search, body: init?.body ? JSON.parse(init.body) : undefined, headers: init?.headers ?? {} })
+    if (u.pathname.endsWith('/machine-rpc/pending')) {
+      const step = steps[polls]
+      polls += 1
+      if (step === undefined) throw new Error('ECONNRESET')
+      clock.advance(step)
+      return { ok: true, status: 200, text: async () => JSON.stringify({ frames: [] }) }
+    }
+    return { ok: true, status: 200, text: async () => '{}' }
+  }
+  return { calls, fetch }
+}
+
+/** The watcher loop with a sweep that answers `reports` in turn (a throw for an Error) and stops at the first back off. */
+async function loopedBeats(steps: number[], reports: Array<any>) {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = steppedBackend(clock, steps)
+  let sweeps = 0
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => {
+      const r = reports[Math.min(sweeps++, reports.length - 1)]
+      if (r instanceof Error) throw r
+      return r
+    },
+    limitPass: async () => ({ agents: [] }),
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  return backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat')).map((c) => c.body.env.watcherHealth.keepAlive)
+}
+
+test('runWatcher: the agents the last sweep looked at ride the next heartbeat in `keepAlive.looked`; the first heartbeat of a process, before any sweep, names none', async () => {
+  const beats = await loopedBeats([61_000], [{ enabled: false, agents: [], looked: ['300', '301'] }])
+  assert.equal(beats.length, 2)
+  assert.equal('looked' in beats[0]!, false, 'the boot heartbeat goes out before the first look')
+  assert.deepEqual(beats[1]!.looked, ['300', '301'])
+})
+
+test('runWatcher: a heartbeat that goes out more than 3 minutes after the sweep that looked names no agent as looked at (a sleep, a long job)', async () => {
+  const beats = await loopedBeats([61_000, 4 * 60_000], [{ enabled: false, agents: [], looked: ['300'] }])
+  assert.equal(beats.length, 3)
+  assert.deepEqual(beats[1]!.looked, ['300'], 'a minute after its sweep')
+  assert.equal('looked' in beats[2]!, false, 'four minutes after its sweep')
+})
+
+test('runWatcher: a sweep that fails leaves no agent looked at, though the list it last sent is still young', async () => {
+  const beats = await loopedBeats([61_000, 61_000], [{ enabled: false, agents: [], looked: ['300'] }, new Error('boom')])
+  assert.equal(beats.length, 3)
+  assert.deepEqual(beats[1]!.looked, ['300'])
+  assert.equal('looked' in beats[2]!, false)
+})
+
+test('runWatcher: after a restart every saved watched finding rides the first heartbeat, whatever its age, until the first sweep replaces it', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const fresh = new Date(T0 - 60_000).toISOString()
+  const stale = new Date(T0 - 10 * 60_000).toISOString()
+  fs.writeFile(
+    `${HOME}/.bgos-agent/watcher/keepalive-state.json`,
+    JSON.stringify({
+      schemaVersion: 1,
+      enabled: false,
+      agents: {},
+      watched: {
+        // Last looked at ten minutes ago (the watcher was down): it still rides, so the agent never
+        // reads as plain offline, which would let an automatic check up restart it.
+        '913': { state: 'failed', reason: WATCHED_913.reason, since: stale, deafSince: stale, deafSeenAt: stale },
+        '915': { state: 'failed', reason: WATCHED_913.reason, since: fresh, deafSince: fresh, deafSeenAt: fresh },
+        // No look time at all (a failed login the launcher named): it rides too.
+        '916': { state: 'failed', reason: 'claude-login-expired: the login failed', since: fresh },
+      },
+    }),
+  )
+  const backend = fakeBackend()
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), execSync: () => ({ code: 1, stdout: '' }), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, {
+    enabled: false,
+    agents: [],
+    watched: [
+      { id: '913', state: 'failed', reason: WATCHED_913.reason, since: stale },
+      { id: '915', state: 'failed', reason: WATCHED_913.reason, since: fresh },
+      { id: '916', state: 'failed', reason: 'claude-login-expired: the login failed', since: fresh },
+    ],
+  })
+})
+
 test('runWatcher: a successful poll records lastPollOkAt (the crash-loop rule); a failed one does not; it survives a restart', async () => {
   const fs = machineFs()
   manifestFor(fs)

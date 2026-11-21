@@ -16,6 +16,19 @@ Running commands is not available for people you share with yet. Your own tools 
 
 **feat(chat): hear reactions to the agent's replies.** With a matching server, the agent hears who reacted and which emoji they chose. A later line can report a changed or removed reaction and how many people reacted. A room member speaks only as themselves. A reaction never grants permission to use a tool.
 
+## 0.90.16 (2026-11-20)
+
+**fix(keep-alive): the Helper now notices when any agent on the computer stops getting messages, not only the agents it keeps running.**
+
+Before, when an agent kept running but stopped getting messages, the Helper noticed only for agents on the keep-alive list, and for none while the computer's keep-alive switch was off. It now checks every agent on the computer, and takes the same care as before not to raise a false alarm: an agent that is still starting, a short pause, or a session it cannot be sure is the agent's.
+
+- An agent on the keep-alive list is brought back, as before.
+- Any other agent is left alone: nothing is restarted, installed or changed for it. The Helper tells the app, which can say the agent is not kept running and offer to keep it running. Once the owner says yes, the agent is brought back.
+- Once the app update that reads this report is out, an agent you did not keep running is no longer restarted by itself when it stops getting messages.
+- A computer with more than 64 agents still reports, naming 64 of them.
+
+An app that does not know the new report ignores it, so nothing already installed changes until that app update is out.
+
 ## 0.90.15 (2026-11-20)
 
 **fix(email): a file that was changing asks the person to wait and try again.** When a file changed while an agent was attaching it to an email, the refusal said "`<file>` changed while HOAI read it, so it is not attached." and read like a dead end. It now says "`<file>` was changing while we tried to attach it. Wait a moment and try again." Both refusal paths (the check on the opened file and the second look at the path) return the same sentence. Guard: the changed-file helper in `test/email-outbound-files.test.ts`, red on the old words first.
