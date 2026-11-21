@@ -53,14 +53,15 @@ function stamped(rpcId: string, expiresInMs = 45_000) {
 }
 
 /** One agent folder and its ledger; `life()` is one daemon process over them. */
-function agentHome(t: any, agentId = AGENT) {
+function agentHome(t: any, agentId = AGENT, folderNames = ['agent']) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'hoai-consult-replay-')))
   t.after(() => rmSync(root, { recursive: true, force: true }))
-  const cwd = join(root, 'agent')
-  mkdirSync(cwd)
+  const folders = folderNames.map(name => join(root, name))
+  for (const folder of folders) mkdirSync(folder)
+  const cwd = folders[0]
   const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
-  markFloorAttached({ root, folders: [cwd] })
-  const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
+  markFloorAttached({ root, folders })
+  const markerPaths = folders.map(folder => privateMarkerPath(root, floorKey(folder)))
   const firesPath = privateFiresPath(root, agentId)
   const clock = { now: T0 }
   const transcripts = new Map<string, string>()
@@ -115,14 +116,15 @@ function agentHome(t: any, agentId = AGENT) {
     hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd,
     prompt: '<task-notification><status>killed</status></task-notification>',
   }, env)
-  const runPromptHook = async (sessionId: string, prompt: string) => {
+  const runPromptHook = async (sessionId: string, prompt: string, folder = cwd) => {
     const hook = fileURLToPath(new URL('../bin/hoai-private-turn-hook.mjs', import.meta.url))
+    const hookEnv = { ...env, CLAUDE_PROJECT_DIR: folder }
     const output = await new Promise<string>((resolve, reject) => {
-      const child = execFile(process.execPath, [hook], { env, encoding: 'utf8', windowsHide: true }, (error, stdout) => {
+      const child = execFile(process.execPath, [hook], { env: hookEnv, encoding: 'utf8', windowsHide: true }, (error, stdout) => {
         if (error) reject(error)
         else resolve(stdout)
       })
-      child.stdin!.end(JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd, prompt }))
+      child.stdin!.end(JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: sessionId, cwd: folder, prompt }))
     })
     return output.trim() ? JSON.parse(output) : null
   }
@@ -134,7 +136,7 @@ function agentHome(t: any, agentId = AGENT) {
     assert.equal(child.stdout.trim(), '')
     assert.equal(child.status, 1, child.stderr)
   }
-  return { runUnservedHook, runPromptHook, paths: markerPaths, life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs, markerPath: markerPaths[0]! }
+  return { runUnservedHook, runPromptHook, folders, paths: markerPaths, life, clock, ledgerKeys, transcripts, firesPath, startupPrompt, logs, markerPath: markerPaths[0]! }
 }
 
 for (const [card, action] of [['peer', 'call_owner'], ['other chat', 'meeting_reply'], ['meeting', 'send_to_peer']]) {
@@ -435,7 +437,8 @@ test('an answer before the recovery prompt removes the card before the model can
 
 for (const sharedOffer of [true, false]) {
   test(`two hooks release one recovered request in a mixed prompt (same offer: ${sharedOffer})`, async t => {
-    const home = agentHome(t, 'fixture-agent')
+    // Each hook writes its own session marker. Both compete for the same recovery slot.
+    const home = agentHome(t, 'fixture-agent', ['first', 'second'])
     home.clock.now = Date.now()
     const first = home.life()
     const message = { content: 'summarize the document', chatId: 'first', actingUserId: OWNER, fireKey: 'owner:1' }
@@ -450,7 +453,7 @@ for (const sharedOffer of [true, false]) {
     const otherBatch = sharedOffer ? batch : peer.tracker.deliver(request) + '\n' + fresh
     const decisions = await Promise.all([
       home.runPromptHook(next.sessionId, batch),
-      home.runPromptHook(peer.sessionId, otherBatch),
+      home.runPromptHook(peer.sessionId, otherBatch, home.folders[1]),
     ])
     assert.equal(decisions.filter(d => d?.hookSpecificOutput?.additionalContext.includes(message.content)).length, 1)
     for (const decision of decisions) assert.notEqual(decision?.decision, 'block')
