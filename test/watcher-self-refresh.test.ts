@@ -32,6 +32,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { EXIT_SELF_REFRESH, refreshWatcherIfStale } from '../lib/watcher-core.mjs'
+import { runWindowsPass } from '../lib/agent-windows.mjs'
+import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { SWAPPABLE_ENTRIES, WATCHER_BUNDLE_FILES, installWatcherBundle, readBundleManifest, watcherImportClosure } from '../lib/watcher-bundle.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 import { fakeWindowHost, viewerProcess } from './helpers/fake-window-host.ts'
@@ -433,6 +435,46 @@ test('viewercwd win32: a process the watcher did not start holds bin; it is neve
   const later = watcherRun(WINDOWS, m.fs, { host: m.host, now: T0 + 30 * MINUTE })
   await later.run()
   assert.equal(m.binMoves.length, 4)
+})
+
+/** Show agent windows ON for agent 912, whose launcher (console 4242) runs; the real windows pass,
+ *  told only which agents run (the agent inventory reads folders this machine does not fake). */
+function showingWindows(m: { fs: any; host: ReturnType<typeof fakeWindowHost> }) {
+  const CONSOLE_PID = 4242
+  m.host.processes.set(CONSOLE_PID, { pid: CONSOLE_PID, ppid: 4, command: '"C:\\Program Files\\nodejs\\node.exe" hoai-core.mjs', startedAtMs: VIEWER_STARTED - MINUTE })
+  const stateDir = at(WINDOWS, WINDOWS.home, '.bgos-agent', '912')
+  m.fs.writeFile(at(WINDOWS, stateDir, 'supervisor.json'), supervisorFileBody(CONSOLE_PID, new Date(VIEWER_STARTED - MINUTE).toISOString()))
+  const row = { assistantId: '912', cwd: at(WINDOWS, WINDOWS.home, 'hoai-agents', 'Wolf'), stateDir, launcherLive: true, supervisor: 'launcher-live', keepalive: null }
+  return {
+    keepAliveSweep: async () => ({ enabled: false, agents: [], showAgentWindows: true }),
+    windowsPass: (ctx: any) => runWindowsPass({ ...ctx, listAgents: () => [row], viewerDir: at(WINDOWS, watcherDir(WINDOWS), 'bin') }),
+  }
+}
+
+test('viewercwd win32: when the swap fails after the viewers were closed for it, the same watcher reopens them, from the home folder', async () => {
+  // The viewer is closed for the swap, but a process the watcher did not start still holds bin.
+  const m = await heldBinMachine([VIEWER_PID, PERSON_PID])
+  const w = watcherRun(WINDOWS, m.fs, { host: m.host, ...showingWindows(m) })
+  assert.equal(await w.run(), 0)
+  assert.equal(stateOf(WINDOWS, m.fs).bundleRefresh?.ok, false, 'the swap failed')
+  assert.equal(m.fs.readFile(liveEntry(WINDOWS)), '// bin/hoai-watcher.mjs 0.61.1\n')
+  assert.deepEqual(m.host.kills, [{ pid: VIEWER_PID, signal: 'SIGTERM' }], 'the viewer was closed for the swap, by pid, and nothing else')
+  // No successor: this watcher's next windows pass opens the viewer again, never from inside the bundle.
+  const reopened = w.spawns.map((s, i) => ({ ...s, cwd: w.spawnOptions[i]?.cwd }))
+  assert.equal(reopened.length, 1, JSON.stringify(reopened))
+  assert.equal(reopened[0]!.file, 'wscript.exe')
+  assert.deepEqual(reopened[0]!.args.slice(2), ['-ConsolePid', '4242', '-AssistantId', '912'])
+  assert.equal(reopened[0]!.cwd, WINDOWS.home, 'reopened from the home folder')
+  assert.equal(stateOf(WINDOWS, m.fs).viewers.opened['912'], 'pid:4242', 'remembered as open again')
+
+  // Control: the same failed swap with the viewer already gone (the owner closed it) reopens nothing,
+  // so the reopen above comes from the swap's release, not from any missing viewer.
+  const owner = await heldBinMachine([PERSON_PID])
+  owner.host.processes.delete(VIEWER_PID)
+  const o = watcherRun(WINDOWS, owner.fs, { host: owner.host, ...showingWindows(owner) })
+  assert.equal(await o.run(), 0)
+  assert.equal(stateOf(WINDOWS, owner.fs).bundleRefresh?.ok, false)
+  assert.deepEqual(o.spawns, [], 'a viewer the owner closed stays closed')
 })
 
 test('an install the watcher cannot read as current is reported by reason: plugin not installed, install folder gone', async () => {

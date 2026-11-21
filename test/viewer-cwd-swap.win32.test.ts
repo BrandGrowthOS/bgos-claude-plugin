@@ -20,7 +20,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -38,6 +39,18 @@ function alive(pid: number) {
   } catch {
     return false
   }
+}
+
+/** End a child this test started and wait for its exit event (or `ms`), so Windows has let go of its working folder. */
+async function endChild(child: ChildProcess, ms: number) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+  try {
+    child.kill()
+  } catch {
+    // already gone
+  }
+  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, ms).unref())])
 }
 
 async function until(check: () => boolean | Promise<boolean>, ms: number) {
@@ -102,15 +115,16 @@ test(
       assert.equal(fs.readFile(join(bin, 'hoai-watcher.mjs')), '// v2\n')
       assert.equal(alive(person.pid!), true, 'the process the watcher did not start runs on')
     } finally {
-      for (const child of children) {
-        try {
-          if (child.pid && alive(child.pid)) process.kill(child.pid)
-        } catch {
-          // already gone
-        }
+      // Cleanup only: it never decides the test. A sync remove right after the kill hit EPERM on a
+      // real Windows PC, before Windows had let go of the children's working folders, and that
+      // error replaced the assertions' own result. So each child's exit event is awaited, then the
+      // folder is removed with retries, and a folder Windows still holds is left in the temp dir.
+      await Promise.all(children.map((child) => endChild(child, 10_000)))
+      try {
+        await rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 })
+      } catch (err) {
+        console.error(`viewercwd test: temp folder ${base} not removed (${(err as Error).message}); left for the OS to clear`)
       }
-      await until(() => children.every((c) => !c.pid || !alive(c.pid)), 10_000)
-      rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 })
     }
   },
 )
