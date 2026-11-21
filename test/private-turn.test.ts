@@ -344,7 +344,7 @@ test('a peer turn is remembered for counting and still has no actor: the gate st
   assert.equal(tracker.peerTurn(), null)
 })
 
-// Captain 2026-11-20 ("start counting"): the browser shim is a separate process, so the daemon's signed context names
+// The browser shim is a separate process, so the daemon's signed context names
 // the peer behind a turn that has NO verified sender, for counting only. It is never an actor and never live.
 test('the signed browser context names the peer only when no turn is open, and only an agent id', () => {
   const root = scratchDir('peer-context-')

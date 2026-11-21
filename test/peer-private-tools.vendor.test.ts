@@ -7,7 +7,7 @@ import { ARTIFACT_TOOL_DECLS } from '../lib/artifacts-tools.js'
 import { VAULT_TOOL_DECLS } from '../lib/vault-tools.js'
 import { PEER_PRIVATE_TOOL_NAMES, peerRefusalReport } from '../lib/peer-refusal-counter.mjs'
 
-// TRUSTCOUNT2 (BGOS security review of the peer refusal count, finding 1): the tool names a refused peer request is
+// The tool names a refused peer request is
 // counted under are ONE list, BGOS backend/src/peer-refusals/peer-private-tools.json, vendored here byte for byte as
 // lib/peer-private-tools.json and pinned by lib/peer-private-tools.vendor.json. The backend counts only those names
 // and its table's CHECK names the same ones; this daemon sends only those names. This file fails when the copy drifts
@@ -22,7 +22,10 @@ const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
 test('the vendored list is the pinned bytes of the BGOS file', () => {
   assert.equal(pin.file, 'lib/peer-private-tools.json')
   assert.equal(pin.source, 'BGOS: backend/src/peer-refusals/peer-private-tools.json')
-  assert.match(pin.sourceCommit, /^[0-9a-f]{40}$/)
+  // The pin is the content hash. This repo is public, so it names no commit or branch of the BGOS repo.
+  assert.equal(pin.sourceCommit, undefined)
+  assert.equal(pin.sourceBranch, undefined)
+  assert.match(pin.sha256, /^[0-9a-f]{64}$/)
   assert.equal(createHash('sha256').update(bytes).digest('hex'), pin.sha256)
   // A local checkout audit, like the shim's: HOAI_PEER_TOOLS_SOURCE=<BGOS file> compares the bytes themselves.
   if (process.env.HOAI_PEER_TOOLS_SOURCE) assert.ok(bytes.equals(readFileSync(process.env.HOAI_PEER_TOOLS_SOURCE)), 'byte for byte')

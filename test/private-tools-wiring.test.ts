@@ -150,7 +150,7 @@ test('a refused private call on a peer turn is counted with the tool name and th
   assert.equal(refused.isError, true)
   assert.match(refused.content[0].text, /did not start/)
   assert.deepEqual(recorded, [{ dir: '/state/1050', tool: 'boards_query', delegate: '888', target: 1050 }])
-  // The server's copy (Captain 2026-11-20, "start counting"): the peer and the tool, nothing else.
+  // The server's copy: the peer and the tool, nothing else.
   assert.deepEqual(reported, [{ tool: 'boards_query', delegate: '888' }])
   assert.deepEqual(logs, ['peer private call refused', 'private turn: refused boards_query: no private turn is open (stub)'])
 

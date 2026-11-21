@@ -18,12 +18,12 @@ test('PRIVATE_HOOK is the liveness view over the boot read, not the boot read it
 test('every marker read the daemon makes feeds the liveness, with the same turn it publishes', () => {
   const publish = server.slice(server.indexOf('function publishBrowserPrivateTurn(): void {'), server.indexOf('let hookTurn: TurnState = emptyTurn()'))
   assert.match(publish, /const turn = privateTurns\.current\(\{ markerPaths: PRIVATE_MARKER_PATHS \}\)\n(\s*\/\/.*\n)?\s*privateHook\.noteTurn\(turn\)/)
-  // `turn`, then the counting only peer (0.90.16), then the end of the call.
+  // `turn`, then the counting only peer (0.90.21), then the end of the call.
   assert.match(publish, /turn,\n(\s*\/\/.*\n)?\s*peerAssistantId: turn \? null : privateTurns\.peerTurn\(\)\?\.sourceAssistantId \?\? null,\n\s*\}\)/)
   assert.doesNotMatch(publish, /privateTurns\.current\([^)]*\)[\s\S]*privateTurns\.current\(/, 'one read, the same turn for both')
 })
 
-// TRUSTCOUNT2 finding 5: the browser shim counts a refusal only when the daemon's SIGNED context names the peer, so
+// The browser shim counts a refusal only when the daemon's SIGNED context names the peer, so
 // the daemon must name it while a peer turn has no verified sender, and never while a turn is open. The function
 // itself, sliced from server.ts and run: it fails if the daemon stops naming the peer, names one beside a turn, or
 // names anything but the tracker's peer.

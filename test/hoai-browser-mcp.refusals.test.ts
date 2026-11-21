@@ -731,7 +731,7 @@ test('the signed turn context still gates the open call: no verified sender, not
   assert.deepEqual(f.frames, [], 'no request left the shim')
 })
 
-// A PEER agent's request reached this agent and no verified turn is open (Captain 2026-11-20, "start counting"): the
+// A PEER agent's request reached this agent and no verified turn is open: the
 // daemon signs a context with no turn and the peer's id (publishPrivateContext peerAssistantId). The browser call is
 // refused exactly as before, and the shim posts ONE count to the server: the peer's id and the tool's name, nothing
 // else. It never lifts the refusal.
@@ -765,7 +765,7 @@ test('no count without a signed peer context: a status call, a forged signature,
     ['junk id', () => signPeerContext(f, { peerAssistantId: 'Mark' }), 'browser_navigate'],
     ['this agent', () => signPeerContext(f, { peerAssistantId: '42' }), 'browser_navigate'],
     ['no peer', () => signPeerContext(f, { peerAssistantId: undefined }), 'browser_navigate'],
-    // TRUSTCOUNT2 finding 4: peerContextRefusal's owner check is the only one on this path; a signed context naming
+    // peerContextRefusal's owner check is the only one on this path; a signed context naming
     // another owner counts nothing (BGOS shim.managed-context.test.js carries the same case for the same bytes).
     ['another owner', () => signPeerContext(f, { ownerUserId: 'user_someone_else' }), 'browser_navigate'],
   ]

@@ -2145,8 +2145,7 @@ async function bgosPost(
 }
 
 /**
- * The server's copy of one refused peer request (lib/peer-refusal-counter.mjs peerRefusalReport; Captain
- * 2026-11-20, "start counting"): the peer's id and the tool's name, nothing else. Pairing mode only (the route is
+ * The server's copy of one refused peer request (lib/peer-refusal-counter.mjs peerRefusalReport): the peer's id and the tool's name, nothing else. Pairing mode only (the route is
  * pairing scoped, like the heartbeat). Never awaited and never throws, so it cannot hold up or change the refusal;
  * a failure is one log line with the status, never the body.
  */
@@ -7023,7 +7022,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       // A refused call on a PEER agent's turn is counted (ids and the tool's name only, no content), so the
       // question of letting a trusted agent's request run private tools is decided on numbers
       // (docs/proposals/peer-delegation-private-tools.md). It never changes the refusal. The server keeps a copy
-      // (reportPeerRefusal, never awaited) so every agent's refusals are one query for Data (Captain 2026-11-20).
+      // (reportPeerRefusal, never awaited) so every agent's refusals are one query.
       try {
         const peer = (privateTurns as { peerTurn?: () => { sourceAssistantId: string } | null }).peerTurn?.()
         if (peer) {
@@ -11366,7 +11365,7 @@ function publishBrowserPrivateTurn(): void {
       secret: AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey,
       assistantId: ASSISTANT_ID, ownerUserId: USER_ID, claudePid: agentClaudePid(),
       turn,
-      // Counting only (Captain 2026-11-20): the shim counts a browser refusal against this peer. Never an actor.
+      // Counting only: the shim counts a browser refusal against this peer. Never an actor.
       peerAssistantId: turn ? null : privateTurns.peerTurn()?.sourceAssistantId ?? null,
     })
   } catch { /* An absent or expired context refuses private tools. */ }

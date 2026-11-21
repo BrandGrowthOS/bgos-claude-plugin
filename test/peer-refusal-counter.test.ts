@@ -71,8 +71,8 @@ test('a junk file is started again and a write that fails never throws or change
   assert.match(out.line, /tool=schedule delegate=888 target=1050/)
 })
 
-// The server's copy of the count (BGOS POST /api/v1/integrations/assistants/:id/peer-refusals, Captain 2026-11-20:
-// "start counting"), so every agent's refusals are one query for Data. The body is the peer's id and the tool's
+// The server's copy of the count (BGOS POST /api/v1/integrations/assistants/:id/peer-refusals), so every
+// agent's refusals are one query. The body is the peer's id and the tool's
 // name, exactly the two fields the backend takes; it refuses any other field whole.
 test('the report to the server names this agent in the path and only the peer id and the tool in the body', () => {
   assert.deepEqual(peerRefusalReport({ assistantId: 1050, delegate: '888', tool: 'boards_query' }), {
@@ -88,7 +88,7 @@ test('a report is not built from anything that is not an agent id or a tool name
     { assistantId: 1050, delegate: '0', tool: 'boards_query' },
     { assistantId: 1050, delegate: '888', tool: 'move my meeting to 3pm' },
     { assistantId: 1050, delegate: '888', tool: '' },
-    // Not a tool, though it starts like one: only the names of lib/peer-private-tools.json (trustcount2).
+    // Not a tool, though it starts like one: only the names of lib/peer-private-tools.json.
     { assistantId: 1050, delegate: '888', tool: 'boards_made_up' },
     { assistantId: 1050, delegate: '888', tool: 'hoai_browser_status' },
     { assistantId: 'me', delegate: '888', tool: 'boards_query' },

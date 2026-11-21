@@ -4,7 +4,7 @@
    finally { if (fd !== undefined) fs.closeSync(fd); }
  }
  
-+// A PEER agent's request reached the agent and no turn is verified (Captain 2026-11-20, "start counting"): the daemon
++// A PEER agent's request reached the agent and no turn is verified (counted, never lifted): the daemon
 +// signed the peer's id into a context with no turn. Called only once the signature is verified. Still refused with the
 +// same words; the refusal only carries the id, so the call is counted on the server (reportPeerRefusal). Anything
 +// stale, live, another session's or not an agent id is the plain refusal.
