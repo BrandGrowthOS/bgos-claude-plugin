@@ -1,0 +1,6 @@
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/DEPENDENTLOADFLAG:0x800"]
+
+# The Windows acceptance tests clean up helpers they did not start only when run one at a time.
+[env]
+RUST_TEST_THREADS = "1"

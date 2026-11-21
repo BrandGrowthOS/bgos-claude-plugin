@@ -1,0 +1,20 @@
+[package]
+name = "hoai-helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[features]
+real-run-key = []
+
+[dependencies]
+hoai-common = { path = "../hoai-common", version = "=0.0.0" }
+windows-sys.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
