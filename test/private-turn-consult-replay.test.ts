@@ -951,6 +951,10 @@ for (const [tool, content] of [
   ['cancel_mission_goal', 'drop the slides goal and finish the report'],
   ['complete_mission', 'complete the mission and send me the report'],
   ['rename_chat', 'rename the chat and finish the report'],
+  ['edit_message', 'correct the earlier message and send me the report'],
+  ['complete_peer_thread', 'close the peer thread and send me the report'],
+  ['complete_side_thread', 'close the side thread and send me the report'],
+  ['withdraw_ask', 'withdraw the question and send me the report'],
 ]) {
   test(`${tool} before a usage refusal leaves exactly one answer due`, t => {
     const home = agentHome(t, 'fixture-agent')
@@ -1023,7 +1027,7 @@ test('a reaction acknowledges the request and leaves its answer due', t => {
   assert.equal(home.life().tracker.canRecover(message.fireKey), false)
 })
 
-for (const action of ['call_owner', 'reply', 'meeting_reply', 'edit_message', 'ask_user_input', 'stop', 'restart yourself']) {
+for (const action of ['call_owner', 'reply', 'meeting_reply', 'ask_user_input', 'stop', 'restart yourself']) {
   test(`recovery excludes a message handled by ${action}`, (t) => {
     const home = agentHome(t)
     const message = { content: action === 'restart yourself' ? action : 'continue',
