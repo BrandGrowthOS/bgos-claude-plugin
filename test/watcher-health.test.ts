@@ -36,6 +36,7 @@ import {
   crashLoopVerdict,
   crashPath,
   healthHome,
+  heartbeatAgentIds,
   readBoots,
   recordBoot,
   runGuarded,
@@ -95,6 +96,15 @@ test('recordBoot: boots.json is a ring of the last 20 starts {startedAt, pid, ve
   assert.deepEqual(readBoots('/home/kc', fs), [])
 })
 
+test('buildWatcherHealth: keepAlive.looked keeps the ids the sweep looked at, as non empty strings, at most 64, and is absent when there are none', () => {
+  const ids = Array.from({ length: 70 }, (_, i) => String(1000 + i))
+  const h = buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: [], looked: ['7', '', 8, null, { id: '9' }, ...ids] } as any })
+  assert.deepEqual(h.keepAlive!.looked, ['7', ...ids].slice(0, 64))
+  assert.equal('looked' in buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: [], looked: [] } as any }).keepAlive!, false)
+  assert.equal('looked' in buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: [] } }).keepAlive!, false)
+  assert.equal('looked' in buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: [], looked: 'all' } as any }).keepAlive!, false)
+})
+
 test('buildWatcherHealth: ok, degraded after a recent fatal or 3+ boots in the hour; strings bounded to 120, agents to 64', () => {
   assert.deepEqual(buildWatcherHealth({ boots: [boot(T0 - 2 * 60 * MIN)], crash: null, now: T0 }), { status: 'ok', bootsLastHour: 0 })
   const crash = { at: new Date(T0 - 10 * MIN).toISOString(), message: `Cannot find module ${'x'.repeat(300)}` }
@@ -109,6 +119,35 @@ test('buildWatcherHealth: ok, degraded after a recent fatal or 3+ boots in the h
   assert.equal(withKeepAlive.keepAlive!.agents.length, 64)
   assert.equal(withKeepAlive.keepAlive!.enabled, true)
   assert.equal(buildWatcherHealth({ boots: [], crash: null, now: T0, status: 'crash_loop' }).status, 'crash_loop')
+})
+
+test('buildWatcherHealth: the deaf agents the sweep only watches ride their OWN list beside the cleared ones, never inside it', () => {
+  const cleared = [{ id: '7', state: 'supervised', reason: 'canonical', since: 'x' }, { id: '912', state: 'waiting_idle', reason: 'background_job', since: 'x' }]
+  const watched = [{ id: '300', state: 'failed', reason: 'no-channel-heartbeat: channel silent (not_cleared)', since: 'y' }, { id: '913', state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since: 'y' }]
+  // `agents` is exactly the cleared list: every app already installed draws a row under the keep-alive
+  // switch for each entry in it, and an older server reads each as an agent the watcher keeps running.
+  // A server that does not name `watched` drops it in silence, so nothing already installed shows anything new.
+  const health = buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: cleared, watched } })
+  assert.deepEqual(health.keepAlive, { enabled: true, agents: cleared, watched })
+  // With the switch off there is no cleared agent, and the finding still rides.
+  assert.deepEqual(buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: false, agents: [], watched } }).keepAlive, { enabled: false, agents: [], watched })
+  // None watched: the block is byte for byte what it always was, with no such field.
+  assert.deepEqual(buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: cleared, watched: [] } }).keepAlive, { enabled: true, agents: cleared })
+  assert.deepEqual(buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: cleared } }).keepAlive, { enabled: true, agents: cleared })
+  // Each list has its own bound of 64: a watched agent never pushes a cleared one out, nor the other way.
+  const many = Array.from({ length: 70 }, (_, i) => ({ id: String(1000 + i), state: 'supervised', since: 'x' }))
+  const manyWatched = Array.from({ length: 70 }, (_, i) => ({ id: String(2000 + i), state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since: 'y' }))
+  const full = buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: many, watched: manyWatched } }).keepAlive as { agents: unknown[]; watched: unknown[] }
+  assert.deepEqual(full.agents, many.slice(0, 64))
+  assert.deepEqual(full.watched, manyWatched.slice(0, 64))
+  // Junk never throws, never adds an entry and never touches the cleared list.
+  for (const junk of [null, undefined, 7, 'x', {}, [null, 7, 'x', {}, { id: '' }]]) {
+    assert.deepEqual(buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: cleared, watched: junk as any } }).keepAlive, { enabled: true, agents: cleared }, JSON.stringify(junk))
+  }
+  assert.deepEqual(
+    buildWatcherHealth({ boots: [], crash: null, now: T0, keepAlive: { enabled: true, agents: cleared, watched: [null, watched[1], { id: '' }] as any } }).keepAlive,
+    { enabled: true, agents: cleared, watched: [watched[1]] },
+  )
 })
 
 test('scrubFatal: the home path, the username, the pairing token and token shapes never leave the machine', () => {
@@ -308,4 +347,28 @@ test('loadWatcherModules loads the whole closure, lifecycle modules included (so
   assert.equal(typeof m.service.readWatcherCredentials, 'function')
   assert.equal(typeof m.inventory.listAgents, 'function')
   assert.equal(typeof m.installMethod.pluginRootFromScriptPath, 'function')
+})
+
+test('heartbeatAgentIds: at most 64 ids, the kept and watched agents first (the server refuses a heartbeat with more)', () => {
+  const ids = Array.from({ length: 65 }, (_, i) => String(i + 1))
+  const sent = heartbeatAgentIds(ids, ['65', '64'])
+  assert.equal(sent.length, 64)
+  assert.ok(sent.includes('65') && sent.includes('64'), 'the ones named first stay')
+  assert.equal(sent.includes('63'), false, 'the last of the others is the one left out')
+  assert.deepEqual(sent, [...sent].sort((a, b) => Number(a) - Number(b)), 'ascending, as the inventory lists them')
+  // An id the inventory does not list is never added.
+  assert.equal(heartbeatAgentIds(ids, ['999']).includes('999'), false)
+  // At or under the bound the list is exactly what it was.
+  const sixtyFour = ids.slice(0, 64)
+  assert.deepEqual(heartbeatAgentIds(sixtyFour, ['1']), sixtyFour)
+  assert.deepEqual(heartbeatAgentIds([], ['1']), [])
+})
+
+test('heartbeatAgentIds: more than 64 kept and watched agents still send 64 ids, the first 64 of them named', () => {
+  const ids = Array.from({ length: 140 }, (_, i) => String(i + 1))
+  // 70 agents kept or watched, in the order the keep-alive report names them.
+  const first = ids.slice(60, 130).reverse()
+  const sent = heartbeatAgentIds(ids, first)
+  assert.equal(sent.length, 64, 'never more than the server takes, however many are kept or watched')
+  assert.deepEqual(sent, first.slice(0, 64).sort((a, b) => Number(a) - Number(b)), 'the first 64 named, ascending')
 })
