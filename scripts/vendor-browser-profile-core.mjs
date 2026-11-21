@@ -5,10 +5,15 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** Removes only attribution comments from public copies; executable code stays unchanged. */
+/**
+ * Removes only attribution comments from public copies, and in file-numbers.js
+ * moves the numberPairs and numbersDiffer lines above sameFile's doc comment so
+ * the comment stays attached to sameFile. No line of executable code changes.
+ */
 export function publicProfileSource(name, bytes) {
-  if (name !== 'crypto.js' && name !== 'sign-in-copy.js') return bytes
+  if (name !== 'crypto.js' && name !== 'sign-in-copy.js' && name !== 'file-numbers.js') return bytes
   let source = bytes.toString('utf8')
+  if (name === 'file-numbers.js') source = source.replace(/^(\/\*\*\n \* One file or folder, by the rule the plugin uses:\n(?: \*[^\n]*\n)*? \*\/\n)(const numberPairs = [^\n]*\n\/\*\* [^\n]*\*\/\nconst numbersDiffer = [^\n]*\n)(?=function sameFile\()/m, '$2$1')
   if (name === 'crypto.js') source = source.replace(/^\/\/ Format 2 \(S3, [^\n]*\):/m, '// Format 2 (S3, D2):')
   if (name === 'sign-in-copy.js') source = source
     .replace(/^\/\/ browser design, section 6;[^\n]*\n\/\/ \.\.\. in a vault"\)\. /m, '// browser design, section 6). ')
@@ -25,14 +30,14 @@ function main() {
   const commit = git(['rev-parse', '--verify', `${ref}^{commit}`]).toString().trim()
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid source commit')
   const destination = join(root, 'lib/browser-profile-core'), files = {}
-  for (const name of ['sign-in-copy.js', 'sign-in-copy-client.js', 'crypto.js', 'storage.js', 'portable-state.js', 'resume-tabs.js', 'runtime-readiness.js', 'native-runtime.js', 'coordinator-client.js', 'runtime-endpoint.js', 'stopped-head-stage.js', 'checkpoint-store.js', 'runtime-status-client.js', 'return-intent.js', 'profile-file-crypto.js', 'profile-file-wire.js', 'profile-file-client.js', 'profile-file-staging.js', 'active-backup-client.js', 'active-backup-scheduler.js', 'active-backup-wire.js', 'active-backup-crypto.js', 'live-backup-input.js', 'live-backup-capture.js', 'live-storage-reader.js', 'backup-seal-client.js', 'backup-seal-worker.js', 'backup-journal.js', 'backup-journal-worker.js']) {
+  for (const name of ['sign-in-copy.js', 'sign-in-copy-client.js', 'crypto.js', 'storage.js', 'portable-state.js', 'resume-tabs.js', 'runtime-readiness.js', 'native-runtime.js', 'coordinator-client.js', 'runtime-endpoint.js', 'stopped-head-stage.js', 'checkpoint-store.js', 'runtime-status-client.js', 'return-intent.js', 'profile-file-crypto.js', 'profile-file-wire.js', 'profile-file-client.js', 'profile-file-staging.js', 'active-backup-client.js', 'active-backup-scheduler.js', 'active-backup-wire.js', 'active-backup-crypto.js', 'live-backup-input.js', 'live-backup-capture.js', 'live-storage-reader.js', 'backup-seal-client.js', 'backup-seal-worker.js', 'backup-journal.js', 'backup-journal-worker.js', 'file-numbers.js']) {
     const sourcePath = `frontend/electron-app/agent-browser/profile-sync/${name}`, upstream = git(['show', `${commit}:${sourcePath}`]), bytes = publicProfileSource(name, upstream)
     if (upstream.includes(13)) throw new Error(`${name} must be LF in the committed source`)
     files[name] = { source: `BGOS: ${sourcePath}`, sha256: createHash('sha256').update(bytes).digest('hex'), ...(bytes.equals(upstream) ? {} : { upstreamSha256: createHash('sha256').update(upstream).digest('hex') }) }
     if (write) { mkdirSync(destination, { recursive: true }); writeFileSync(join(destination, name), bytes) }
     else if (!readFileSync(join(destination, name)).equals(bytes)) throw new Error(`${name} differs from committed source`)
   }
-  const manifest = { version: 1, sourceCommit: commit, why: 'Pinned encrypted checkpoint, lossless storage, portable state and resume readiness, cookie codecs, typed runtime endpoint, signed stopped-head lineage, separate permissioned file crypto/client/private materialization and encrypted local journal shared with HOAI. Explicit fixed-principal active backup transport, scheduler, readonly capture and seal/journal workers are included as pure main-only dependencies; they provide no activation authority. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter shares pure endpoint and document validation and never instantiates or inherits the desktop Bearer client. ProfileFileClient fixes its principal explicitly; paired use obtains only fresh pairing proof. Electron OS folder policy and native dialogs are intentionally excluded. Public copies remove only personal attribution in comments; upstreamSha256 pins the original committed bytes when they differ, and sha256 pins the shipped bytes.', files }
+  const manifest = { version: 1, sourceCommit: commit, why: 'Pinned encrypted checkpoint, lossless storage, portable state and resume readiness, cookie codecs, typed runtime endpoint, signed stopped-head lineage, separate permissioned file crypto/client/private materialization and encrypted local journal shared with HOAI. Explicit fixed-principal active backup transport, scheduler, readonly capture and seal/journal workers are included as pure main-only dependencies; they provide no activation authority. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter shares pure endpoint and document validation and never instantiates or inherits the desktop Bearer client. ProfileFileClient fixes its principal explicitly; paired use obtains only fresh pairing proof. Electron OS folder policy and native dialogs are intentionally excluded. Whole device and file numbers (file-numbers.js) back every same-file check. Public copies remove only personal attribution in comments, and file-numbers.js moves whole lines so the sameFile doc comment stays above it; upstreamSha256 pins the original committed bytes when they differ, and sha256 pins the shipped bytes.', files }
   if (write) {
     writeFileSync(join(destination, 'package.json'), '{"private":true,"type":"commonjs"}\n')
     writeFileSync(join(destination, 'vendor.json'), JSON.stringify(manifest, null, 2) + '\n')

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "sourceCommit": "a2eb30b1e89a2c6a8a7578ecb145d54c2061d9be",
-  "why": "Pinned encrypted checkpoint, lossless storage, portable state and resume readiness, cookie codecs, typed runtime endpoint, signed stopped-head lineage, separate permissioned file crypto/client/private materialization and encrypted local journal shared with HOAI. Explicit fixed-principal active backup transport, scheduler, readonly capture and seal/journal workers are included as pure main-only dependencies; they provide no activation authority. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter shares pure endpoint and document validation and never instantiates or inherits the desktop Bearer client. ProfileFileClient fixes its principal explicitly; paired use obtains only fresh pairing proof. Electron OS folder policy and native dialogs are intentionally excluded. Public copies remove only personal attribution in comments; upstreamSha256 pins the original committed bytes when they differ, and sha256 pins the shipped bytes.",
+  "sourceCommit": "eca213e6507298f0a6d96c71c545228844116a55",
+  "why": "Pinned encrypted checkpoint, lossless storage, portable state and resume readiness, cookie codecs, typed runtime endpoint, signed stopped-head lineage, separate permissioned file crypto/client/private materialization and encrypted local journal shared with HOAI. Explicit fixed-principal active backup transport, scheduler, readonly capture and seal/journal workers are included as pure main-only dependencies; they provide no activation authority. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter shares pure endpoint and document validation and never instantiates or inherits the desktop Bearer client. ProfileFileClient fixes its principal explicitly; paired use obtains only fresh pairing proof. Electron OS folder policy and native dialogs are intentionally excluded. Whole device and file numbers (file-numbers.js) back every same-file check. Public copies remove only personal attribution in comments, and file-numbers.js moves whole lines so the sameFile doc comment stays above it; upstreamSha256 pins the original committed bytes when they differ, and sha256 pins the shipped bytes.",
   "files": {
     "sign-in-copy.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/sign-in-copy.js",
@@ -51,7 +51,7 @@
     },
     "checkpoint-store.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/checkpoint-store.js",
-      "sha256": "ced69edbe63875d615620b3fbad9b0de5458f060701f9531ad1e804f3e1c7520"
+      "sha256": "c06550c81c368ad5adc76ba630914613cdab49f6832b5183b332d3f5eff63068"
     },
     "runtime-status-client.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/runtime-status-client.js",
@@ -75,7 +75,7 @@
     },
     "profile-file-staging.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/profile-file-staging.js",
-      "sha256": "63e7a86d9d1cc5e34a857ad217edbc80f20c9ff3c04ecc1cec4a9edce0cbd22a"
+      "sha256": "f55948c429c407a369cec627e4b945f54320a7862364c040db5cad46a6d10688"
     },
     "active-backup-client.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/active-backup-client.js",
@@ -115,11 +115,16 @@
     },
     "backup-journal.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/backup-journal.js",
-      "sha256": "43075421e966b46d443e0294e09d98fe3adab6d5ca9aa24e44932d0ab59fb199"
+      "sha256": "1eb2deaa81c91b891d3bd4ee66db55ccb6263e75cad20c79c6b9f59a06c8df99"
     },
     "backup-journal-worker.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/backup-journal-worker.js",
-      "sha256": "a87bd08969dc2f78610937bfb55de70a6c5412f7e2a9747f7886849b87c804a5"
+      "sha256": "6660801b445525cec8bd7fc5cab8ca883419e791813bb48648eb6a1e6f8b1577"
+    },
+    "file-numbers.js": {
+      "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/file-numbers.js",
+      "sha256": "87e52049d963016c87ae3fd0162c0ec5b4c8eac3715411c0233e1ef0891123da",
+      "upstreamSha256": "a4700fb6952e6a2c25418fc580ecb49eaf6426734e3412e7b894a8d7afd68cce"
     }
   }
 }

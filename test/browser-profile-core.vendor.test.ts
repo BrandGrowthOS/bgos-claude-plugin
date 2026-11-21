@@ -33,9 +33,40 @@ test('public vendor sanitization changes attribution comments and preserves ever
   assert.equal(publicProfileSource('unrelated.js', opaque), opaque, 'unrelated bytes are never decoded or rewritten')
 })
 
-test('only the two sanitized vendor copies carry separate upstream and public hashes', () => {
+test("the public file-numbers copy moves only whole lines so sameFile's doc comment sits directly above it", () => {
+  const upstream = [
+    '"use strict";',
+    '/**',
+    ' * One file or folder, by the rule the plugin uses:',
+    ' * - a number that differs: another file.',
+    ' */',
+    'const numberPairs = (a, b) => [a, b];',
+    '/** A device or file number that both looks give differs: another file. */',
+    'const numbersDiffer = (a, b) => numberPairs(a, b).length > 2;',
+    'function sameFile(a, b) {',
+    '  return !numbersDiffer(a, b);',
+    '}',
+    'module.exports = { sameFile };',
+    '',
+  ].join('\n')
+  const shipped = publicProfileSource('file-numbers.js', Buffer.from(upstream)).toString()
+  assert.notEqual(shipped, upstream)
+  assert.match(shipped, /\* One file or folder, by the rule the plugin uses:\n \* - a number that differs: another file\.\n \*\/\nfunction sameFile\(a, b\) \{/)
+  assert.match(shipped, /\/\*\* A device or file number that both looks give differs: another file\. \*\/\nconst numbersDiffer =/)
+  assert.deepEqual(shipped.split('\n').sort(), upstream.split('\n').sort(), 'only whole lines move; none is added, dropped or changed')
+  assert.ok(publicProfileSource('file-numbers.js', Buffer.from(shipped)).equals(Buffer.from(shipped)), 'the public copy is stable on another pass')
+  assert.ok(publicProfileSource('checkpoint-store.js', Buffer.from(upstream)).equals(Buffer.from(upstream)), 'other copies stay byte-identical')
+  const attached = readFileSync(join(core, 'file-numbers.js'), 'utf8')
+  assert.match(attached, /\/\*\*\n \* One file or folder, by the rule the plugin uses:\n(?: \*[^\n]*\n)*? \*\/\nfunction sameFile\(/, 'the shipped copy keeps the comment attached')
+  const require = createRequire(import.meta.url), numbers = require('../lib/browser-profile-core/file-numbers.js')
+  assert.equal(numbers.sameFile({ dev: 1n, ino: 2n }, { dev: 1n, ino: 2n }), true)
+  assert.equal(numbers.sameFile({ dev: 1n, ino: (1n << 63n) + 2n }, { dev: 1n, ino: (1n << 63n) + 3n }), false, 'numbers past 2^53 are compared whole')
+  assert.equal(numbers.knownNumbers({ dev: 1n, ino: (1n << 64n) - 1n }), false, 'all ones is no file number')
+})
+
+test('only the three public vendor copies carry separate upstream and public hashes', () => {
   const sanitized = Object.entries(manifest.files).filter(([, pin]: [string, any]) => pin.upstreamSha256)
-  assert.deepEqual(sanitized.map(([name]) => name).sort(), ['crypto.js', 'sign-in-copy.js'])
+  assert.deepEqual(sanitized.map(([name]) => name).sort(), ['crypto.js', 'file-numbers.js', 'sign-in-copy.js'])
   for (const [name, pin] of sanitized as Array<[string, any]>) {
     assert.match(pin.upstreamSha256, /^[a-f0-9]{64}$/)
     assert.notEqual(pin.sha256, pin.upstreamSha256)
@@ -91,7 +122,7 @@ test('the vendor CLI copies and verifies sanitized committed source, and rejects
 
 test('profile codecs ship exactly the pinned committed bytes and CommonJS boundary', () => {
   assert.deepEqual(readdirSync(core).filter(name => name.endsWith('.js')).sort(), Object.keys(manifest.files).sort())
-  assert.deepEqual(Object.keys(manifest.files).sort(), ['sign-in-copy.js', 'sign-in-copy-client.js', 'active-backup-client.js', 'active-backup-scheduler.js', 'active-backup-wire.js', 'active-backup-crypto.js', 'live-backup-input.js', 'live-backup-capture.js', 'live-storage-reader.js', 'backup-seal-client.js', 'backup-seal-worker.js', 'backup-journal.js', 'backup-journal-worker.js', 'checkpoint-store.js', 'coordinator-client.js', 'crypto.js', 'native-runtime.js', 'portable-state.js', 'profile-file-client.js', 'profile-file-crypto.js', 'profile-file-staging.js', 'profile-file-wire.js', 'resume-tabs.js', 'return-intent.js', 'runtime-endpoint.js', 'runtime-readiness.js', 'runtime-status-client.js', 'stopped-head-stage.js', 'storage.js'].sort())
+  assert.deepEqual(Object.keys(manifest.files).sort(), ['sign-in-copy.js', 'sign-in-copy-client.js', 'active-backup-client.js', 'active-backup-scheduler.js', 'active-backup-wire.js', 'active-backup-crypto.js', 'live-backup-input.js', 'live-backup-capture.js', 'live-storage-reader.js', 'backup-seal-client.js', 'backup-seal-worker.js', 'backup-journal.js', 'backup-journal-worker.js', 'checkpoint-store.js', 'coordinator-client.js', 'crypto.js', 'file-numbers.js', 'native-runtime.js', 'portable-state.js', 'profile-file-client.js', 'profile-file-crypto.js', 'profile-file-staging.js', 'profile-file-wire.js', 'resume-tabs.js', 'return-intent.js', 'runtime-endpoint.js', 'runtime-readiness.js', 'runtime-status-client.js', 'stopped-head-stage.js', 'storage.js'].sort())
   assert.match(manifest.sourceCommit, /^[a-f0-9]{40}$/)
   for (const [name, pin] of Object.entries(manifest.files) as Array<[string, any]>) {
     const bytes = readFileSync(join(core, name)); assert.equal(bytes.includes(13), false)

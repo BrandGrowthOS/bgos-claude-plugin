@@ -18,7 +18,7 @@ import ts from 'typescript'
 import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const LIB = fileURLToPath(new URL('../lib/', import.meta.url))
-const ALLOWED_SITE_COUNT = 37
+const ALLOWED_SITE_COUNT = 27
 const ALLOW_LIST: string[] = JSON.parse(readFileSync(new URL('./fixtures/file-identity-allowlist.json', import.meta.url), 'utf8'))
 const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/
 const COMPARISONS = new Set([
@@ -34,6 +34,8 @@ type Site = { key: string, location: string }
 function readsFileNumber(node: ts.Node): boolean {
   // A type check compares a type name, not the device or inode value itself.
   if (ts.isTypeOfExpression(node)) return false
+  // wholeNumber keeps the number whole and gives null when it is unknown, the rule this guard asks for.
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'wholeNumber') return false
   if (ts.isPropertyAccessExpression(node) && /^(dev|ino)$/.test(node.name.text)) return true
   if (ts.isElementAccessExpression(node) && node.argumentExpression &&
       ts.isStringLiteralLike(node.argumentExpression) && /^(dev|ino)$/.test(node.argumentExpression.text)) return true
@@ -140,6 +142,16 @@ test('comments, strings, other properties, type checks and non-comparison uses a
     const safe = bothSame(known, a.ino, b.ino)
   `
   assert.deepEqual(comparisonSites('lib/example.ts', source), [])
+})
+
+test('a number read whole through wholeNumber is not a plain site, and a plain operand beside it still is', () => {
+  // wholeNumber (lib/browser-profile-core/file-numbers.js) keeps a 64 bit number whole and gives null when it is unknown.
+  assert.deepEqual(comparisonSites('lib/example.js', 'wholeNumber(stat?.dev) !== null && wholeNumber(stat?.ino) !== null'), [])
+  assert.deepEqual(comparisonSites('lib/example.js', 'wholeNumber(a?.["ino"]) === wholeNumber(b.ino)'), [])
+  assert.equal(comparisonSites('lib/example.js', 'wholeNumber(a.ino) === b.ino').length, 1)
+  assert.equal(comparisonSites('lib/example.js', 'Number(wholeNumber(a.ino)) === b.ino').length, 1)
+  assert.equal(comparisonSites('lib/example.js', 'other.wholeNumber(a.ino) === null').length, 1, 'only the plain helper name counts')
+  assert.equal(comparisonSites('lib/example.js', 'wholeNumber(a.ino, a.dev === b.dev) === null').length, 1, 'a comparison inside its arguments is still a site')
 })
 
 test('allowances are tied to the file, expression and number of occurrences', () => {

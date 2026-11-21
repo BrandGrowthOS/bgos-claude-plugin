@@ -95,6 +95,30 @@ test('the managed original request refuses an arbitrary path before native websi
   await f.run('browser_file_upload', { paths: ['/private/agent/path'] }); assert.equal(f.calls.some(row => row.kind === 'request' || row.kind === 'engine'), false); const message = f.calls.find(row => row.kind === 'completion')!.payload.message; assert.ok(message.error || message.result?.isError)
 })
 
+const DRIVE_REFUSAL = 'The file could not be uploaded: the drive where this agent keeps its files cannot keep them safe. Ask whoever looks after this computer for help.'
+const refusal = (code: string) => Object.assign(new Error(code), { code })
+test('an upload refused because the drive gives no file numbers says so in one plain sentence, before and after permission', async t => {
+  for (const where of ['before-permission', 'while-materializing']) {
+    const f = await fixture(t)
+    if (where === 'before-permission') f.fileHooks.upload = async () => { throw refusal('profile_file_numbers_unknown') }
+    else f.fileRunner.upload = async (input: Row) => input.authorize(async () => { throw refusal('profile_file_numbers_unknown') })
+    await f.run('browser_file_upload', { paths: ['hoai-file:' + randomUUID()] })
+    const message = f.calls.find(row => row.kind === 'completion')!.payload.message
+    assert.equal(message.error, undefined, where); assert.equal(message.result.isError, true, where)
+    assert.deepEqual(message.result.content, [{ type: 'text', text: DRIVE_REFUSAL }], where)
+    assert.equal(f.calls.some(row => row.kind === 'engine'), false, where); assert.equal(f.record.engineTasks.size, 0, where)
+  }
+})
+
+test('any other upload refusal keeps the error it gave before', async t => {
+  for (const code of ['profile_file_available_token_required', 'profile_file_path_changed', 'profile_file_original_page_changed']) {
+    const f = await fixture(t); f.fileHooks.upload = async () => { throw refusal(code) }
+    await f.run('browser_file_upload', { paths: ['hoai-file:' + randomUUID()] })
+    const message = f.calls.find(row => row.kind === 'completion')!.payload.message
+    assert.equal(message.result, undefined, code); assert.equal(message.error.code, -32603, code); assert.doesNotMatch(JSON.stringify(message), /drive where this agent/, code)
+  }
+})
+
 test('file work participates in positive activity and native disposal starts before its held operation drains', async t => {
   const f = await fixture(t), gate = deferred<void>(), entered = deferred<void>(); f.fileHooks.list = async (input: Row) => { f.fileState.pending = 1; entered.resolve(); try { await gate.promise; input.assertCurrent() } finally { f.fileState.pending = 0 } }
   const work = f.run('hoai_browser_files', {}); await entered.promise; let disposal: Promise<unknown> | undefined, disposed = false

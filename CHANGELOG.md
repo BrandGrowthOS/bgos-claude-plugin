@@ -12,6 +12,14 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.20 (2026-11-21)
+
+**fix(browser): same-file checks read whole file numbers, and a drive without them is refused in one plain sentence.**
+
+The browser profile copies the plugin keeps from BGOS (`profile-file-staging.js`, `checkpoint-store.js`, `backup-journal.js`, `backup-journal-worker.js`) are copied again from BGOS main `eca213e6507298f0a6d96c71c545228844116a55`, with the new `file-numbers.js` they now share. Every check that decides two looks saw one file reads device and file numbers whole, as bigints, so two Windows files whose 64 bit numbers round to the same plain JavaScript number are no longer taken for one. A file number that is unknown (left out, zero or all ones) is never a match by itself. The public copy of `file-numbers.js` moves two whole lines so the `sameFile` doc comment sits directly above `sameFile`; `vendor.json` pins both the BGOS bytes and the shipped bytes. The ten plain device and file number compares those four copies had are gone, so `test/file-identity.guard.test.ts` drops their allowances (37 to 27), and its scanner reads a number passed through `wholeNumber` as the whole number it is; a plain operand beside it is still a site.
+
+When `browser_file_upload` is refused because the drive where the agent keeps its files gives no whole file numbers, the agent now gets one plain sentence instead of a JSON-RPC -32603 error: "The file could not be uploaded: the drive where this agent keeps its files cannot keep them safe. Ask whoever looks after this computer for help." Every other refusal is unchanged. Guards: `test/browser-profile-companion-files.test.ts` and `test/browser-profile-core.vendor.test.ts`, both red first.
+
 ## 0.90.16 (2026-11-20)
 
 **fix(keep-alive): the Helper now notices when any agent on the computer stops getting messages, not only the agents it keeps running.**
