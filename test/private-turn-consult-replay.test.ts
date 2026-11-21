@@ -53,7 +53,7 @@ function stamped(rpcId: string, expiresInMs = 45_000) {
 }
 
 /** One agent folder and its ledger; `life()` is one daemon process over them. */
-function agentHome(t: any) {
+function agentHome(t: any, agentId = AGENT) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'hoai-consult-replay-')))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const cwd = join(root, 'agent')
@@ -61,7 +61,7 @@ function agentHome(t: any) {
   const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
   markFloorAttached({ root, folders: [cwd] })
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
-  const firesPath = privateFiresPath(root, AGENT)
+  const firesPath = privateFiresPath(root, agentId)
   const clock = { now: T0 }
   const transcripts = new Map<string, string>()
   const logs: string[] = []
@@ -86,7 +86,7 @@ function agentHome(t: any) {
     }
     /** server.ts's voice notify: a consult card through deliver(), the owner only from the backend stamp. */
     const consult = (frame: ReturnType<typeof stamped>, extra: Record<string, unknown> = {}) => {
-      const actor = voiceConsultActor({ frame, assistantId: AGENT, ownerUserId: OWNER, now: clock.now })
+      const actor = voiceConsultActor({ frame, assistantId: agentId, ownerUserId: OWNER, now: clock.now })
       return tracker.deliver({
         content: '[voice_consult] Remind me to call Sam at five',
         actingUserId: actor?.actingUserId ?? null, chatId: String(frame.chatId),
@@ -907,6 +907,30 @@ for (const tool of ['create_mission', 'set_mission_goals', 'add_mission_goals', 
     first.submit(card)
     first.act(tool)
     home.transcripts.set(first.sessionId, [JSON.stringify({ type: 'user', message: { content: card } }), limitRecord].join('\n'))
+    const answers = [0]
+    answerAfterRestart(home, [request], answers)
+    assert.deepEqual(answers, [1])
+  })
+}
+
+for (const [tool, content] of [
+  ['cancel_mission_goal', 'drop the slides goal and finish the report'],
+  ['complete_mission', 'complete the mission and send me the report'],
+  ['rename_chat', 'rename the chat and finish the report'],
+]) {
+  test(`${tool} before a usage refusal leaves exactly one answer due`, t => {
+    const home = agentHome(t, 'fixture-agent')
+    const first = home.life()
+    const request = { content, chatId: 'chat', actingUserId: OWNER, fireKey: 'owner:1' }
+    const card = first.tracker.deliver(request)
+    first.submit(card)
+    first.act(tool)
+    home.transcripts.set(first.sessionId, [
+      JSON.stringify({ type: 'user', message: { content: card } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: tool, id: 'action' }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'action', content: 'done' }] } }),
+      limitRecord,
+    ].join('\n'))
     const answers = [0]
     answerAfterRestart(home, [request], answers)
     assert.deepEqual(answers, [1])
