@@ -3872,7 +3872,7 @@ async function readOne(path: string, ctx: Record<string, unknown>): Promise<any>
   return lib.readOutboundFile(path, ctx)
 }
 
-const changedSentence = (path: string) => `${path} changed while HOAI read it, so it is not attached.`
+const changedSentence = (path: string) => `${path} was changing while we tried to attach it. Wait a moment and try again.`
 
 test('final fix: a path that leads somewhere else when HOAI looks again after opening it is refused (a parent folder swapped for a junction)', async (t) => {
   const home = scratchHome(t)

@@ -12,22 +12,11 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
-## 0.91.5 (2026-11-20)
+Saved Claude accounts (Helper Accounts). The version these notes ship in is set when the plugin release chain reaches them; they were written as 0.91.1 to 0.91.5 on their branch.
 
-**test(launcher): the unknown file identity case is pinned.** The identity decision is now the exported pure `sameKnownFile`. A test shows an unknown identity (null) never matches, not even another unknown one, and the `a === b` mutant fails it.
+**feat(watcher): saved Claude accounts, switched now, at the limit, or by Auto.** The owner saves Claude logins per computer (each in its own folder under `~/.bgos-agent/helper-accounts/`) and assigns one to the computer's new starts or to one agent from HOAI Helper. Switch now waits for the agent's turn and restarts it in the same conversation. Switch at limit keeps the current login until the agent's own "You've hit your ... limit" line appears in its transcript (any model, read the way capkeeper reads it; the statusline has no per model usage), then switches once. Auto switches now to the saved login with the most week room (capkeeper's statusline sample, up to a day old; a tie keeps the current login) and picks again at each limit. A login whose agent just hit a model limit has no room for that model until the reset Claude gave; a session or weekly limit blocks it for every model. With no login left with room, the agent waits. At a limit the switch does not wait for the turn (the agent cannot answer anyway), but never cuts a permission question, thread work or a background job (`atLimitSafe`). The refused message is not sent again by itself.
 
-## 0.91.4 (2026-11-20)
-
-**fix(launcher): the linked conversation's identity check reads file numbers safely.** A saved login's transcript link compared plain device and inode numbers, which the file identity guard refuses: on some drives a number is 0 (unknown), and a large id loses precision as a plain number. It now compares bigint "dev:ino" identities, and an unknown identity is never taken as the conversation (the link is refused). The full suite found it (`test/file-identity.guard.test.ts`), and a new test pins the conflict.
-
-## 0.91.3 (2026-11-20)
-
-**fix(watcher): the independent verification of the review fixes.**
-- A refused or thrown account job is published by its id (`refusedRpcIds`, memory only), even with no registry and without overwriting a change still waiting.
-- A rollback held by a safety check gives up after 30 minutes.
-- New tests drive the real stopped-agent reading and the frame handler's failure hook.
-
-## 0.91.2 (2026-11-20)
+Security round (acctbuild3): a saved login now mirrors the source login's `permissions`, `hooks`, `sandbox` and `disableAllHooks` settings and its global `CLAUDE.md` at every start, and a source it cannot read stops the start; a rollback or an unassigned start gets the supervisor's own launch login and provider settings back; one bad registry entry hides that login only, and an unreadable registry or a lost computer default no longer stops other agents; the sign in check runs from home, never inside a saved login folder.
 
 **fix(watcher): Helper Accounts review findings (REVIEW-rvacctbuild).**
 - #1: a recovered switch rolls back only the conversation it was made for, never one the owner opened since.
@@ -39,12 +28,45 @@ Running commands is not available for people you share with yet. Your own tools 
 - #11: `rebind` brings a re-enrolled watcher's logins back for the same owner without a slot.
 - #14: a test now pins that no restart is requested without the pinned transcript.
 
-## 0.91.1 (2026-11-20)
+**fix(watcher): the independent verification of the review fixes.**
+- A refused or thrown account job is published by its id (`refusedRpcIds`, memory only), even with no registry and without overwriting a change still waiting.
+- A rollback held by a safety check gives up after 30 minutes.
+- New tests drive the real stopped-agent reading and the frame handler's failure hook.
 
-**feat(watcher): saved Claude accounts, switched now, at the limit, or by Auto.** The owner saves Claude logins per computer (each in its own folder under `~/.bgos-agent/helper-accounts/`) and assigns one to the computer's new starts or to one agent from HOAI Helper. Switch now waits for the agent's turn and restarts it in the same conversation. Switch at limit keeps the current login until the agent's own "You've hit your ... limit" line appears in its transcript (any model, read the way capkeeper reads it; the statusline has no per model usage), then switches once. Auto switches now to the saved login with the most week room (capkeeper's statusline sample, up to a day old; a tie keeps the current login) and picks again at each limit. A login whose agent just hit a model limit has no room for that model until the reset Claude gave; a session or weekly limit blocks it for every model. With no login left with room, the agent waits. At a limit the switch does not wait for the turn (the agent cannot answer anyway), but never cuts a permission question, thread work or a background job (`atLimitSafe`). The refused message is not sent again by itself.
+**fix(launcher): the linked conversation's identity check reads file numbers safely.** A saved login's transcript link compared plain device and inode numbers, which the file identity guard refuses: on some drives a number is 0 (unknown), and a large id loses precision as a plain number. It now compares bigint "dev:ino" identities, and an unknown identity is never taken as the conversation (the link is refused). The full suite found it (`test/file-identity.guard.test.ts`), and a new test pins the conflict.
 
-Security round (acctbuild3): a saved login now mirrors the source login's `permissions`, `hooks`, `sandbox` and `disableAllHooks` settings and its global `CLAUDE.md` at every start, and a source it cannot read stops the start; a rollback or an unassigned start gets the supervisor's own launch login and provider settings back; one bad registry entry hides that login only, and an unreadable registry or a lost computer default no longer stops other agents; the sign in check runs from home, never inside a saved login folder.
+**test(launcher): the unknown file identity case is pinned.** The identity decision is now the exported pure `sameKnownFile`. A test shows an unknown identity (null) never matches, not even another unknown one, and the `a === b` mutant fails it.
 
+**test(launcher): the supervisor keeps its launch login across a rollback.** A keep-alive supervisor runs its first child in a saved login, the owner moves the computer back to the agent's own login, and the relaunch must carry the launch's `ANTHROPIC_BASE_URL` and key again (`test/helper-account-security.test.ts`). With the supervisor's `launchEnv` wiring removed it fails.
+
+## 0.90.16 (2026-11-20)
+
+**fix(keep-alive): the Helper now notices when any agent on the computer stops getting messages, not only the agents it keeps running.**
+
+Before, when an agent kept running but stopped getting messages, the Helper noticed only for agents on the keep-alive list, and for none while the computer's keep-alive switch was off. It now checks every agent on the computer, and takes the same care as before not to raise a false alarm: an agent that is still starting, a short pause, or a session it cannot be sure is the agent's.
+
+- An agent on the keep-alive list is brought back, as before.
+- Any other agent is left alone: nothing is restarted, installed or changed for it. The Helper tells the app, which can say the agent is not kept running and offer to keep it running. Once the owner says yes, the agent is brought back.
+- Once the app update that reads this report is out, an agent you did not keep running is no longer restarted by itself when it stops getting messages.
+- A computer with more than 64 agents still reports, naming 64 of them.
+
+An app that does not know the new report ignores it, so nothing already installed changes until that app update is out.
+
+## 0.90.15 (2026-11-20)
+
+**fix(email): a file that was changing asks the person to wait and try again.** When a file changed while an agent was attaching it to an email, the refusal said "`<file>` changed while HOAI read it, so it is not attached." and read like a dead end. It now says "`<file>` was changing while we tried to attach it. Wait a moment and try again." Both refusal paths (the check on the opened file and the second look at the path) return the same sentence. Guard: the changed-file helper in `test/email-outbound-files.test.ts`, red on the old words first.
+
+## 0.90.14 (2026-11-20)
+
+**fix(update): an agent that was already deaf before an update no longer rolls the computer back.** An agent counts as restarted only when it is seen answering after the restart: a whole live marker whose boot stamp is after it, never the file's modified time. An agent that was not answering before the update is left out of the proof when another agent can prove the new build; when none can, the run rolls back as before. A keepalive restart checks the fresh marker right before its signal, with nothing in between, and waits at most 30 s (and never past the job deadline, whatever the clock does) for the relaunched one. A retry that timed out is settled before the run reports, and every agent a rollback could not restart is named in the run's result and the watcher's log. Guard: `test/update-executor.test.ts`, `test/watcher-core.test.ts`, `test/agent-verify.test.ts` and `test/agent-inventory.boot-clock.test.ts`, each new case red first, with the mutants named in the pull request.
+
+## 0.90.13 (2026-11-19)
+
+**fix(secret scan): the AWS secret key rule stays fast on any line.** The rule now checks a line in linear time with the same matches as before, byte for byte, so a long or unusual line can no longer slow the scan. Tests compare the new check with the old pattern on 200,000 generated lines and 156 long ones.
+
+## 0.90.12 (2026-11-18)
+
+**feat(missions): a working mark can be held for background work, so the mission card keeps showing every goal a worker is on after the agent's turn ends (KC 2026-11-17, msg 241497).** `set_goal_working` takes two optional inputs: `held: true` (120 minutes) or `held_minutes` (1 to 240). Stop, SessionEnd, a new prompt and the 15 minute idle rule do not clear a held mark; the daemon's 30 second sweep refreshes it every 10 minutes, inside the server's 30 minute lapse, and it ends only when its hold runs out, when the agent sends `working: false`, or when the goal is ticked (the agent's own tick, the owner's or a server check), cancelled, or its mission closes. Calling again restarts the hold; a call without a hold makes the mark an ordinary one again. A mark sent without a hold behaves exactly as before. The wire is unchanged: the server sees ordinary marks and refreshes. A daemon with no hook intake running has no sweep, so it sends the mark as an ordinary one and says it cannot hold it. A daemon that stands down still clears held marks, since nothing is left to refresh them. The tool description, the MCP instructions (Missions, item 7), the bundled fallback canon and the README say so. Guard: `test/mission-working-held.test.ts` (16 cases on the tracker) and new cases in `test/goal-marks.test.ts` (input, the real server case, the description, and both tick paths), red on 0.90.8 first; a mutant that clears held marks on Stop turns five named tests red.
 ## 0.90.11 (2026-11-17)
 
 **fix(slash commands): /permissions, /hooks, every other built in that edits the owner's files, and every discovered command run only on the owner's own turn.** One session serves every chat of an agent, so with person lanes off a person the agent is shared with, a group member's slash command and a peer agent's frame all reached the owner's main session through `routeSlashCommand`, and no rail asked who sent it. /permissions told the model, for whoever sent it, to edit `.claude/settings.json`; /hooks, /memory, /init, /model and /agents did the same for the owner's hooks, CLAUDE.md, launcher and subagent files. Each of those six built ins now carries a `nonOwnerPrompt`, the answer anyone but the owner gets (only the owner decides; do not read or edit any settings file). Owner only is also the default for everything else: only /help, /plan, /mcp and /doctor (and the person lane's own catalog) are marked `forAnyone`, and every command discovered from an installed plugin, `~/.claude/commands` or the project's `.claude/commands` runs its body only for the owner. That includes this plugin's own /hoai:pair, which told the model to run `bin/bgos-pair.mjs` with a code the sender supplied. A non owner is told only the owner can run it, with no body, run line, plugin path or source file. A command file cannot mark itself `forAnyone`. The speaker is decided by the check the daemon already uses for its own slash commands (`isOwnerSender` over `readSlashSender`, composed with each rail's own `fromHuman` the way the sign-in code gate composes it), on the poll, the stream and the socket alike; a call that names no speaker fails closed. Guard: `test/slash-owner-only.test.ts`, 41 cases. The first 25 were 20 red on 0.90.3's code (the five that passed are the owner path and wiring cases); the discovered command cases were 15 red on the first round's code, and the wiring case names each rail's own `fromHuman` variable, so a rail that hard codes `fromHuman: true` fails it.

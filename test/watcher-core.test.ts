@@ -464,7 +464,7 @@ test('runWatcher reconcile: ack, job, planning, per-step progress, marker + reci
   clock.onSleep((_ms, nowMs) => {
     for (const id of ['912', '7']) {
       const probe = `${HOME}/.bgos-agent/${id}/probe-requested.json`
-      if (fs.files.has(probe)) fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString() }))
+      if (fs.files.has(probe)) fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
     }
   })
   const cliCalls: string[][] = []
@@ -540,7 +540,7 @@ test('runWatcher reconcile: targets filter the fleet (only the named agent resta
   const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'restart_only', targets: [{ pairingId: 1, assistantId: '912' }, { pairingId: 9, assistantId: '999' }] } } })
   const clock = fakeClock()
   clock.onSleep((_ms, nowMs) => {
-    if (fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/912/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString() }))
+    if (fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/912/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
   })
   let planned: any = null
   const plan = (state: any) => {
@@ -602,6 +602,68 @@ test('runWatcher reconcile: the executor reads the marks the agents wrote, so a 
   assert.equal(backend.progress('j').at(-1)!.state, 'failed')
 })
 
+test('runWatcher reconcile: the executor is given the question to ask BEFORE an update, answered from each agent\'s own marker', async () => {
+  // Bug board rows 66450e01 and 367b861a: an agent already deaf must not roll
+  // a good install back. The executor asks through this dependency
+  // (update-executor.test.ts pins what it does with the answer); here the
+  // watcher's wiring is real: its file system, its clock, its inventory rows.
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'update', targets: [] } } })
+  const clock = fakeClock()
+  // Only 7 answers a probe; 912 never does and has no marker at all.
+  clock.onSleep((_ms, nowMs) => {
+    if (fs.files.has(`${HOME}/.bgos-agent/7/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/7/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
+  })
+  let answers: any = null
+  let reread: any = null
+  const execute = async (_plan: any, deps: any) => {
+    assert.equal(typeof deps.proveLiveBefore, 'function', 'the watcher hands the executor the question')
+    answers = {
+      live: await deps.proveLiveBefore({ assistantId: '7', cwd: null }, { timeoutMs: 9000 }),
+      deaf: await deps.proveLiveBefore({ assistantId: '912', cwd: null }, { timeoutMs: 9000 }),
+      stranger: await deps.proveLiveBefore({ assistantId: '4242', cwd: null }, { timeoutMs: 9000 }),
+    }
+    // Review of #396, C1: the second read, for a late answer.
+    assert.equal(typeof deps.readLastLiveAt, 'function', 'the watcher hands the executor the second read')
+    reread = {
+      live: await deps.readLastLiveAt({ assistantId: '7', cwd: null }),
+      deaf: await deps.readLastLiveAt({ assistantId: '912', cwd: null }),
+      stranger: await deps.readLastLiveAt({ assistantId: '4242', cwd: null }),
+    }
+    return { ok: true, verdict: 'done', failedStep: null, rolledBack: false, steps: [] }
+  }
+  const { deps, logs } = baseDeps(fs, backend, clock, { modules: stubModules({ plan: updatePlan, execute }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(answers.live, { live: true, detail: 'answered' })
+  assert.equal(answers.deaf.live, false)
+  assert.equal(answers.deaf.detail, 'no_answer_in_9000ms;never_live')
+  assert.deepEqual(answers.stranger, { live: null, detail: 'agent_not_in_inventory:4242' })
+  assert.ok(fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`), 'the deaf agent was really asked')
+  assert.ok(logs.some((line: string) => line.includes('live before 912: DEAF')), 'and the log says so')
+  assert.match(reread.live.lastLiveAt, /^\d{4}-\d\d-\d\dT/, 'the answering agent\'s marker time')
+  assert.ok('bootedAt' in reread.live, 'and when its session booted')
+  assert.equal(reread.deaf, null, 'no marker, no time')
+  assert.equal(reread.stranger, null, 'an agent this watcher does not hold is never read')
+})
+
+test('runWatcher reconcile: past the job deadline the question before an update is not asked: unknown, and no probe is written (review minor 6)', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'update', targets: [] } } })
+  const clock = fakeClock()
+  let late: any = null
+  const execute = async (_plan: any, deps: any) => {
+    clock.advance(60_000)
+    late = await deps.proveLiveBefore({ assistantId: '912', cwd: null }, { timeoutMs: 9000 })
+    return { ok: true, verdict: 'done', failedStep: null, rolledBack: false, steps: [] }
+  }
+  const { deps } = baseDeps(fs, backend, clock, { modules: stubModules({ plan: updatePlan, execute }), jobDeadlineMs: 1_000 })
+  await runWatcher(deps as any)
+  assert.deepEqual(late, { live: null, detail: 'job_deadline_exceeded' })
+  assert.equal(fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`), false, 'no probe after the deadline')
+})
+
 test('runWatcher reconcile: a verify failure rolls back, names the step, posts scrubbed diagnostics', async () => {
   const fs = machineFs()
   manifestFor(fs)
@@ -609,7 +671,7 @@ test('runWatcher reconcile: a verify failure rolls back, names the step, posts s
   const clock = fakeClock()
   // Only 7 answers the probe; 912 stays deaf.
   clock.onSleep((_ms, nowMs) => {
-    if (fs.files.has(`${HOME}/.bgos-agent/7/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/7/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString() }))
+    if (fs.files.has(`${HOME}/.bgos-agent/7/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/7/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
   })
   const { deps, logs } = baseDeps(fs, backend, clock, { modules: stubModules({ plan: updatePlan }), verifyTimeoutMs: 9000 })
   assert.equal(await runWatcher(deps as any), 0)
@@ -644,7 +706,7 @@ test('runWatcher reconcile: a stale watcher bundle is staged, swapped and the pr
     const clock = fakeClock()
     clock.onSleep((_ms, nowMs) => {
       for (const id of ['912', '7']) {
-        if (fs.files.has(`${HOME}/.bgos-agent/${id}/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString() }))
+        if (fs.files.has(`${HOME}/.bgos-agent/${id}/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
       }
     })
     let observations = 0
@@ -707,7 +769,7 @@ test('runWatcher create_agent: folder, preseed, pair (exact argv, cwd = folder),
   const clock = fakeClock()
   clock.onSleep((_ms, nowMs) => {
     // The boot hello proves the new pairing live.
-    if (fs.exists(`${HOME}/.bgos-agent/55/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/55/channel-live.json`, JSON.stringify({ firstLiveAt: new Date(nowMs).toISOString(), lastLiveAt: new Date(nowMs).toISOString() }))
+    if (fs.exists(`${HOME}/.bgos-agent/55/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/55/channel-live.json`, JSON.stringify({ firstLiveAt: new Date(nowMs).toISOString(), lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
   })
   const execCalls: Array<{ file: string; args: string[]; opts: any }> = []
   const exec = async (file: string, args: readonly string[], opts: any) => {
@@ -846,7 +908,7 @@ async function createAgentRun(opts: {
   const backend = fakeBackend({ frames: [{ rpcId: 'c1', op: 'create_agent' }], jobs: { c1: { op: 'create_agent', pairCode: PAIR_CODE, folderName: 'wolf', assistantId: '55' } }, keepAlive: opts.keepAlive })
   const clock = fakeClock()
   clock.onSleep((_ms, nowMs) => {
-    if (fs.exists(`${HOME}/.bgos-agent/55/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/55/channel-live.json`, JSON.stringify({ firstLiveAt: new Date(nowMs).toISOString(), lastLiveAt: new Date(nowMs).toISOString() }))
+    if (fs.exists(`${HOME}/.bgos-agent/55/probe-requested.json`)) fs.writeFile(`${HOME}/.bgos-plugin-state/55/channel-live.json`, JSON.stringify({ firstLiveAt: new Date(nowMs).toISOString(), lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
   })
   const execCalls: Array<{ file: string; args: string[]; opts: any }> = []
   const exec = async (file: string, args: readonly string[], execOpts: any) => {
@@ -1307,7 +1369,7 @@ test('a job that succeeded keeps its own outcome even when the watcher cannot re
     if (fs.files.has(probe)) {
       fs.writeFile(
         `${HOME}/.bgos-plugin-state/912/channel-live.json`,
-        JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString() }),
+        JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }),
       )
     }
   })
@@ -1490,6 +1552,211 @@ test('runWatcher: a limit pass that throws is logged and the loop goes on pollin
   assert.ok(backend.calls.some((c) => c.path.includes('/machine-rpc/pending')))
 })
 
+// -- deafwatch for every agent: a deaf agent the sweep only watches is reported, never acted on.
+
+const WATCHED_913 = { id: '913', state: 'failed', reason: 'no-channel-heartbeat: no live channel (not_cleared)', since: 'y' }
+
+test('runWatcher: a deaf agent the sweep only watches rides the NEXT heartbeat in its own list, never among the cleared ones, and is never handed to the limit watch', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const cleared = { id: '912', state: 'supervised', reason: 'canonical', since: 'x' }
+  const passes: any[] = []
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => ({ enabled: true, source: 'live', agents: [cleared], watched: [WATCHED_913] }),
+    limitPass: async (ctx: any) => {
+      passes.push(ctx.assistantIds)
+      return { agents: [] }
+    },
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.equal(beats.length, 2)
+  // The way the Helper already learns an agent's state, the heartbeat's keep-alive block, in a list of its own:
+  // `agents` stays exactly the agents the watcher keeps running.
+  assert.deepEqual(beats[1]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [cleared], watched: [WATCHED_913] })
+  // The limit watch presses a key for the agents the sweep cleared. A watched agent is not one of them.
+  assert.ok(passes.length >= 1)
+  for (const ids of passes) assert.deepEqual(ids, ['912'])
+})
+
+test('runWatcher: with the switch off a watched deaf agent still rides the heartbeat, in its own list', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => ({ enabled: false, source: 'live', agents: [], watched: [WATCHED_913] }),
+    limitPass: async () => ({ agents: [] }),
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.deepEqual(beats[1]!.body.env.watcherHealth.keepAlive, { enabled: false, agents: [], watched: [WATCHED_913] })
+  // The sweep that follows has nothing watched: the list leaves the block again.
+})
+
+test('runWatcher: the first heartbeat after a restart carries the watched findings the previous process persisted', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const since = new Date(T0 - 60_000).toISOString()
+  fs.writeFile(
+    `${HOME}/.bgos-agent/watcher/keepalive-state.json`,
+    JSON.stringify({ schemaVersion: 1, enabled: false, agents: {}, watched: { '913': { state: 'failed', reason: WATCHED_913.reason, since, deafSince: since, deafSeenAt: since }, '914': { deafSince: since, deafSeenAt: since } } }),
+  )
+  const backend = fakeBackend()
+  // The heartbeat's inventory never runs a real systemctl or ps.
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), execSync: () => ({ code: 1, stdout: '' }), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: false, agents: [], watched: [{ id: '913', state: 'failed', reason: WATCHED_913.reason, since }] })
+})
+
+test('runWatcher: a computer with more than 64 agents sends 64 ids, its kept and watched agents among them, and says so in the log once', async () => {
+  // The server takes at most 64 ids (heartbeat.dto.ts) and refuses the WHOLE heartbeat above that.
+  const extra: Record<string, string> = {}
+  for (let id = 1000; id <= 1062; id++) extra[`${HOME}/.bgos-agent/credentials-${id}.json`] = JSON.stringify({ pairingToken: `agent-secret-${id}`, backendUrl: 'x' })
+  const fs = machineFs(extra)
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const kept = { id: '1062', state: 'supervised', reason: 'canonical', since: 'x' }
+  const watched = { ...WATCHED_913, id: '1061' }
+  const { deps, logs } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => ({ enabled: true, source: 'live', agents: [kept], watched: [watched] }),
+    limitPass: async () => ({ agents: [] }),
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.equal(beats.length, 2)
+  // 65 agents on this computer: 7, 912 and 1000 to 1062.
+  assert.equal((beats[0]!.body.env.agents as string[]).length, 64)
+  const second = beats[1]!.body.env.agents as string[]
+  assert.equal(second.length, 64)
+  assert.ok(second.includes('1062'), 'the kept agent')
+  assert.ok(second.includes('1061'), 'the watched agent')
+  assert.equal(second.includes('1060'), false, 'the last of the others is the one left out')
+  assert.deepEqual(second, [...second].sort((a, b) => Number(a) - Number(b)))
+  assert.equal(logs.filter((l) => l.includes('65 agents')).length, 1)
+})
+
+/** Each poll moves the clock on by the next of `steps` (ms) and answers no frames; past the last one the poll fails and the loop stops at its back off. */
+function steppedBackend(clock: ReturnType<typeof fakeClock>, steps: number[]) {
+  const calls: Call[] = []
+  let polls = 0
+  const fetch = async (url: string, init: any) => {
+    const u = new URL(url)
+    calls.push({ method: init?.method ?? 'GET', path: u.pathname + u.search, body: init?.body ? JSON.parse(init.body) : undefined, headers: init?.headers ?? {} })
+    if (u.pathname.endsWith('/machine-rpc/pending')) {
+      const step = steps[polls]
+      polls += 1
+      if (step === undefined) throw new Error('ECONNRESET')
+      clock.advance(step)
+      return { ok: true, status: 200, text: async () => JSON.stringify({ frames: [] }) }
+    }
+    return { ok: true, status: 200, text: async () => '{}' }
+  }
+  return { calls, fetch }
+}
+
+/** The watcher loop with a sweep that answers `reports` in turn (a throw for an Error) and stops at the first back off. */
+async function loopedBeats(steps: number[], reports: Array<any>) {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = steppedBackend(clock, steps)
+  let sweeps = 0
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async () => {
+      const r = reports[Math.min(sweeps++, reports.length - 1)]
+      if (r instanceof Error) throw r
+      return r
+    },
+    limitPass: async () => ({ agents: [] }),
+    windowsPass: windowsNone,
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  return backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat')).map((c) => c.body.env.watcherHealth.keepAlive)
+}
+
+test('runWatcher: the agents the last sweep looked at ride the next heartbeat in `keepAlive.looked`; the first heartbeat of a process, before any sweep, names none', async () => {
+  const beats = await loopedBeats([61_000], [{ enabled: false, agents: [], looked: ['300', '301'] }])
+  assert.equal(beats.length, 2)
+  assert.equal('looked' in beats[0]!, false, 'the boot heartbeat goes out before the first look')
+  assert.deepEqual(beats[1]!.looked, ['300', '301'])
+})
+
+test('runWatcher: a heartbeat that goes out more than 3 minutes after the sweep that looked names no agent as looked at (a sleep, a long job)', async () => {
+  const beats = await loopedBeats([61_000, 4 * 60_000], [{ enabled: false, agents: [], looked: ['300'] }])
+  assert.equal(beats.length, 3)
+  assert.deepEqual(beats[1]!.looked, ['300'], 'a minute after its sweep')
+  assert.equal('looked' in beats[2]!, false, 'four minutes after its sweep')
+})
+
+test('runWatcher: a sweep that fails leaves no agent looked at, though the list it last sent is still young', async () => {
+  const beats = await loopedBeats([61_000, 61_000], [{ enabled: false, agents: [], looked: ['300'] }, new Error('boom')])
+  assert.equal(beats.length, 3)
+  assert.deepEqual(beats[1]!.looked, ['300'])
+  assert.equal('looked' in beats[2]!, false)
+})
+
+test('runWatcher: after a restart every saved watched finding rides the first heartbeat, whatever its age, until the first sweep replaces it', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const fresh = new Date(T0 - 60_000).toISOString()
+  const stale = new Date(T0 - 10 * 60_000).toISOString()
+  fs.writeFile(
+    `${HOME}/.bgos-agent/watcher/keepalive-state.json`,
+    JSON.stringify({
+      schemaVersion: 1,
+      enabled: false,
+      agents: {},
+      watched: {
+        // Last looked at ten minutes ago (the watcher was down): it still rides, so the agent never
+        // reads as plain offline, which would let an automatic check up restart it.
+        '913': { state: 'failed', reason: WATCHED_913.reason, since: stale, deafSince: stale, deafSeenAt: stale },
+        '915': { state: 'failed', reason: WATCHED_913.reason, since: fresh, deafSince: fresh, deafSeenAt: fresh },
+        // No look time at all (a failed login the launcher named): it rides too.
+        '916': { state: 'failed', reason: 'claude-login-expired: the login failed', since: fresh },
+      },
+    }),
+  )
+  const backend = fakeBackend()
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), execSync: () => ({ code: 1, stdout: '' }), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, {
+    enabled: false,
+    agents: [],
+    watched: [
+      { id: '913', state: 'failed', reason: WATCHED_913.reason, since: stale },
+      { id: '915', state: 'failed', reason: WATCHED_913.reason, since: fresh },
+      { id: '916', state: 'failed', reason: 'claude-login-expired: the login failed', since: fresh },
+    ],
+  })
+})
+
 test('runWatcher: a successful poll records lastPollOkAt (the crash-loop rule); a failed one does not; it survives a restart', async () => {
   const fs = machineFs()
   manifestFor(fs)
@@ -1548,21 +1815,260 @@ test('runWatcher: a reconcile job restart hands the injected kill to the restart
   const clock = fakeClock()
   const kills: Array<[number, string]> = []
   const plan = () => ({ verdict: 'plan', targetVersion: null, steps: [{ id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' }] })
+  // The rows below carry this process's uid, and so must the watcher: the
+  // fresh check refuses a row of another owner. baseDeps' default (501) only
+  // matched it on a Mac whose user is 501, so CI on Linux and Windows was red.
+  const uid = process.getuid?.() ?? 0
   const { deps } = baseDeps(fs, backend, clock, {
     modules: stubModules({ plan }),
+    uid,
     pidAlive: (pid: number) => pid === 4242 || pid === 5151,
     // claude 5151 runs under its keepalive script 4242: provably the script's (F6).
     execSync: (file: string, args: string[]) =>
       file === 'ps' && args[1] === 'comm='
         ? { code: 0, stdout: 'claude\n' }
         : file === 'ps' && args[0] === '-A'
-          ? { code: 0, stdout: `4242 1 ${process.getuid?.() ?? 0} 01:00:00\n5151 4242 ${process.getuid?.() ?? 0} 10:00\n` }
+          ? { code: 0, stdout: `4242 1 ${uid} 01:00:00\n5151 4242 ${uid} 10:00\n` }
           : { code: 1, stdout: '' },
     kill: (pid: number, signal: string) => void kills.push([pid, signal]),
     keepAliveSweep: async () => ({ enabled: false, agents: [] }),
   })
   await runWatcher(deps as any)
   assert.deepEqual(kills, [[5151, 'SIGTERM']])
+})
+
+// Review of #396, round 5: the keepalive tier signalled the claude
+// pid the inventory saw when the job STARTED. After the first restart its
+// keepalive script has started a new claude, so a second restart of the
+// same agent (the retry on a restored build) signalled a pid that was gone,
+// or reused. Each restart now verifies the claude again just before the
+// signal, and sends none when it cannot.
+for (const after of ['relaunched', 'reused'] as const) {
+  test(`runWatcher: a second restart of one agent signals the claude verified just now (${after})`, async () => {
+    const marker = `${HOME}/.bgos-agent/7/keepalive.json`
+    const fs = machineFs({
+      [marker]: JSON.stringify({ kind: 'keepalive', pid: 4242, claudePid: 5151, capabilities: ['relaunch'] }),
+    })
+    manifestFor(fs)
+    const backend = fakeBackend({
+      frames: [{ rpcId: 'job-k2', op: 'restart_only' }],
+      jobs: { 'job-k2': { op: 'restart_only', intent: 'restart_only', targets: [{ pairingId: 2, assistantId: '7' }] } },
+    })
+    const uid = process.getuid?.() ?? 0
+    let claude = 5151
+    let comm = 'claude'
+    const kills: Array<[number, string]> = []
+    const plan = () => ({
+      verdict: 'plan',
+      targetVersion: null,
+      steps: [
+        { id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' },
+        { id: 's2-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' },
+      ],
+    })
+    const { deps, logs } = baseDeps(fs, backend, fakeClock(), {
+      // The watcher's uid is the rows' uid (see the reconcile case above).
+      uid,
+      modules: stubModules({ plan }),
+      pidAlive: (pid: number) => pid === 4242 || pid === claude,
+      execSync: (file: string, args: string[]) =>
+        file === 'ps' && args[1] === 'comm='
+          ? { code: 0, stdout: `${comm}\n` }
+          : file === 'ps' && args[0] === '-A'
+            ? { code: 0, stdout: `4242 1 ${uid} 01:00:00\n${claude} 4242 ${uid} 10:00\n` }
+            : { code: 1, stdout: '' },
+      kill: (pid: number, signal: string) => {
+        kills.push([pid, signal])
+        // The keepalive script relaunches: a new claude at a new pid, or a
+        // marker that now names a pid another program took.
+        claude = after === 'relaunched' ? 6161 : 7171
+        if (after === 'reused') comm = 'python3'
+        fs.writeFile(marker, JSON.stringify({ kind: 'keepalive', pid: 4242, claudePid: claude, capabilities: ['relaunch'] }))
+      },
+      keepAliveSweep: async () => ({ enabled: false, agents: [] }),
+    })
+    await runWatcher(deps as any)
+    assert.deepEqual(kills, after === 'relaunched' ? [[5151, 'SIGTERM'], [6161, 'SIGTERM']] : [[5151, 'SIGTERM']])
+    // Unverified is a FAILED restart, never another tier that reads as a pass.
+    const restartLines = logs.filter((l) => / restart 7[ :]/.test(` ${l}`))
+    if (after === 'reused') {
+      assert.ok(restartLines.some((l) => l.includes('no signal sent')), restartLines.join('\n'))
+      assert.equal(restartLines.filter((l) => l.includes(': ok ')).length, 1, restartLines.join('\n'))
+      // Round 5: the job's own report names the refused restart.
+      const terminal = backend.progress('job-k2').at(-1)!
+      assert.equal(terminal.steps.find((step: any) => step.id === 's2-restart_agent:7')!.message, 'restart_failed:keepalive_unverified_now')
+    } else {
+      assert.equal(restartLines.filter((l) => l.includes(': ok ')).length, 2, restartLines.join('\n'))
+    }
+  })
+}
+
+// Round 5: on a Mac claude runs under tmux, not under its keepalive
+// script, so the claude is known by its folder or by the agent's own state
+// file, and its owner must be the watcher's user. No case read those three
+// inputs: dropping any of them from the fresh check kept every test green.
+function keepaliveOnlyRun(opts: { cwd?: string | null; owner?: number; agentState?: boolean; restarts?: number; relaunchLate?: boolean; relaunchNever?: boolean; frozenClock?: boolean; jobDeadlineMs?: number; slowPollMs?: number }) {
+  const marker = `${HOME}/.bgos-agent/7/keepalive.json`
+  // The process's own uid: the job's inventory (observeMachine) reads with it too.
+  const UID = process.getuid?.() ?? 0
+  const fs = machineFs({
+    [marker]: JSON.stringify({ kind: 'keepalive', pid: 4242, claudePid: 5151, capabilities: ['relaunch'] }),
+  })
+  manifestFor(fs)
+  if (opts.agentState) {
+    fs.writeFile(
+      `${HOME}/.bgos-plugin-state/7/agent-state.json`,
+      JSON.stringify({ schemaVersion: 1, assistantId: '7', pid: 8888, claudePid: 5151, runningVersion: '0.90.0', pendingRestartVersion: null, turnInFlight: false, pendingMessages: 0, pendingPermissions: 0, activeOperations: 0, lastActivityAt: new Date(T0 - 60_000).toISOString(), sessionId: null, updatedAt: new Date(T0).toISOString(), turnSignal: 'hooks' }),
+    )
+  }
+  const backend = fakeBackend({
+    frames: [{ rpcId: 'job-mac', op: 'restart_only' }],
+    jobs: { 'job-mac': { op: 'restart_only', intent: 'restart_only', targets: [{ pairingId: 2, assistantId: '7' }] } },
+  })
+  const steps = Array.from({ length: opts.restarts ?? 1 }, (_, i) => ({ id: `s${i + 1}-restart_agent:7`, kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' }))
+  const plan = () => ({ verdict: 'plan', targetVersion: null, steps })
+  const owner = opts.owner ?? UID
+  let script = 4242
+  let claude = 5151
+  const kills: Array<[number, string]> = []
+  const clock = fakeClock()
+  if (opts.frozenClock) {
+    // A clock that never moves: a stepped wall clock, or a sleep that does
+    // not advance it. Only a pass cap can end a wait on it.
+    const frozen = clock.now()
+    clock.now = () => frozen
+  }
+  let relaunchAt: number | null = null
+  clock.onSleep((ms, nowMs) => {
+    // A busy computer: each 2 s poll's check takes this much more clock.
+    if (opts.slowPollMs && ms === 2_000) clock.advance(opts.slowPollMs)
+    // The new keepalive script writes its marker a few seconds after its claude is up.
+    if (relaunchAt !== null && nowMs >= relaunchAt) {
+      fs.writeFile(marker, JSON.stringify({ kind: 'keepalive', pid: script, claudePid: claude, capabilities: ['relaunch'] }))
+      relaunchAt = null
+    }
+  })
+  const { deps, logs } = baseDeps(fs, backend, clock, {
+    modules: stubModules({ plan }),
+    uid: UID,
+    pidAlive: (pid: number) => pid === script || pid === claude || pid === 8888 || pid === 999,
+    execSync: (file: string, args: string[]) =>
+      file === 'ps' && args[1] === 'comm='
+        ? { code: 0, stdout: 'claude\n' }
+        : file === 'ps' && args[0] === '-A'
+          ? { code: 0, stdout: `${script} 1 ${UID} 01:00:00\n999 1 ${UID} 02:00:00\n${claude} 999 ${owner} 10:00\n` }
+          : file === 'readlink' && opts.cwd != null && args[0] === `/proc/${claude}/cwd`
+            ? { code: 0, stdout: `${opts.cwd}\n` }
+            : { code: 1, stdout: '' },
+    kill: (pid: number, signal: string) => {
+      kills.push([pid, signal])
+      // launchd starts a new script, which starts a new claude; its marker
+      // lands later (relaunchLate) or at once, or never (relaunchNever).
+      if (opts.relaunchNever) {
+        script = -1
+        claude = -1
+        return
+      }
+      script += 101
+      claude += 1010
+      // Late: after the 10 s stagger between restarts (the script's marker
+      // lands up to 5 s after its claude, and launchd's relaunch takes time).
+      if (opts.relaunchLate) relaunchAt = clock.now() + 16_000
+      else fs.writeFile(marker, JSON.stringify({ kind: 'keepalive', pid: script, claudePid: claude, capabilities: ['relaunch'] }))
+    },
+    keepAliveSweep: async () => ({ enabled: false, agents: [] }),
+    ...(opts.jobDeadlineMs ? { jobDeadlineMs: opts.jobDeadlineMs } : {}),
+  })
+  return { deps, kills, backend, logs, clock }
+}
+
+test('runWatcher: a claude under tmux, known by its own folder, is signalled; another folder is not', async () => {
+  const mine = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old` })
+  await runWatcher(mine.deps as any)
+  assert.deepEqual(mine.kills, [[5151, 'SIGTERM']])
+  const other = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/someone-else` })
+  await runWatcher(other.deps as any)
+  // Not this agent's claude: never signalled (the restart takes another tier).
+  assert.deepEqual(other.kills, [])
+})
+
+test("runWatcher: a claude in the agent's folder but owned by another user is never signalled", async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, owner: 999 })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(run.kills, [])
+})
+
+test("runWatcher: a claude named by the agent's own fresh state file is signalled", async (t) => {
+  // The job's first inventory read takes the real clock (Date.now) and the
+  // fresh check the injected one; in production they are the same clock.
+  t.mock.timers.enable({ apis: ['Date'], now: T0 })
+  const run = keepaliveOnlyRun({ agentState: true })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(run.kills, [[5151, 'SIGTERM']])
+})
+
+// Round 5: after a restart the keepalive script exits and launchd
+// starts a new one, which writes its marker seconds after its claude is up.
+// The second restart waits for that marker (bounded) instead of failing.
+test('runWatcher: a second restart waits for the relaunched keepalive to declare its new claude, then signals it', async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, restarts: 2, relaunchLate: true })
+  // The relaunched claude runs in the same folder.
+  await runWatcher(run.deps as any)
+  assert.deepEqual(run.kills, [[5151, 'SIGTERM'], [6161, 'SIGTERM']])
+})
+
+// Round 7: the wait for a relaunched keepalive had no case for its
+// bound, for the job deadline inside it, or for a clock that never moves.
+const declarePolls = (sleeps: number[]) => sleeps.filter((ms) => ms === 2_000).reduce((a, b) => a + b, 0)
+
+test('runWatcher: the wait for a relaunched keepalive gives up after 30 s', async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, restarts: 2, relaunchNever: true })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(run.kills, [[5151, 'SIGTERM']])
+  assert.ok(declarePolls(run.clock.sleeps) <= 30_000, `${declarePolls(run.clock.sleeps)} ms`)
+  assert.ok(declarePolls(run.clock.sleeps) >= 28_000, `${declarePolls(run.clock.sleeps)} ms`)
+})
+
+// Only the 30 s bound ends this one: each poll takes 5 s of clock, so 30 s
+// pass after 6 polls, long before the 15 poll cap.
+test('runWatcher: the wait ends at 30 s of clock even when the polls are slow', async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, restarts: 2, relaunchNever: true, slowPollMs: 3_000 })
+  await runWatcher(run.deps as any)
+  assert.deepEqual(run.kills, [[5151, 'SIGTERM']])
+  const polls = run.clock.sleeps.filter((ms) => ms === 2_000).length
+  assert.ok(polls >= 5 && polls <= 6, `${polls} polls`)
+})
+
+test("runWatcher: the wait ends at the job's deadline when that comes first", async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, restarts: 2, relaunchNever: true, jobDeadlineMs: 16_000 })
+  await runWatcher(run.deps as any)
+  assert.ok(declarePolls(run.clock.sleeps) <= 8_000, `${declarePolls(run.clock.sleeps)} ms`)
+})
+
+test('runWatcher: on a clock that never moves the wait still ends (a pass cap)', { timeout: 20_000 }, async () => {
+  const run = keepaliveOnlyRun({ cwd: `${HOME}/hoai-agents/old`, restarts: 2, relaunchNever: true, frozenClock: true })
+  // Without a cap the loop runs on microtasks for minutes and never yields
+  // to a timer, so the test's own timeout cannot stop it: time it directly.
+  const startedAt = performance.now()
+  await runWatcher(run.deps as any)
+  assert.ok(performance.now() - startedAt < 5_000, `${Math.round(performance.now() - startedAt)} ms`)
+  // At most the cap's 15 polls of 2 s, however the clock behaves.
+  assert.ok(declarePolls(run.clock.sleeps) <= 30_000, `${declarePolls(run.clock.sleeps)} ms of polls`)
+  assert.deepEqual(run.kills, [[5151, 'SIGTERM']])
+})
+
+test('runWatcher: agents a rollback could not restart are named in the job log', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend({
+    frames: [{ rpcId: 'job-left', op: 'restart_only' }],
+    jobs: { 'job-left': { op: 'restart_only', intent: 'restart_only', targets: [{ pairingId: 2, assistantId: '7' }] } },
+  })
+  const plan = () => ({ verdict: 'plan', targetVersion: null, steps: [{ id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' }] })
+  const execute = async () => ({ ok: false, verdict: 'rolled_back', failedStep: { id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', message: 'x' }, rolledBack: true, targetVersion: null, installedVersion: '0.38.3', steps: [], notRestored: ['7', '912'] })
+  const { deps, logs } = baseDeps(fs, backend, fakeClock(), { modules: stubModules({ plan, execute }), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.ok(logs.some((l) => l.includes('left on the rejected build: 7, 912')), logs.filter((l) => l.includes('job-left')).join('\n'))
 })
 
 test('runWatcher: the first heartbeat after a restart carries the keep-alive states the previous process persisted', async () => {
