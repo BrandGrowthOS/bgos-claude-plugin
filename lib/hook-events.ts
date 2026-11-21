@@ -348,6 +348,8 @@ export const OWN_MCP_TOOLS = [
   'react',
   'rename_chat',
   'set_status',
+  // Setting its own picture on the owner's ask is the agent answering the owner.
+  'set_profile_image',
   'ask_user_input',
   // Retiring a question card is the agent talking to the owner too.
   'withdraw_ask',
