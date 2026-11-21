@@ -8,7 +8,8 @@ import { randomUUID } from 'node:crypto'
 import { applyHelperAccount, prepareHelperTranscript, profileEnvOf, sameKnownFile } from '../lib/helper-account-launch.mjs'
 import { readAccountRegistry } from '../lib/helper-accounts.mjs'
 import { atLimitSafe, createAccountWatcher } from '../lib/helper-account-watcher.mjs'
-import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
+import { EventEmitter } from 'node:events'
+import { sessionTranscriptPath, superviseClaude } from '../bin/hoai-core.mjs'
 import { nodeFs } from '../lib/watcher-bundle.mjs'
 
 function write(file: string, content: string) {
@@ -105,6 +106,68 @@ test('F2 going back to the launch login restores its provider settings instead o
   assert.deepEqual(second, launch)
   m.apply(env, { launchEnv })
   assert.deepEqual(env, launch)
+})
+
+test('F2 in the supervisor: a keep-alive relaunch after a rollback from a saved login keeps the launch gateway and key', async (t) => {
+  // The supervisor takes its launch login once (launchEnv = profileEnvOf(env)) and hands it to
+  // every selection. Without that wiring the saved login's isolated env leaks into the next start,
+  // and the agent comes back with no ANTHROPIC_BASE_URL and no key (acctplug4, review test gap).
+  const m = machine(t, (a) => ({ computer: { choice: a } }))
+  const cwd = join(m.home, 'work')
+  const pin = randomUUID()
+  write(join(cwd, '.bgos-agent-id'), '41')
+  write(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'node', env: { BGOS_BACKEND_URL: 'http://127.0.0.1:1' } } } }))
+  write(join(m.home, '.bgos-agent', '41', 'session-id'), pin)
+  write(sessionTranscriptPath(m.home, cwd, pin), 'first turn\n')
+  const env: any = {
+    BGOS_ASSISTANT_ID: '41',
+    ANTHROPIC_BASE_URL: 'https://gateway.fixture',
+    ANTHROPIC_API_KEY: 'fixture-key',
+    PATH: '/bin',
+  }
+  const stop = new AbortController()
+  t.after(() => stop.abort())
+  const launches: any[] = []
+  const exit = await superviseClaude(['--dangerously-load-development-channels', 'server:bgos'], {
+    platform: 'darwin',
+    home: m.home,
+    cwd,
+    scriptDir: join(m.home, 'plugin', 'bin'),
+    env,
+    keepAlive: true,
+    signal: stop.signal,
+    sleep: async () => {},
+    hasExpect: false,
+    probeIdentityFlag: () => null,
+    pidAlive: () => false,
+    pidProcess: () => null,
+    listProcesses: () => [],
+    fetchImpl: async () => {
+      throw new Error('no network in this fixture')
+    },
+    print: () => {},
+    writeErr: () => {},
+    spawnImpl: (_name: string, args: string[], opts: any) => {
+      launches.push({ args, env: { ...opts.env } })
+      // After the first child, the owner moves this computer back to the agent's own login.
+      if (launches.length === 1) m.registry({ targets: { computer: { choice: null } } })
+      else stop.abort()
+      const child = new EventEmitter()
+      setImmediate(() => child.emit('exit', 0, null))
+      return child
+    },
+  } as never)
+  assert.equal(exit, 0)
+  assert.equal(launches.length, 2)
+  // The saved login runs isolated: none of the launch's provider settings reach it.
+  assert.equal(launches[0].env.CLAUDE_CONFIG_DIR, join(m.root, m.a))
+  assert.equal(launches[0].env.ANTHROPIC_BASE_URL, undefined)
+  assert.equal(launches[0].env.ANTHROPIC_API_KEY, undefined)
+  // Back on the launch login, the relaunch carries the gateway and key it was started with.
+  assert.equal(launches[1].env.CLAUDE_CONFIG_DIR, undefined)
+  assert.equal(launches[1].env.ANTHROPIC_BASE_URL, 'https://gateway.fixture')
+  assert.equal(launches[1].env.ANTHROPIC_API_KEY, 'fixture-key')
+  assert.deepEqual(launches[1].args.slice(-2), ['--resume', pin])
 })
 
 test('F3 a damaged registry or a lost profile never stops agents it does not own from starting', async (t) => {
