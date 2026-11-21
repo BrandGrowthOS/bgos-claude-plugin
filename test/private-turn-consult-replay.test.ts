@@ -785,6 +785,40 @@ for (const tool of ['send_to_peer', 'boards_update', 'artifact_update']) {
   })
 }
 
+test('a later request in the same session can close an unanswered request at Stop', t => {
+  const home = agentHome(t, 'fixture-agent')
+  const first = home.life()
+  const requests = ['first', 'second', 'third'].map((chatId, index) => ({
+    content: `question for ${chatId}`, actingUserId: OWNER, chatId, fireKey: `owner:${index + 1}`,
+  }))
+  const rows: string[] = []
+  const answers = [0, 0, 0]
+  function submit(index: number) {
+    const card = first.tracker.deliver(requests[index])
+    const content = `<channel message_id="${index + 1}">${card}</channel>`
+    first.submit(content)
+    rows.push(JSON.stringify({ type: 'user', message: { content } }))
+  }
+  function reply(index: number) {
+    first.act('reply', requests[index].chatId)
+    first.tracker.noteHandled(`reply:${index + 1}`)
+    rows.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'reply' }] } }))
+    answers[index]++
+  }
+  submit(0)
+  submit(1)
+  reply(1)
+  rows.push(limitRecord)
+  submit(2)
+  reply(2)
+  home.transcripts.set(first.sessionId, rows.join('\n'))
+  assert.equal(first.tracker.canRecover(requests[0].fireKey), true)
+  first.stop()
+  assert.equal(first.tracker.canRecover(requests[0].fireKey), false)
+  answerAfterRestart(home, requests, answers)
+  assert.deepEqual(answers, [0, 1, 1])
+})
+
 test('the end of a later prompt leaves a refused message available', t => {
   const home = agentHome(t)
   const first = home.life()
