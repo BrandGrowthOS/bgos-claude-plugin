@@ -737,6 +737,74 @@ test('with no folder numbers, remove still refuses a skill of the computer folde
   assert.ok(existsSync(join(f.home, '.claude', 'skills', 'not-in-config')))
 })
 
+/**
+ * No folder numbers for these folders under any spelling a check may ask for: the one given and the real one, each
+ * proved unknown so the checks cannot decide by identity.
+ */
+function noNumbersAt(...folders: string[]): IdentFs {
+  const given = new Map<string, FolderNumbers>()
+  for (const folder of folders) {
+    given.set(folder, NO_NUMBERS)
+    if (existsSync(folder)) given.set(realpathSync(folder), NO_NUMBERS)
+  }
+  const fs = fakeIdentFs(given)
+  for (const folder of folders) assert.equal(identOf(folder, true, fs), null, `${folder} has no number`)
+  return fs
+}
+
+/** The skills roots a remove compares against, as the fixture lays them out. */
+const rootsOf = (f: ReturnType<typeof fixture>, agentDir: string) => [
+  join(agentDir, '.claude', 'skills'),
+  join(f.config, 'skills'),
+  join(f.home, '.claude', 'skills'),
+  join(f.repo, '.claude', 'skills'),
+]
+
+// skillsq2: an unknown folder number must never be taken as "not the same folder". The folders below are inside a
+// shared skills folder only by their real path, so a check that compared spellings, or that waved unknown numbers
+// through, would move the skill.
+
+test('with no folder numbers, remove refuses a skill of an agent reached through a link into the computer skills folder', () => {
+  const f = fixture()
+  const real = join(f.config, 'skills', 'an-agent')
+  skill(join(real, '.claude', 'skills', 'inner'), 'description: Inside the computer folder.')
+  const agentDir = join(f.home, 'agent-link')
+  linkFolder(real, agentDir)
+  const target = join(agentDir, '.claude', 'skills', 'inner')
+  assert.ok(!target.startsWith(join(f.config, 'skills')), 'by its spelling the skill is outside the computer folder')
+  const { answer } = remove(f, { name: 'inner', scope: 'agent', path: target }, agentDir, { fs: noNumbersAt(...rootsOf(f, agentDir)) })
+  assert.equal((answer as any).code, 'scope_refused', JSON.stringify(answer))
+  assert.ok(existsSync(join(real, '.claude', 'skills', 'inner', 'SKILL.md')), 'the computer skill stayed')
+})
+
+test('with no folder numbers, remove still moves a skill of an agent reached through a link to a folder outside every shared one', () => {
+  const f = fixture()
+  const real = join(f.home, 'elsewhere', 'an-agent')
+  skill(join(real, '.claude', 'skills', 'inner'), 'description: An agent of its own.')
+  const agentDir = join(f.home, 'agent-link')
+  linkFolder(real, agentDir)
+  const target = join(agentDir, '.claude', 'skills', 'inner')
+  const { answer } = remove(f, { name: 'inner', scope: 'agent', path: target }, agentDir, { fs: noNumbersAt(...rootsOf(f, agentDir)) })
+  assert.equal(answer.ok, true, JSON.stringify(answer))
+  assert.ok(!existsSync(join(real, '.claude', 'skills', 'inner')))
+})
+
+test('with no folder numbers, remove refuses a trash folder that a link puts inside a skills folder', () => {
+  for (const into of ['agent', 'computer'] as const) {
+    const f = fixture()
+    const intoDir = into === 'agent' ? join(f.agent, '.claude', 'skills') : join(f.config, 'skills')
+    linkFolder(intoDir, join(f.home, 'trash-link'))
+    const trashDir = join(f.home, 'trash-link', 'skills-trash')
+    const { answer } = remove(f, { name: 'agent-skill', scope: 'agent', path: join(f.agent, '.claude', 'skills', 'agent-skill') }, f.agent, {
+      trashDir,
+      fs: noNumbersAt(...rootsOf(f, f.agent)),
+    })
+    assert.equal((answer as any).code, 'write_failed', `${into}: ${JSON.stringify(answer)}`)
+    assert.ok(existsSync(join(f.agent, '.claude', 'skills', 'agent-skill', 'SKILL.md')), `${into}: the skill stayed`)
+    assert.ok(!existsSync(join(intoDir, 'skills-trash')), `${into}: no trash was made in the skills folder`)
+  }
+})
+
 test('a folder is the same folder after a check by its number, or by where it is when it has no number', () => {
   const f = fixture()
   const a = join(f.home, 'one')

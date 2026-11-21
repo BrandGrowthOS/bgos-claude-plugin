@@ -31,7 +31,7 @@ import { join } from 'node:path'
 
 import { bundleSha256, sha256Hex } from '../lib/skill-share-content-rules.ts'
 import { exportSkill, installBundle, readSkillFolder } from '../lib/skills-share.ts'
-import type { IdentFs } from '../lib/skills-inventory.ts'
+import { identOf, type IdentFs } from '../lib/skills-inventory.ts'
 import { fakeIdentFs, type FolderNumbers } from './helpers/fake-ident-fs.ts'
 import { fileSymlinkRefused, linkFolder } from './helpers/links.ts'
 import { scratchDir } from './helpers/scratch-dirs.ts'
@@ -470,6 +470,93 @@ test('with no folder numbers, export refuses an agent folder inside the computer
   const fs = fakeIdentFs(new Map([[join(agentDir, '.claude', 'skills'), NO_NUMBERS], [join(w.config, 'skills'), NO_NUMBERS]]))
   const answer = exp(w, { name: 'notes', scope: 'agent' }, agentDir, fs)
   assert.equal(answer.ok ? 'ok' : answer.code, 'scope_refused')
+})
+
+/**
+ * No folder numbers for these folders under any spelling a check may ask for: the one given and the real one. The
+ * tests below prove each folder really is unknown, so the overlap check cannot decide by identity.
+ */
+function noNumbersAt(...folders: string[]): IdentFs {
+  const given = new Map<string, FolderNumbers>()
+  for (const folder of folders) {
+    given.set(folder, NO_NUMBERS)
+    if (existsSync(folder)) given.set(realpathSync(folder), NO_NUMBERS)
+  }
+  const fs = fakeIdentFs(given)
+  for (const folder of folders) assert.equal(identOf(folder, true, fs), null, `${folder} has no number`)
+  return fs
+}
+
+// skillsq2: an unknown folder number must never be taken as "not the same folder". Each folder below is inside the
+// computer skills folder only by its real path: its spelling says it is elsewhere, so a check that compared
+// spellings, or that waved unknown numbers through, would export it.
+
+test('with no folder numbers, export refuses an agent reached through a link into the computer skills folder', () => {
+  const w = world()
+  const real = join(w.config, 'skills', 'an-agent')
+  write(join(real, '.claude', 'skills', 'notes', 'SKILL.md'), SKILL)
+  const agentDir = join(w.root, 'agent-link')
+  linkFolder(real, agentDir)
+  const root = join(agentDir, '.claude', 'skills')
+  assert.ok(!root.startsWith(join(w.config, 'skills')), 'by its spelling the agent skills folder is outside the computer one')
+  const fs = noNumbersAt(root, join(w.config, 'skills'))
+  const answer = exp(w, { name: 'notes', scope: 'agent' }, agentDir, fs)
+  assert.equal(answer.ok ? 'ok' : answer.code, 'scope_refused')
+})
+
+test('with no folder numbers, export refuses an agent whose skills the computer skills folder links to, or links above', () => {
+  for (const above of [false, true]) {
+    const w = world()
+    agentSkill(w, 'notes', { 'SKILL.md': SKILL })
+    const computer = join(w.config, 'skills')
+    rmSync(computer, { recursive: true })
+    // the computer skills folder IS the agent's own skills folder, or a folder that holds the agent
+    linkFolder(above ? join(w.home, 'agents') : join(w.agent, '.claude', 'skills'), computer)
+    const fs = noNumbersAt(join(w.agent, '.claude', 'skills'), computer)
+    const answer = exp(w, { name: 'notes', scope: 'agent' }, w.agent, fs)
+    assert.equal(answer.ok ? 'ok' : answer.code, 'scope_refused', above ? 'linked above the agent' : 'linked to its skills')
+  }
+})
+
+test('with no folder numbers, export refuses an agent spelled in another case inside the computer skills folder', (t) => {
+  const w = world()
+  const real = join(w.config, 'skills', 'an-agent')
+  write(join(real, '.claude', 'skills', 'notes', 'SKILL.md'), SKILL)
+  const agentDir = join(w.config, 'SKILLS', 'an-agent')
+  if (!existsSync(agentDir)) return t.skip('this file system tells the case apart, so the other spelling is another folder')
+  const fs = noNumbersAt(join(agentDir, '.claude', 'skills'), join(w.config, 'skills'))
+  const answer = exp(w, { name: 'notes', scope: 'agent' }, agentDir, fs)
+  assert.equal(answer.ok ? 'ok' : answer.code, 'scope_refused')
+})
+
+test('with no folder numbers, export still shares from an agent reached through a link to a folder outside the computer one', () => {
+  const w = world()
+  agentSkill(w, 'notes', { 'SKILL.md': SKILL })
+  const agentDir = join(w.root, 'agent-link')
+  linkFolder(w.agent, agentDir)
+  const plain = exp(w, { name: 'notes', scope: 'agent', dryRun: true }, agentDir, noNumbersAt(join(agentDir, '.claude', 'skills'), join(w.config, 'skills')))
+  assert.equal(plain.ok ? 'ok' : plain.code, 'ok')
+  // a computer skills folder linked to a name the agent's path only starts with is another folder: the
+  // separator counts (home/agents/dat is not above home/agents/data)
+  const computer = join(w.config, 'skills')
+  rmSync(computer, { recursive: true })
+  mkdirSync(join(w.home, 'agents', 'dat'))
+  linkFolder(join(w.home, 'agents', 'dat'), computer)
+  assert.ok(join(w.agent, '.claude', 'skills').startsWith(realpathSync(computer)), 'the real paths share their first letters')
+  const prefix = exp(w, { name: 'notes', scope: 'agent', dryRun: true }, w.agent, noNumbersAt(join(w.agent, '.claude', 'skills'), computer))
+  assert.equal(prefix.ok ? 'ok' : prefix.code, 'ok')
+})
+
+test('with no folder numbers, install never writes through an agent reached by a link into the computer skills folder', async () => {
+  const w = world()
+  const real = join(w.config, 'skills', 'an-agent')
+  mkdirSync(join(real, '.claude', 'skills'), { recursive: true })
+  const agentDir = join(w.root, 'agent-link')
+  linkFolder(real, agentDir)
+  const { answer } = await inst(w, bundle(FILES), { agentDir, fs: noNumbersAt(join(agentDir, '.claude', 'skills'), join(w.config, 'skills')) })
+  assert.equal(answer.ok, false, JSON.stringify(answer))
+  if (!answer.ok) assert.equal(answer.code, 'scope_refused')
+  assert.deepEqual(tree(join(w.config, 'skills')), [])
 })
 
 test('with no folder numbers, install still never writes into the computer skills folder', async () => {
