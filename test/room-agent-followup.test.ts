@@ -58,6 +58,9 @@ import * as pollCore from '../lib/poll-core.ts'
 import * as meetingCard from '../lib/meeting-card.ts'
 import * as streamApply from '../lib/stream-apply.ts'
 import { senderUserIdCandidate, parsePermissionChoice } from '../lib/permission-relay.ts'
+import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
+import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
+import * as missionEvents from '../lib/mission-events.ts'
 import * as privateTurnModule from '../lib/private-turn.mjs'
 import { privateActor, privateSenderUserId } from '../lib/private-turn.mjs'
 import { ownerLaneVerdict } from '../lib/lane-core.mjs'
@@ -237,7 +240,9 @@ function compile(source: string, name: string, extra: Record<string, unknown> = 
     senderUserIdCandidate,
     parsePermissionChoice,
     senderUserIdOf: (m: unknown) => senderUserIdCandidate(m) ?? OWNER,
+    privateFires: { handledAt: () => null, claimed: () => false },
     privateTurns: {
+      canRecover: () => false,
       deliver: (d: Record<string, any>) => (run.deliveries.push(d), d.content),
       noteUntracked: () => undefined,
     },
@@ -926,6 +931,207 @@ test('first read paging: our reply across room context stops older reads at the 
   assert.equal(needsOlder([rows[0]!, { ...rows[1]!, sender: 'system' }, rows[2]!]), true, 'system traffic still separates a proactive assistant')
 })
 
+function recoverySession(root: string, cwd: string, session: string, transcript: string[]) {
+  const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
+  const paths = [privateTurnModule.privateMarkerPath(root, floorKey(cwd))]
+  const fires = privateTurnModule.createFireLedger({ path: privateTurnModule.privateFiresPath(root, 'agent'), readTranscript: () => transcript.join('\n') })
+  const tracker = privateTurnModule.createPrivateTurnTracker({ markerPaths: paths, fires, ownerUserId: OWNER })
+  const submit = (card: string) => {
+    recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: session, cwd, prompt: card }, env)
+    assert.equal(tracker.begin({ prompt: card, sessionId: session }), 'opened')
+    return privateTurnModule.requirePrivateTurn(tracker, paths, OWNER).actingUserId
+  }
+  return { fires, tracker, paths, submit }
+}
+
+for (const toolRan of [false, true]) {
+  test(`mission_created leaves the request due at boot after a usage refusal (planning tool ran: ${toolRan})`, async t => {
+    const fs = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'mission-recovery-')))
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+    const cwd = join(root, 'agent')
+    fs.mkdirSync(cwd)
+    markFloorAttached({ root, folders: [cwd] })
+    const row = { id: 1, sender: 'user', senderUserId: OWNER, text: 'prepare the report', sentDate: new Date().toISOString() }
+    const transcript: string[] = []
+    const first = recoverySession(root, cwd, 'first', transcript)
+    const card = first.tracker.deliver({ content: row.text, actingUserId: OWNER, chatId: CHAT, fireKey: 'owner:1' })
+    assert.equal(first.submit(card), OWNER)
+    if (toolRan) first.tracker.noteOutbound('create_mission', first.paths)
+    const seen = new Set<string>()
+    const event = compile(serverFunction('function handleMissionEvent('), 'handleMissionEvent', {
+      ...missionEvents, privateTurns: first.tracker, privateFires: first.fires, missionFramesSeen: seen,
+      missionSelfWrites: missionEvents.createMissionSelfWriteLedger(), missionChatId: () => CHAT,
+    })
+    event.fn('mission_created', { assistant_id: ASSISTANT_ID, chat_id: CHAT,
+      mission: { id: 1, title: 'prepare the report', chatId: Number(CHAT), createdByAssistant: true } })
+    assert.equal(seen.size, 1)
+    assert.deepEqual(event.run.logs, [])
+    assert.deepEqual(event.run.notifications, [])
+    transcript.push(JSON.stringify({ type: 'user', message: { content: card } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' }))
+
+    let answers = 0
+    for (const session of ['restart', 'next']) {
+      const next = recoverySession(root, cwd, session, transcript)
+      // Creating a mission emits its own event. Only the user request is in chat history.
+      const lane = pollLane([{ message: row, messageFiles: [] }], { chatLastSeen: new Map([[CHAT, row.id]]),
+        chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10, privateTurns: next.tracker, privateFires: next.fires })
+      await lane.fn(CHAT)
+      await lane.clock.elapse()
+      for (const offered of lane.run.notifications) {
+        const release = privateTurnModule.recoveryPromptDecision(offered.content, next.paths[0], root, session, process.pid)
+        assert.ok(release?.hookSpecificOutput?.additionalContext.includes(row.text))
+        assert.equal(next.submit(offered.content), OWNER)
+        next.tracker.noteOutbound('reply', next.paths, CHAT)
+        next.tracker.noteHandled('reply:1')
+        answers++
+      }
+    }
+    assert.equal(answers, 1)
+  })
+}
+
+test('incident replay integrates the usage refusal, resumed prompt, boot poll and confirmed answer', async (t) => {
+  const fs = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { parseTranscriptTail } = await import('../lib/watcher-checkup.mjs')
+  const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'incident-')))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const cwd = join(root, 'agent')
+  fs.mkdirSync(cwd)
+  const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: cwd }
+  const { spawn } = await import('node:child_process')
+  const { once } = await import('node:events')
+  const old = spawn(process.execPath, ['-e', 'process.stdin.resume()'], { cwd, env, windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] })
+  const oldEnded = once(old, 'exit')
+  t.after(() => { old.stdin.end() })
+  await once(old, 'spawn')
+  markFloorAttached({ root, folders: [cwd], pid: old.pid })
+  const paths = [privateTurnModule.privateMarkerPath(root, floorKey(cwd))]
+  const start = Date.parse('2026-11-20T11:18:00Z')
+  let now = start - 5 * 60_000
+  t.mock.method(Date, 'now', () => now)
+  const session = 'resumed'
+  const transcript: string[] = []
+  const boot = () => recoverySession(root, cwd, session, transcript)
+  const a = boot()
+  const row = { id: 1, sender: 'user', senderUserId: OWNER, text: 'Carry on', sentDate: new Date(now).toISOString() }
+  const card = a.tracker.deliver({ content: row.text, actingUserId: OWNER, chatId: CHAT, fireKey: 'owner:1' })
+  assert.equal(a.submit(card), OWNER)
+  const insert = (record: Record<string, unknown>) => transcript.push(JSON.stringify({ timestamp: new Date(now).toISOString(), ...record }))
+  insert({ type: 'user', message: { content: card } })
+  insert({ type: 'assistant', message: { role: 'assistant', model: 'fixture', content: [{ type: 'tool_use', id: 'task', name: 'background_task' }] } })
+  insert({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'task', content: 'started in background' }] } })
+  insert({ type: 'assistant', isApiErrorMessage: true, apiError: 'usage_limit_reached' })
+  now += 1_000
+  const other = a.tracker.deliver({ content: 'update', actingUserId: OWNER, chatId: 'second' })
+  insert({ type: 'queue-operation', operation: 'enqueue', content: other })
+  now = start + 3000
+  const tail = parseTranscriptTail(transcript.join('\n'), now)
+  assert.equal(tail.error?.kind, 'rate_limit')
+  assert.equal(tail.heldQueue, true)
+  old.stdin.end()
+  await oldEnded
+  recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: session, cwd,
+    prompt: '<task-notification><status>killed</status></task-notification>' }, env)
+  now = start + 5000
+  markFloorAttached({ root, folders: [cwd], now })
+  let answers = 0
+  for (const expected of [1, 0]) {
+    const b = boot()
+    const lane = pollLane([{ message: row, messageFiles: [] }], { chatLastSeen: new Map([[CHAT, row.id]]),
+      chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10, privateTurns: b.tracker, privateFires: b.fires })
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.length, expected)
+    for (const n of lane.run.notifications) {
+      assert.match(n.content, /^<hoai-recovery /)
+      assert.doesNotMatch(n.content, /Carry on/)
+      const release = privateTurnModule.recoveryPromptDecision(n.content, paths[0], root, session, process.pid)
+      assert.match(release?.hookSpecificOutput?.additionalContext ?? '', /Carry on/)
+      assert.equal(b.submit(n.content), OWNER)
+      b.tracker.noteOutbound('reply', paths)
+      b.tracker.noteHandled('reply:1')
+      answers++
+    }
+  }
+  assert.equal(answers, 1)
+})
+
+test('restart offers a held request once per boot until its first answer', async () => {
+  const id = 1
+  const rows = [{ message: { id, sender: 'user', senderUserId: PERSON, text: 'Request', sentDate: new Date().toISOString() }, messageFiles: [] }]
+  const replies = new Set<string>()
+  for (const boot of [1, 2, 3]) {
+    const lane = pollLane(rows, {
+      chatLastSeen: new Map([[CHAT, id]]), chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10,
+      privateFires: { handledAt: (key: string) => replies.has(key) ? 1 : null, claimed: () => false },
+    })
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.length, boot < 3 ? 1 : 0)
+    if (boot < 3) assert.equal(lane.run.deliveries[0]!.recoveryWithoutReply, false)
+    if (boot === 2) replies.add(`reply:${id}`)
+  }
+})
+
+test('a later assistant reply closes an admitted turn across a system message', async () => {
+  const sentDate = new Date().toISOString()
+  const rows = [
+    { message: { id: 1, sender: 'user', senderUserId: PERSON, text: 'Request', sentDate }, messageFiles: [] },
+    { message: { id: 2, sender: 'system', text: 'Update', sentDate }, messageFiles: [] },
+    pollAgentRow({ id: 3, senderAssistantId: ASSISTANT_ID, sentDate }),
+  ]
+  const lane = pollLane(rows, {
+    chatLastSeen: new Map([[CHAT, 3]]), chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10,
+    privateFires: { handledAt: (key: string) => key === 'owner:1' ? 1 : null, claimed: () => false },
+    privateTurns: { canRecover: () => true, deliver: (d: { content: string }) => d.content },
+  })
+  await lane.fn(CHAT)
+  await lane.clock.elapse()
+  assert.ok(lane.run.notifications.every(n => Number(n.meta.message_id) !== 1))
+})
+
+test('an unsaved recovery claim skips delivery and logs one error', async () => {
+  const error = 'Could not save the recovery claim. Skipped the interrupted message.'
+  const lane = pollLane([{ message: { id: 1, sender: 'user', senderUserId: PERSON, text: 'Request', sentDate: new Date().toISOString() }, messageFiles: [] }], {
+    chatLastSeen: new Map([[CHAT, 1]]), chatsPolledSinceBoot: new Set(), MAX_RESTART_RECOVERY_FORWARD: 10,
+    privateTurns: { canRecover: () => true, deliver: () => { throw new Error(error) } },
+  })
+  await lane.fn(CHAT)
+  await lane.clock.elapse()
+  assert.equal(lane.run.notifications.length, 0)
+  assert.equal(lane.run.logs.filter(line => line.includes(error)).length, 1, lane.run.logs.join('\n'))
+})
+
+test('a missing cursor preserves a new request and recovers only an open unclaimed turn', async () => {
+  const id = 1
+  for (const [admitted, open, claimed, answered, count, resume] of [
+    [false, false, false, false, 1, false],
+    [true, false, false, false, 0, false],
+    [true, true, false, false, 1, true],
+    [true, true, true, false, 0, false],
+    [true, true, false, true, 0, false],
+  ] as const) {
+    const deliveries: any[] = []
+    const lane = pollLane([{ message: { id, sender: 'user', senderUserId: PERSON, text: 'Request', sentDate: new Date().toISOString() }, messageFiles: [] }], {
+      chatLastSeen: new Map([[CHAT, 0]]), chatsPolledSinceBoot: new Set(),
+      privateFires: { handledAt: (key: string) => (key.startsWith('reply:') ? answered : admitted) ? 1 : null, claimed: () => claimed },
+      privateTurns: { canRecover: () => open, deliver: (d: any) => (deliveries.push(d), d.content) },
+    })
+    await lane.fn(CHAT)
+    await lane.clock.elapse()
+    assert.equal(lane.run.notifications.length, count)
+    if (count) assert.equal(deliveries[0].recoveryWithoutReply, resume)
+  }
+})
+
 // Each row is the same boundary rule under a different collection policy.
 const answeredTurnCases = [
   { name: 'human alone', senders: ['user'], human: [0], context: [0], older: true },
@@ -962,7 +1168,11 @@ for (const c of answeredTurnCases) {
       })
       await lane.fn(CHAT)
       await lane.clock.elapse()
-      assert.deepEqual(lane.run.notifications.map((n) => Number(n.meta.message_id)), ids(restart ? c.human : c.context), restart ? 'restart integration' : 'first-read integration')
+      // Already-forwarded human messages use the stricter interruption proof. A later
+      // assistant row rules out reopening one, including across a proactive system turn.
+      const lastReply = c.senders.lastIndexOf('assistant')
+      const expected = restart ? c.human.filter(i => c.senders[i] !== 'user' || i > lastReply) : c.context
+      assert.deepEqual(lane.run.notifications.map((n) => Number(n.meta.message_id)), ids(expected), restart ? 'restart integration' : 'first-read integration')
     }
   })
 }

@@ -12,6 +12,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.18 (2026-11-21)
+
+Restart now reports when the agent is catching up, and an interrupted request can return after a usage limit even if the agent already changed a mission or renamed the chat. Editing a message, closing a peer thread or a side thread, and withdrawing a question also leave the request open for an answer. When a recovered request arrives with new work, only one session receives its text.
+
 ## 0.90.16 (2026-11-20)
 
 **fix(keep-alive): the Helper now notices when any agent on the computer stops getting messages, not only the agents it keeps running.**

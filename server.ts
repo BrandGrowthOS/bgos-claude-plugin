@@ -179,7 +179,7 @@ import {
 } from './lib/export-pack.js'
 import { UsageTracker } from './lib/usage-report.js'
 import { SessionTranscriptBinder, claudeProjectCwd } from './lib/session-binding.js'
-import { AgentSessionLibrary } from './lib/session-library.js'
+import { AgentSessionLibrary, NODE_SESSION_FS } from './lib/session-library.js'
 import {
   resolveTmuxTarget,
   buildProbeArgs,
@@ -6993,6 +6993,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       isError: true,
     })
   }
+  let confirmedReplyChat: string | undefined
+  const replyTo = req.params.name === 'reply' ? req.params.arguments?.reply_to_id : null
+  let completeOutbound = privateTurns.outboundCompletion(req.params.name, PRIVATE_MARKER_PATHS, typeof replyTo === 'number' ? replyTo : null)
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
   if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
@@ -7130,13 +7133,14 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const reply_to_id = rawArgs.reply_to_id as number | undefined
 
       if (!chat_id) {
-        return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
+        return { content: [{ type: 'text', text: 'Error: chat_id is required' }], isError: true }
       }
       if (!text && !filesInput?.length && !buttonsInput?.length) {
         return {
           content: [
             { type: 'text', text: 'Error: at least one of text, files, or buttons is required' },
           ],
+          isError: true,
         }
       }
 
@@ -7353,6 +7357,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         // (message_id: N)...") verbatim into THIS session's transcript, so
         // the minted id is positive proof of which transcript is ours.
         if (msgId != null) sessionBinder.recordReplyMessageId(msgId)
+        confirmedReplyChat = replyChatId
+        const answered = reply_to_id
+        if (replyChatId === String(resolvedChatId) && typeof answered === 'number' && Number.isSafeInteger(answered) && answered > 0) {
+          privateTurns.noteHandled(`reply:${answered}`)
+        }
         // Fast-poll scope for the tap (0.38.26). Without the Agent Update
         // Stream a click reaches this daemon only on the chat sweep, and the
         // WS-healthy sweep is five minutes; a fresh prompt puts its chat on the
@@ -7728,7 +7737,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const chat_id = rawArgs.chat_id as string | undefined
       const title = rawArgs.title as string | undefined
       if (!chat_id || !title) {
-        return { content: [{ type: 'text', text: 'Error: chat_id and title required' }] }
+        return { content: [{ type: 'text', text: 'Error: chat_id and title required' }], isError: true }
       }
       // Membership check before forwarding the agent-supplied chat_id.
       const renameAuth = resolveAuthorizedChat(chat_id)
@@ -7799,7 +7808,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const askWait = askWaitSeconds(rawArgs)
 
       if (!chat_id) {
-        return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
+        return { content: [{ type: 'text', text: 'Error: chat_id is required' }], isError: true }
       }
       // Only the daemon holding this agent's connection delivers answers, and a
       // card's answers go only to the session that asked it (lib/ask-tracker.ts
@@ -7853,6 +7862,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       if (!questions?.length) {
         return {
           content: [{ type: 'text', text: 'Error: at least one question is required' }],
+          isError: true,
         }
       }
       const questionsError = askQuestionsError(questions)
@@ -8073,6 +8083,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       // Its ask_answered already went out (a delivery in flight cannot be
       // recalled): say so, instead of promising that no event will come.
       if (askDelivering.has(askId)) {
+        completeOutbound = undefined
         return {
           content: [
             {
@@ -8228,6 +8239,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
             { ok: true, payload: { text: answer } },
           )) as { taskId?: string | null } | undefined
           const landed = res && typeof res === 'object' && res.taskId
+          if (!landed) completeOutbound = undefined
           return {
             content: [
               {
@@ -8252,6 +8264,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         }
       }
       if (status === 'late') {
+        completeOutbound = undefined
         return {
           content: [
             {
@@ -9579,7 +9592,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     default:
       throw new Error(`Unknown tool: ${req.params.name}`)
   }
-  }).then((result) => withRetiredOwnAskNotes(result, extra.signal))
+  }).then((result) => {
+    completeOutbound?.(result, confirmedReplyChat)
+    return withRetiredOwnAskNotes(result, extra.signal)
+  })
 })
 
 // ── Chat Polling ─────────────────────────────────────────────────────────────
@@ -11219,7 +11235,11 @@ function teachSessionIdle(): boolean {
 // The scheduled fires this agent opened a private turn for, in its own state folder (0.68.4): a fire that restart
 // recovery re-offers as backlog after a restart reaches the agent as text but opens no second turn. A person's own
 // message the same way, as owner:<message id>.
-const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
+const privateFires = createFireLedger({
+  path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID),
+  readTranscript: session => NODE_SESSION_FS.readTail(pathJoin(sessionBinder.projectDirectory, `${session}.jsonl`), 512 * 1024),
+  log,
+})
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 const privateTurns = createPrivateTurnTracker({ ownerUserId: USER_ID, markerPaths: PRIVATE_MARKER_PATHS, fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn(); quietTurns.recheck() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)), onEnded: (info) => log(privateEndedLine(info)), voiceCardsUntrusted: () => serverQuiet.on() })
 // A trusted turn is quiet (lib/quiet-turn.mjs, 2026-11-11): while the owner's own turn is bound in the tracker above (a
@@ -12053,6 +12073,7 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   // writes the agent's private turn marker (lib/floor-state.mjs findOwnAttachedKey, the third review of c69224fe), and
   // none once that session ended, so the first prompt of the session a /clear starts writes its own (the fourth).
   if (floorEntrySession(liveSessionId, hookEndedSessionId) !== floorEntrySessionWritten) markFloorAttachedIfHolder()
+  if (event.name === 'PreToolUse' || event.name === 'PostToolUse' || event.name === 'PostToolUseFailure') privateTurns.noteRetryTool(hookSessionId)
   if (event.name === 'SessionEnd') privateTurns.end({ at: lineAt, startedAt: line?.startedAt })
   // The session that ran a granted scheduled run is gone: the run is over, and what waited is delivered.
   if (event.name === 'SessionEnd') scheduleGrantRuns.end('session ended')
@@ -12065,6 +12086,10 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
     scheduleGrantRuns.noteBegin(payload.prompt)
     // After the tracker's begin: a pending card's own prompt hands over to the tracker's bound turn.
     quietTurns.noteBegin(payload.prompt)
+    if (began === 'cancelled-retry') {
+      publishBrowserPrivateTurn()
+      return
+    }
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
@@ -12845,6 +12870,8 @@ async function pollChat(chatId: string): Promise<void> {
     )
 
     let newUserMessages: ChatMessage[]
+    const previouslyForwarded = new Set<number>()
+    const recoveredWithoutReply = new Set<number>()
     let readIsBacklog = false
     if (lastSeen === 0) {
       // First poll for a chat with no cursor: forward user messages that
@@ -12983,6 +13010,7 @@ async function pollChat(chatId: string): Promise<void> {
             (m) => recoveredIds.has(m.message.id) && !already.has(m.message.id),
           )
           if (recovered.length) {
+            for (const row of recovered) previouslyForwarded.add(row.message.id)
             log(
               `Restart recovery: re-offering ${recovered.length} unanswered message(s) in chat ${chatId} (ids ${recovered
                 .map((m) => m.message.id)
@@ -13000,6 +13028,23 @@ async function pollChat(chatId: string): Promise<void> {
           const t = sentDateToMs(m.message.sentDate)
           return t !== null && t < DAEMON_START_MS
         })
+    }
+
+    if (isBootPoll) {
+      // Admission and confirmed sends can both outlive the cursor flush. Apply the same
+      // recovery proof to a previously admitted message even when its cursor was lost.
+      const lastReply = ordered.reduce((id, row) => pollStoredSenderOf(row) === 'assistant' ? row.message.id : id, 0)
+      newUserMessages = newUserMessages.filter((row) => {
+        if (pollStoredSenderOf(row) !== 'user') return true
+        const id = row.message.id
+        const key = `owner:${id}`
+        if (privateFires.handledAt(`reply:${id}`) !== null || privateFires.claimed(key)) return false
+        if (id > lastReply && privateTurns.canRecover(key)) {
+          recoveredWithoutReply.add(id)
+          return true
+        }
+        return privateFires.handledAt(key) === null && (!previouslyForwarded.has(id) || id > lastReply)
+      })
     }
 
     // A marked room row on the poll uses the same settle wait and claim as
@@ -13671,8 +13716,8 @@ async function pollChat(chatId: string): Promise<void> {
       // the run when the card goes out and holds every other card while the run is live.
       const pollActor = privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta })
       const pollGrant = scheduleGrantOf({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, actingUserId: pollActor, chatId })
-      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : channelNotify(() => ({
-          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: pollSenderType, agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta, messageId: msg.message.id, backlog: isBacklog }), fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
+      const humanHandoff = trackMessageOperation(async () => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId: msg.message.id }) ? Promise.resolve() : channelNotify(() => ({
+          content: privateTurns.deliver({ content, chatId, recoveryWithoutReply: recoveredWithoutReply.has(msg.message.id), peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: pollSenderType, agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta, messageId: msg.message.id, backlog: isBacklog }), fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
           meta: finalInboundMeta(
             pollChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
@@ -19353,7 +19398,7 @@ function connectWebsocket(): void {
       )
       const wsActor = privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta })
       const wsGrant = scheduleGrantOf({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, actingUserId: wsActor, chatId })
-      const humanHandoff = trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId }) ? Promise.resolve() : channelNotify(() => ({
+      const humanHandoff = trackMessageOperation(async () => deliverInbound(steerPlan, (interrupted) => humanMessageEdits.isDeleted({ chatId, messageId }) ? Promise.resolve() : channelNotify(() => ({
           content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: wsSenderType, agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId, backlog: sentBeforeStart(payload?.sentDate ?? payload?.sent_date, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId }), actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
           meta: finalInboundMeta(
             wsChannel.meta,
@@ -21299,6 +21344,63 @@ async function main(): Promise<void> {
     // down, 5 min while it is healthy).
     await phase('discover chats', () => discoverChats())
     log(`Monitoring ${monitoredChatIds.length} chat(s)`)
+    // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
+    // the watcher restarts this agent nothing proves the new session HEARS the
+    // channel until the user speaks (the marker only refreshes on the first
+    // tool call of a boot; the hello fires once per pairing). So the watcher
+    // drops ~/.bgos-agent/<id>/probe-requested.json and we answer it with ONE
+    // silent channel notification asking for the channel_ack tool; that call
+    // goes through the CallTool chokepoint and touches channel-live.json,
+    // which the watcher reads (newer than its restart timestamp) as proof.
+    // Cheap stat every 3s, unref'd, rate-limited to one probe per 30s however
+    // often the file reappears. The file is unlinked BEFORE the push so a
+    // failed push cannot loop on the same file (the watcher rewrites it every
+    // 30s while it waits anyway).
+    const PROBE_REQUEST_PATH = probeRequestPath(homedir(), ASSISTANT_ID)
+    let lastLivenessProbeAt: number | null = null
+    if (PROBE_REQUEST_PATH) {
+      const sendPendingProbe = async () => {
+        let markerExists = false
+        try {
+          markerExists = existsSync(PROBE_REQUEST_PATH)
+        } catch {
+          markerExists = false
+        }
+        if (
+          !shouldSendLivenessProbe({
+            markerExists,
+            lastSentAt: lastLivenessProbeAt,
+            now: Date.now(),
+          })
+        ) {
+          return
+        }
+        // Read before the unlink: the request says whether a restart happened
+        // (the question before an update writes purpose 'before_update').
+        let request: string | null = null
+        try {
+          request = readFileSync(PROBE_REQUEST_PATH, 'utf8')
+          if (Number(JSON.parse(request)?.afterBootMs) >= DAEMON_START_MS) return
+        } catch {
+          request = null
+        }
+        const saysAfterRestart = probeSaysAfterRestart(request)
+        try {
+          unlinkSync(PROBE_REQUEST_PATH)
+        } catch {
+          // Already gone or unremovable: the rate limit still bounds us.
+        }
+        lastLivenessProbeAt = Date.now()
+        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0], afterRestart: saysAfterRestart })
+        log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
+        await trackMessageOperation(() =>
+          channelNotify(() => ({ content: probe.content, meta: probe.meta })),
+        ).catch((err) => log(`liveness probe delivery failed: ${err}`))
+      }
+      await sendPendingProbe()
+      setInterval(() => void sendPendingProbe(), LIVENESS_PROBE_POLL_MS).unref()
+    }
+
     // The boot sweep stays awaited too, and deliberately so: cursor persistence
     // below must NOT begin until it finishes. A partial sweep flushed to disk
     // would leave the next boot with a cursor file and the first-run backlog
@@ -21458,60 +21560,6 @@ async function main(): Promise<void> {
     // block, yet it too must die when its launching session closes stdin and
     // must release any lock it later reclaimed. flushChatCursors is gated by
     // channelLiveness.live, so a shutdown before this block ran writes nothing.
-
-    // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
-    // the watcher restarts this agent nothing proves the new session HEARS the
-    // channel until the user speaks (the marker only refreshes on the first
-    // tool call of a boot; the hello fires once per pairing). So the watcher
-    // drops ~/.bgos-agent/<id>/probe-requested.json and we answer it with ONE
-    // silent channel notification asking for the channel_ack tool; that call
-    // goes through the CallTool chokepoint and touches channel-live.json,
-    // which the watcher reads (newer than its restart timestamp) as proof.
-    // Cheap stat every 3s, unref'd, rate-limited to one probe per 30s however
-    // often the file reappears. The file is unlinked BEFORE the push so a
-    // failed push cannot loop on the same file (the watcher rewrites it every
-    // 30s while it waits anyway).
-    const PROBE_REQUEST_PATH = probeRequestPath(homedir(), ASSISTANT_ID)
-    let lastLivenessProbeAt: number | null = null
-    if (PROBE_REQUEST_PATH) {
-      setInterval(() => {
-        let markerExists = false
-        try {
-          markerExists = existsSync(PROBE_REQUEST_PATH)
-        } catch {
-          markerExists = false
-        }
-        if (
-          !shouldSendLivenessProbe({
-            markerExists,
-            lastSentAt: lastLivenessProbeAt,
-            now: Date.now(),
-          })
-        ) {
-          return
-        }
-        // Read before the unlink: the request says whether a restart happened
-        // (the question before an update writes purpose 'before_update').
-        let request: string | null = null
-        try {
-          request = readFileSync(PROBE_REQUEST_PATH, 'utf8')
-        } catch {
-          request = null
-        }
-        const saysAfterRestart = probeSaysAfterRestart(request)
-        try {
-          unlinkSync(PROBE_REQUEST_PATH)
-        } catch {
-          // Already gone or unremovable: the rate limit still bounds us.
-        }
-        lastLivenessProbeAt = Date.now()
-        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0], afterRestart: saysAfterRestart })
-        log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
-        void trackMessageOperation(() =>
-          channelNotify(() => ({ content: probe.content, meta: probe.meta })),
-        ).catch((err) => log(`liveness probe delivery failed: ${err}`))
-      }, LIVENESS_PROBE_POLL_MS).unref()
-    }
 
     // Step 2.65: the limit watch's notice (lib/limit-notice.ts). When this agent was stuck on Claude
     // Code's usage limit screen, the watcher presses Enter once as soon as usage is back (or says why

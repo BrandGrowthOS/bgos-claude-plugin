@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findOwnAttachedKey, floorKey, floorStateRoot, pidIsAlive, sessionFolders } from '../lib/floor-state.mjs'
-import { GROUP_LANE_ENV, PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateTurnRecord, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
+import { appendEvent, isRecoverySubmission } from './hoai-hook.mjs'
+import { GROUP_LANE_ENV, PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateTurnRecord, privateUnservedPath, recoveryPromptDecision, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 
 const envText = (env, name) => (env && typeof env[name] === 'string' ? env[name].trim() : '')
 
@@ -182,16 +183,23 @@ export function recordPrivateBoundary(payload, env = process.env, report = () =>
   // `ended`: a SessionEnd says its session is over, and a marker written while the entry still names a session that
   // ended says so again, until the daemon reads that SessionEnd line and names none (managedMarker).
   const ended = event === 'SessionEnd' ? sessionId : target.ended
+  const stopping = event === 'Stop' ? previousAt(path, sessionId).previous : null
   const marker = {
     schemaVersion: 1, turnId, sessionId,
     promptHash: privatePromptHash(payload.prompt), live: event === 'UserPromptSubmit',
     ...(promptId ? { promptId } : {}),
     ...record,
+    ...(stopping?.live === true && stopping.sessionId === sessionId && Array.isArray(stopping.tags)
+      ? { stoppedTags: stopping.tags, stoppedPromptHash: stopping.promptHash } : {}),
     ...(ended ? { ended } : {}),
     // When this marker was written, on the clock the daemon's own moments are on: the daemon orders the marker by it,
     // never by the file's modification time, which a file clock ahead of the real one moves (lib/private-turn.mjs
     // privateMarkerWrittenAt, board row 495d73c1). Taken last, right before the write.
     writtenAt: Date.now(),
+  }
+  if (marker.stoppedTags?.length) {
+    // A prompt can replace the marker before the daemon receives this Stop line.
+    try { writePrivateJson(`${path}.stopped`, { sessionId, turnId, tags: marker.stoppedTags, promptHash: marker.stoppedPromptHash }) } catch { /* The current marker still carries the Stop. */ }
   }
   writePrivateJson(path, marker)
   if (event === 'SessionEnd') {
@@ -297,6 +305,13 @@ export async function main() {
     }
     let unserved = ''
     const recorded = recordPrivateBoundary(payload, process.env, (why) => { unserved = why })
+    const recovery = isRecoverySubmission(payload)
+    const decision = recorded && recorded.marker.live && String(payload.prompt).includes('<hoai-recovery agent="')
+      ? recoveryPromptDecision(payload.prompt, recorded.path, floorStateRoot(), recorded.marker.sessionId, recorded.marker.daemon?.pid)
+      : null
+    // The async forwarder leaves a single recovery to this hook. Publish its boundary
+    // after the release decision so intake can never consume an unseen offer.
+    if (recovery && (decision || !recorded)) appendEvent(payload)
     if (unserved) {
       // Exit 1: a non blocking error the CLI records with the prompt. The prompt runs; its private tools refuse.
       process.stderr.write(`HOAI wrote no private turn marker: ${unserved}. Private tools refuse this turn.\n`)
@@ -313,6 +328,7 @@ export async function main() {
         if (ready?.turnId === recorded.marker.turnId && ready.sessionId === recorded.marker.sessionId) break
         await new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.min(25, until - performance.now()))))
       }
+      if (decision) process.stdout.write(JSON.stringify(decision))
     }
   } catch {
     const event = payload?.hook_event_name

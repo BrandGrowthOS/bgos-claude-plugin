@@ -563,7 +563,9 @@ test('server.ts builds the binder from the agent folder and the CLI config dir, 
   assert.match(server, /readSessionTranscript\(\{\s*resolve: \(\) => sessionBinder\.resolve\(\),\s*projectDir: sessionBinder\.projectDirectory,/)
   // The fourth is the floor's attached entry, which the private turn hook matches its transcript against (0.68.4).
   assert.match(server, /markFloorAttached\(\{ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder\.projectDirectory, baseDir: LAUNCH_CWD, sessionId: floorEntrySession\(liveSessionId, hookEndedSessionId\) \}\)/)
-  assert.equal((server.match(/sessionBinder\.projectDirectory/g) ?? []).length, 4)
+  // An interrupted delivery's refusal must come from this same agent's transcript.
+  assert.ok(server.includes('readTranscript: session => NODE_SESSION_FS.readTail(pathJoin(sessionBinder.projectDirectory, `${session}.jsonl`)'))
+  assert.equal((server.match(/sessionBinder\.projectDirectory/g) ?? []).length, 5)
 })
 
 // The two other transcript readers (mission 104 fix round, verifier item a).
