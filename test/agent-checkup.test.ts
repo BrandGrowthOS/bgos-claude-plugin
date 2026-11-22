@@ -569,7 +569,7 @@ test('never a restart or a start for C9: even when every other gate is open', ()
 // P3 (brief decision): the connector is not the model. Restarting a dead daemon needs no login and
 // no quota, and the daemon is what carries the login or limit report, so C3 is fixed in the same pass
 // that reports C8 or C9. Nothing else is restarted or started for them.
-// Lone repair, owner switched off (Data, 22 Nov): a check up the Helper started with nobody pressing never starts or
+// Lone repair, owner switched off: a check up the Helper started with nobody pressing never starts or
 // restarts an agent its computer does not keep running. Each shape plans its start or restart when kept (or pressed).
 test('a check up the Helper started alone never starts or restarts an agent nobody keeps running: held, with the reason', () => {
   for (const over of [

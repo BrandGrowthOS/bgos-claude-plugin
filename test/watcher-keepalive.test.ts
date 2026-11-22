@@ -2245,6 +2245,29 @@ test('board row 69337efa (win32): an update for an agent whose launcher died wai
   assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].attempts, 0, 'no attempt spent')
 })
 
+// A process of record whose start cannot be read is held, never waited out: the claude its last state
+// names, or its hung daemon (the lock holder, under a claude), still runs, but the listing cannot read
+// its CreationDate, so the start rule cannot tell it from a reused pid. Read as "maybe running", the
+// task would start after 30 quiet minutes: a second session on the same pin. It waits for that session.
+test('win32: a process of record whose start cannot be read holds the task start, even after 30 quiet minutes: never a second session on the pin', async () => {
+  const quietAt = T0 - 40 * MIN
+  const claude = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: null, CommandLine: '"C:\\Users\\user\\.local\\bin\\claude.exe"' }]
+  const fs = crashedMachine({ [`${WPLUGIN_STATE}\\agent-state.json`]: stateBody('912', quietAt + 10_000, { lastActivityAt: new Date(quietAt).toISOString(), sessionId: PIN, claudePid: 5912, runningVersion: '0.62.1' }) }, { activityAt: quietAt })
+  const rec = recorder({ win32Ps: listed(claude) })
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn(claude) }) as any)
+  assert.deepEqual(starts(rec), [], 'the claude its state named, start unreadable')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+  const hungDaemon = [
+    { ProcessId: 5914, ParentProcessId: 4100, CreationDate: quietAt - 60 * MIN, CommandLine: '"C:\\Users\\user\\.local\\bin\\claude.exe"' },
+    { ProcessId: 4912, ParentProcessId: 5914, CreationDate: null, CommandLine: 'bun C:\\x\\server.ts' },
+  ]
+  const hungFs = crashedMachine({}, { activityAt: quietAt })
+  const hungRec = recorder({ win32Ps: listed(hungDaemon) })
+  const hungReport = await runKeepAliveSweep(windowsCtx(hungFs, hungRec, { pidAlive: aliveIn(hungDaemon) }) as any)
+  assert.deepEqual(starts(hungRec), [], 'the hung daemon its lock names, start unreadable')
+  assert.deepEqual(hungReport.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+})
+
 // Review: an agent whose folder is the home folder (the pairing default before 2026-09-21) holds
 // every claude installed under it on a command line; none of them is a session run in it.
 test('board row 69337efa (win32): an agent whose folder holds the claude install (a home folder agent) is still started at once', async () => {

@@ -658,7 +658,7 @@ test('board row 23415823, round 2: the same records with the pairing moved to an
   assert.equal(restartRequested(fs), false)
 })
 
-// Lone repair, owner switched off (Data, 22 Nov). The app marks a check up it starts with nobody pressing
+// Lone repair, owner switched off. The app marks a check up it starts with nobody pressing
 // (`alone`); the watcher asks the server's keep-alive list itself and never starts or restarts an agent not on it.
 const keptList = (ids: string[]) => ({ enabled: true, enabledAt: '2026-08-25T00:00:00.000Z', assistantIds: ids, switchState: 'on', showAgentWindows: false })
 const switchOff = { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false }
@@ -1357,6 +1357,36 @@ test('M3: an unreadable start time proves nothing: no claude of A, claudeAlive n
   assert.equal(run.kills.some(([pid]) => pid === 5300), false, JSON.stringify(run.kills))
 })
 
+// The two record routes still PROVE a claude: one with no pin on its command line (a hand run, say),
+// proven only by the claude pid its state names, or only as the claude above its live daemon, each
+// started before its record. A wrong record time (another field, seconds for ms) would leave such an
+// agent unknown, never repaired.
+async function observeOnly(fs: MemoryFs, ps: string, alive: number[]) {
+  const live = new Set(alive)
+  const pidAlive = (pid: number) => live.has(pid)
+  const row = listAgents({ home: HOME, env: { USER }, platform: 'linux', fs: fs as any, pidAlive, execSync: () => ({ code: 1, stdout: '' }), now: T0, uid: 501 }).find((a: any) => a.assistantId === '912')
+  assert.ok(row, '912 is listed')
+  const exec = async (file: string) => (file === 'ps' ? { code: 0, stdout: `${ps}\n`, stderr: '', error: null, timedOut: false } : { code: 1, stdout: '', stderr: '', error: null, timedOut: false })
+  return observeAgentForCheckup({ row, install: { configDir: CONFIG } as any, home: HOME, env: { USER }, platform: 'linux', fs, exec, now: T0, pidAlive, uid: 501 })
+}
+const EARLIER = 'Mon Aug 24 08:00:00 2026'
+
+test("the state's claude pid route proves a claude with no pin that started before the state", async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ pid: 4999, claudePid: 5912, updatedAt: new Date(T0 - 10 * MIN).toISOString() }) })
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(5912, 1, 'claude --dangerously-skip-permissions', EARLIER)].join('\n')
+  const seen = await observeOnly(fs, ps, [5912])
+  assert.deepEqual(seen.claudes.map((c: any) => c.pid), [5912])
+  assert.equal(seen.observation.claudeAlive, true)
+})
+
+test('the live daemon route proves the claude above a daemon that started before its record, with no pin', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ claudePid: null }) })
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(5912, 1, 'claude --dangerously-skip-permissions', EARLIER), psLine(4912, 5912, `node ${ROOT}/server.ts`, EARLIER)].join('\n')
+  const seen = await observeOnly(fs, ps, [5912, 4912])
+  assert.deepEqual(seen.claudes.map((c: any) => c.pid), [5912])
+  assert.equal(seen.observation.claudeAlive, true)
+})
+
 // -- item 5: the owner's Restart, which the Helper always carries out ---------------------------------
 
 function ownerRestartJob(rpcId = 'rst-1', body: Record<string, unknown> = {}) {
@@ -1546,6 +1576,19 @@ test('review F2 (M8): SIGKILL only reaches the SAME claude: a reused pid or a ch
   assert.deepEqual((await run(null)).kills, [], 'gone from the listing')
   const same = await run({ ...old })
   assert.deepEqual(same.kills, [[5912, 'SIGCONT'], [5912, 'SIGKILL']])
+})
+
+test('SIGKILL needs both start times: a command line match alone (a relaunch on the old pid whose start cannot be read) is never killed', async () => {
+  const old = { pid: 5912, command: `claude --resume ${SID}`, startedAtMs: T0 - 60 * MIN }
+  const run = async (was: typeof old | { pid: number, command: string, startedAtMs: null }, now: Record<string, unknown>) => {
+    const kills: Array<[number, string]> = []
+    const clock = fakeClock()
+    await endOldClaudes({ claudes: [was as any], kill: (pid: number, signal: string) => void kills.push([pid, signal]), pidAlive: () => true, sleep: clock.sleep, now: clock.now, relist: async () => [now as any], id: '912', platform: 'linux' })
+    return kills
+  }
+  assert.deepEqual(await run(old, { pid: 5912, command: old.command, startedAtMs: null }), [], 'the fresh listing cannot read its start')
+  assert.deepEqual(await run({ ...old, startedAtMs: null }, { ...old }), [], 'the check up could not read it')
+  assert.deepEqual(await run({ ...old, startedAtMs: null }, { pid: 5912, command: old.command }), [], 'neither')
 })
 
 test('review F2 (M10): a claude tied to the folder only by a cwd lookup (a person\'s own session) is never signalled', async () => {

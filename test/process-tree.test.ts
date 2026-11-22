@@ -328,9 +328,16 @@ test('findAgentClaudePids (board row 69337efa): a claude of the agent by its pin
   // A process of record that still runs as itself with no claude visible above it (an orphaned or hung
   // daemon, or a claude this watcher cannot read): no claude found, and no session ruled out either.
   const orphan = look([[4912, 4100, T - 100_000, 'bun C:\\x\\server.ts']], { known: [{ pid: 4912, atMs: T }] })
-  assert.deepEqual(orphan, { pids: [], unsure: true }, 'the lock holder lives: the caller keeps the quiet window')
-  assert.deepEqual(look(hung, { known: [{ pid: 4912, atMs: T - 50_000 }] }), { pids: [5914], unsure: false })
-  assert.deepEqual(look(hung, { known: [{ pid: 4912, atMs: T - 105_000 }] }), { pids: [], unsure: false }, 'a reused pid is neither')
-  assert.deepEqual(look([], { known: [{ pid: 4999, atMs: T }] }), { pids: [], unsure: false }, 'gone is gone')
-  assert.deepEqual(look([], { sessionIds: undefined, cwd: undefined, known: undefined }), { pids: [], unsure: false }, 'nothing to look for')
+  assert.deepEqual(orphan, { pids: [], unsure: true, startUnknown: false }, 'the lock holder lives: the caller keeps the quiet window')
+  assert.deepEqual(look(hung, { known: [{ pid: 4912, atMs: T - 50_000 }] }), { pids: [5914], unsure: false, startUnknown: false })
+  assert.deepEqual(look(hung, { known: [{ pid: 4912, atMs: T - 105_000 }] }), { pids: [], unsure: false, startUnknown: false }, 'a reused pid is neither')
+  assert.deepEqual(look([], { known: [{ pid: 4999, atMs: T }] }), { pids: [], unsure: false, startUnknown: false }, 'gone is gone')
+  assert.deepEqual(look([], { sessionIds: undefined, cwd: undefined, known: undefined }), { pids: [], unsure: false, startUnknown: false }, 'nothing to look for')
+  // A process of record whose start cannot be read (a null CreationDate), or a record with no time:
+  // the start rule cannot tell it from a reused pid, so it proves nothing, rules nothing out, and says
+  // so (startUnknown), for a caller that must HOLD rather than wait out a quiet window.
+  const unreadable = hung.map(([pid, ppid, at, cmd]): [number, number, number | null, string] => [pid, ppid, pid === 4912 || pid === 5914 ? null : at, cmd])
+  assert.deepEqual(look(unreadable, { known: [{ pid: 4912, atMs: T }] }), { pids: [], unsure: true, startUnknown: true }, 'the daemon of record, start unreadable')
+  assert.deepEqual(look(unreadable, { known: [{ pid: 5914, atMs: T }] }), { pids: [], unsure: true, startUnknown: true }, 'the claude of record, start unreadable')
+  assert.deepEqual(look(hung, { known: [{ pid: 4912, atMs: null }] }), { pids: [], unsure: true, startUnknown: true }, 'a record with no time')
 })
