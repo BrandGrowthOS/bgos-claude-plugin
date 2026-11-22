@@ -53,6 +53,15 @@
  * 20 s wait. A step is never started without the time to confirm it. There is
  * no rollback: a model confirmed before the effort step is refused is what
  * runs, and the answer's report says so.
+ *
+ * With NO pane (every Windows agent, and one started without tmux) the same
+ * checks run, and then the restart route switches it instead of typing
+ * (lib/model-effort-restart.ts): only when the Helper's launcher that reads
+ * the launch choice is proven to supervise this session, and the asking app
+ * and backend can show a restart (`restartOk`). Its answer is `restarting`;
+ * the lock stays held until this process ends or the restart is given up.
+ * The server's model catalog widens the choice on that route only: an id is
+ * passed to the launcher as one argv element and never typed.
  */
 
 import {
@@ -71,6 +80,7 @@ import {
 } from './compact-inject.ts'
 import {
   buildModelEffortReport,
+  mergeServerModels,
   modelFamilyOf,
   parseHelpCatalog,
   pickerModelOf,
@@ -80,6 +90,14 @@ import {
   type ModelEffortReport,
 } from './model-effort-catalog.ts'
 import type { ModelObservation } from './model-control-store.mjs'
+import { isLaunchModel } from './launch-choice.mjs'
+import {
+  beginSwitch,
+  modelMeets,
+  scheduleRestart,
+  switchPendingNow,
+  type RestartRouteDeps,
+} from './model-effort-restart.ts'
 import {
   agentOwnsPane,
   composerHolds,
@@ -121,6 +139,8 @@ export type RefusalCode =
   | 'session_mismatch'
   | 'not_owner_main_chat'
   | 'out_of_time'
+  | 'restart_failed'
+  | 'switch_pending'
 
 /** One plain sentence per refusal, at most 300 characters, dash free. */
 export const REFUSAL_MESSAGES: Readonly<Record<RefusalCode, string>> = Object.freeze({
@@ -151,10 +171,19 @@ export const REFUSAL_MESSAGES: Readonly<Record<RefusalCode, string>> = Object.fr
   session_mismatch: 'The agent\'s session is not the one the picker read. Open the picker again.',
   not_owner_main_chat: 'The model and effort are changed by the agent\'s owner, from the agent\'s main chat only.',
   out_of_time: 'There was not enough time left to change and confirm the effort. Open the picker again.',
+  restart_failed: 'The agent could not be restarted to switch its model, so it stays on the model it had.',
+  switch_pending: 'The agent is restarting to switch its model. Try again in a moment.',
 })
 
 export type ControlOutcome =
-  | { ok: true; op: ControlOp; applied: boolean; report: ModelEffortReport }
+  | {
+      ok: true
+      op: ControlOp
+      applied: boolean
+      report: ModelEffortReport
+      /** apply on the restart route: the agent is being restarted onto this; not confirmed yet. */
+      restarting?: { model: string; effort: string }
+    }
   | {
       ok: false
       op: ControlOp | null
@@ -190,6 +219,25 @@ export interface ControlDeps {
   sleep: (ms: number) => Promise<void>
   now: () => number
   log: (msg: string) => void
+  /** The restart route for an agent with no pane (lib/model-effort-restart.ts); absent, there is none. */
+  restart?: RestartRouteDeps
+  /**
+   * The model names the installed CLI's own file carries (lib/cli-model-names.ts),
+   * or null while unknown. A server catalog id is offered only when it is named
+   * here; absent or null, none is.
+   */
+  cliModelNames?: () => ReadonlySet<string> | null
+}
+
+/** What `apply` is told besides the selection. */
+export interface ApplyOptions {
+  deadlineAtMs: number
+  /** The owner's main chat the picker asked from: the restart route's notes go there. */
+  chatId?: string
+  /** The backend and the app can show a `restarting` answer; without it the restart route is never taken. */
+  restartOk?: boolean
+  /** The server's model catalog ids (BGOS claudeModels), for the restart route only. */
+  serverModels?: readonly string[]
 }
 
 /** The picker's selection, as BGOS sends it (ModelEffortSelection). */
@@ -206,6 +254,8 @@ export interface ControlSnapshot {
   /** The proven session's latest observation, or null when none is fresh. */
   observation: ModelObservation | null
   catalog: HostCatalog
+  /** A restart route switch is in flight: the list answers busy. Absent means none. */
+  switchPending?: boolean
 }
 
 export interface ControlOptions {
@@ -253,33 +303,44 @@ export class ModelEffortControl {
    * the lock and one deadline. The answer is ok only when the session's own
    * latest report holds BOTH requested values.
    */
-  async apply(selection: ApplySelection, opts: { deadlineAtMs: number }): Promise<ControlOutcome> {
+  async apply(selection: ApplySelection, opts: ApplyOptions): Promise<ControlOutcome> {
     const { sessionId: wanted, model, effort } = selection
     if (typeof wanted !== 'string' || typeof model !== 'string' || typeof effort !== 'string') {
       return this.refused('apply', new Refusal('unsupported_value'), null)
     }
     if (effort === 'ultracode') return this.refused('apply', new Refusal('ultracode_unconfirmable'), null)
-    // A model is a table family, or the running model's own id (checked
-    // against the session below); nothing else is ever looked at again.
-    if (!isEffortLevel(effort) || (modelLiteral(model) === null && pickerModelOf(model) !== model)) {
+    // A model is a table family, the running model's own id, or (restart
+    // route only) a strict launch id (checked against the catalog below);
+    // nothing else is ever looked at again.
+    if (!isEffortLevel(effort) || (modelLiteral(model) === null && pickerModelOf(model) !== model && !isLaunchModel(model))) {
       return this.refused('apply', new Refusal('unsupported_value'), null)
     }
     if (this.inFlight || this.deps.otherInjectionBusy()) {
       return this.refused('apply', new Refusal('control_busy'), null)
     }
+    // A switch still waiting for its confirmation is busy too: the daemon that
+    // came back after the restart holds no lock.
+    if (this.switchPending()) return this.refused('apply', new Refusal('switch_pending'), null)
     // Held from here, synchronously, through BOTH steps.
     this.inFlight = true
     let sessionId: string | null = null
     let catalog: HostCatalog = { efforts: [], models: [] }
     let modelSwitched = false
+    // The restart route keeps the lock past the answer (scheduleRestart releases it).
+    let keepLock = false
     try {
       let pre = await this.preflight()
       sessionId = pre.sessionId
-      catalog = pre.catalog
+      catalog = pre.target === null ? mergeServerModels(pre.catalog, opts.serverModels, this.cliNames()) : pre.catalog
       if (wanted !== pre.sessionId) throw new Refusal('session_mismatch')
       if (!isModelFamily(model) && !catalog.models.includes(model) && model !== pickerModelOf(pre.observation.modelId, catalog)) throw new Refusal('unsupported_value')
       let applied = false
       const modelMatches = (id: string) => isModelFamily(model) ? modelFamilyOf(id) === model : id === model
+      if (pre.target === null) {
+        const out = await this.applyByRestart({ model, effort, opts, pre: { ...pre, target: null }, catalog })
+        keepLock = out.ok && out.restarting !== undefined
+        return out
+      }
       if (!modelMatches(pre.observation.modelId)) {
         this.checkTime(opts.deadlineAtMs)
         const step = await this.change('set_model', model, pre, opts.deadlineAtMs)
@@ -303,12 +364,72 @@ export class ModelEffortControl {
       this.deps.log(`model control: apply ${model} ${effort} ${err.code}`)
       return { ok: false, op: 'apply', code: err.code, message: err.message, report: this.report(catalog, sessionId), modelSwitched }
     } finally {
-      this.release()
+      if (!keepLock) this.release()
     }
   }
 
+  /**
+   * The restart route, under the lock apply holds and after every check
+   * preflight ran: the catalog, the launcher's proof, the turn once more, then
+   * the two files and the answer. Throws a Refusal for anything else.
+   */
+  private async applyByRestart(input: {
+    model: string
+    effort: string
+    opts: ApplyOptions
+    pre: { sessionId: string; target: null; observation: ModelObservation; catalog: HostCatalog }
+    catalog: HostCatalog
+  }): Promise<ControlOutcome> {
+    const { model, effort, opts, pre, catalog } = input
+    const restart = this.deps.restart
+    if (!restart || opts.restartOk !== true || typeof opts.chatId !== 'string') throw new Refusal('no_terminal')
+    const offered = isModelFamily(model)
+      ? catalog.models.some((id) => id === model || modelFamilyOf(id) === model)
+      : catalog.models.includes(model) || model === pickerModelOf(pre.observation.modelId, catalog)
+    if (!offered || !isLaunchModel(model)) throw new Refusal('not_in_catalog')
+    if (!catalog.efforts.includes(effort as keyof typeof EFFORT_LITERALS)) throw new Refusal('not_in_catalog')
+    if (modelMeets(model, pre.observation.modelId) && pre.observation.effort === effort) {
+      this.deps.log(`model control: apply ${model} ${effort} already`)
+      return { ok: true, op: 'apply', applied: false, report: this.report(catalog, pre.sessionId)! }
+    }
+    let proven = false
+    try {
+      proven = await restart.launcherProven()
+    } catch {
+      proven = false
+    }
+    if (!proven) throw new Refusal('no_terminal')
+    // Again, right before the files: the proof read the process table.
+    const late = this.checkIdle()
+    if (late) throw late
+    if (this.deps.sessionId() !== pre.sessionId) throw new Refusal('session_changed')
+    // The proof read the process table, which can be slow on Windows: past the
+    // deadline BGOS has told the app this did not answer, so nothing restarts.
+    this.checkTime(opts.deadlineAtMs)
+    // An effort only change keeps the exact model the agent runs: the picker's
+    // choice may be its family alias, and `--model opus` could start another Opus.
+    const observed = pre.observation.modelId
+    const launchModel = modelMeets(model, observed) && isLaunchModel(observed) ? observed : model
+    let record
+    try {
+      record = beginSwitch(restart, {
+        target: { model: launchModel, effort },
+        from: { model: pre.observation.modelId, effort: pre.observation.effort },
+        sessionId: pre.sessionId,
+        chatId: opts.chatId,
+        nowMs: this.deps.now(),
+      })
+    } catch {
+      throw new Refusal('restart_failed')
+    }
+    this.deps.log(`model control: apply ${model} ${effort} restarting`)
+    const report = this.report(catalog, pre.sessionId)!
+    scheduleRestart(restart, record, () => this.release(), this.deps.log)
+    return { ok: true, op: 'apply', applied: true, report, restarting: { model, effort } }
+  }
+
   /** What a list reads: the opt in, the proven session, its fresh observation, the CLI's catalog. Types nothing. */
-  async snapshot(): Promise<ControlSnapshot> {
+  async snapshot(opts: { serverModels?: readonly string[] } = {}): Promise<ControlSnapshot> {
     const optedIn = this.deps.optedIn()
     const sessionId = this.deps.sessionId()
     const seen = sessionId ? this.deps.readObservation(sessionId) : null
@@ -319,7 +440,37 @@ export class ModelEffortControl {
     } catch {
       help = null
     }
-    return { optedIn, sessionId, observation, catalog: parseHelpCatalog(help, observation?.version) }
+    const cli = parseHelpCatalog(help, observation?.version)
+    // The server's ids are offered only where they are never typed.
+    const catalog = !this.deps.target() && this.restartDeclared() ? mergeServerModels(cli, opts.serverModels, this.cliNames()) : cli
+    return { optedIn, sessionId, observation, catalog, switchPending: this.switchPending() }
+  }
+
+  /** The model names the installed CLI's own file carries, or null while unknown. Never throws. */
+  private cliNames(): ReadonlySet<string> | null {
+    try {
+      return this.deps.cliModelNames?.() ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /** A restart route switch in flight, waiting for its confirmation, or being undone (model-switch.json). */
+  private switchPending(): boolean {
+    try {
+      return this.deps.restart ? switchPendingNow(this.deps.restart, this.deps.now()) : false
+    } catch {
+      return false
+    }
+  }
+
+  /** A launcher that reads the launch choice supervises this agent (cheap; the proof comes at apply). */
+  private restartDeclared(): boolean {
+    try {
+      return this.deps.restart?.launcherDeclared() === true
+    } catch {
+      return false
+    }
   }
 
   private release(): void {
@@ -336,7 +487,7 @@ export class ModelEffortControl {
   /** The checks that need no pane read, in the order a refusal names them. */
   private checkSync(catalog: HostCatalog | null): Refusal | null {
     if (!this.deps.optedIn()) return new Refusal('not_opted_in')
-    if (!this.deps.target()) return new Refusal('no_terminal')
+    if (!this.deps.target() && !this.restartDeclared()) return new Refusal('no_terminal')
     const sessionId = this.deps.sessionId()
     if (!sessionId) return new Refusal('session_unknown')
     const observation = this.deps.readObservation(sessionId)
@@ -379,11 +530,11 @@ export class ModelEffortControl {
     }
   }
 
-  private async preflight(): Promise<{ sessionId: string; target: TmuxTarget; observation: ModelObservation; catalog: HostCatalog }> {
+  private async preflight(): Promise<{ sessionId: string; target: TmuxTarget | null; observation: ModelObservation; catalog: HostCatalog }> {
     const refusal = this.checkSync(null)
     if (refusal) throw refusal
     const sessionId = this.deps.sessionId()!
-    const target = this.deps.target()!
+    const target = this.deps.target()
     const observation = this.deps.readObservation(sessionId)!
     let help: string | null = null
     try {
@@ -397,10 +548,12 @@ export class ModelEffortControl {
   private async change(
     op: 'set_model' | 'set_effort',
     value: string,
-    pre: { sessionId: string; target: TmuxTarget; observation: ModelObservation; catalog: HostCatalog },
+    pre: { sessionId: string; target: TmuxTarget | null; observation: ModelObservation; catalog: HostCatalog },
     deadlineAtMs: number,
   ): Promise<ControlOutcome> {
     const { sessionId, target, catalog } = pre
+    // The typing route only: no pane is the restart route's, never typed into.
+    if (!target) throw new Refusal('no_terminal')
     if (op === 'set_model' && !catalog.models.includes(value) && !(isModelFamily(value) && catalog.models.some((id) => modelFamilyOf(id) === value))) throw new Refusal('not_in_catalog')
     if (op === 'set_effort') {
       if (!catalog.efforts.includes(value as keyof typeof EFFORT_LITERALS)) throw new Refusal('not_in_catalog')

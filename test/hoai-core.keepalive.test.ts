@@ -244,7 +244,8 @@ test('keep-alive: an exit on its own relaunches after 5 s RESUMING the pinned se
   assert.equal(h.spawns[1]!.args.includes('--continue'), false)
   const sup = JSON.parse(h.files.get(SUPERVISOR_PATH) ?? 'null')
   assert.equal(sup?.pid, process.pid)
-  assert.deepEqual(sup?.capabilities, ['relaunch'])
+  // launch-choice: this launcher passes the agent's chosen model and effort (lib/launch-choice.mjs).
+  assert.deepEqual(sup?.capabilities, ['relaunch', 'launch-choice'])
   // The stamp before a relaunch names no deadline: lib/restart-handoff.mjs counts only such a stamp as a relaunch.
   assert.equal(sup?.relaunchBy, undefined)
   assert.equal(h.files.get(SESSION_ID_PATH), PINNED, 'the pin is untouched')

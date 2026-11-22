@@ -195,9 +195,10 @@ test('readFolderPin: digits only, else empty', () => {
 })
 
 test('parseSupervisorFile: fail-closed mirror of lib/update-readiness.ts', () => {
+  // launch-choice: hoai passes the agent's chosen model and effort (lib/launch-choice.mjs).
   assert.deepEqual(parseSupervisorFile(supervisorFileBody(42, 'x')), {
     pid: 42,
-    capabilities: ['relaunch'],
+    capabilities: ['relaunch', 'launch-choice'],
   })
   assert.equal(parseSupervisorFile(null), null)
   assert.equal(parseSupervisorFile(''), null)

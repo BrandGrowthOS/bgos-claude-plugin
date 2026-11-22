@@ -466,8 +466,9 @@ export function declaredCapabilities(input: {
   personLanes?: boolean
   /**
    * Can this daemon change its session's model and effort for the owner right
-   * now (server.ts modelEffortDeclared: opted in, injector, fresh status line
-   * observation, non empty catalog)? Absent reads as no.
+   * now (server.ts modelEffortDeclared: opted in, a route that can switch
+   * (the injector's pane, or a launcher that starts it on its launch choice),
+   * fresh status line observation, non empty catalog)? Absent reads as no.
    */
   modelEffortPicker?: boolean
   /**
@@ -483,7 +484,12 @@ export function declaredCapabilities(input: {
    */
   groupLevels?: boolean
   authMode: 'pairing' | 'apikey'
-  /** The host platform; process.platform when absent. The picker and the thread tokens are never declared on win32. */
+  /**
+   * The host platform; process.platform when absent. The thread tokens are
+   * never declared on win32. The picker is: a Windows agent switches by a
+   * restart through its own hoai launcher (lib/model-effort-restart.ts), and
+   * `modelEffortPicker` already says whether that route is there.
+   */
   platform?: NodeJS.Platform
 }): readonly string[] {
   return [
@@ -494,9 +500,7 @@ export function declaredCapabilities(input: {
     ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
     ...(input.authMode === 'pairing' && input.personLanes === true ? [PERSON_LANES_TOKEN, LANE_MEMORY_RPC_TOKEN] : []),
-    ...(input.authMode === 'pairing' && input.modelEffortPicker === true && (input.platform ?? process.platform) !== 'win32'
-      ? [MODEL_EFFORT_PICKER_TOKEN]
-      : []),
+    ...(input.authMode === 'pairing' && input.modelEffortPicker === true ? [MODEL_EFFORT_PICKER_TOKEN] : []),
     ...(input.threads === true && (input.platform ?? process.platform) !== 'win32' ? THREAD_CAPABILITY_TOKENS : []),
     ...(input.authMode === 'pairing' && input.threads === true && (input.platform ?? process.platform) !== 'win32'
       ? [GROUP_THREADS_TOKEN, ...((input.groupLevels ?? groupLevelsEnabled(process.env)) ? [GROUP_LEVELS_TOKEN] : [])]
