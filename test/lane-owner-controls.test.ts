@@ -33,6 +33,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { wsAuthOptions } from '../lib/agent-credentials.ts'
+import { HEARD_REACTIONS_CAPABILITY } from '../lib/heard-reaction.ts'
 import { declaredCapabilities } from '../lib/declared-capabilities.ts'
 import { LANE_MEMORY_RPC_TOKEN, LANE_NOTICES, laneNoticeSentence, parseLaneEventLine, PERSON_LANES_TOKEN } from '../lib/lane-core.mjs'
 
@@ -57,8 +58,12 @@ test('the owner\'s handshake declares it in auth.capabilities; nothing else in t
   assert.deepEqual(wsAuthOptions(pairing, [LANE_MEMORY_RPC_TOKEN]), { query: { pairingToken: 'pair_secret' }, auth: { capabilities: ['lane_memory_rpc'] } })
   assert.deepEqual(wsAuthOptions(pairing), { query: { pairingToken: 'pair_secret' } }, 'no capability: today\'s handshake byte for byte')
   const apikey = { mode: 'apikey', apiKey: 'k', assistantId: '7' } as never
-  assert.deepEqual(wsAuthOptions(apikey, [LANE_MEMORY_RPC_TOKEN]), { auth: { apiKey: 'k', assistantId: '7' } }, 'an API key socket declares nothing')
-  assert.match(SERVER, /\.\.\.wsAuthOptions\(AUTH, laneSupport\(\)\.ok \? \[LANE_MEMORY_RPC_TOKEN\] : \[\]\),/)
+  assert.deepEqual(wsAuthOptions(apikey, [LANE_MEMORY_RPC_TOKEN]), { auth: { apiKey: 'k', assistantId: '7' } }, 'an API key socket cannot declare lane memory')
+  const both = [HEARD_REACTIONS_CAPABILITY, LANE_MEMORY_RPC_TOKEN]
+  assert.deepEqual(wsAuthOptions(pairing, both), { query: { pairingToken: 'pair_secret' }, auth: { capabilities: ['heard_reactions', 'lane_memory_rpc'] } })
+  assert.deepEqual(wsAuthOptions(pairing, [HEARD_REACTIONS_CAPABILITY]), { query: { pairingToken: 'pair_secret' }, auth: { capabilities: ['heard_reactions'] } })
+  assert.deepEqual(wsAuthOptions(apikey, both), { auth: { apiKey: 'k', assistantId: '7', capabilities: ['heard_reactions'] } })
+  assert.match(SERVER, /\.\.\.wsAuthOptions\(AUTH, \[HEARD_REACTIONS_CAPABILITY, \.\.\.\(laneSupport\(\)\.ok \? \[LANE_MEMORY_RPC_TOKEN\] : \[\]\)\]\),/)
 })
 
 test('server.ts: a person\'s stamped memory frame goes to her stopped lane\'s folder, never the owner\'s memory', () => {

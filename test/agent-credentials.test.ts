@@ -57,6 +57,9 @@ test('legacy api-key env resolves to apikey mode (Echo path, unchanged)', () => 
   assert.equal(auth.complete, true)
   assert.deepEqual(authHeaders(auth), { 'X-API-Key': 'raw_key' })
   assert.deepEqual(wsAuthOptions(auth), { auth: { apiKey: 'raw_key', assistantId: '1234' } })
+  assert.deepEqual(wsAuthOptions(auth, ['heard_reactions']), {
+    auth: { apiKey: 'raw_key', assistantId: '1234', capabilities: ['heard_reactions'] },
+  })
 })
 
 test('credentials file resolves to pairing mode with X-BGOS-Pairing + query token', () => {

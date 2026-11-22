@@ -54,6 +54,24 @@ function session(t: any) {
   return { deliver, prompt, stop, call, tracker, markerPaths }
 }
 
+test('a reaction records a member for turn aware tools and preserves the owner continuation', () => {
+  const tracker = privateTurn.createPrivateTurnTracker({ ownerUserId: OWNER })
+  const call = () => turnAwarePrivateTurn({ tracker, markerPaths: [], ownerUserId: OWNER })
+  tracker.rawCard('Reaction', { event_type: 'reaction', user_id: OWNER })
+  assert.equal(call().actingUserId, OWNER)
+  tracker.rawCard('Reaction', { event_type: 'reaction', user_id: RECIPIENT })
+  assert.deepEqual(tracker.turnSenders().people, [RECIPIENT])
+  assert.throws(call, { message: TURN_AWARE_REFUSAL })
+})
+
+test('a reaction with no verified sender leaves turn aware tools closed', () => {
+  const tracker = privateTurn.createPrivateTurnTracker({ ownerUserId: OWNER })
+  tracker.rawCard('Reaction', { event_type: 'reaction' })
+  assert.throws(() => turnAwarePrivateTurn({ tracker, markerPaths: [], ownerUserId: OWNER }), {
+    message: privateTurn.TURN_AWARE_UNVERIFIED_REFUSAL,
+  })
+})
+
 test('a verified turn is used as requirePrivateTurn answers it', (t) => {
   const s = session(t)
   s.prompt(s.deliver(RECIPIENT, '20'))

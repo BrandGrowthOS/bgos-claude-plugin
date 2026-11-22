@@ -26,6 +26,10 @@ On Windows the watch only viewer (Show agent windows) was started with its worki
 
 Tests: `test/agent-windows.test.ts` (no viewer starts inside the bundle; the swap closes only known viewers; the successor reopens them), `test/watcher-bundle.test.ts` (EBUSY and EPERM retried three times), `test/watcher-self-refresh.test.ts` (the real loop with a viewer, and a program it did not start, holding `bin`; when the swap fails, the same Helper reopens the viewers it closed, from the home folder), and `test/viewer-cwd-swap.win32.test.ts` (Windows only: a real process working in `bin` blocks the real rename; closed by pid, the swap goes through).
 
+## 0.90.17 (2026-11-21)
+
+**feat(chat): hear reactions to the agent's replies.** With a matching server, the agent hears who reacted and which emoji they chose. A later line can report a changed or removed reaction and how many people reacted. A room member speaks only as themselves. A reaction never grants permission to use a tool.
+
 ## 0.90.16 (2026-11-20)
 
 **fix(keep-alive): the Helper now notices when any agent on the computer stops getting messages, not only the agents it keeps running.**
