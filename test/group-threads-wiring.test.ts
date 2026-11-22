@@ -471,3 +471,46 @@ test('round 5 B: HOAI_GROUP_LEVELS is on only for the literal true, and group_le
   const manager = server.slice(server.indexOf('const groupLanes = new GroupLaneManager({'), server.indexOf('\n})\n', server.indexOf('const groupLanes = new GroupLaneManager({')))
   assert.match(manager, /levelsEnabled: groupLevelsEnabled\(process\.env\),/)
 })
+
+test('a group reaction leaves the original message available for forwarding', () => {
+  const at = server.indexOf('function routeGroupDelivery(')
+  assert.ok(at > 0)
+  const source = server.slice(at, server.indexOf('\n}\n', at) + 2)
+  const js = ts.transpileModule(source + '\nreturn routeGroupDelivery', {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.None,
+    },
+  }).outputText
+  const remembered: number[] = []
+  const route = new Function(
+    'groupRouteOf',
+    'groupLanesOn',
+    'updateDrainMode',
+    'groupLanes',
+    'readGroupDelivery',
+    'rememberForwarded',
+    'log',
+    js,
+  )(
+    groupRouteOf,
+    () => true,
+    false,
+    { deliver: () => true },
+    readGroupDelivery,
+    (id: number) => remembered.push(id),
+    () => {},
+  )
+  const input = { messageId: stamped.messageId, text: 'Ready?' }
+  const records = [{ lane: 'group:' + stamped.chatId }]
+  assert.equal(
+    route(records, { ...input, key: 'reaction:' + input.messageId }, 'socket'),
+    true,
+  )
+  assert.deepEqual(remembered, [])
+  assert.equal(
+    route(records, { ...input, key: String(input.messageId) }, 'socket'),
+    true,
+  )
+  assert.deepEqual(remembered, [input.messageId])
+})

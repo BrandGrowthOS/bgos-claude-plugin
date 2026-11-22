@@ -39,6 +39,10 @@ Security round (acctbuild3): a saved login now mirrors the source login's `permi
 
 **test(launcher): the supervisor keeps its launch login across a rollback.** A keep-alive supervisor runs its first child in a saved login, the owner moves the computer back to the agent's own login, and the relaunch must carry the launch's `ANTHROPIC_BASE_URL` and key again (`test/helper-account-security.test.ts`). With the supervisor's `launchEnv` wiring removed it fails.
 
+## 0.90.17 (2026-11-21)
+
+**feat(chat): hear reactions to the agent's replies.** With a matching server, the agent hears who reacted and which emoji they chose. A later line can report a changed or removed reaction and how many people reacted. A room member speaks only as themselves. A reaction never grants permission to use a tool.
+
 ## 0.90.16 (2026-11-20)
 
 **fix(keep-alive): the Helper now notices when any agent on the computer stops getting messages, not only the agents it keeps running.**

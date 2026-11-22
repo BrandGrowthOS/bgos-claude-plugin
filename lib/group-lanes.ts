@@ -645,7 +645,7 @@ export class GroupLaneManager {
     lane.st.started = true
     if (d.messageId !== null) {
       if (lane.st.firstMessageId === null) lane.st.firstMessageId = d.messageId
-      lane.st.lastMessageId = d.messageId
+      lane.st.lastMessageId = Math.max(lane.st.lastMessageId ?? d.messageId, d.messageId)
     }
     this.persist(lane)
     this.postState({ chatId: lane.chatId, state: 'live', sessionId }, lane)
