@@ -139,7 +139,7 @@ function stamperFor(over: Record<string, unknown> = {}) {
   const execs: unknown[] = []
   let startOk = true
   const s = createClaudeStamper({
-    path: '/Users/kc/.bgos-plugin-state/300/claude-stamp.json',
+    path: '/Users/x/.bgos-plugin-state/300/claude-stamp.json',
     platform: 'win32',
     now: () => t,
     assistantId: () => '300',
@@ -165,7 +165,7 @@ test('createClaudeStamper: the lock holder writes its claude\'s stamp once, agai
   const { s, writes, set } = stamperFor()
   assert.equal(s.tick(), 'written')
   assert.deepEqual(writes.map((w) => w.body), [{ schemaVersion: 1, assistantId: '300', claudePid: 5300, claudeStartedAtMs: UP, stampedAt: new Date(T0).toISOString() }])
-  assert.equal(writes[0]!.path, '/Users/kc/.bgos-plugin-state/300/claude-stamp.json')
+  assert.equal(writes[0]!.path, '/Users/x/.bgos-plugin-state/300/claude-stamp.json')
   set({ advance: 60_000 })
   assert.equal(s.tick(), 'unchanged', 'the same claude is not stamped every second')
   assert.equal(writes.length, 1)

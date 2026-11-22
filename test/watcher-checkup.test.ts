@@ -26,8 +26,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { freeLimitResult, runWatcher } from '../lib/watcher-core.mjs'
-import { checkupTarget, endOldClaudes, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
-import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
+import { checkupTarget, endOldClaudes, isOwnerChannelText, observeAgentForCheckup, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
+import { agentServiceNamesFor, buildLaunchRecipe, listAgents } from '../lib/agent-inventory.mjs'
 import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
 import { CHANNEL_CORE_FILES } from '../lib/keepalive-plan.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
@@ -1265,6 +1265,55 @@ test('finding 3: parseTranscriptTail reads an owner enqueue as a delivery, and n
   }
   // A queue line is never model activity.
   assert.equal(parseTranscriptTail(owner, T0).lastActivityAtMs, null)
+})
+
+// Security review F1: a stale agent-state.json names a claude pid that another agent's claude holds now.
+// Agent A (912) died without removing its state, which still names claude 5300 (two days old). After a
+// reboot agent B's claude got pid 5300, started later than A's state was written. That claude is B's,
+// never A's: nothing is proven as A's claude, and neither a check up the Helper starts alone nor the
+// owner's Restart signals it.
+function reusedPidFs() {
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState({ claudePid: 5300, updatedAt: new Date(T0 - 2 * 24 * 60 * MIN).toISOString(), lastActivityAt: new Date(T0 - 2 * 24 * 60 * MIN).toISOString() }),
+  })
+  writeTranscript(fs, [assistantTurn(T0 - 20 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
+  return fs
+}
+const B_SID = '8c1f0000-0000-4000-8000-0000000000b2'
+const REUSED_PS = [psLine(1, 0, '/sbin/init'), psLine(5300, 1, `claude --resume ${B_SID}`), psLine(5301, 5300, `node ${ROOT}/server.ts`)].join('\n')
+
+test("F1: the observation proves no claude of A from a stale state's pid that a later claude holds: claudeAlive null", async () => {
+  const fs = reusedPidFs()
+  const live = new Set([5300, 5301])
+  const pidAlive = (pid: number) => live.has(pid)
+  const row = listAgents({ home: HOME, env: { USER }, platform: 'linux', fs: fs as any, pidAlive, execSync: () => ({ code: 1, stdout: '' }), now: T0, uid: 501 }).find((a: any) => a.assistantId === '912')
+  assert.ok(row, '912 is listed')
+  const exec = async (file: string) => (file === 'ps' ? { code: 0, stdout: `${REUSED_PS}\n`, stderr: '', error: null, timedOut: false } : { code: 1, stdout: '', stderr: '', error: null, timedOut: false })
+  const seen = await observeAgentForCheckup({ row, install: { configDir: CONFIG } as any, home: HOME, env: { USER }, platform: 'linux', fs, exec, now: T0, pidAlive, uid: 501 })
+  assert.deepEqual(seen.claudes, [], 'nothing proven as A\'s claude')
+  assert.equal(seen.observation.claudeAlive, null)
+})
+
+test("F1: a stale state's claude pid, reused by another agent's later claude, proves nothing: a lone check up signals nothing", async () => {
+  const fs = reusedPidFs()
+  const backend = aloneCheckup(keptList(['912']))
+  const run = rig(fs, backend, fakeClock(), REUSED_PS, { alive: [5300, 5301] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(run.kills, [], "agent B's claude is never signalled")
+  assert.deepEqual(run.spawns, [])
+  assert.equal(restartRequested(fs), false)
+  assert.equal(terminal.findings.some((f: any) => f.cause === 'wedged_session'), false, 'no live claude of A, so no wedge')
+  assert.equal(terminal.actions.some((a: any) => a.did === 'restart_agent' && a.outcome === 'fixed'), false, JSON.stringify(terminal.actions))
+})
+
+test("F1: the owner's Restart reads the same proof: the reused pid is not A's claude and is never signalled", async () => {
+  const fs = reusedPidFs()
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, fakeClock(), REUSED_PS, { alive: [5300, 5301] })
+  await runWatcher(run.deps as any)
+  assert.match(JSON.stringify(backend.progress('rst-1')), /claude none/, 'nothing proven as 912\'s claude')
+  assert.equal(run.kills.some(([pid]) => pid === 5300), false, JSON.stringify(run.kills))
 })
 
 // -- item 5: the owner's Restart, which the Helper always carries out ---------------------------------
