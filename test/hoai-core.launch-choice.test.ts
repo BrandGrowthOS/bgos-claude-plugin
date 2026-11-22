@@ -408,6 +408,109 @@ test('a restart back picked up after the chat was told it is late never spends t
   }
 })
 
+// The switch record is a file the agent itself can write. The restart budgets live in the
+// launcher's memory, so the record cannot reset them, and it must not stand in for them either: a
+// record this launcher already launched is spent, whatever the file says later, and a missing or
+// unreadable one is no switch. Its marker then meets the update budget, which stays spent.
+test('a switch record set back to unlaunched, deleted or broken after its launch buys no restart', async () => {
+  const h = harness({ ...resumed, [CHOICE_PATH]: choice('opus', 'high') })
+  try {
+    await launched(h, 1)
+    for (let i = 0; i < 3; i++) {
+      h.clock.now = T0 + (i + 1) * 60_000
+      h.files.set(MARKER_PATH, '{}')
+      await launched(h, i + 2)
+    }
+    h.clock.now = T0 + 5 * 60_000
+    h.files.set(MARKER_PATH, '{}')
+    await waitUntil(() => h.prints.some((l) => /restart marker ignored/.test(l)), 'the update budget')
+    // A real pick: its own budget, launched and stamped.
+    h.clock.now = T0 + 10 * 60_000
+    h.files.set(SWITCH_PATH, JSON.stringify({ ...JSON.parse(pendingSwitch(null)), requestedAtMs: h.clock.now }))
+    h.files.set(CHOICE_PATH, choice('claude-sonnet-5-5', 'low'))
+    h.files.set(MARKER_PATH, '{}')
+    await launched(h, 5)
+    const pick = parseModelSwitch(h.files.get(SWITCH_PATH) ?? null)
+    assert.equal(pick?.launchedAtMs, T0 + 10 * 60_000)
+    // It did not work: the daemon asks for the restart back, which runs once and is stamped.
+    h.clock.now = T0 + 11 * 60_000
+    h.files.set(SWITCH_PATH, JSON.stringify({ version: 1, ...pick, state: 'restoring', reason: 'model_refused', launchedAtMs: null }))
+    h.files.set(CHOICE_PATH, choice('opus', 'high'))
+    h.files.set(MARKER_PATH, '{}')
+    await launched(h, 6)
+    const back = parseModelSwitch(h.files.get(SWITCH_PATH) ?? null)
+    assert.equal(back?.launchedAtMs, T0 + 11 * 60_000)
+    const tries: Array<[string, string]> = [
+      ['the pick set back to unlaunched', JSON.stringify({ version: 1, ...pick, launchedAtMs: null })],
+      ['the go back set back to unlaunched', JSON.stringify({ version: 1, ...back, launchedAtMs: null })],
+      ['a broken record', 'not json'],
+    ]
+    for (const [i, [what, body]] of tries.entries()) {
+      h.clock.now = T0 + (12 + i) * 60_000
+      h.files.set(SWITCH_PATH, body)
+      h.files.set(MARKER_PATH, '{}')
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      assert.equal(h.claudes.length, 6, what)
+    }
+    h.files.delete(SWITCH_PATH)
+    h.files.set(MARKER_PATH, '{}')
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    assert.equal(h.claudes.length, 6, 'no record at all')
+  } finally {
+    await h.end()
+  }
+})
+
+// Only the restart back from a switch this launcher launched skips the switch budget, once. Any
+// other go back record (written by hand, or made up again and again) counts like a switch, so a
+// spent switch budget refuses it.
+test('a go back for a switch this launcher never launched is refused once the switch budget is spent', async () => {
+  const h = harness({ ...resumed, [CHOICE_PATH]: choice('opus', 'high') })
+  try {
+    await launched(h, 1)
+    // The update budget spent first, so a marker that is no switch cannot restart either.
+    for (let i = 0; i < 3; i++) {
+      h.clock.now = T0 + (i + 1) * 1_000
+      h.files.set(MARKER_PATH, '{}')
+      await launched(h, i + 2)
+    }
+    h.clock.now = T0 + 5_000
+    h.files.set(MARKER_PATH, '{}')
+    await waitUntil(() => h.prints.some((l) => /restart marker ignored/.test(l)), 'the update budget')
+    for (let i = 0; i < 12; i++) {
+      h.clock.now = T0 + (i + 1) * 60_000
+      const model = i % 2 === 0 ? 'claude-sonnet-5-5' : 'claude-opus-5-5'
+      h.files.set(SWITCH_PATH, JSON.stringify({ ...JSON.parse(pendingSwitch(null)), target: { model, effort: 'low' }, requestedAtMs: h.clock.now }))
+      h.files.set(CHOICE_PATH, choice(model, 'low'))
+      h.files.set(MARKER_PATH, '{}')
+      await launched(h, i + 5)
+    }
+    const goBack = (requestedAtMs: number) =>
+      JSON.stringify({ ...JSON.parse(pendingSwitch({ model: 'opus', effort: 'high' })), state: 'restoring', reason: 'model_refused', requestedAtMs })
+    h.files.set(CHOICE_PATH, choice('opus', 'high'))
+    for (const [i, at] of [T0 + 30 * 60_000, T0 + 31 * 60_000].entries()) {
+      h.clock.now = T0 + (20 + i) * 60_000
+      h.files.set(SWITCH_PATH, goBack(at))
+      h.files.set(MARKER_PATH, '{}')
+      await waitUntil(() => h.prints.filter((l) => /switches in the last hour/.test(l)).length === i + 1, `made up go back ${i + 1}`)
+      assert.equal(h.claudes.length, 16)
+    }
+    // The go back from the last switch it launched still restarts, and only once.
+    h.clock.now = T0 + 25 * 60_000
+    h.files.set(SWITCH_PATH, goBack(T0 + 12 * 60_000))
+    h.files.set(MARKER_PATH, '{}')
+    await launched(h, 17)
+    assert.equal(flagValue(claudeArgs(h.claudes[16]!), '--model'), 'opus')
+    h.clock.now = T0 + 26 * 60_000
+    h.files.set(SWITCH_PATH, goBack(T0 + 12 * 60_000))
+    h.files.set(MARKER_PATH, '{}')
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    assert.equal(h.claudes.length, 17, 'the same go back again')
+  } finally {
+    await h.end()
+  }
+})
+
 // The failed start record is built from the record on disk, read again, never from the launcher's
 // own copy: a switch the new daemon already confirmed (and told the chat) must not be undone.
 test('a switch the new daemon already confirmed is never undone by a later fast exit', async () => {

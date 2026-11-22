@@ -3348,6 +3348,13 @@ export async function superviseClaude(args, opts = {}) {
   // The switch a launch carries (the daemon's restart route wrote it pending):
   // its launch is recorded on it, and a fast death of that launch undoes it below.
   let switchLaunch = null
+  // Every switch record this launcher launched, by what names it. The record is
+  // a file the agent itself can write; this list is not. A record named here is
+  // spent whatever the file says later, so taking its launch stamp off buys no
+  // restart, and only the go back from a switch named here skips the switch budget.
+  const launchedSwitches = new Set()
+  const switchKey = (record, state = record.state) =>
+    [state, record.requestedAtMs, record.sessionId, record.chatId].join('\u0000')
   const markSwitchLaunch = (choiceArgs) => {
     switchLaunch = null
     const record = parseModelSwitch(readFile(switchPath))
@@ -3356,6 +3363,7 @@ export async function superviseClaude(args, opts = {}) {
       // comes back reads its own launch and the record is no switch any more.
       // Also when the chat was already told it is late (noted): it is the one
       // restart back, and stamped it never stands for a later marker.
+      launchedSwitches.add(switchKey(record))
       try {
         writeFile(switchPath, modelSwitchBody({ ...record, launchedAtMs: now() }))
       } catch {
@@ -3366,6 +3374,7 @@ export async function superviseClaude(args, opts = {}) {
     if (!record || record.state !== 'pending') return
     const target = launchChoiceArgs(record.target)
     if (target.length === 0 || target.join('\u0000') !== choiceArgs.join('\u0000')) return
+    launchedSwitches.add(switchKey(record))
     const launched = { ...record, launchedAtMs: now() }
     try {
       writeFile(switchPath, modelSwitchBody(launched))
@@ -3713,10 +3722,15 @@ export async function superviseClaude(args, opts = {}) {
         // restart back after the new model did not work, also one the chat was
         // already told is late. Its own budget, never latched; the update budget
         // is never spent on it. Each go back is stamped at its launch, so it is
-        // one restart.
+        // one restart. A record this launcher already launched is no switch,
+        // whatever the file says now: its marker meets the update budget. A
+        // missing or unreadable record is no switch either.
         const asked = parseModelSwitch(readFile(switchPath))
         const switching = Boolean(
-          asked && asked.launchedAtMs === null && (asked.state === 'pending' || asked.state === 'restoring'),
+          asked &&
+            asked.launchedAtMs === null &&
+            (asked.state === 'pending' || asked.state === 'restoring') &&
+            !launchedSwitches.has(switchKey(asked)),
         )
         if (exhausted && !switching) return
         removeFile(markerPath)
@@ -3725,7 +3739,9 @@ export async function superviseClaude(args, opts = {}) {
           switchRelaunchesAt = decision.recent
           // The restart back after a new model did not work ends a switch already counted: never
           // refused, or the agent would stay on that model. It still counts for the next switch.
-          if (!decision.allow && asked.state !== 'restoring') {
+          // Only the go back from a switch this launcher launched: any other counts like a switch.
+          const ownGoBack = asked.state === 'restoring' && launchedSwitches.has(switchKey(asked, 'pending'))
+          if (!decision.allow && !ownGoBack) {
             // Not restarted: the daemon fails the switch and tells the chat the agent stays on its model.
             print(`[hoai] model switch not restarted: ${MAX_SWITCH_RELAUNCHES_PER_WINDOW} switches in the last hour.`)
             return
