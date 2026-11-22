@@ -21,21 +21,36 @@
  *     test/watcher-self-refresh.test.ts runs), driven through a FAILED self refresh, reaches the
  *     windows pass through the fake layer (test/helpers/fake-window-host.ts) only: the fake answers
  *     the listing, the fake's viewer is the one closed, and the sentinel saw nothing.
+ * And one real OS case (posix only, through the sentinel's start time door): the start the daemon
+ * stamps (lib/claude-stamp.mjs readClaudeStartMs, its `ps -o lstart=` of one pid) equals, exactly,
+ * the start the watcher's real listing (lib/process-tree.mjs listProcesses) gives the same process,
+ * a child of this test. A stamp matches a claude only on that equality: if the two differed, every
+ * claude would read as unstamped and lone repair would never happen.
  */
 
 import './helpers/real-os-sentinel.ts'
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { nodeExec, nodeSpawnDetached } from '../lib/watcher-bundle.mjs'
-import { WIN32_PROCESS_SCRIPT } from '../lib/process-tree.mjs'
-import { RealOsRefused, allowedRealChild, realOsSentinelInstalled, takeRealOsRefusals } from './helpers/real-os-sentinel.ts'
+import { WIN32_PROCESS_SCRIPT, listProcesses, psCommand } from '../lib/process-tree.mjs'
+import { claudeStartCommand, readClaudeStartMs } from '../lib/claude-stamp.mjs'
+import { defaultExecSync } from '../lib/service-supervision.mjs'
+import {
+  RealOsRefused,
+  START_PROBE_CHILD_SOURCE,
+  allowedRealChild,
+  realOsSentinelInstalled,
+  startTimeProbeChild,
+  takeRealOsRefusals,
+  throughStartTimeProbe,
+} from './helpers/real-os-sentinel.ts'
 import { fakeWindowHost, viewerProcess } from './helpers/fake-window-host.ts'
 import { WINDOWS, liveEntry, probesOf, realFilesRun, staleMachine, stateOf, watcherRun } from './helpers/watcher-self-refresh-harness.ts'
 
@@ -145,3 +160,44 @@ test('the real files run, its refresh failed, reaches the windows pass through t
     rmSync(base, { recursive: true, force: true })
   }
 })
+
+test(
+  "the daemon's stamp start equals the watcher's listing start for the same real process (posix, a child of this test)",
+  { skip: process.platform === 'win32' ? 'the Windows start comes from the parent walk, and the listing needs PowerShell' : false },
+  async () => {
+    // The door is shut outside throughStartTimeProbe, and lets nothing else through inside it.
+    const list = psCommand(process.platform)
+    assert.equal(startTimeProbeChild(list.file, list.args), false)
+    assert.equal(throughStartTimeProbe(() => startTimeProbeChild('ps', ['-e', '-o', 'pid=,args='])), false)
+    assert.equal(throughStartTimeProbe(() => startTimeProbeChild(process.execPath, ['-e', 'process.exit(0)'])), false)
+    const one = claudeStartCommand(process.pid)
+    assert.throws(() => spawnSync(one.file, one.args), RealOsRefused)
+    assert.equal(takeRealOsRefusals().length, 1)
+
+    const child = throughStartTimeProbe(() => spawn(process.execPath, ['-e', START_PROBE_CHILD_SOURCE], { stdio: ['pipe', 'ignore', 'ignore'] }))
+    const exited = new Promise((resolve) => child.once('exit', resolve))
+    try {
+      const pid = child.pid
+      if (typeof pid !== 'number') assert.fail('the child has a pid')
+      const stamped = readClaudeStartMs({
+        platform: process.platform,
+        pid,
+        execSync: (file: string, args: string[]) => throughStartTimeProbe(() => defaultExecSync(file, args)),
+        win32StartedAtMs: null,
+      })
+      const listing = await listProcesses({
+        platform: process.platform,
+        exec: (file, args, opts) => throughStartTimeProbe(() => nodeExec()(file, [...args], opts)),
+      })
+      if (!listing.ok) assert.fail(`the real listing reads: ${listing.error}`)
+      const row = listing.processes.find((p) => p.pid === pid)
+      assert.ok(row, 'the listing names the child')
+      assert.equal(typeof stamped, 'number', 'the daemon side reads a start')
+      assert.equal(stamped, row.startedAtMs, 'the stamp start and the listing start are the same number')
+      assert.deepEqual(takeRealOsRefusals(), [])
+    } finally {
+      child.stdin?.end()
+      await exited
+    }
+  },
+)
