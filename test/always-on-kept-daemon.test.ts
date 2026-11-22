@@ -68,7 +68,7 @@ type Scene = {
   /** This HOME's watcher service file is there (default yes). */
   watcher?: boolean
   /** The watcher's cached keep-alive answer, written `agoMs` ago; none when absent. `unmarked`: as a watcher from before the format mark wrote it. */
-  cache?: { answer: Record<string, unknown>; agoMs: number; unmarked?: boolean; emptyAgoMs?: number }
+  cache?: { answer: Record<string, unknown>; agoMs: number; unmarked?: boolean; listedRecently?: string[] }
 }
 
 const ON = { enabled: true, assistantIds: ['912'], switchState: 'on' }
@@ -91,7 +91,7 @@ async function reconcile(scene: Scene) {
   }
   if (scene.watcher !== false) files.set(kept.watcherServiceFiles({ platform, home, env: {} })[0]!, 'x')
   if (scene.cache) {
-    const empty = scene.cache.emptyAgoMs != null ? { emptySinceMs: now - scene.cache.emptyAgoMs } : {}
+    const empty = scene.cache.listedRecently ? { listedRecently: scene.cache.listedRecently } : {}
     const text = buildKeepAliveCache({ enabledAt: null, showAgentWindows: false, ...scene.cache.answer, ...empty }, now - scene.cache.agoMs)
     files.set(kept.keepAliveCacheFile(home), scene.cache.unmarked ? `${JSON.stringify({ ...JSON.parse(text), format: undefined }, null, 2)}\n` : text)
   }
@@ -227,14 +227,30 @@ test('round 4 m2: an older watcher\'s refusal (OFF, fresh, written before the fo
 
 test('round 4 m1 (the maintainer\'s ruling): an empty list with the switch on is no answer to the daemon until the watcher read it twice a minute apart; then the agent is not listed', async () => {
   const EMPTY = { enabled: true, assistantIds: [], switchState: 'on' }
-  // The watcher's first empty read: the run began with this very read.
-  const once = await reconcile({ installed: true, seen: true, cache: { answer: EMPTY, agoMs: MIN, emptyAgoMs: MIN } })
+  // The watcher counts the reads (by its steady clock, round 4c); the cache carries only who they confirm is listed.
+  const once = await reconcile({ installed: true, seen: true, cache: { answer: EMPTY, agoMs: MIN } })
   assert.equal(once.installed, true, once.logs.join('\n'))
   assert.equal(once.logs.some((l) => /not kept/.test(l)), false, once.logs.join('\n'))
   // A second empty read a minute after the first.
-  const twice = await reconcile({ installed: true, seen: true, cache: { answer: EMPTY, agoMs: MIN, emptyAgoMs: 2 * MIN } })
+  const twice = await reconcile({ installed: true, seen: true, cache: { answer: EMPTY, agoMs: MIN, listedRecently: [] } })
   assert.equal(twice.installed, false, twice.logs.join('\n'))
   assert.ok(twice.logs.some((l) => /not kept running \(not_listed/.test(l)), twice.logs.join('\n'))
+})
+
+test('round 4c ruling, pinned: the daemon\'s own alwaysOn:false read is the owner\'s switch and removes on ONE read, even while the list still names the agent', async () => {
+  const out = await reconcile({ installed: true, seen: true, alwaysOn: false, cache: { answer: { enabled: true, assistantIds: [912], switchState: 'on' }, agoMs: MIN } })
+  assert.equal(out.installed, false, out.logs.join('\n'))
+  assert.ok(out.logs.some((l) => /not kept running \(always_on_off:was_kept/.test(l)), out.logs.join('\n'))
+})
+
+test('round 4c ruling: a good list that leaves this agent out is no answer to the daemon until the watcher confirmed it', async () => {
+  const OTHERS = { enabled: true, assistantIds: [7], switchState: 'on' }
+  const once = await reconcile({ installed: true, seen: true, cache: { answer: OTHERS, agoMs: MIN } })
+  assert.equal(once.installed, true, once.logs.join('\n'))
+  const listed = await reconcile({ installed: true, seen: true, cache: { answer: OTHERS, agoMs: MIN, listedRecently: ['7', '912'] } })
+  assert.equal(listed.installed, true, listed.logs.join('\n'))
+  const twice = await reconcile({ installed: true, seen: true, cache: { answer: OTHERS, agoMs: MIN, listedRecently: ['7'] } })
+  assert.equal(twice.installed, false, twice.logs.join('\n'))
 })
 
 test('M1: the daemon trusts the watcher\'s cache only while it is fresh: OFF older than 5 minutes removes nothing, and ON older than 5 minutes installs nothing', async () => {

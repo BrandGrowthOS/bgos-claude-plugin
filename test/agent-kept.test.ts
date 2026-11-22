@@ -58,7 +58,10 @@ const stamp = (msAgo: number) => `${Math.floor((NOW - msAgo) / 1000)}\n`
 test('the keep-alive answer, for one agent: kept only with the switch ON and the agent on the list', () => {
   const live = (enabled: boolean, ids: string[], switchState = enabled ? 'on' : 'off') => ({ enabled, enabledAt: null, assistantIds: ids, switchState, showAgentWindows: false, source: 'live' })
   assert.equal(keepAliveStanding(live(true, ['912', '7']), '912'), 'kept')
-  assert.equal(keepAliveStanding(live(true, ['7']), '912'), 'not_listed')
+  // Left out of one read is no answer; two reads confirm it, and a read between that lists it does not.
+  assert.equal(keepAliveStanding(live(true, ['7']), '912'), 'unknown')
+  assert.equal(keepAliveStanding({ ...live(true, ['7']), listedRecently: ['7'] }, '912'), 'not_listed')
+  assert.equal(keepAliveStanding({ ...live(true, ['7']), listedRecently: ['7', '912'] }, '912'), 'unknown')
   // A list that rides an OFF answer clears nobody (decision D2).
   assert.equal(keepAliveStanding(live(false, ['912']), '912'), 'switch_off')
   assert.equal(keepAliveStanding(live(false, [], 'never_set'), '912'), 'never_set')
@@ -72,7 +75,9 @@ test('the daemon reads the watcher\'s cached answer: no file, a stale or a junk 
     buildKeepAliveCache({ enabled, enabledAt: null, assistantIds: ids, switchState: switchState ?? (enabled ? 'on' : 'off'), showAgentWindows: false }, NOW - fetchedAgoMs)
   assert.equal(keepAliveStandingFromCache(null, '912', NOW), 'unknown')
   assert.equal(keepAliveStandingFromCache(cache(true, ['912'], MIN), '912', NOW), 'kept')
-  assert.equal(keepAliveStandingFromCache(cache(true, ['7'], MIN), '912', NOW), 'not_listed')
+  assert.equal(keepAliveStandingFromCache(cache(true, ['7'], MIN), '912', NOW), 'unknown', 'one read left it out: not confirmed')
+  const confirmed = buildKeepAliveCache({ enabled: true, enabledAt: null, assistantIds: ['7'], switchState: 'on', showAgentWindows: false, listedRecently: ['7'] }, NOW - MIN)
+  assert.equal(keepAliveStandingFromCache(confirmed, '912', NOW), 'not_listed')
   assert.equal(keepAliveStandingFromCache(cache(false, ['912'], MIN), '912', NOW), 'switch_off')
   assert.equal(keepAliveStandingFromCache(cache(false, [], MIN, 'never_set'), '912', NOW), 'never_set')
   // The cache's own 24 h rule (lib/keepalive-plan.mjs, untouched here): older is no answer at all.

@@ -374,6 +374,10 @@ function ctxFor(fs: MemoryFs, rec: ReturnType<typeof recorder>, clock: ReturnTyp
       hasCommand: () => false,
       verifyTimeoutMs: 30_000,
       fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [912, 7] }).fetchKeepAlive,
+      // The run of empty keep-alive lists is counted in memory by a steady clock: this context's own, so no
+      // test carries a count into another; the fake clock stands in for the steady one unless a test says.
+      steadyNow: clock.now,
+      listReads: new Map(),
       ...extra,
     },
   }
@@ -3534,6 +3538,10 @@ test('deafwatch for every agent: a cleared deaf agent the owner stops keeping ru
   assert.equal(kicks(rec), 1)
   assert.deepEqual(cleared.agents.map((a: any) => [a.id, a.state, a.reason]), [['912', 'failed', 'no-channel-heartbeat: no live channel (agent_deaf_after_restart)']])
   ids = [7]
+  // One read that leaves it out is no answer about it (the maintainer's ruling); the second, a minute later, is.
+  const once = await sweepFor(ctx, clock, 1)
+  assert.deepEqual(once.agents, [])
+  assert.deepEqual(watchedOf(once), [['912', 'failed', 'no-channel-heartbeat: no live channel (consent_unknown)']])
   const after = await sweepFor(ctx, clock, 1)
   assert.deepEqual(after.agents, [])
   assert.deepEqual(watchedOf(after), [['912', 'failed', NOT_KEPT]])
@@ -3796,11 +3804,16 @@ test('switched off stays off (brief case 5 and round 2): several agents on one c
   fs.writeFile(`${HOME}/.bgos-agent/913/installed-at`, installedAt(60 * MIN))
   fs.writeFile(`${HOME}/.bgos-agent/914/installed-at`, installedAt(4 * MIN))
   const rec = recorder({ ps: IDLE_PS })
-  const { ctx } = ctxFor(fs, rec, fakeClock(), { fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [912] }).fetchKeepAlive })
+  const clock = fakeClock()
+  const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [912] }).fetchKeepAlive })
   await runKeepAliveSweep(ctx as any)
   assert.equal(fs.files.has(PLIST('912')), true, 'the kept agent keeps its supervisor (brief case 4)')
   assert.equal(fs.files.get(`${HOME}/.bgos-agent/912/kept-seen`), installedAt(3 * MIN), 'and this install is now seen kept')
-  assert.equal(fs.files.has(PLIST('913')), false, 'not listed, past its 15 minutes: removed')
+  assert.equal(fs.files.has(PLIST('913')), true, 'left out of one read: no answer about it yet')
+  clock.advance(MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(fs.files.has(PLIST('912')), true)
+  assert.equal(fs.files.has(PLIST('913')), false, 'not listed by a second read a minute later, past its 15 minutes: removed')
   assert.equal(fs.files.has(PLIST('914')), true, 'not listed yet, never seen kept, 4 minutes old: left alone')
   assert.equal(fs.files.has(`${HOME}/.bgos-agent/914/kept-seen`), false)
   assert.deepEqual(bootouts(rec), [])
@@ -3941,8 +3954,8 @@ const onceKept = () => {
   fs.writeFile(`${HOME}/.bgos-agent/912/kept-seen`, installedAt(60 * MIN))
   return fs
 }
-const sweepWith = async (fs: MemoryFs, clock: ReturnType<typeof fakeClock>, fetchKeepAlive: unknown) => {
-  const { ctx, logs } = ctxFor(fs, recorder({ ps: IDLE_PS }), clock, { fetchKeepAlive })
+const sweepWith = async (fs: MemoryFs, clock: ReturnType<typeof fakeClock>, fetchKeepAlive: unknown, runs: Map<string, unknown> = new Map(), extra: Record<string, unknown> = {}) => {
+  const { ctx, logs } = ctxFor(fs, recorder({ ps: IDLE_PS }), clock, { fetchKeepAlive, listReads: runs, ...extra })
   await runKeepAliveSweep(ctx as any)
   return logs
 }
@@ -3959,12 +3972,13 @@ test('switched off stays off (round 4 m1, the maintainer\'s ruling): ONE live an
 test('switched off stays off (round 4 m1, the maintainer\'s ruling): two empty reads in a row at least a minute apart remove; under a minute apart they do not', async () => {
   const fs = onceKept()
   const clock = fakeClock()
-  await sweepWith(fs, clock, EMPTY_ON)
+  const runs = new Map()
+  await sweepWith(fs, clock, EMPTY_ON, runs)
   clock.advance(30_000)
-  await sweepWith(fs, clock, EMPTY_ON)
+  await sweepWith(fs, clock, EMPTY_ON, runs)
   assert.equal(fs.files.has(PLIST('912')), true, 'two empty reads 30 seconds apart: not yet')
   clock.advance(30_000)
-  const logs = await sweepWith(fs, clock, EMPTY_ON)
+  const logs = await sweepWith(fs, clock, EMPTY_ON, runs)
   assert.equal(fs.files.has(PLIST('912')), false, `a minute after the first empty read: removed\n${logs.join('\n')}`)
   assert.ok(logs.some((l) => /keep-alive 912: supervisor removed \(not_listed/.test(l)), logs.join('\n'))
   const cached = fs.files.get(keepAliveCachePath(HOME)) ?? ''
@@ -3976,11 +3990,12 @@ test('switched off stays off (round 4 m1, the maintainer\'s ruling): empty, then
   for (const [name, middle] of between) {
     const fs = onceKept()
     const clock = fakeClock()
-    await sweepWith(fs, clock, EMPTY_ON)
+    const runs = new Map()
+    await sweepWith(fs, clock, EMPTY_ON, runs)
     clock.advance(MIN)
-    await sweepWith(fs, clock, middle)
+    await sweepWith(fs, clock, middle, runs)
     clock.advance(MIN)
-    const logs = await sweepWith(fs, clock, EMPTY_ON)
+    const logs = await sweepWith(fs, clock, EMPTY_ON, runs)
     assert.equal(fs.files.has(PLIST('912')), true, `${name}: ${logs.join('\n')}`)
     assert.equal(logs.some((l) => /supervisor removed/.test(l)), false, `${name}: ${logs.join('\n')}`)
   }
@@ -4010,6 +4025,242 @@ test('switched off stays off (round 4 m3, the maintainer\'s ruling): a Windows s
   const removed = await runKeepAliveSweep(ctx as any)
   assert.equal(tasks.tasks.has(WTASK), false, 'read back this time, and removed')
   assert.equal((removed.watched ?? []).some((e: any) => e.id === '912'), false, 'and the Helper no longer says it')
+})
+
+// Round 4c: the count of empty reads lives in the watcher's memory, by a steady clock; the cache only says the result.
+const NO_ANSWER = consent(null, false, 0).fetchKeepAlive
+const samePath = (a: string, b: string) => a.replace(/\\/g, '/') === b.replace(/\\/g, '/')
+/** Every write of the keep-alive cache fails while `on` says so (a full disk, a file an antivirus holds). */
+const cacheWritesFail = (fs: MemoryFs) => {
+  const write = fs.writeFile
+  const gate = { on: true }
+  fs.writeFile = (p: string, text: string, opts?: { mode?: number }) => {
+    if (gate.on && samePath(p, keepAliveCachePath(HOME))) throw new Error('ENOSPC: no space left on device')
+    return write(p, text, opts)
+  }
+  return gate
+}
+const standingNow = (fs: MemoryFs, at: number) => keepAliveStandingFromCache(fs.files.get(keepAliveCachePath(HOME)) ?? null, '912', at, { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled: true })
+
+test('switched off stays off (round 4c m-a): a good read starts the count again in memory, even when its cache write fails; and it takes a confirmed empty list off the disk', async () => {
+  const fs = onceKept()
+  const clock = fakeClock()
+  const runs = new Map()
+  await sweepWith(fs, clock, EMPTY_ON, runs)
+  clock.advance(MIN)
+  const gate = cacheWritesFail(fs)
+  await sweepWith(fs, clock, ON_912, runs)
+  gate.on = false
+  clock.advance(MIN)
+  const logs = await sweepWith(fs, clock, EMPTY_ON, runs)
+  assert.equal(fs.files.has(PLIST('912')), true, `empty, a good list (not written), empty: nothing removed\n${logs.join('\n')}`)
+  assert.equal(logs.some((l) => /supervisor removed/.test(l)), false, logs.join('\n'))
+  // On disk: a confirmed empty list, then a good read that cannot be written. No reader may act on the old one.
+  const disk = onceKept()
+  const at = fakeClock()
+  const memory = new Map()
+  await sweepWith(disk, at, EMPTY_ON, memory)
+  at.advance(MIN)
+  await sweepWith(disk, at, EMPTY_ON, memory)
+  assert.equal(standingNow(disk, at.now()), 'not_listed', 'confirmed on disk')
+  at.advance(MIN)
+  cacheWritesFail(disk)
+  await sweepWith(disk, at, ON_912, memory)
+  assert.equal(standingNow(disk, at.now()), 'unknown', 'the good read could not be written, so the confirmed empty list is gone')
+})
+
+test('switched off stays off (round 4c m-a): a run of empty reads does not carry across a gap: reads that fail in between, then an empty read, is a first read again', async () => {
+  const fs = onceKept()
+  const clock = fakeClock()
+  const runs = new Map()
+  await sweepWith(fs, clock, EMPTY_ON, runs)
+  for (let i = 0; i < 4; i++) {
+    clock.advance(MIN)
+    await sweepWith(fs, clock, NO_ANSWER, runs)
+  }
+  clock.advance(MIN)
+  const after = await sweepWith(fs, clock, EMPTY_ON, runs)
+  assert.equal(fs.files.has(PLIST('912')), true, `five minutes after the first empty read, with no answer between: a first read\n${after.join('\n')}`)
+  clock.advance(MIN)
+  await sweepWith(fs, clock, EMPTY_ON, runs)
+  assert.equal(fs.files.has(PLIST('912')), false, 'and the next empty read a minute later confirms it')
+})
+
+test('switched off stays off (round 4c m-a): "a minute apart" is a steady clock\'s minute: the first read must be 50 to 120 seconds old; a wall clock step counts for nothing', async () => {
+  // The wall clock jumps a minute while 5 steady seconds pass (create_agent reading right after a sweep).
+  const fs = onceKept()
+  const clock = fakeClock()
+  let steady = 1_000
+  const runs = new Map()
+  const steadyNow = () => steady
+  await sweepWith(fs, clock, EMPTY_ON, runs, { steadyNow })
+  clock.advance(MIN)
+  steady += 5_000
+  await sweepWith(fs, clock, EMPTY_ON, runs, { steadyNow })
+  assert.equal(fs.files.has(PLIST('912')), true, 'a wall minute, 5 steady seconds: not confirmed')
+  clock.advance(55_000)
+  steady += 55_000
+  await sweepWith(fs, clock, EMPTY_ON, runs, { steadyNow })
+  assert.equal(fs.files.has(PLIST('912')), false, '60 steady seconds after the first: confirmed')
+  // Too old to count: a read 130 s after the last one has no read 50 to 120 s old: a first read again.
+  const late = onceKept()
+  const lateClock = fakeClock()
+  const lateRuns = new Map()
+  await sweepWith(late, lateClock, EMPTY_ON, lateRuns)
+  lateClock.advance(30_000)
+  await sweepWith(late, lateClock, EMPTY_ON, lateRuns)
+  lateClock.advance(130_000)
+  await sweepWith(late, lateClock, EMPTY_ON, lateRuns)
+  assert.equal(late.files.has(PLIST('912')), true, '130 s after the last read is over 120 s: it does not count')
+  lateClock.advance(MIN)
+  await sweepWith(late, lateClock, EMPTY_ON, lateRuns)
+  assert.equal(late.files.has(PLIST('912')), false, 'a minute after that new first read: confirmed')
+})
+
+test('switched off stays off (round 4c m-b): one unconfirmed empty list is no answer to the whole sweep: an agent stopped at its restart limit keeps its record, and is not started again when the list comes back', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  const spentAt = new Date(T0 - 5 * 60 * MIN).toISOString()
+  const record = { state: 'failed', reason: 'attempts_exhausted', since: spentAt, target: '0.62.1', attempts: 3, lastRestartAt: new Date(T0 - 6 * 60 * MIN).toISOString() }
+  fs.writeFile(keepAliveStatePath(HOME), JSON.stringify({ schemaVersion: 1, enabled: true, consentSource: 'live', agents: { '912': record } }))
+  const clock = fakeClock()
+  const runs = new Map()
+  const empty = ctxFor(fs, recorder({ ps: IDLE_PS }), clock, { fetchKeepAlive: EMPTY_ON, listReads: runs })
+  await runKeepAliveSweep(empty.ctx as any)
+  assert.deepEqual(JSON.parse(fs.files.get(keepAliveStatePath(HOME)) ?? '{}').agents, { '912': record }, 'its record is frozen, as with the switch off')
+  clock.advance(MIN)
+  fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now()))
+  const idle = recorder({ ps: IDLE_PS })
+  const back = await runKeepAliveSweep(ctxFor(fs, idle, clock, { fetchKeepAlive: ON_912, listReads: runs }).ctx as any)
+  assert.deepEqual(back.agents, [{ id: '912', state: 'failed', reason: 'attempts_exhausted', since: spentAt }])
+  assert.equal(idle.calls.some((c) => c.file === 'launchctl'), false, 'never a fourth attempt')
+})
+
+test('switched off stays off (round 4c m-b): with one unconfirmed empty list a deaf agent is held as "list not known", never as "not kept running", and the log says why', async () => {
+  const clock = fakeClock()
+  const fs = deafMachine({ beaconAt: T0 - 20 * MIN })
+  const rec = recorder({ ps: deafPs(T0 - 3 * 60 * MIN) })
+  // It was kept at the last sweep. A steady clock that never moves: every empty read stays the first of its run.
+  fs.writeFile(keepAliveStatePath(HOME), JSON.stringify({ schemaVersion: 1, enabled: true, consentSource: 'live', agents: { '912': { state: 'supervised', reason: 'canonical', since: new Date(T0 - 60 * MIN).toISOString() } } }))
+  const { ctx, logs } = ctxFor(fs, rec, clock, { fetchKeepAlive: EMPTY_ON, steadyNow: () => 0, pidAlive: (pid: number) => [5912, 4100].includes(pid) })
+  const report = await confirmedSweep(ctx, clock)
+  assert.deepEqual(watchedOf(report), [['912', 'failed', 'no-channel-heartbeat: no live channel (consent_unknown)']])
+  assert.deepEqual(linesFor(logs, '912'), ['keep-alive 912: claude up 182 min with no live channel (no_channel_process, last beacon 22 min ago); not restarted, the keep-alive list left it out once, which counts only when a second read a minute later says so'])
+})
+
+test('switched off stays off (round 4c m-b): an agent with no kept record stays "not kept running" on one read, so a watcher that just restarted does not relabel every agent nobody keeps', async () => {
+  const clock = fakeClock()
+  const fs = deafMachine({ beaconAt: T0 - 20 * MIN })
+  const rec = recorder({ ps: deafPs(T0 - 3 * 60 * MIN) })
+  const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive: EMPTY_ON, steadyNow: () => 0, pidAlive: (pid: number) => [5912, 4100].includes(pid) })
+  const report = await confirmedSweep(ctx, clock)
+  assert.deepEqual(watchedOf(report), [['912', 'failed', NOT_KEPT]])
+})
+
+test('switched off stays off (round 4c m-c): a Windows start task whose removal Windows refuses stays, launcher and all; one plain log line, and the Helper says it in plain words', async () => {
+  const fs = windowsMachine({ [`${WSTATE}\\run-agent.vbs`]: 'Set shell = CreateObject("WScript.Shell")\r\n' })
+  const rec = recorder({ fail: [{ match: '-Action uninstall', code: 1, stderr: 'task not unregistered: Access is denied.' }] })
+  const clock = fakeClock()
+  const logs: string[] = []
+  const ctx = windowsCtx(fs, rec, { clock, fetchKeepAlive: SWITCH_OFF([912]), log: (l: string) => void logs.push(l) })
+  const tasks = rec.useTaskHost(fs)
+  tasks.seed.task(WTASK, `${WSTATE}\\run-agent.vbs`, { description: `HOAI agent 912, installed from home=${WHOME}`, running: true })
+  const words = "Windows would not let me remove this agent's start task, so I left it in place."
+  const plain = (l: string) => /^keep-alive 912: Windows would not let it remove its start task, so the task and its launcher \(run-agent\.vbs\) stay in place: the agent can start again after it exits or at the next logon; tried again every 10 minutes$/.test(l)
+  const first = await runKeepAliveSweep(ctx as any)
+  assert.equal(tasks.tasks.has(WTASK), true)
+  assert.equal(fs.files.has(`${WSTATE}\\run-agent.vbs`), true)
+  assert.equal(logs.filter(plain).length, 1, logs.join('\n'))
+  assert.deepEqual((first.watched ?? []).filter((e: any) => e.id === '912').map((e: any) => [e.state, e.reason]), [['failed', words]], JSON.stringify(first.watched))
+  assert.equal(readKeepAliveReport({ home: WHOME, fs, now: clock.now() }).watched?.find((e: any) => e.id === '912')?.reason, words)
+  clock.advance(11 * MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(logs.filter(plain).length, 1, 'said once')
+})
+
+test('switched off stays off (round 4c m-d): a launcher that cannot be deleted is not "removed": one plain line, and no PowerShell every minute after that, only every 10 minutes', async () => {
+  const VBS = `${WSTATE}\\run-agent.vbs`
+  const fs = windowsMachine({ [VBS]: 'Set shell = CreateObject("WScript.Shell")\r\n' })
+  const rm = fs.rm
+  fs.rm = (p: string) => {
+    if (samePath(p, VBS)) throw new Error('EBUSY: resource busy or locked')
+    return rm(p)
+  }
+  const rec = recorder({})
+  const clock = fakeClock()
+  const logs: string[] = []
+  const ctx = windowsCtx(fs, rec, { clock, fetchKeepAlive: SWITCH_OFF([912]), log: (l: string) => void logs.push(l) })
+  const tasks = rec.useTaskHost(fs)
+  tasks.seed.task(WTASK, VBS, { description: `HOAI agent 912, installed from home=${WHOME}`, running: true })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(tasks.tasks.has(WTASK), false, 'the task itself is unregistered')
+  assert.equal(fs.files.has(VBS), true)
+  assert.equal(logs.some((l) => /keep-alive 912: supervisor removed/.test(l)), false, logs.join('\n'))
+  const said = (l: string) => /^keep-alive 912: not kept \(switch_off\), supervisor not removed: its launcher \(run-agent\.vbs\) could not be deleted \(EBUSY\); it can still start the agent after it exits$/.test(l)
+  assert.equal(logs.filter(said).length, 1, logs.join('\n'))
+  const ranAfterFirst = tasks.calls.length
+  clock.advance(MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(tasks.calls.length, ranAfterFirst, 'no PowerShell a minute later')
+  clock.advance(10 * MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.ok(tasks.calls.length > ranAfterFirst, 'tried again after 10 minutes')
+  assert.equal(logs.filter(said).length, 1, 'and said once')
+})
+
+// The maintainer's ruling on item 8: left out of a good list is the empty list's failure shape; the owner's own switches are not.
+const ONLY_7 = consent({ enabled: true, enabledAt: 'e', assistantIds: [7], switchState: 'on' }).fetchKeepAlive
+
+test('switched off stays off (round 4c ruling): one good list that leaves an agent out removes nothing, and the daemon reads it as no answer too', async () => {
+  const fs = onceKept()
+  const clock = fakeClock()
+  const logs = await sweepWith(fs, clock, ONLY_7)
+  assert.equal(fs.files.has(PLIST('912')), true, logs.join('\n'))
+  assert.equal(logs.some((l) => /keep-alive 912: supervisor removed/.test(l)), false, logs.join('\n'))
+  assert.equal(standingNow(fs, clock.now()), 'unknown')
+})
+
+test('switched off stays off (round 4c ruling): two good lists a minute apart that both leave an agent out remove it', async () => {
+  const fs = onceKept()
+  const clock = fakeClock()
+  const runs = new Map()
+  await sweepWith(fs, clock, ONLY_7, runs)
+  clock.advance(MIN)
+  const logs = await sweepWith(fs, clock, ONLY_7, runs)
+  assert.equal(fs.files.has(PLIST('912')), false, logs.join('\n'))
+  assert.ok(logs.some((l) => /keep-alive 912: supervisor removed \(not_listed:was_kept\)/.test(l)), logs.join('\n'))
+  assert.equal(standingNow(fs, clock.now()), 'not_listed', 'and the daemon reads it confirmed')
+})
+
+test('switched off stays off (round 4c ruling): a read that lists the agent between two that leave it out starts its count again', async () => {
+  const fs = onceKept()
+  const clock = fakeClock()
+  const runs = new Map()
+  await sweepWith(fs, clock, ONLY_7, runs)
+  clock.advance(MIN)
+  await sweepWith(fs, clock, consent({ enabled: true, enabledAt: 'e', assistantIds: [7, 912], switchState: 'on' }).fetchKeepAlive, runs)
+  clock.advance(MIN)
+  const logs = await sweepWith(fs, clock, ONLY_7, runs)
+  assert.equal(fs.files.has(PLIST('912')), true, `left out, listed, left out: nothing removed\n${logs.join('\n')}`)
+  clock.advance(MIN)
+  await sweepWith(fs, clock, ONLY_7, runs)
+  assert.equal(fs.files.has(PLIST('912')), false, 'two reads in a row a minute apart after the one that listed it: removed')
+  // The read that lists it can sit strictly between the two that leave it out.
+  const between = onceKept()
+  const at = fakeClock()
+  const reads = new Map()
+  await sweepWith(between, at, ONLY_7, reads)
+  at.advance(30_000)
+  await sweepWith(between, at, consent({ enabled: true, enabledAt: 'e', assistantIds: [7, 912], switchState: 'on' }).fetchKeepAlive, reads)
+  at.advance(30_000)
+  await sweepWith(between, at, ONLY_7, reads)
+  assert.equal(between.files.has(PLIST('912')), true, 'left out at 0 s and 60 s, listed at 30 s: nothing removed')
+})
+
+test('switched off stays off (round 4c ruling, pinned): an enabled:false answer is the owner\'s own switch and removes on ONE read', async () => {
+  const fs = onceKept()
+  const logs = await sweepWith(fs, fakeClock(), SWITCH_OFF([912]))
+  assert.equal(fs.files.has(PLIST('912')), false, logs.join('\n'))
+  assert.ok(logs.some((l) => /keep-alive 912: supervisor removed \(switch_off\)/.test(l)), logs.join('\n'))
 })
 
 test('switched off stays off (round 3 M1): the sweep removes only on a live answer: a young cached OFF removes nothing, nor does a cached list that misses an agent created during the outage', async () => {

@@ -377,12 +377,12 @@ test('a task registered for a differently spelled folder falls back to the recip
 test('switched off stays off: an agent that is not kept running is never handed to its logon task; the hidden recipe launch brings it back once, as it was started', async () => {
   // The watcher's cached keep-alive answer (lib/watcher-keepalive.mjs keepAliveCachePath): what the task
   // would mean is "kept running from now on", and the owner has said this agent is not.
-  const cache = (enabled: boolean, ids: number[], switchState = enabled ? 'on' : 'off') =>
-    buildKeepAliveCache({ enabled, enabledAt: null, assistantIds: ids, switchState, showAgentWindows: false }, T0 - 60_000)
+  const cache = (enabled: boolean, ids: number[], switchState = enabled ? 'on' : 'off', extra: Record<string, unknown> = {}) =>
+    buildKeepAliveCache({ enabled, enabledAt: null, assistantIds: ids, switchState, showAgentWindows: false, ...extra }, T0 - 60_000)
   const CACHE = `${HOME}\\.bgos-agent\\watcher\\keepalive.json`
   for (const [name, text] of [
     ['the computer switch off', cache(false, [909])],
-    ['the agent not on the list', cache(true, [7])],
+    ['the agent not on the list, confirmed by a second read', cache(true, [7], 'on', { listedRecently: ['7'] })],
   ] as const) {
     const w = world({ task: true })
     w.put(CACHE, text)
@@ -394,8 +394,8 @@ test('switched off stays off: an agent that is not kept running is never handed 
     assert.equal((await run(none)).outcome, 'no_way_back', name)
     assert.deepEqual(none.kills, [], name)
   }
-  // Kept, never set, or no watcher at all: the task, as before.
-  for (const [name, text] of [['kept', cache(true, [909])], ['never set', cache(false, [], 'never_set')], ['no watcher', null]] as const) {
+  // Kept, never set, no watcher at all, or left out of one read only (no answer yet): the task, as before.
+  for (const [name, text] of [['kept', cache(true, [909])], ['never set', cache(false, [], 'never_set')], ['no watcher', null], ['left out of one read', cache(true, [7])]] as const) {
     const w = world({ task: true })
     if (text) w.put(CACHE, text)
     assert.equal((await run(w)).outcome, 'restarted', name)
