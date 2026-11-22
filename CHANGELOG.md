@@ -12,6 +12,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.18 (2026-11-22)
+
+**feat(ask): a yes or no question to the owner is always two buttons to tap.** The `reply` and `ask_user_input` tool descriptions, the instructions every session reads and the offline guide now say that a question the owner answers yes or no goes through `ask_user_input` as one question with two options, Yes and No (or two short words of the agent's own) with the values `yes` and `no`, never as a question in plain text. `reply` takes `yes_no: true` with the question as `text` and sends exactly that card: it returns as `ask_user_input` does with `wait_seconds: 0`, and the tap comes back as an `ask_answered` event. Nothing reads a question out of a reply's words. A matching app draws the card as two buttons side by side; an older app shows it as a two row list, still tappable.
+
 ## 0.90.17 (2026-11-21)
 
 **feat(chat): hear reactions to the agent's replies.** With a matching server, the agent hears who reacted and which emoji they chose. A later line can report a changed or removed reaction and how many people reacted. A room member speaks only as themselves. A reaction never grants permission to use a tool.

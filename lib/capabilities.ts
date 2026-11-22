@@ -34,6 +34,7 @@
 import { HARD_FLOOR_TOKEN, PERMISSION_CARD } from './claude-capability-tokens.js';
 import { AGENT_EMAIL_FILES_SENTENCE, AGENT_EMAIL_SEND_SENTENCE } from './agent-email-tools.ts';
 import { ARTIFACTS_GUIDANCE } from './artifacts-tools.js';
+import { YES_NO_RULE } from './yes-no-ask.ts';
 
 /** Compact frozen fallback used only when the served canon cannot be fetched. */
 export const BGOS_CAPABILITIES_FALLBACK = `# BGOS Channel Agent Capabilities (bundled fallback)
@@ -97,6 +98,7 @@ fetched from the backend at connect; if you are reading this, that fetch failed.
   wait_seconds from 1 to 600. A call with neither wait_seconds nor
   timeout_seconds keeps its old behaviour: it waits up to 600 s and returns
   the answers, or pending if they do not all come in time.
+  ${YES_NO_RULE}
 - Inline buttons: up to 6 chips; __skip__ and __custom__ are reserved sentinels.
   Approvals use the ea:{choice}:{id} callback format.
 - The owner can turn on Always ask before risky actions for you. It covers a short list: a recursive delete, a force push, a change inside .git, a change to an .env file or to a settings file in the owner's home folder, and a tool that sends, posts, pays or deletes on the owner's behalf. While it is on, a request card raised for one of these offers only once and deny: the platform removes any session or always option you send, so do not offer them. Only the owner, signed in to the app, can say yes on such a card: an answer your own credential sends to it is refused unless it is a deny, and so is any change your credential makes to the owner's switch. Raise that card and wait for the answer; never split, rename or wrap the action to step around the list. From this release a hook stops a listed action even with full access and your relay holds it for the owner; do not retry a refused one.
