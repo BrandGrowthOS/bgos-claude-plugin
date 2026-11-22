@@ -678,20 +678,24 @@ async function stoppedAgentCheckup(backend: ReturnType<typeof fakeBackend>) {
 }
 function assertHeldNotKept(out: Awaited<ReturnType<typeof stoppedAgentCheckup>>, backend: ReturnType<typeof fakeBackend>, label: string) {
   assert.deepEqual(out.terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['dead_session', 'start_agent', 'not_fixed']], label)
-  assert.match(JSON.stringify(backend.progress('chk-1')), /not_kept_running: its owner switched it off/, label)
+  assert.match(JSON.stringify(backend.progress('chk-1')), /not_kept_running: it is not on this computer's keep-alive list, so the Helper did not start it alone\)\. Press Fix, or keep it running again\./, label)
   assert.deepEqual(out.run.spawns, [], `${label}: nothing started`)
   assert.equal(restartRequested(out.fs), false, label)
   assert.ok(backend.calls.some((c) => c.method === 'GET' && c.path.endsWith('/integrations/watchers/keep-alive')), `${label}: the server's own list was asked`)
 }
 
 test('alone, Always on off (the switch on, another agent kept): the stopped agent is not started, and the check up says why', async () => {
-  const backend = aloneCheckup(keptList(['913']))
-  assertHeldNotKept(await stoppedAgentCheckup(backend), backend, 'always on off')
+  for (const alone of [true, 'step']) {
+    const backend = aloneCheckup(keptList(['913']), alone)
+    assertHeldNotKept(await stoppedAgentCheckup(backend), backend, `always on off, ${alone}`)
+  }
 })
 
-test("alone, the computer's keep-alive switch off: the stopped agent is not started, and the check up says why", async () => {
-  const backend = aloneCheckup(switchOff)
-  assertHeldNotKept(await stoppedAgentCheckup(backend), backend, 'switch off')
+test("alone, the computer's keep-alive switch off: the stopped agent is not started, and the check up says why, for a step check up too", async () => {
+  for (const alone of [true, 'step']) {
+    const backend = aloneCheckup(switchOff, alone)
+    assertHeldNotKept(await stoppedAgentCheckup(backend), backend, `switch off, ${alone}`)
+  }
 })
 
 test('alone, with no keep-alive answer and no cache: nobody is known kept, so nothing is started', async () => {
@@ -708,14 +712,47 @@ test('alone, a kept agent stopped past 15 minutes IS started (the guard is not v
   }
 })
 
-test('several agents on one computer, alone: only the kept one is started', async () => {
-  // The same computer's list, read two ways: 913 kept and 912 not, then 912 kept and 913 not.
-  const notKept = aloneCheckup(keptList(['913']))
-  assertHeldNotKept(await stoppedAgentCheckup(notKept), notKept, '912 not kept')
-  const kept = aloneCheckup(keptList(['912']))
-  const out = await stoppedAgentCheckup(kept)
-  assert.deepEqual(out.terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['dead_session', 'start_agent', 'fixed']])
-  assert.equal(out.run.spawns.length, 1)
+test('several agents on one computer, alone: two stopped agents, one list, two jobs, only the kept one is started', async () => {
+  // A second agent, 913 in ~/hoai-agents/bo, stopped like 912. The list keeps 913 only.
+  const BO = `${HOME}/hoai-agents/bo`
+  const SID2 = '8c1f0000-0000-4000-8000-000000000002'
+  const BO_STATE = `${HOME}/.bgos-agent/913`
+  const BO_TRANSCRIPT = `${CONFIG}/projects/${BO.replace(/[^a-zA-Z0-9]/g, '-')}/${SID2}.jsonl`
+  const fs = agentFs({
+    [`${STATE_DIR}/supervisor.json`]: '',
+    [`${HOME}/.bgos-agent/credentials-913.json`]: JSON.stringify({ pairingToken: 'agent-secret-913', backendUrl: 'x' }),
+    [`${BO_STATE}/launch.json`]: JSON.stringify(buildLaunchRecipe({ assistantId: '913', cwd: BO, argv: ['--x'], installMethod: 'marketplace', pluginRoot: ROOT, node: '/usr/bin/node', startedAt: 'x', pid: 4242 })),
+    [`${BO_STATE}/supervisor.json`]: '',
+    [`${BO_STATE}/session-id`]: `${SID2}\n`,
+    [`${BO}/.bgos-agent-id`]: '913\n',
+  })
+  fs.mkdir(BO)
+  writeTranscript(fs, [ownerMessage(T0 - 50 * MIN), assistantTurn(T0 - 49 * MIN)], T0 - 49 * MIN)
+  fs.writeFile(BO_TRANSCRIPT, `${[ownerMessage(T0 - 50 * MIN), assistantTurn(T0 - 49 * MIN)].join('\n')}\n`)
+  fs.touch(BO_TRANSCRIPT, T0 - 49 * MIN)
+  const clock = fakeClock()
+  clock.onSleep((_ms, nowMs) => {
+    for (const id of ['912', '913']) {
+      if (fs.files.has(`${HOME}/.bgos-agent/${id}/probe-requested.json`)) {
+        fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
+      }
+    }
+  })
+  const job = (rpcId: string, assistantId: number, pairingId: number) => ({ rpcId, op: 'reconcile', machineId: MACHINE_ID, intent: 'checkup', targets: [{ pairingId, assistantId }], alone: true })
+  const backend = fakeBackend({
+    frames: [{ rpcId: 'chk-1', op: 'reconcile' }, { rpcId: 'chk-2', op: 'reconcile' }],
+    jobs: { 'chk-1': job('chk-1', 912, 3), 'chk-2': job('chk-2', 913, 4) },
+    keepAlive: keptList(['913']),
+  })
+  const run = rig(fs, backend, clock, psLine(1, 0, '/sbin/init'))
+  await runWatcher(run.deps as any)
+  const did = (rpcId: string) => terminalOf(backend, rpcId).actions.map((a: any) => [a.cause, a.did, a.outcome])
+  assert.deepEqual(did('chk-1'), [['dead_session', 'start_agent', 'not_fixed']], '912 is not kept: held')
+  assert.match(JSON.stringify(backend.progress('chk-1')), /not_kept_running/)
+  assert.deepEqual(did('chk-2'), [['dead_session', 'start_agent', 'fixed']], '913 is kept: started')
+  assert.equal(run.spawns.length, 1, 'one start, for the kept agent only')
+  assert.match(run.spawns[0]!.args.join(' '), /913/, 'the start names 913')
+  assert.equal(restartRequested(fs), false, '912 was not restarted')
 })
 
 test("the owner's own press (no alone mark) still starts an agent nobody keeps running, and asks no list", async () => {
