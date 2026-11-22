@@ -396,13 +396,15 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   const published: string[] = []
   let callback: (() => void) | undefined
   let unrefCount = 0
-  new Function('setInterval', 'agentStatePublisher', 'publishBrowserPrivateTurn', 'AGENT_STATE_TICK_MS', intervalSource)(
+  new Function('setInterval', 'agentStatePublisher', 'claudeStamper', 'publishBrowserPrivateTurn', 'AGENT_STATE_TICK_MS', intervalSource)(
     (tick: () => void, delay: number) => {
       assert.equal(delay, 1000)
       callback = tick
       return { unref: () => { unrefCount += 1 } }
     },
     { tick: () => published.push('state') },
+    // The claude stamp (lib/claude-stamp.mjs) ticks beside the state, on the same lock.
+    { tick: () => published.push('stamp') },
     () => published.push('private-turn'),
     1000,
   )
@@ -410,7 +412,7 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   assert.ok(callback)
   callback()
   callback()
-  assert.deepEqual(published, ['state', 'private-turn', 'state', 'private-turn'])
+  assert.deepEqual(published, ['state', 'stamp', 'private-turn', 'state', 'stamp', 'private-turn'])
   // The live session id is learned from the daemon's OWN admitted hook events,
   // and every hook event pokes a publish (a turn start is news at once).
   const hookAt = server.indexOf('function onHookPayload(')
@@ -800,7 +802,7 @@ test('server.ts finds the claude ancestor through the platform aware walk', () =
   const server = readFileSync(join(root, 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   assert.match(
     server,
-    /const agentClaudePid = memoizeAncestorReading\(CLAUDE_ANCESTOR_RETRY_MS, CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS, Date\.now, \(\) =>\s*readClaudeAncestor\(\{ platform: process\.platform, ownPid: process\.pid, execSync: defaultExecSync \}\),?\s*\)/,
+    /const agentClaudePid = memoizeAncestorReading\(CLAUDE_ANCESTOR_RETRY_MS, CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS, Date\.now, \(\) => \{\n\s*const reading = readClaudeAncestor\(\{ platform: process\.platform, ownPid: process\.pid, execSync: defaultExecSync \}\)\n[^}]*return reading\n\}\)/,
   )
 })
 

@@ -769,7 +769,9 @@ import {
   oldestOwnerWaitMs,
   readClaudeAncestor,
   readSessionTranscript,
+  writeTextAtomic,
 } from './lib/agent-state.js'
+import { CLAUDE_STAMP_FILE_NAME, createClaudeStamper } from './lib/claude-stamp.mjs'
 import {
   SESSION_PIN_CHECK_MS,
   SessionPinKeeper,
@@ -16292,9 +16294,27 @@ const AGENT_STATE_TICK_MS = 1_000
 // doubling while it keeps failing, up to the same 10 minutes.
 const CLAUDE_ANCESTOR_RETRY_MS = 10 * 60_000
 const CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS = 30_000
-const agentClaudePid = memoizeAncestorReading(CLAUDE_ANCESTOR_RETRY_MS, CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS, Date.now, () =>
-  readClaudeAncestor({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync }),
-)
+// The Windows walk reads the claude's start with its pid; the stamp below needs it (posix asks ps).
+let claudeAncestorStartedAtMs: number | null = null
+const agentClaudePid = memoizeAncestorReading(CLAUDE_ANCESTOR_RETRY_MS, CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS, Date.now, () => {
+  const reading = readClaudeAncestor({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync })
+  claudeAncestorStartedAtMs = reading.readable && reading.pid !== null ? reading.startedAtMs ?? null : null
+  return reading
+})
+// Lone repair (lib/claude-stamp.mjs): this agent's id on its claude, pid and start time, so the watcher
+// can tell that claude from a stopped agent's while the same person runs several agents. The lock holder
+// writes it, beside agent-state.json; it stays when this daemon stops (pid and start say if it holds).
+const claudeStamper = createClaudeStamper({
+  path: pathJoin(pathDirname(CURSOR_FILE_PATH), CLAUDE_STAMP_FILE_NAME),
+  platform: process.platform,
+  now: Date.now,
+  assistantId: () => ASSISTANT_ID,
+  claudePid: () => agentClaudePid(),
+  win32StartedAtMs: () => claudeAncestorStartedAtMs,
+  shouldStamp: () => lockHeld,
+  execSync: defaultExecSync,
+  write: (path: string, body: string) => writeTextAtomic(path, body),
+})
 // installed_plugins.json is a file read; the 1 s tick must not repeat it.
 const agentStatePendingRestart = memoizeFor(AGENT_STATE_MAX_INTERVAL_MS, Date.now, () =>
   daemonPendingRestartVersion(),
@@ -20712,7 +20732,7 @@ async function main(): Promise<void> {
 
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
-  setInterval(() => { agentStatePublisher.tick(); publishBrowserPrivateTurn() }, AGENT_STATE_TICK_MS).unref()
+  setInterval(() => { agentStatePublisher.tick(); claudeStamper.tick(); publishBrowserPrivateTurn() }, AGENT_STATE_TICK_MS).unref()
   // Threads phase 1: the worktree of a thread closed more than 7 days ago goes.
   setInterval(() => {
     void threadLanes
