@@ -6192,9 +6192,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['schedule_id'],
       },
     },
-    // WHEN A ROUTINE RUNS (2026-11-22): the end of one run of a routine, posted with this daemon's own credential like
-    // a board grant's end. Deliberately outside the private turn gate and the turn aware list (see the admission
-    // block for why, and what that costs).
+    // WHEN A ROUTINE RUNS (2026-11-22): the end of one run of a routine. The daemon takes it only on a private turn, as
+    // it takes schedule (see the admission block).
     {
       name: 'end_run',
       description:
@@ -6230,8 +6229,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             maxLength: 300,
             description:
-              'For could_not_check: why, in a few plain words your owner reads ' +
-              '(at most 300 characters).',
+              'Required for could_not_check: why, in a few plain words your ' +
+              'owner reads (at most 300 characters). Not needed for no_change.',
           },
         },
         required: ['task_id', 'fire_id', 'outcome'],
@@ -7069,15 +7068,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     })
   }
   // Freeze private authority at request admission, before any awaited work.
-  // end_run is in neither list below, on purpose (When a routine runs, 2026-11-22). The owner's own routine wake would
-  // usually pass them (it names the owner as its acting user), but they also refuse whenever the private turn machinery
-  // is not in place: no hook, a marker that cannot be verified, a daemon without the active connection. Any such refusal
-  // would leave the run silent, which the server's sweep turns into the red card end_run exists to avoid. The server
-  // decides instead: it ends only the latest run of a wake routine that belongs to this agent's owner and to this agent.
-  // Accepted cost: a turn that is not the owner's could also lead the agent to end that latest run, which does nothing
-  // a reply in the owner's chat could not; at worst one run's Could not check card is missed, or shows unearned.
+  // end_run is gated here like schedule (When a routine runs, 2026-11-22): only a private turn ends a run. The owner's
+  // routine wake is one (its payload names the owner as acting user). A turn an email, a webhook or another agent's
+  // text opened or reached is refused before anything is sent, so the run stays open for the server to judge.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
-  if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
+  if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule', 'end_run'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       // A boards call in a granted scheduled run carries its grant, and is admitted on it alone after another
@@ -8754,7 +8749,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         when: rawArgs.when,
         chatId: resolvedChatId,
         boards: rawArgs.boards,
-        // How this routine's runs show in the owner's chat (0.91.0). Left out, nothing is sent: Settings decide.
+        // How this routine's runs show in the owner's chat. Left out, nothing is sent: Settings decide.
         whenItRuns: rawArgs.when_it_runs,
         // ONE name for this tool call: a second ask by the add-on (lib/schedule-send.ts) reuses it, so the
         // server answers it with the first result. The agent calling the tool again is a new call, a new id.
@@ -8863,9 +8858,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     case 'end_run': {
       // WHEN A ROUTINE RUNS (2026-11-22): end one run of a routine with no change (post nothing) or could not check
       // (the owner gets the card with the reason). The ids come from the wake's event payload, copied by the model, so
-      // they are checked first (lib/schedule.ts). The post is the daemon's own, exactly as the board grant's end is:
-      // its credential and X-Caller-Assistant-Id, no private turn and no acting user header. Every answer is one plain
-      // sentence (lib/schedule-send.ts sendRunEnd); one that was not taken says to reply normally instead.
+      // they are checked first (lib/schedule.ts). Admitted only on a private turn, and posted as schedule posts: the
+      // daemon's credential and X-Caller-Assistant-Id, plus the acting user header on a share recipient's turn (none on
+      // the owner's). Every answer is one plain sentence (lib/schedule-send.ts sendRunEnd); one that was not taken says
+      // to reply normally instead.
       const built = buildScheduleRunEndRequest({
         taskId: rawArgs.task_id,
         fireId: rawArgs.fire_id,
@@ -8878,7 +8874,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           isError: true,
         }
       }
-      const ended = await sendRunEnd({ path: built.path, body: built.body, post: (path, body) => bgosPeerPost(path, body) })
+      const ended = await sendRunEnd({ path: built.path, body: built.body, post: (path, body) => bgosPeerPost(path, body, privateCall!.headers) })
       log(`end_run: ${built.path} ${built.body.outcome}: ${ended.ok ? 'taken' : 'not taken'}`)
       return {
         content: [{ type: 'text', text: ended.text }],

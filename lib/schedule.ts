@@ -122,7 +122,7 @@ export interface ScheduleCreateBody {
   chatId?: number
   /** The boards each run of a wake may use (0.86.20): the server's grant. */
   boards?: Array<{ boardId: string; access: 'read' | 'write' }>
-  /** How this routine's runs show in the owner's chat (0.91.0, when_it_runs). Absent = follow the owner's Settings. */
+  /** How this routine's runs show in the owner's chat (when_it_runs). Absent = follow the owner's Settings. */
   runDisplay?: RunDisplay
   clientRequestId?: string
 }
@@ -610,7 +610,7 @@ export interface RunEndInput {
   /** The wake's fireId, as it came. */
   fireId?: unknown
   outcome?: unknown
-  /** Optional: why the check could not be done, in a few plain words the owner reads. */
+  /** Why the check could not be done, in a few plain words the owner reads: required for could_not_check, optional for no_change. */
   reason?: unknown
 }
 
@@ -669,6 +669,14 @@ export function buildScheduleRunEndRequest(input: RunEndInput): RunEndRequest {
       }
     }
     if (trimmed) body.reason = trimmed
+  }
+  // The owner reads the reason on the Could not check card: without one the card would say the agent gave no message
+  // and no report, which is not true. So could_not_check needs one, and nothing is sent without it.
+  if (body.outcome === 'could_not_check' && !body.reason) {
+    return {
+      ok: false,
+      error: 'reason is required for could_not_check: say in a few plain words why you could not do the check, and call end_run again.',
+    }
   }
   return { ok: true, path: `scheduled-tasks/agent/${taskId}/run-end`, body }
 }

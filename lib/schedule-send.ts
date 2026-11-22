@@ -21,7 +21,7 @@
  *      "property clientRequestId should not exist"): that refusal made nothing,
  *      so the same body is sent once more WITHOUT the id and the call works as
  *      it always did. The same goes for runDisplay, the routine's own "when it
- *      runs" choice (0.91.0): sent once more without it, and the agent is told
+ *      runs" choice: sent once more without it, and the agent is told
  *      the routine follows its owner's Settings. One 400 may name both; one
  *      resend then leaves out both. Each field is left out at most once. An
  *      older server that quietly drops the field needs no
@@ -226,9 +226,10 @@ export async function sendScheduleCreate(opts: ScheduleSendOptions): Promise<Sch
 // ── end_run: the end of one run of a routine (When a routine runs, 2026-11-22) ──
 //
 // The agent ends one run with no change (post nothing) or could not check (its owner gets a Could not check card with
-// the reason). The daemon posts it with its own credential and X-Caller-Assistant-Id, as it posts a board grant's end.
-// Every answer reads as one plain sentence. When the end was not taken, the sentence says to reply normally instead:
-// a reply is never wrong for a run, and a run left silent turns into a red card on the server's sweep.
+// the reason). Only a private turn may call it, as only one may call schedule (server.ts admission), and the daemon
+// posts it as it posts schedule: its own credential and X-Caller-Assistant-Id, plus the acting user header on a share
+// recipient's turn. Every answer reads as one plain sentence. When the end was not taken, the sentence says to reply
+// normally instead: a reply is never wrong for a run, and a run left silent turns into a red card on the server's sweep.
 
 /** What the agent reads when its no change end was taken. */
 export const RUN_END_NO_CHANGE_TEXT = 'Run ended: no change. Post nothing more for this run.'
