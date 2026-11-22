@@ -545,6 +545,8 @@ describe('declared capabilities on the heartbeat', () => {
     // changes_rpc (P7 stage 3) likewise: every host can read its own folder
     // with Git, so it rides every beat after memory_rpc. email_files rides
     // right after email_send, while this plugin ships the files tools.
+    // run_end (When a routine runs, 2026-11-22) is declared on a pairing only,
+    // and only a pairing beats, so every beat carries it, last of all.
     expect([...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
       'mission_goal_checks',
@@ -576,6 +578,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_goal_uncapped',
       'mission_pause',
       'stop_pauses_mission',
+      'run_end',
     ])
     expect([...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
@@ -604,6 +607,7 @@ describe('declared capabilities on the heartbeat', () => {
       'email_files',
       'hard_floor',
       'hard_floor_rules_2',
+      'run_end',
     ])
   })
 

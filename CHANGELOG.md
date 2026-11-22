@@ -12,6 +12,17 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.91.0 (2026-11-22)
+
+**feat(routines): an agent can end a routine's run quietly, and say how a routine's runs show.**
+
+- New tool `end_run`. When a routine's wake carries `quietEnd` in its event payload and nothing changed since the last run, the agent ends the run with `no_change` and posts nothing. When it could not do the check, it ends the run with `could_not_check` and a short reason, which the owner reads on a Could not check card. Any other run is answered as before, and the tool is never used instead of a reply when the agent found something. The daemon posts it over its own connection, the way it ends a board grant, and it needs no private turn, so a wake can always use it. Every answer reads as one plain sentence; an end the server did not take says to reply normally instead.
+- The daemon now declares `run_end`, on a paired connection only and after every other token, so no other token moves. A server that reads it offers the quiet end to a Claude Code agent only once its daemon declares the tool, so an agent without `end_run` is never shown as failing for a quiet run.
+- `schedule` takes an optional `when_it_runs` on a wake: `show_nothing`, `one_line_a_day` or `card_every_run`. Left out, nothing is sent and the routine follows the owner's own "When a routine runs" setting, including a later change there. An older server that refuses the field still gets the routine: it is sent once more without it, and the agent is told the routine follows the owner's setting. The agent is told the choice was kept only when the server's answer names it. It applies only to the agent's own chat with its owner; a group chat keeps its one line a day. The "tell me if nothing came" switch stays the owner's alone; the tool has no argument for it.
+- The MCP instructions say when to call `end_run`, and no longer promise that a system message always shows as a card: the owner chooses whether a routine's runs show as a card, one line a day, or nothing.
+
+Guard: `test/end-run-tool.test.ts` and `test/schedule-when-it-runs.test.ts` (new), new cases in `test/declared-capabilities.test.ts` and `test/bundled-instructions.test.ts`, and the tool drift guard in `test/hook-events.test.ts`, each red before the change.
+
 ## 0.90.17 (2026-11-21)
 
 **feat(chat): hear reactions to the agent's replies.** With a matching server, the agent hears who reacted and which emoji they chose. A later line can report a changed or removed reaction and how many people reacted. A room member speaks only as themselves. A reaction never grants permission to use a tool.

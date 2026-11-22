@@ -20,6 +20,7 @@ import {
   DECLARED_CAPABILITIES_BASE,
   DECLARED_CAPABILITIES_INJECTOR,
   DECLARED_CAPABILITIES_PAIRING,
+  RUN_END_TOKEN,
   declaredCapabilities,
 } from '../lib/declared-capabilities.ts'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from '../lib/session-controls-contract.ts'
@@ -105,7 +106,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ui_card_answers', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ui_card_answers', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'run_end'],
   )
 })
 
@@ -159,6 +160,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'mission_goal_uncapped',
       'mission_pause',
       'stop_pauses_mission',
+      'run_end',
     ],
   )
 })
@@ -270,6 +272,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'mission_goal_uncapped',
       'mission_pause',
       'stop_pauses_mission',
+      'run_end',
     ],
   )
 })
@@ -518,7 +521,7 @@ test('an API key connection does not declare hard_floor, on either host, and kee
     assert.ok(declared.includes('plan_card'))
     assert.deepEqual(
       [...declared],
-      declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).filter((t) => t !== 'hard_floor' && t !== 'hard_floor_rules_2'),
+      declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).filter((t) => t !== 'hard_floor' && t !== 'hard_floor_rules_2' && t !== RUN_END_TOKEN),
     )
     // And the canon fetch at connect, which is what the backend counts for
     // a caller with no pairing, does not carry it either.
@@ -745,6 +748,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'mission_goal_uncapped',
       'mission_pause',
       'stop_pauses_mission',
+      'run_end',
     ],
   )
 })
@@ -865,12 +869,13 @@ test('hard_floor_rules_2 rides with hard_floor, and only with it', () => {
 test('the three thread tokens are declared together where threads can run, after every other token', () => {
   for (const authMode of ['pairing', 'apikey'] as const) {
     // group_threads (a pairing only) rides after them: lib/declared-capabilities.ts GROUP_THREADS_TOKEN.
+    // run_end (a pairing only, 2026-11-22) is the very last token: lib/declared-capabilities.ts RUN_END_TOKEN.
     const declared = declaredCapabilities({ canInjectGoal: false, floorHook: true, threads: true, authMode, platform: 'darwin' })
-      .filter((token) => token !== 'group_threads')
+      .filter((token) => token !== 'group_threads' && token !== RUN_END_TOKEN)
     assert.deepEqual(declared.slice(-3), ['message_threads', 'thread_sessions', 'asides'])
     assert.deepEqual(
       [...declared.slice(0, -3)],
-      [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode, platform: 'darwin' })],
+      [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode, platform: 'darwin' })].filter((token) => token !== RUN_END_TOKEN),
       'nothing else moves',
     )
   }
@@ -892,7 +897,7 @@ test('no thread token on Windows in phase 1, nor where threads cannot run', () =
 test('the fullest declaration, every token in its place, is exactly this list', () => {
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: true, floorHook: true, personLanes: true, modelEffortPicker: true, threads: true, authMode: 'pairing', platform: 'darwin' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ui_card_answers', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides', 'group_threads'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ui_card_answers', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides', 'group_threads', 'run_end'],
   )
 })
 
@@ -934,4 +939,37 @@ test('ui_card_answers is declared on every host, once, right after ui_card', () 
     }
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('ui_card_answers'))
+})
+
+/**
+ * run_end (When a routine runs, 2026-11-22): this daemon's agent has the end_run tool, which ends one run of a routine
+ * with no change (post nothing) or could not check (the owner gets the card with the reason), through the server's run
+ * end door with the daemon's own credential. The server offers a Claude Code agent the quiet end, and turns a silent
+ * run into a red Could not check card, only when the agent's PAIRING declared this token. It reads the stored pairing
+ * list alone, and an API key daemon never beats, so the token is declared on a pairing only: an API key daemon stays
+ * untold, which is safe (never offered the quiet end, so never trapped into a red card).
+ *
+ * It is appended LAST, after every other token on every shape, so no existing token moves: the boot canon fetch keeps
+ * the first 32 (lib/capabilities.ts), and every token the canon gates on keeps its place inside that cut.
+ */
+test('run_end is declared on every pairing, once and last, and never on an API key', () => {
+  assert.equal(RUN_END_TOKEN, 'run_end')
+  assert.ok(!DECLARED_CAPABILITIES_BASE.includes(RUN_END_TOKEN), 'not in the base: an API key daemon would declare it too')
+  assert.ok(!DECLARED_CAPABILITIES_PAIRING.includes(RUN_END_TOKEN), 'not beside hard_floor: it does not need the floor hook')
+  for (const { host, canInjectGoal, personLanes } of HOSTS) {
+    for (const floorHook of [true, false]) {
+      for (const threads of [true, false]) {
+        for (const platform of ['darwin', 'linux', 'win32'] as const) {
+          const shape = { canInjectGoal, floorHook, personLanes, threads, modelEffortPicker: true, groupLevels: true, platform }
+          const pairing = [...declaredCapabilities({ ...shape, authMode: 'pairing' })]
+          const where = `${host}, floorHook ${floorHook}, threads ${threads}, ${platform}`
+          assert.equal(pairing.filter((t) => t === RUN_END_TOKEN).length, 1, `once on a pairing: ${where}`)
+          assert.equal(pairing.at(-1), RUN_END_TOKEN, `last on a pairing: ${where}`)
+          assert.ok(pairing.length <= 64, `${pairing.length} tokens`)
+          const apikey = declaredCapabilities({ ...shape, authMode: 'apikey' })
+          assert.equal(apikey.includes(RUN_END_TOKEN), false, `never on an API key: ${where}`)
+        }
+      }
+    }
+  }
 })

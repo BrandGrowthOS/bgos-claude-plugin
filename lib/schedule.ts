@@ -1,6 +1,6 @@
 /**
  * Pure, side-effect-free builders for the `schedule` / `list_schedules` /
- * `cancel_schedule` MCP tools.
+ * `cancel_schedule` / `end_run` MCP tools.
  *
  * Like ./lib/call-owner.ts, everything here is deterministic and import-safe
  * (no env reads, no network, no clock, no process exit), so it can be unit and
@@ -8,8 +8,8 @@
  * eval suite (test/schedule.test.ts) imports them too.
  *
  * The wire contract is the FINAL agent-scoped backend surface (Home of Agents
- * native scheduler; /tmp/sched-contract-final.txt is authoritative). All three
- * endpoints authenticate with X-API-Key + X-Caller-Assistant-Id (the plugin's
+ * native scheduler; /tmp/sched-contract-final.txt is authoritative). Every
+ * endpoint authenticates with X-API-Key + X-Caller-Assistant-Id (the plugin's
  * peer client):
  *
  *   POST   scheduled-tasks/agent          create a task
@@ -19,6 +19,13 @@
  *   DELETE scheduled-tasks/agent/:id      SOFT cancel (200 with the task view,
  *                                         idempotent; 400 on a done one-shot;
  *                                         404 anti-enumeration)
+ *   POST   scheduled-tasks/agent/:id/run-end
+ *                                         end one run of a routine (end_run):
+ *                                         { fireId, outcome, reason? } answers
+ *                                         { ended, outcome }; 409 when the run
+ *                                         must answer or the fire is not the
+ *                                         latest; 404 while the server offers
+ *                                         no run ends or the task is not yours
  *
  * Create body:
  *   {
@@ -36,6 +43,7 @@
  *       dayOfMonth?: number,            // 1..31, clamped to month length; REQUIRED for monthly
  *     },
  *     chatId?: number,                  // omitted = backend uses the agent's main chat
+ *     runDisplay?: 'inbox' | 'timeline' | 'cards', // wakes only; omitted = follow the owner's Settings
  *     clientRequestId?: string,         // 16..100 of A-Z a-z 0-9 _ - ; see below
  *   }
  *   At least ONE of fireAt / everyHours / recurrence (backend 400 otherwise).
@@ -114,7 +122,56 @@ export interface ScheduleCreateBody {
   chatId?: number
   /** The boards each run of a wake may use (0.86.20): the server's grant. */
   boards?: Array<{ boardId: string; access: 'read' | 'write' }>
+  /** How this routine's runs show in the owner's chat (0.91.0, when_it_runs). Absent = follow the owner's Settings. */
+  runDisplay?: RunDisplay
   clientRequestId?: string
+}
+
+/**
+ * WHEN A ROUTINE RUNS (2026-11-22): the three ways a routine's runs can show in the owner's chat with the agent, in
+ * the words the tool offers, mapped to the words the server stores (the same three the owner's Settings choice is
+ * stored as: Show nothing is inbox, One line a day is timeline, A card every run is cards). This map is the one place
+ * the tool's words meet the wire's. Leaving when_it_runs out sends nothing, so the routine follows the owner's own
+ * "When a routine runs" setting, including a later change there; the agent sets it only when its owner asked for
+ * this routine. The 30 minute "tell me if nothing came" switch is the owner's alone and has no word here.
+ */
+export const WHEN_IT_RUNS_TO_RUN_DISPLAY = Object.freeze({
+  show_nothing: 'inbox',
+  one_line_a_day: 'timeline',
+  card_every_run: 'cards',
+} as const)
+export type WhenItRuns = keyof typeof WHEN_IT_RUNS_TO_RUN_DISPLAY
+export type RunDisplay = (typeof WHEN_IT_RUNS_TO_RUN_DISPLAY)[WhenItRuns]
+export const WHEN_IT_RUNS_CHOICES = Object.freeze(Object.keys(WHEN_IT_RUNS_TO_RUN_DISPLAY) as WhenItRuns[])
+
+/** The plain words for a stored choice, for what the agent reads back. */
+export const RUN_DISPLAY_WORDS: Readonly<Record<RunDisplay, string>> = Object.freeze({
+  inbox: 'show nothing',
+  timeline: 'one line a day',
+  cards: 'a card every run',
+})
+
+/**
+ * The server word for a when_it_runs argument. Absent, null or blank is no choice (follow Settings); a call is refused,
+ * as boards are, because a call rings the owner and shows no run in the chat; anything else is refused with the three
+ * words, never guessed.
+ */
+function buildRunDisplay(input: unknown, kind: unknown): { ok: true; runDisplay: RunDisplay | undefined } | { ok: false; error: string } {
+  if (input == null) return { ok: true, runDisplay: undefined }
+  const choice = typeof input === 'string' ? input.trim() : input
+  if (choice === '') return { ok: true, runDisplay: undefined }
+  if (typeof choice !== 'string' || !Object.hasOwn(WHEN_IT_RUNS_TO_RUN_DISPLAY, choice)) {
+    return {
+      ok: false,
+      error:
+        `when_it_runs must be show_nothing, one_line_a_day or card_every_run (got ${JSON.stringify(input)}). ` +
+        "Leave it out to follow your owner's When a routine runs setting.",
+    }
+  }
+  if (kind !== 'wake') {
+    return { ok: false, error: 'when_it_runs is for wakes only; a call rings the owner and shows no run in the chat.' }
+  }
+  return { ok: true, runDisplay: WHEN_IT_RUNS_TO_RUN_DISPLAY[choice as WhenItRuns] }
 }
 
 /** How many boards one schedule may name (the server's SCHEDULE_GRANT_MAX_BOARDS). */
@@ -156,6 +213,8 @@ export interface ScheduleCreateInput {
   chatId?: number | null
   /** Optional, wakes only: [{ board_id, access }] the runs may use whoever posts meanwhile. */
   boards?: unknown
+  /** Optional, wakes only: show_nothing | one_line_a_day | card_every_run. Absent = follow the owner's Settings. */
+  whenItRuns?: unknown
   /** This request's own name (16..100 of A-Z a-z 0-9 _ -), made by the caller, never derived from the body. Omitted = no id on the wire. */
   clientRequestId?: unknown
 }
@@ -466,6 +525,10 @@ export function buildScheduleCreateBody(input: ScheduleCreateInput): ScheduleBui
   if (!boards.ok) return boards
   if (boards.boards) body.boards = boards.boards
 
+  const runDisplay = buildRunDisplay(input.whenItRuns, kind)
+  if (!runDisplay.ok) return runDisplay
+  if (runDisplay.runDisplay) body.runDisplay = runDisplay.runDisplay
+
   const { clientRequestId } = input
   if (clientRequestId != null) {
     if (typeof clientRequestId !== 'string' || !SCHEDULE_REQUEST_ID_PATTERN.test(clientRequestId)) {
@@ -526,4 +589,86 @@ export function buildScheduleCancelPath(id: unknown): SchedulePathResult {
   }
 
   return { ok: true, path: `scheduled-tasks/agent/${encodeURIComponent(idText)}` }
+}
+
+/**
+ * WHEN A ROUTINE RUNS (2026-11-22): the two ways the agent may end one run of its routine with end_run, the server's
+ * RUN_END_OUTCOMES. no_change posts nothing (only a run whose wake carries quietEnd: the server answers 409 with one
+ * sentence for any other); could_not_check tells the owner, on a Could not check card, with the reason. The server
+ * also ends a run itself (no answer); that outcome is the server's alone and never sent from here.
+ */
+export const RUN_END_OUTCOMES = Object.freeze(['no_change', 'could_not_check'] as const)
+export type RunEndOutcome = (typeof RUN_END_OUTCOMES)[number]
+
+/** The server's caps on a run end: the reason the owner reads (300) and the fire id (160). */
+export const RUN_END_REASON_MAX = 300
+export const RUN_END_FIRE_ID_MAX = 160
+
+export interface RunEndInput {
+  /** The wake's scheduledTaskId: a whole number above 0, as a number or its digits. */
+  taskId?: unknown
+  /** The wake's fireId, as it came. */
+  fireId?: unknown
+  outcome?: unknown
+  /** Optional: why the check could not be done, in a few plain words the owner reads. */
+  reason?: unknown
+}
+
+export type RunEndBody = {
+  fireId: string
+  outcome: RunEndOutcome
+  reason?: string
+}
+
+export type RunEndRequest = { ok: true; path: string; body: RunEndBody } | { ok: false; error: string }
+
+/** The fire id shape the server writes: scheduled-wake:<task id>:<the fire's ISO time>. */
+const WAKE_FIRE_ID_RE = /^scheduled-wake:([1-9][0-9]*):/
+
+/**
+ * Build POST scheduled-tasks/agent/:id/run-end. Pure: no I/O, no clock. The model copies both ids out of the wake's
+ * event payload, so they are checked here first and a slip reads as one sentence before anything is sent: the task id
+ * is a whole number above 0, the fire id is not blank and fits the server's cap, and a fire id in the server's own
+ * shape must name this same task. Anything else about the fire (the latest run, a wake at all) is the server's to say.
+ */
+export function buildScheduleRunEndRequest(input: RunEndInput): RunEndRequest {
+  const rawTask = typeof input.taskId === 'string' ? input.taskId.trim() : input.taskId
+  const taskId =
+    typeof rawTask === 'number' ? rawTask : typeof rawTask === 'string' && /^[1-9][0-9]*$/.test(rawTask) ? Number(rawTask) : Number.NaN
+  if (!Number.isSafeInteger(taskId) || taskId <= 0) {
+    return {
+      ok: false,
+      error: "task_id must be the routine's id, a whole number above 0: copy scheduledTaskId from the wake's event payload.",
+    }
+  }
+  const fireId = typeof input.fireId === 'string' ? input.fireId.trim() : ''
+  if (!fireId) return { ok: false, error: "fire_id is required: copy fireId from the wake's event payload." }
+  if (fireId.length > RUN_END_FIRE_ID_MAX) {
+    return { ok: false, error: `fire_id is too long (${fireId.length} characters, at most ${RUN_END_FIRE_ID_MAX}): copy fireId from the wake's event payload as it is.` }
+  }
+  const named = WAKE_FIRE_ID_RE.exec(fireId)
+  if (named && Number(named[1]) !== taskId) {
+    return {
+      ok: false,
+      error: `fire_id belongs to routine ${named[1]}, not to task_id ${taskId}. Copy both from the same wake's event payload.`,
+    }
+  }
+  const outcome = input.outcome
+  if (typeof outcome !== 'string' || !(RUN_END_OUTCOMES as readonly string[]).includes(outcome)) {
+    return { ok: false, error: 'outcome must be no_change or could_not_check.' }
+  }
+  const body: RunEndBody = { fireId, outcome: outcome as RunEndOutcome }
+  const { reason } = input
+  if (reason != null) {
+    if (typeof reason !== 'string') return { ok: false, error: 'reason must be a few plain words, as text.' }
+    const trimmed = reason.trim()
+    if (trimmed.length > RUN_END_REASON_MAX) {
+      return {
+        ok: false,
+        error: `reason is too long (${trimmed.length} characters, at most ${RUN_END_REASON_MAX}). Say it in fewer words and call end_run again.`,
+      }
+    }
+    if (trimmed) body.reason = trimmed
+  }
+  return { ok: true, path: `scheduled-tasks/agent/${taskId}/run-end`, body }
 }

@@ -365,6 +365,8 @@ export const OWN_MCP_TOOLS = [
   'schedule',
   'list_schedules',
   'cancel_schedule',
+  // Ending a routine's run (2026-11-22) is the agent telling the owner, or deciding not to: never work on the card.
+  'end_run',
   'create_mission',
   'tick_mini_goal',
   'set_mission_goals',

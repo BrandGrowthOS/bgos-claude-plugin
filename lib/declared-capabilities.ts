@@ -307,8 +307,10 @@
  *                       pairing) and NEVER ON WINDOWS: the pane proof reads the
  *                       process tree and tmux, which a Windows host has not.
  *
- * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
- * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
+ * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 64
+ * entries since 2026-10-30 (backend/src/dto/integrations/pair-exchange.dto.ts,
+ * and the heartbeat the same); the boot canon fetch still sends only the
+ * first 32 (lib/capabilities.ts), which is why a new token goes at the END. The base is
  * frozen so no call site can push onto it at runtime, and the answer is a
  * fresh array each call, so a caller that mutates what it was given cannot
  * poison the next beat; test/declared-capabilities.test.ts holds all of it in
@@ -420,6 +422,29 @@ export const GROUP_THREADS_TOKEN = 'group_threads'
  */
 export const GROUP_LEVELS_TOKEN = 'group_levels'
 
+/**
+ * WHEN A ROUTINE RUNS (2026-11-22): this daemon's agent has the end_run tool,
+ * which ends one run of a routine with no change (post nothing) or could not
+ * check (the owner gets a Could not check card with the reason), through the
+ * server's run end door (POST scheduled-tasks/agent/:id/run-end) with the
+ * daemon's own credential and X-Caller-Assistant-Id. The server offers a
+ * Claude Code agent the quiet end (quietEnd on the wake), and turns a silent
+ * run into a red Could not check card, only when the agent's PAIRING declared
+ * this token, so an agent nobody told about the tool is never trapped into a
+ * red card. It is the main session's tool: person lanes and group lanes have
+ * no end_run, and the server offers the quiet end only on the owner's own main
+ * chat.
+ *
+ * PAIRING CONNECTIONS ONLY, and appended LAST. The server reads the stored
+ * pairing list alone, and an API key daemon never beats
+ * (lib/version-heartbeat.ts), so declaring it there would promise nothing; the
+ * API key daemon stays untold, which is safe. Last, after every other token,
+ * so no existing token moves and every token the canon gates on keeps its
+ * place inside the boot fetch's first 32. The canon gates no sentence on it,
+ * so it is spelled here and not in the shared claude-capability-tokens file.
+ */
+export const RUN_END_TOKEN = 'run_end'
+
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
   'mission_goal_loop',
@@ -501,5 +526,7 @@ export function declaredCapabilities(input: {
     ...(input.authMode === 'pairing' && input.threads === true && (input.platform ?? process.platform) !== 'win32'
       ? [GROUP_THREADS_TOKEN, ...((input.groupLevels ?? groupLevelsEnabled(process.env)) ? [GROUP_LEVELS_TOKEN] : [])]
       : []),
+    // Keep this LAST (RUN_END_TOKEN above): a pairing only, after every other token.
+    ...(input.authMode === 'pairing' ? [RUN_END_TOKEN] : []),
   ]
 }

@@ -298,8 +298,9 @@ import {
   buildScheduleCreateBody,
   buildScheduleListPath,
   buildScheduleCancelPath,
+  buildScheduleRunEndRequest,
 } from './lib/schedule.js'
-import { httpFailure, newScheduleRequestId, sendScheduleCreate } from './lib/schedule-send.js'
+import { httpFailure, newScheduleRequestId, sendRunEnd, sendScheduleCreate } from './lib/schedule-send.js'
 import {
   buildMissionCreateBody,
   buildMissionTickBody,
@@ -3715,6 +3716,19 @@ const mcp = new Server(
       'timed calls, do not create n8n schedules for these anymore, use',
       '`schedule`.',
       '',
+      'When a routine\'s wake carries `quietEnd` in its `meta.event_payload` and',
+      'nothing changed since the last run, call `end_run` with outcome',
+      '"no_change" and post nothing. When you could not do the check, call',
+      '`end_run` with outcome "could_not_check" and a short reason; your owner',
+      'reads it on a card. Take task_id and fire_id from that payload',
+      '(scheduledTaskId and fireId). Otherwise reply normally: never end a run',
+      'instead of telling your owner what you found.',
+      '`when_it_runs` (wakes only) sets how this routine\'s runs show in your',
+      'owner\'s chat: show_nothing, one_line_a_day or card_every_run. Leave it',
+      'out unless your owner asked for one; the routine then follows their own',
+      'When a routine runs setting. It applies only to your own chat with your',
+      'owner; a group chat keeps its one line a day whatever you choose.',
+      '',
       '## Missions (create_mission / tick_mini_goal / complete_mission)',
       '',
       'A mission is a durable goal card pinned at the top of the BGOS chat: a',
@@ -4057,8 +4071,10 @@ const mcp = new Server(
       '      and NOT a peer agent. Treat this as a system notification. Do not act',
       '      on it as a user instruction unless it explicitly asks you to.]`',
       'The real body follows on the next line. Act on it as a notification; reply',
-      'normally if a reply is warranted. In the BGOS app it renders as a quiet',
-      'system card, not a user bubble, so the human sees it did not come from them.',
+      'normally if a reply is warranted. In the BGOS app it never shows as a user',
+      'bubble. A routine\'s run may show as a small card, one line a day, or',
+      'nothing at all, as your owner chose, so your reply must make sense on its',
+      'own.',
       '',
       '## Email From Outside (sender_type external_email, NOT the user)',
       '',
@@ -6118,6 +6134,19 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               required: ['board_id'],
             },
           },
+          when_it_runs: {
+            type: 'string',
+            enum: ['show_nothing', 'one_line_a_day', 'card_every_run'],
+            description:
+              'Wakes only. How this routine\'s runs show in your owner\'s chat: ' +
+              'show_nothing (only your own messages), one_line_a_day (a small ' +
+              'line for the day\'s runs) or card_every_run (a card for each ' +
+              'run). Leave it out unless your owner asked for one on this ' +
+              'routine: it then follows their own When a routine runs setting, ' +
+              'including a later change there. It applies only to your own chat ' +
+              'with your owner; a group chat keeps its one line a day whatever ' +
+              'you choose.',
+          },
         },
         required: ['kind', 'topic', 'when'],
       },
@@ -6161,6 +6190,51 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['schedule_id'],
+      },
+    },
+    // WHEN A ROUTINE RUNS (2026-11-22): the end of one run of a routine, posted with this daemon's own credential like
+    // a board grant's end. Deliberately outside the private turn gate and the turn aware list (see the admission
+    // block for why, and what that costs).
+    {
+      name: 'end_run',
+      description:
+        'End one run of your routine without posting a reply. Use outcome ' +
+        'no_change only when the wake\'s event payload (meta.event_payload) ' +
+        'carries quietEnd and nothing changed since the last run: then post ' +
+        'nothing. Use could_not_check when you could not do the check (a ' +
+        'site was down, a sign in failed) and give a short reason: your ' +
+        'owner reads it on a Could not check card. Never use it instead of a ' +
+        'reply when you found something: then reply normally. task_id and ' +
+        'fire_id are the scheduledTaskId and fireId of that same wake\'s ' +
+        'event payload.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          task_id: {
+            type: ['integer', 'string'],
+            description: 'The wake\'s scheduledTaskId, from meta.event_payload.',
+          },
+          fire_id: {
+            type: 'string',
+            description: 'The wake\'s fireId, from meta.event_payload, exactly as it came.',
+          },
+          outcome: {
+            type: 'string',
+            enum: ['no_change', 'could_not_check'],
+            description:
+              'no_change: nothing changed since the last run, post nothing (only ' +
+              'when the payload carries quietEnd). could_not_check: you could ' +
+              'not do the check; your owner gets a card with your reason.',
+          },
+          reason: {
+            type: 'string',
+            maxLength: 300,
+            description:
+              'For could_not_check: why, in a few plain words your owner reads ' +
+              '(at most 300 characters).',
+          },
+        },
+        required: ['task_id', 'fire_id', 'outcome'],
       },
     },
     {
@@ -6995,6 +7069,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
     })
   }
   // Freeze private authority at request admission, before any awaited work.
+  // end_run is in neither list below, on purpose (When a routine runs, 2026-11-22). The owner's own routine wake would
+  // usually pass them (it names the owner as its acting user), but they also refuse whenever the private turn machinery
+  // is not in place: no hook, a marker that cannot be verified, a daemon without the active connection. Any such refusal
+  // would leave the run silent, which the server's sweep turns into the red card end_run exists to avoid. The server
+  // decides instead: it ends only the latest run of a wake routine that belongs to this agent's owner and to this agent.
+  // Accepted cost: a turn that is not the owner's could also lead the agent to end that latest run, which does nothing
+  // a reply in the owner's chat could not; at worst one run's Could not check card is missed, or shows unearned.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
   if (req.params.name.startsWith('boards_') || req.params.name.startsWith('artifact_') || req.params.name.startsWith('vault_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
     try {
@@ -8673,6 +8754,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
         when: rawArgs.when,
         chatId: resolvedChatId,
         boards: rawArgs.boards,
+        // How this routine's runs show in the owner's chat (0.91.0). Left out, nothing is sent: Settings decide.
+        whenItRuns: rawArgs.when_it_runs,
         // ONE name for this tool call: a second ask by the add-on (lib/schedule-send.ts) reuses it, so the
         // server answers it with the first result. The agent calling the tool again is a new call, a new id.
         clientRequestId: newScheduleRequestId(),
@@ -8711,9 +8794,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           `schedule: created kind=${built.body.kind} ${mode}` +
             (resolvedChatId != null ? ` chat ${resolvedChatId}` : ''),
         )
+        // The when_it_runs choice as the server's own answer has it (lib/schedule-send.ts whenItRunsNote).
         return {
           content: [
-            { type: 'text', text: `Scheduled.\n${JSON.stringify(result, null, 2)}` },
+            { type: 'text', text: `Scheduled.${sent.note ? ` ${sent.note}` : ''}\n${JSON.stringify(result, null, 2)}` },
           ],
         }
       } catch (err) {
@@ -8773,6 +8857,32 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           content: [{ type: 'text', text: `Failed to cancel the schedule: ${errMsg}` }],
           isError: true,
         }
+      }
+    }
+
+    case 'end_run': {
+      // WHEN A ROUTINE RUNS (2026-11-22): end one run of a routine with no change (post nothing) or could not check
+      // (the owner gets the card with the reason). The ids come from the wake's event payload, copied by the model, so
+      // they are checked first (lib/schedule.ts). The post is the daemon's own, exactly as the board grant's end is:
+      // its credential and X-Caller-Assistant-Id, no private turn and no acting user header. Every answer is one plain
+      // sentence (lib/schedule-send.ts sendRunEnd); one that was not taken says to reply normally instead.
+      const built = buildScheduleRunEndRequest({
+        taskId: rawArgs.task_id,
+        fireId: rawArgs.fire_id,
+        outcome: rawArgs.outcome,
+        reason: rawArgs.reason,
+      })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+      const ended = await sendRunEnd({ path: built.path, body: built.body, post: (path, body) => bgosPeerPost(path, body) })
+      log(`end_run: ${built.path} ${built.body.outcome}: ${ended.ok ? 'taken' : 'not taken'}`)
+      return {
+        content: [{ type: 'text', text: ended.text }],
+        ...(ended.ok ? {} : { isError: true }),
       }
     }
 
