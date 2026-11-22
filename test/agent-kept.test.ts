@@ -1,5 +1,5 @@
 /**
- * lib/agent-kept.mjs: an agent its owner switched off stays off at the supervisor (ruling 2026-11-22).
+ * lib/agent-kept.mjs: an agent its owner switched off stays off at the supervisor.
  *
  * Kept is Always on ON for the agent AND Keep agents running ON for its computer. The rules every
  * reader applies (the watcher's sweep, the agent's own daemon):
@@ -18,21 +18,34 @@ import assert from 'node:assert/strict'
 import {
   INSTALL_GRACE_MS,
   INSTALLED_AT_FILE_NAME,
+  KEPT_CACHE_FRESH_MS,
+  KEPT_CHECK_CAPABILITY,
   KEPT_SEEN_FILE_NAME,
   NOT_KEPT_FILE_NAME,
   NOT_KEPT_RUN_SH_MARK,
+  NOT_KEPT_STUCK_FILE_NAME,
   decideKeptSupervisor,
   installGraceRemainingMs,
   keepAliveStanding,
   keepAliveCacheFile,
   keepAliveStandingFromCache,
   launchSupervisorGone,
+  markInstallSeenKept,
   notKeptRunSh,
+  olderLiveLauncher,
+  releaseAgentTask,
   releasePosixSupervisor,
   seenKept,
+  watcherServiceFiles,
+  watcherServiceInstalled,
 } from '../lib/agent-kept.mjs'
-import { buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
+import { buildKeepAliveCache, decideCreateLaunch, decideKeepAliveConsent, parseKeepAliveCache } from '../lib/keepalive-plan.mjs'
 import { keepAliveCachePath } from '../lib/watcher-keepalive.mjs'
+import { agentTaskRegistration } from '../lib/agent-task-win32.mjs'
+import { agentTaskDescription } from '../lib/agent-service.mjs'
+import { supervisorFileBody } from '../bin/hoai-core.mjs'
+import { main as agentServiceMain } from '../bin/hoai-agent-service.mjs'
+import { fakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 import { memoryFs } from './helpers/memory-fs.ts'
 
 const NOW = 1_800_000_000_000
@@ -49,15 +62,15 @@ test('the keep-alive answer, for one agent: kept only with the switch ON and the
   // A list that rides an OFF answer clears nobody (decision D2).
   assert.equal(keepAliveStanding(live(false, ['912']), '912'), 'switch_off')
   assert.equal(keepAliveStanding(live(false, [], 'never_set'), '912'), 'never_set')
-  assert.equal(keepAliveStanding({ ...live(false, []), source: 'refused' }, '912'), 'switch_off', 'a revoked pairing is an answer: off')
+  assert.equal(keepAliveStanding({ ...live(false, []), source: 'refused' }, '912'), 'unknown', 'a refusal (a revoked pairing, an auth incident) is no answer, never the owner\'s switch')
   assert.equal(keepAliveStanding({ ...live(false, []), source: 'none' }, '912'), 'unknown', 'no answer and no young cache')
   assert.equal(keepAliveStanding(null, '912'), 'unknown')
 })
 
-test('the daemon reads the watcher\'s cached answer: no file is a computer with no watcher, a stale or junk file is no answer', () => {
+test('the daemon reads the watcher\'s cached answer: no file, a stale or a junk file is no answer', () => {
   const cache = (enabled: boolean, ids: string[], fetchedAgoMs: number, switchState?: string) =>
     buildKeepAliveCache({ enabled, enabledAt: null, assistantIds: ids, switchState: switchState ?? (enabled ? 'on' : 'off'), showAgentWindows: false }, NOW - fetchedAgoMs)
-  assert.equal(keepAliveStandingFromCache(null, '912', NOW), 'no_watcher')
+  assert.equal(keepAliveStandingFromCache(null, '912', NOW), 'unknown')
   assert.equal(keepAliveStandingFromCache(cache(true, ['912'], MIN), '912', NOW), 'kept')
   assert.equal(keepAliveStandingFromCache(cache(true, ['7'], MIN), '912', NOW), 'not_listed')
   assert.equal(keepAliveStandingFromCache(cache(false, ['912'], MIN), '912', NOW), 'switch_off')
@@ -67,7 +80,7 @@ test('the daemon reads the watcher\'s cached answer: no file is a computer with 
   assert.equal(keepAliveStandingFromCache('{not json', '912', NOW), 'unknown')
   assert.equal(keepAliveStandingFromCache('', '912', NOW), 'unknown')
   // The file the watcher writes, read by a reader that does not load the watcher.
-  for (const home of ['/Users/kc', 'C:\\Users\\kc']) assert.equal(keepAliveCacheFile(home), keepAliveCachePath(home))
+  for (const home of ['/Users/user', 'C:\\Users\\user']) assert.equal(keepAliveCacheFile(home), keepAliveCachePath(home))
 })
 
 // -- seen kept is a fact of ONE install -------------------------------------------------------------
@@ -166,7 +179,7 @@ test('Always on OFF is an answer whatever the switch read says: not kept, so a s
 
 // -- removal without ending what runs ------------------------------------------------------------------
 
-const HOME = '/home/kc'
+const HOME = '/home/user'
 const UNIT = 'bgos-agent-912-home-5156882f'
 const UNIT_FILE = `${HOME}/.config/systemd/user/${UNIT}.service`
 const LABEL = 'ai.bgos.agent.912.home-5156882f'
@@ -196,7 +209,7 @@ test('Linux removal is exactly the measured one: disable, delete the unit file, 
   // run.sh by hoai finds the not-kept one, so a run.sh still waiting to start the agent starts nothing.
   const runSh = fs.files.get(RUN_SH) ?? ''
   assert.ok(runSh.includes(NOT_KEPT_RUN_SH_MARK), runSh)
-  assert.doesNotMatch(runSh, /hoai-core|tmux|claude|exec |launchctl|systemctl/)
+  assert.doesNotMatch(runSh, /hoai-core|tmux|claude|exec |launchctl|systemctl --user (start|restart|enable)/)
   assert.equal([...fs.files.keys()].some((p) => p.endsWith('.tmp')), false)
 })
 
@@ -237,7 +250,7 @@ test('Mac removal: a run.sh that cannot be replaced leaves the plist too, so the
 // -- what runs does not bring it back --------------------------------------------------------------------
 
 test('a supervised launch asks whether its supervisor is gone: Windows by the task launcher, Mac and Linux by a not-kept run.sh; a launch by hand is never asked', () => {
-  const SD = '/home/kc/.bgos-agent/912'
+  const SD = '/home/user/.bgos-agent/912'
   const files = new Map<string, string>()
   const io = { stateDir: SD, exists: (p: string) => files.has(p), readFile: (p: string) => files.get(p) ?? null }
   files.set(`${SD}/run-agent.vbs`, 'x')
@@ -263,4 +276,193 @@ test('a supervised launch asks whether its supervisor is gone: Windows by the ta
     assert.equal(launchSupervisorGone({ platform, supervised: true, keepAlive: false, ...io }), 'service_removed', platform)
     assert.equal(launchSupervisorGone({ platform, supervised: false, keepAlive: false, ...io }), null, `${platform}: by hand`)
   }
+})
+
+// -- round 3: what a reader may trust, and what it says ------------------------------------------------
+
+const offCache = (agoMs: number, extra: Record<string, unknown> = {}) =>
+  buildKeepAliveCache({ enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, ...extra }, NOW - agoMs)
+
+test('B1: a refusal (401/403) is no answer, never the owner\'s switch: the watcher caches it marked refused, and every reader of that cache reads no answer', () => {
+  const text = offCache(MIN, { refused: true })
+  assert.equal(JSON.parse(text).refused, true)
+  const parsed = parseKeepAliveCache(text)
+  assert.equal(parsed?.refused, true)
+  const consent = decideKeepAliveConsent({ live: null, cache: parsed, now: NOW })
+  assert.equal(consent.source, 'refused', 'the watcher\'s own fallback reads it as the refusal it was')
+  assert.equal(consent.enabled, false, 'and acts on nothing')
+  assert.equal(keepAliveStandingFromCache(text, '912', NOW), 'unknown')
+  assert.equal(keepAliveStandingFromCache(text, '912', NOW, { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled: true }), 'unknown')
+  assert.deepEqual(decideCreateLaunch(consent), { mode: 'once', reason: 'no_answer' }, 'create_agent reads it as a live refusal: no answer')
+  // Not marked: the owner's own switch, as before.
+  const off = offCache(MIN)
+  assert.equal('refused' in JSON.parse(off), false)
+  assert.equal(keepAliveStandingFromCache(off, '912', NOW), 'switch_off')
+})
+
+test('M1: the daemon trusts the watcher\'s cache only while it is fresh: older than 5 minutes is no answer (the watcher rewrites it every minute while it runs)', () => {
+  assert.equal(KEPT_CACHE_FRESH_MS, 5 * MIN)
+  const fresh = { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled: true }
+  assert.equal(keepAliveStandingFromCache(offCache(4 * MIN), '912', NOW, fresh), 'switch_off')
+  assert.equal(keepAliveStandingFromCache(offCache(6 * MIN), '912', NOW, fresh), 'unknown')
+  assert.equal(keepAliveStandingFromCache(offCache(-MIN), '912', NOW, fresh), 'unknown', 'a cache from the future is no answer')
+  assert.equal(keepAliveStandingFromCache(offCache(6 * MIN), '912', NOW), 'switch_off', 'a reader that sets no limit keeps the cache\'s own 24 h rule')
+})
+
+test('m2: "no watcher" is read from the watcher\'s install (its service file, this HOME\'s or the old name), never from a missing cache', () => {
+  for (const platform of ['darwin', 'linux']) {
+    const home = platform === 'darwin' ? '/Users/user' : '/home/user'
+    const files = watcherServiceFiles({ platform, home, env: {} })
+    assert.match(files[0] ?? '', platform === 'darwin' ? /\/Library\/LaunchAgents\/ai\.bgos\.watcher\.home-[0-9a-f]{8}\.plist$/ : /\/\.config\/systemd\/user\/bgos-watcher-home-[0-9a-f]{8}\.service$/)
+    for (const file of files) {
+      const fs = memoryFs()
+      assert.equal(watcherServiceInstalled({ platform, home, env: {}, exists: fs.exists }), false, `${platform}: no watcher`)
+      fs.writeFile(file, 'x')
+      assert.equal(watcherServiceInstalled({ platform, home, env: {}, exists: fs.exists }), true, `${platform}: ${file}`)
+    }
+    assert.ok(files.some((f) => /ai\.bgos\.watcher\.plist$|bgos-watcher\.service$/.test(f)), `${platform}: the old name counts too`)
+  }
+  assert.equal(keepAliveStandingFromCache(null, '912', NOW, { watcherInstalled: true }), 'unknown', 'a fresh watcher before its first sweep: no answer, nothing moves')
+  assert.equal(keepAliveStandingFromCache(null, '912', NOW, { watcherInstalled: false }), 'no_watcher')
+  assert.equal(keepAliveStandingFromCache(offCache(MIN), '912', NOW, { watcherInstalled: false }), 'no_watcher', 'a cache an uninstalled watcher left behind is no switch')
+})
+
+test('m1: an install made because the agent is kept is seen kept at once: kept-seen gets the new installed-at', () => {
+  const SD = '/Users/user/.bgos-agent/912'
+  const fs = memoryFs({ [`${SD}/${INSTALLED_AT_FILE_NAME}`]: stamp(0) })
+  assert.equal(markInstallSeenKept({ stateDir: SD, readFile: fs.readFile, writeFile: fs.writeFile }), true)
+  assert.equal(seenKept(fs.readFile(`${SD}/${INSTALLED_AT_FILE_NAME}`), fs.readFile(`${SD}/${KEPT_SEEN_FILE_NAME}`)), true)
+  for (const bad of ['soon', null]) {
+    const bare = memoryFs(bad === null ? {} : { [`${SD}/${INSTALLED_AT_FILE_NAME}`]: bad })
+    assert.equal(markInstallSeenKept({ stateDir: SD, readFile: bare.readFile, writeFile: bare.writeFile }), false, String(bad))
+    assert.equal(bare.files.has(`${SD}/${KEPT_SEEN_FILE_NAME}`), false, 'no install stamp: nothing to mark')
+  }
+})
+
+test('m4: a self-removal that fails does not loop unseen: the run.sh left behind waits 30 minutes after a failed bootout (Mac) or reload (Linux), and says so once', () => {
+  const SD = '/Users/user/.bgos-agent/912'
+  const mac = notKeptRunSh({ platform: 'darwin', assistantId: '912', label: LABEL, stateDir: SD })
+  const linux = notKeptRunSh({ platform: 'linux', assistantId: '912', label: UNIT, stateDir: SD })
+  assert.ok(mac.includes('if ! launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1; then'), mac)
+  // Linux: the unit runs this only while the manager still holds its old Restart, so it reloads it itself.
+  assert.ok(linux.includes('if ! systemctl --user daemon-reload >/dev/null 2>&1; then'), linux)
+  assert.ok(linux.includes('export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"'), linux)
+  assert.doesNotMatch(linux, /launchctl/)
+  for (const sh of [mac, linux]) {
+    assert.ok(sh.includes(`stuck="$sd/${NOT_KEPT_STUCK_FILE_NAME}"`), sh)
+    // The failure is said once: only while its marker is not there yet, which the same branch writes.
+    assert.match(sh, /  if \[ ! -e "\$stuck" \]; then\n    : > "\$stuck" 2>\/dev\/null\n    echo "[^\n]*failed[^\n]*" >> "\$sd\/agent\.log" 2>\/dev\/null\n  fi\n  sleep 1800\nfi\nexit 0\n$/)
+    // And the every-run line is quiet once it is stuck: a wait of 30 minutes is not a line every 30 minutes.
+    assert.match(sh, /\[ -e "\$stuck" \] \|\| echo "[^\n]*not kept running: not starting it/)
+  }
+})
+
+test('m4: a new removal starts with no stuck marker, so a failure is said again for it', async () => {
+  const stuck = `${HOME}/.bgos-agent/912/${NOT_KEPT_STUCK_FILE_NAME}`
+  const fs = memoryFs({ [PLIST]: '<plist/>', [stuck]: '' })
+  const out = await releasePosixSupervisor({ platform: 'darwin', service: { kind: 'launchd', handle: LABEL, file: PLIST }, assistantId: '912', home: HOME, exec: recordingExec().exec, fs, env: {} } as any)
+  assert.equal(out.ok, true, out.message)
+  assert.equal(fs.files.has(stuck), false)
+})
+
+test('m4: Linux: a daemon-reload that fails is tried again while the unit still runs, and said plainly when it never works', async () => {
+  const run = async (reloadCodes: number[], activeOut: string) => {
+    const fs = memoryFs({ [UNIT_FILE]: '[Service]\nRestart=always\n', [RUN_SH]: '#!/usr/bin/env bash\n' })
+    const verbs: string[] = []
+    let reloads = 0
+    const exec = async (file: string, args: readonly string[]) => {
+      verbs.push(args[1]!)
+      if (args[1] === 'daemon-reload') return { code: reloadCodes[reloads++] ?? 1, stdout: '', stderr: 'Failed to reload daemon: Connection timed out', error: null, timedOut: false }
+      if (args[1] === 'is-active') return { code: activeOut === 'active' ? 0 : 3, stdout: `${activeOut}\n`, stderr: '', error: null, timedOut: false }
+      return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+    }
+    const out = await releasePosixSupervisor({ platform: 'linux', service: { kind: 'systemd', handle: UNIT, file: UNIT_FILE }, assistantId: '912', home: HOME, exec, fs, env: {} } as any)
+    return { out, verbs, fs }
+  }
+  const second = await run([1, 0], 'active')
+  assert.equal(second.out.ok, true)
+  assert.deepEqual(second.verbs, ['disable', 'daemon-reload', 'is-active', 'daemon-reload'])
+  assert.equal((second.out as any).note ?? null, null, 'reloaded on the second try: nothing to say')
+  const never = await run([1, 1, 1], 'active')
+  assert.equal(never.out.ok, true, 'disabled and its file gone: no login starts it again')
+  assert.deepEqual(never.verbs, ['disable', 'daemon-reload', 'is-active', 'daemon-reload', 'is-active', 'daemon-reload'])
+  assert.match((never.out as any).note ?? '', /daemon-reload failed .*Connection timed out.*run\.sh reloads it itself/)
+  assert.equal(never.fs.files.has(UNIT_FILE), false)
+  const stopped = await run([1], 'inactive')
+  assert.deepEqual(stopped.verbs, ['disable', 'daemon-reload', 'is-active'], 'not running: nothing left to restart it, no more tries')
+})
+
+test('m3: a Windows task that cannot be read back, or whose Unregister fails, is not "removed": nothing is deleted, so the next sweep sees it and tries again', async () => {
+  const WHOME = 'C:\\Users\\user'
+  const reg = agentTaskRegistration({ assistantId: '912', home: WHOME })
+  const scene = (opts: Record<string, unknown>) => {
+    const fs = memoryFs({ [reg.launcherPath]: 'Set shell = CreateObject("WScript.Shell")\r\n' })
+    const tasks = fakeAgentTasks({ fs, ...opts } as any)
+    tasks.seed.task(reg.taskName, reg.launcherPath, { description: agentTaskDescription('912', WHOME), running: true })
+    return { fs, tasks }
+  }
+  const unread = scene({ queryErrors: [{ action: 'probe', times: 1 }] })
+  const a = await releaseAgentTask({ assistantId: '912', home: WHOME, exec: unread.tasks.exec, fs: unread.fs } as any)
+  assert.equal(a.ok, false)
+  assert.match(a.message, /could not be read back/)
+  assert.equal(unread.tasks.tasks.has(reg.taskName), true)
+  assert.equal(unread.fs.files.has(reg.launcherPath), true, 'its launcher stays: the inventory still sees the task')
+  assert.equal(unread.tasks.calls.some((c) => c.includes('-Action uninstall')), false)
+  const refused = scene({ fail: [{ match: '-Action uninstall', code: 1, stderr: 'task not unregistered: Access is denied.' }] })
+  const b = await releaseAgentTask({ assistantId: '912', home: WHOME, exec: refused.tasks.exec, fs: refused.fs } as any)
+  assert.equal(b.ok, false)
+  assert.match(b.message, /not unregistered.*Access is denied/)
+  assert.equal(refused.fs.files.has(reg.launcherPath), true)
+  const fine = scene({})
+  const c = await releaseAgentTask({ assistantId: '912', home: WHOME, exec: fine.tasks.exec, fs: fine.fs } as any)
+  assert.equal(c.ok, true, c.message)
+  assert.equal(fine.tasks.tasks.has(reg.taskName), false)
+  assert.equal(fine.tasks.instances.has(reg.taskName), true, 'what it runs now is not ended')
+  assert.equal(fine.fs.files.has(reg.launcherPath), false)
+})
+
+test('m3: the task script\'s uninstall no longer swallows an Unregister error: it exits 1 and says why; only a task already gone is fine', () => {
+  const ps1 = agentTaskRegistration({ assistantId: '912', home: 'C:\\Users\\user' }).script.content
+  const block = ps1.slice(ps1.indexOf('"uninstall" {'), ps1.indexOf('"status" {'))
+  assert.ok(block.length > 0, ps1)
+  assert.doesNotMatch(block, /catch \{\}/)
+  assert.match(block, /ObjectNotFound/)
+  assert.match(block, /Write-Output \("task not unregistered: " \+ \$_\.Exception\.Message\); exit 1/)
+})
+
+test('m5: a hoai launcher of this version says it stops once its supervisor is removed; a live one that does not say so is from an older version', () => {
+  assert.deepEqual(JSON.parse(supervisorFileBody(42, 'S')).capabilities, ['relaunch', KEPT_CHECK_CAPABILITY])
+  const SD = 'C:\\Users\\user\\.bgos-agent\\912'
+  const file = `${SD}\\supervisor.json`
+  const fs = memoryFs({ [file]: JSON.stringify({ pid: 4242, capabilities: ['relaunch'], startedAt: 'S' }) })
+  assert.equal(olderLiveLauncher({ launcherLive: true, stateDir: SD, readFile: fs.readFile }), 4242)
+  assert.equal(olderLiveLauncher({ launcherLive: false, stateDir: SD, readFile: fs.readFile }), null, 'not live: nothing relaunches')
+  fs.writeFile(file, supervisorFileBody(4243, 'S'))
+  assert.equal(olderLiveLauncher({ launcherLive: true, stateDir: SD, readFile: fs.readFile }), null)
+})
+
+test('m7: hoai-agent install --always-on asks first (bin/hoai-agent-service.mjs kept-switch): a fresh cache saying this computer\'s switch is off is "switch_off"; stale, refused or no watcher is not', async () => {
+  const home = '/Users/user'
+  const fs = memoryFs()
+  const [watcherFile] = watcherServiceFiles({ platform: 'darwin', home, env: {} })
+  fs.writeFile(watcherFile!, 'x')
+  const ask = async () => {
+    const lines: string[] = []
+    const code = await agentServiceMain(['kept-switch', '--assistant', '912', '--os', 'Darwin'], { env: { HOME: home }, fs, out: (l: string) => void lines.push(l), err: () => undefined, now: () => NOW } as any)
+    return [code, ...lines]
+  }
+  const put = (text: string) => fs.writeFile(keepAliveCacheFile(home), text)
+  put(offCache(MIN))
+  assert.deepEqual(await ask(), [0, 'switch_off'])
+  put(offCache(6 * MIN))
+  assert.deepEqual(await ask(), [0, 'unknown'], 'stale')
+  put(offCache(MIN, { refused: true }))
+  assert.deepEqual(await ask(), [0, 'unknown'], 'refused')
+  put(offCache(MIN, { switchState: 'never_set' }))
+  assert.deepEqual(await ask(), [0, 'never_set'])
+  put(buildKeepAliveCache({ enabled: true, enabledAt: null, assistantIds: ['912'], switchState: 'on', showAgentWindows: false }, NOW - MIN))
+  assert.deepEqual(await ask(), [0, 'kept'])
+  put(offCache(MIN))
+  fs.rm(watcherFile!)
+  assert.deepEqual(await ask(), [0, 'no_watcher'])
 })

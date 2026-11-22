@@ -149,7 +149,12 @@ test('install-agent-task.ps1: exact text, unelevated Register-ScheduledTask with
       '    catch { Write-Output ("task start refused: " + $_.Exception.Message); exit 1 }',
       '  }',
       '  "uninstall" {',
-      "    try { Unregister-ScheduledTask -TaskPath '\\' -TaskName $name -Confirm:$false -ErrorAction Stop } catch {}",
+      // An Unregister error is said and exits 1 (lib/agent-kept.mjs releaseAgentTask removes nothing then); absent is fine.
+      "    try { Unregister-ScheduledTask -TaskPath '\\' -TaskName $name -Confirm:$false -ErrorAction Stop }",
+      '    catch {',
+      "      if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { Write-Output \"not registered\"; exit 0 }",
+      '      Write-Output ("task not unregistered: " + $_.Exception.Message); exit 1',
+      '    }',
       '    Write-Output "unregistered"; exit 0',
       '  }',
       '  "status" {',

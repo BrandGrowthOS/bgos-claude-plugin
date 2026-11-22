@@ -245,7 +245,7 @@ test('keep-alive: an exit on its own relaunches after 5 s RESUMING the pinned se
   assert.equal(h.spawns[1]!.args.includes('--continue'), false)
   const sup = JSON.parse(h.files.get(SUPERVISOR_PATH) ?? 'null')
   assert.equal(sup?.pid, process.pid)
-  assert.deepEqual(sup?.capabilities, ['relaunch'])
+  assert.deepEqual(sup?.capabilities, ['relaunch', 'kept-check'], 'kept-check: it stops once its supervisor is removed (lib/agent-kept.mjs)')
   // The stamp before a relaunch names no deadline: lib/restart-handoff.mjs counts only such a stamp as a relaunch.
   assert.equal(sup?.relaunchBy, undefined)
   assert.equal(h.files.get(SESSION_ID_PATH), PINNED, 'the pin is untouched')
@@ -557,7 +557,7 @@ test('main(): --keep-alive reaches the loop (an exit is relaunched), and the sto
   }
 })
 
-// -- switched off stays off (lib/agent-kept.mjs, ruling 2026-11-22) --------------------------------------
+// -- switched off stays off (lib/agent-kept.mjs) ----------------------------------------------------------
 //
 // A supervisor removed because its agent is no longer kept leaves what runs alone; what runs must then
 // not bring the agent back. On Windows the task's `hoai-core --keep-alive` is itself the loop, so it

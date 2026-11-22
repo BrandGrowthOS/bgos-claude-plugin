@@ -46,6 +46,7 @@ import { agentTaskSpec } from '../lib/agent-task-win32.mjs'
 import { RESTART_EXEC_TIMEOUT_MS } from '../lib/agent-restart.mjs'
 import { CHANNEL_DEAF_CONFIRM_MS, CHANNEL_DEAF_EPISODE_CLEAR_MS, buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
+import { KEPT_CACHE_FRESH_MS, KEPT_CHECK_CAPABILITY, keepAliveStandingFromCache } from '../lib/agent-kept.mjs'
 import { fakeAgentTasks, type FakeAgentTaskOptions, type FakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 
 const HOME = '/Users/kc'
@@ -275,7 +276,7 @@ const readOnlyProbe = (c: { file: string; args: string[] }) =>
  *     --property=LoadState,...` a loaded unit from this HOME's unit file. With the user bus down
  *     (`systemctlShow` null) every `systemctl --user show` fails alike, the read back included.
  */
-function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number | null; bashCode?: number; launchctlCode?: number; win32Ps?: string; systemctlShow?: string | null; win32Task?: 'own' | 'absent' | 'legacy'; fail?: FakeAgentTaskOptions['fail'] } = {}) {
+function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number | null; bashCode?: number; launchctlCode?: number; win32Ps?: string; systemctlShow?: string | null; reloadCode?: number; win32Task?: 'own' | 'absent' | 'legacy'; fail?: FakeAgentTaskOptions['fail']; queryErrors?: FakeAgentTaskOptions['queryErrors'] } = {}) {
   const calls: Array<{ file: string; args: string[]; opts: any }> = []
   let tasks: FakeAgentTasks | null = null
   let tasksFs: MemoryFs | null = null
@@ -284,7 +285,7 @@ function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number |
     if (tasksFs === fs) return tasks!
     if (tasksFs) throw new Error('recorder: its task host is already bound to another machine')
     tasksFs = fs
-    tasks = fakeAgentTasks({ fs, fail: opts.fail })
+    tasks = fakeAgentTasks({ fs, fail: opts.fail, queryErrors: opts.queryErrors })
     for (const id of WIN32_AGENT_IDS) seedWin32Task(tasks, id, opts.win32Task ?? 'own')
     return tasks
   }
@@ -307,6 +308,9 @@ function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number |
       if (args.some((a) => a.startsWith('--property=LoadState'))) return { code: 0, stdout: ownUnitShow(String(args[args.length - 1])), stderr: '', error: null, timedOut: false }
       return { code: 0, stdout: opts.systemctlShow, stderr: '', error: null, timedOut: false }
     }
+    // reloadCode: a user manager whose daemon-reload fails while the unit still runs (round 3 m4).
+    if (file === 'systemctl' && opts.reloadCode != null && args.includes('daemon-reload')) return { code: opts.reloadCode, stdout: '', stderr: 'Failed to reload daemon: Connection timed out', error: null, timedOut: false }
+    if (file === 'systemctl' && opts.reloadCode != null && args.includes('is-active')) return { code: 0, stdout: 'active\n', stderr: '', error: null, timedOut: false }
     return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
   }
   const kills: Array<[number, string]> = []
@@ -3731,7 +3735,7 @@ test('deafwatch for every agent (F8): the state written BEFORE an act on a clear
   assert.equal(atKick.watched['913'].reason, NOT_KEPT)
 })
 
-// -- switched off stays off (lib/agent-kept.mjs, ruling 2026-11-22) ---------------------------------------
+// -- switched off stays off (lib/agent-kept.mjs) -----------------------------------------------------------
 //
 // The keep-alive read is where a supervisor stops existing for an agent that is not kept: the
 // computer's switch OFF removes every one at once; an agent off the list loses one that was ever seen
@@ -3782,8 +3786,8 @@ test('switched off stays off (brief case 5 and round 2): several agents on one c
     [
       { id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.1' } },
       { id: '913', cwd: GURU, service: 'canonical' },
-      { id: '914', cwd: `${HOME}/hoai-agents/nova`, service: 'canonical' },
-      { id: '915', cwd: `${HOME}/hoai-agents/zed`, service: 'none' },
+      { id: '914', cwd: `${HOME}/hoai-agents/agent-914`, service: 'canonical' },
+      { id: '915', cwd: `${HOME}/hoai-agents/agent-915`, service: 'none' },
     ],
     { scoped: true },
   )
@@ -3842,10 +3846,10 @@ test('switched off stays off: a Windows task the sweep installs is stamped, so a
 test('switched off stays off: only this HOME\'s canonical supervisor is ever removed; a job some other launcher installed for the agent is left exactly as it is', async () => {
   const fs = machine([{ id: '913', cwd: GURU, service: 'none' }], { platform: 'linux' })
   // The owner's own unit, in the agent's folder: found by the inventory (G11), never installed by HOAI.
-  const OWN_UNIT = `${HOME}/.config/systemd/user/my-guru.service`
+  const OWN_UNIT = `${HOME}/.config/systemd/user/owner-agent.service`
   fs.writeFile(OWN_UNIT, `[Service]\nWorkingDirectory=${GURU}\nExecStart=/usr/local/bin/claude\nRestart=always\n`)
   const execSync = (file: string, args: string[]) =>
-    file === 'systemctl' && args.includes('list-units') ? { code: 0, stdout: 'my-guru.service loaded active running guru\n' } : { code: 1, stdout: '' }
+    file === 'systemctl' && args.includes('list-units') ? { code: 0, stdout: 'owner-agent.service loaded active running agent\n' } : { code: 1, stdout: '' }
   const row = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: () => false, execSync, now: T0, uid: 501 } as any).find((r: any) => r.assistantId === '913')
   assert.equal(row?.service?.file, OWN_UNIT, 'the scene: the agent is supervised by its owner\'s unit')
   assert.notEqual(row?.service?.via, 'canonical-file')
@@ -3885,4 +3889,153 @@ test('switched off stays off: a removal that fails is said once and tried again 
   await runKeepAliveSweep(ctx as any)
   assert.equal(fs.files.has(UNIT_FILE('912')), false)
   assert.ok(linesFor(logs, '912').some((l) => /supervisor removed \(switch_off\)/.test(l)))
+})
+
+// -- switched off stays off, round 3: what the sweep may trust, and what it says ---------------------------
+
+const ON_912 = consent({ enabled: true, enabledAt: 'e', assistantIds: [912] }).fetchKeepAlive
+
+test('switched off stays off (round 3 B1): a 401 with a canonical supervisor present leaves it alone; the refusal is cached marked refused, which the daemon reads as no answer', async () => {
+  for (const status of [401, 403]) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'canonical' }], { scoped: true })
+    fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, installedAt(60 * MIN))
+    fs.writeFile(`${HOME}/.bgos-agent/912/kept-seen`, installedAt(60 * MIN))
+    fs.writeFile(RUN_SH('912'), '#!/usr/bin/env bash\nexec hoai-core\n')
+    const rec = recorder({ ps: IDLE_PS })
+    const clock = fakeClock()
+    const { ctx, logs } = ctxFor(fs, rec, clock, { fetchKeepAlive: consent({ message: 'Invalid pairing token' }, false, status).fetchKeepAlive })
+    const report = await runKeepAliveSweep(ctx as any)
+    assert.equal(report.source, 'refused')
+    assert.equal(fs.files.has(PLIST('912')), true, `${status}: the supervisor stays`)
+    assert.match(fs.files.get(RUN_SH('912')) ?? '', /hoai-core/, `${status}: run.sh untouched`)
+    assert.deepEqual(bootouts(rec), [])
+    assert.equal(logs.some((l) => /not kept|supervisor removed/.test(l)), false, logs.join('\n'))
+    const cached = fs.files.get(keepAliveCachePath(HOME)) ?? ''
+    assert.equal(JSON.parse(cached).refused, true, `${status}: cached as a refusal, not as the owner's switch`)
+    assert.equal(keepAliveStandingFromCache(cached, '912', T0, { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled: true }), 'unknown')
+    // An outage right after: the cached refusal still moves nothing.
+    clock.advance(5 * MIN)
+    await runKeepAliveSweep(ctxFor(fs, rec, clock, { fetchKeepAlive: consent(null, false, 503).fetchKeepAlive }).ctx as any)
+    assert.equal(fs.files.has(PLIST('912')), true)
+  }
+})
+
+test('switched off stays off (round 3 M1): the sweep removes only on a live answer: a young cached OFF removes nothing, nor does a cached list that misses an agent created during the outage', async () => {
+  const answers = [
+    { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false },
+    { enabled: true, enabledAt: 'e', assistantIds: ['912'], switchState: 'on', showAgentWindows: false },
+  ]
+  for (const answer of answers) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'canonical' }, { id: '913', cwd: GURU, service: 'canonical' }], { scoped: true })
+    fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, installedAt(60 * MIN))
+    fs.writeFile(`${HOME}/.bgos-agent/912/kept-seen`, installedAt(60 * MIN))
+    // create_agent installed 913 while the keep-alive route was down: never on the cached list, 20 minutes ago.
+    fs.writeFile(`${HOME}/.bgos-agent/913/installed-at`, installedAt(20 * MIN))
+    fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache(answer, T0 - 2 * MIN))
+    const rec = recorder({ ps: IDLE_PS })
+    const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { fetchKeepAlive: consent(null, false, 503).fetchKeepAlive })
+    const report = await runKeepAliveSweep(ctx as any)
+    assert.equal(report.source, 'cache')
+    assert.equal(fs.files.has(PLIST('912')), true, `switch ${answer.switchState}: 912`)
+    assert.equal(fs.files.has(PLIST('913')), true, `switch ${answer.switchState}: 913, created during the outage`)
+    assert.equal(fs.files.has(`${HOME}/.bgos-agent/913/kept-seen`), false, 'and nothing is marked seen on a cached answer')
+    assert.equal(logs.some((l) => /not kept|supervisor removed/.test(l)), false, logs.join('\n'))
+  }
+})
+
+test('switched off stays off (round 3 m1): an install the sweep makes for an agent a live answer clears is seen kept at once; one made on a cached answer is not', async () => {
+  for (const live of [true, false]) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'none' }])
+    const rec = recorder({ ps: IDLE_PS })
+    // bin/bgos-agent stamps every always-on install (installed-at); the stand-in does what it does.
+    const exec = async (file: string, args: readonly string[], o: any = {}) => {
+      if (file === 'bash' && args.includes('install')) fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, installedAt(0))
+      return rec.exec(file, args, o)
+    }
+    if (!live) fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'], switchState: 'on', showAgentWindows: false }, T0 - 2 * MIN))
+    const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { exec, ...(live ? { fetchKeepAlive: ON_912 } : { fetchKeepAlive: consent(null, false, 503).fetchKeepAlive }) })
+    await runKeepAliveSweep(ctx as any)
+    assert.ok(logs.some((l) => /keep-alive 912: supervisor install ok/.test(l)), logs.join('\n'))
+    assert.equal(fs.files.get(`${HOME}/.bgos-agent/912/kept-seen`)?.trim() ?? null, live ? installedAt(0).trim() : null, live ? 'live' : 'cached')
+  }
+  // Windows: the task install stamps itself, and is marked with that stamp.
+  const wfs = windowsMachine()
+  await runKeepAliveSweep(windowsCtx(wfs, recorder({ win32Task: 'absent' })) as any)
+  assert.equal(wfs.files.get(`${WSTATE}\\installed-at`), `${Math.floor(T0 / 1000)}\n`)
+  assert.equal(wfs.files.get(`${WSTATE}\\kept-seen`)?.trim(), `${Math.floor(T0 / 1000)}`)
+})
+
+test('switched off stays off (round 3 m3): on Windows a task that cannot be read back is not "removed": said plainly, its launcher stays, and it is tried again after 10 minutes', async () => {
+  const fs = windowsMachine({ [`${WSTATE}\\run-agent.vbs`]: 'Set shell = CreateObject("WScript.Shell")\r\n' })
+  const rec = recorder({ queryErrors: [{ action: 'probe', times: 1, message: 'The operation timed out (CIM).' }] })
+  const clock = fakeClock()
+  const logs: string[] = []
+  const ctx = windowsCtx(fs, rec, { clock, fetchKeepAlive: SWITCH_OFF([912]), log: (l: string) => void logs.push(l) })
+  const tasks = rec.useTaskHost(fs)
+  tasks.seed.task(WTASK, `${WSTATE}\\run-agent.vbs`, { description: `HOAI agent 912, installed from home=${WHOME}`, running: true })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(tasks.tasks.has(WTASK), true)
+  assert.equal(fs.files.has(`${WSTATE}\\run-agent.vbs`), true, 'the launcher stays, so the inventory still sees the task')
+  assert.equal(logs.filter((l) => /keep-alive 912: supervisor removed/.test(l)).length, 0, logs.join('\n'))
+  assert.equal(logs.filter((l) => /keep-alive 912: not kept \(switch_off\), supervisor not removed: .*could not be read back.*timed out/.test(l)).length, 1, logs.join('\n'))
+  clock.advance(MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(tasks.tasks.has(WTASK), true, 'not again a minute later')
+  clock.advance(10 * MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(tasks.tasks.has(WTASK), false, 'tried again after 10 minutes, and read back this time')
+  assert.equal(tasks.instances.has(WTASK), true, 'what it runs now is not ended')
+  assert.ok(logs.some((l) => /keep-alive 912: supervisor removed \(switch_off\)/.test(l)))
+})
+
+test('switched off stays off (round 3 m4): on Linux a daemon-reload that keeps failing is tried again while the unit runs, then said plainly with the removal', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical' }], { platform: 'linux', scoped: true })
+  fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, installedAt(60 * MIN))
+  fs.writeFile(`${HOME}/.bgos-agent/912/kept-seen`, installedAt(60 * MIN))
+  const rec = recorder({ ps: IDLE_PS, reloadCode: 1 })
+  const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { platform: 'linux', fetchKeepAlive: SWITCH_OFF([912]) })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(fs.files.has(UNIT_FILE('912')), false)
+  assert.deepEqual(
+    rec.calls.filter((c) => c.file === 'systemctl' && !c.args.includes('show')).map((c) => c.args[1]),
+    ['disable', 'daemon-reload', 'is-active', 'daemon-reload', 'is-active', 'daemon-reload'],
+  )
+  assert.equal(logs.filter((l) => /keep-alive 912: supervisor removed/.test(l)).length, 1, logs.join('\n'))
+  const said = logs.filter((l) => /keep-alive 912: .*daemon-reload failed/.test(l))
+  assert.equal(said.length, 1, logs.join('\n'))
+  assert.match(said[0]!, /its run\.sh once more, and that run\.sh reloads it itself and starts nothing/)
+})
+
+test('switched off stays off (round 3 m5): removing a task whose live hoai launcher is from an older version says one restart is needed; a launcher of this version is not named', async () => {
+  for (const capabilities of [['relaunch'], ['relaunch', KEPT_CHECK_CAPABILITY]]) {
+    const fs = windowsMachine({
+      [`${WSTATE}\\run-agent.vbs`]: 'Set shell = CreateObject("WScript.Shell")\r\n',
+      [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 4912, capabilities, startedAt: new Date(T0 - 60 * MIN).toISOString() }),
+    })
+    const rec = recorder()
+    const logs: string[] = []
+    const ctx = windowsCtx(fs, rec, { fetchKeepAlive: SWITCH_OFF([912]), log: (l: string) => void logs.push(l) })
+    rec.useTaskHost(fs).seed.task(WTASK, `${WSTATE}\\run-agent.vbs`, { description: `HOAI agent 912, installed from home=${WHOME}`, running: true })
+    await runKeepAliveSweep(ctx as any)
+    assert.ok(logs.some((l) => /keep-alive 912: supervisor removed/.test(l)), logs.join('\n'))
+    const old = logs.filter((l) => /keep-alive 912: .*pid 4912.*older version.*restart/i.test(l))
+    assert.equal(old.length, capabilities.length === 1 ? 1 : 0, `${capabilities.join(',')}: ${logs.join('\n')}`)
+  }
+})
+
+test('switched off stays off (round 3 m8): an agent not kept that its owner\'s own unit keeps running is left alone, and that is said once', async () => {
+  const fs = machine([{ id: '913', cwd: GURU, service: 'none' }], { platform: 'linux' })
+  const OWN_UNIT = `${HOME}/.config/systemd/user/owner-agent.service`
+  fs.writeFile(OWN_UNIT, `[Service]\nWorkingDirectory=${GURU}\nExecStart=/usr/local/bin/claude\nRestart=always\n`)
+  const execSync = (file: string, args: string[]) =>
+    file === 'systemctl' && args.includes('list-units') ? { code: 0, stdout: 'owner-agent.service loaded active running agent\n' } : { code: 1, stdout: '' }
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  const { ctx, logs } = ctxFor(fs, rec, clock, { platform: 'linux', execSync, fetchKeepAlive: SWITCH_OFF([913]) })
+  await runKeepAliveSweep(ctx as any)
+  clock.advance(MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(fs.files.has(OWN_UNIT), true)
+  const said = linesFor(logs, '913').filter((l) => /not kept \(switch_off\).*owner-agent.*left alone/.test(l))
+  assert.equal(said.length, 1, logs.join('\n'))
 })

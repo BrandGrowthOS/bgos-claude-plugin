@@ -124,7 +124,7 @@ test('readLauncherProcesses: one exec for the whole fleet, none without pids or 
 test('parseSupervisorRecord: the file plus its writer\'s stamp; a missing or junk stamp is null', () => {
   assert.deepEqual(parseSupervisorRecord(supervisorFileBody(42, '2026-10-06T21:00:00.000Z')), {
     pid: 42,
-    capabilities: ['relaunch'],
+    capabilities: ['relaunch', 'kept-check'],
     startedAtMs: Date.parse('2026-10-06T21:00:00.000Z'),
     boot: null,
     declaredLauncher: false,

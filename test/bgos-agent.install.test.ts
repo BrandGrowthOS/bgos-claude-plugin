@@ -50,6 +50,8 @@ import { resolvePosixBash } from './helpers/posix-bash.ts'
 import { LAUNCHCTL_PRINT_NOT_LOADED, systemctlShowFromUnitFile } from './helpers/bash-service-probes.ts'
 import { watcherHomeId } from '../lib/watcher-service.mjs'
 import { scratchDir } from './helpers/scratch-dirs.ts'
+import { keepAliveCacheFile, watcherServiceFiles } from '../lib/agent-kept.mjs'
+import { buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 // bin/bgos-agent is the macOS and Linux installer: it refuses any other OS by name (on Windows it
@@ -715,4 +717,21 @@ test('the PATH an install bakes is correct for its OS: Homebrew on macOS only (b
   const mr = mac.run(['--assistant', '874', '--dir', mw, '--always-on'])
   assert.equal(mr.status, 0, mr.out)
   assert.ok(pathOf(mac).split(':').includes('/opt/homebrew/bin'), 'Homebrew stays on a macOS plist PATH')
+})
+
+test('the computer\'s Keep agents running is off (the watcher\'s fresh answer): install --always-on is refused in one plain line and leaves nothing behind', SLOW, (t) => {
+  if (!ready(t)) return
+  const m = machine({ os: 'Linux' })
+  const ws = pair(m, '21')
+  const [watcherFile] = watcherServiceFiles({ platform: 'linux', home: m.home, env: {} })
+  mkdirSync(dirname(watcherFile!), { recursive: true })
+  writeFileSync(watcherFile!, '[Service]\n')
+  mkdirSync(dirname(keepAliveCacheFile(m.home)), { recursive: true })
+  writeFileSync(keepAliveCacheFile(m.home), buildKeepAliveCache({ enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false }, Date.now()))
+  const result = m.run(['--assistant', '21', '--dir', ws, '--always-on'])
+  assert.equal(result.status, 1, result.out)
+  assert.equal(result.out.split('\n').filter((l) => /Keep agents running is off for this computer/.test(l)).length, 1, result.out)
+  assert.equal(existsSync(join(m.home, '.bgos-agent', '21', 'run.sh')), false)
+  assert.deepEqual(m.serviceFiles().filter((f) => f !== watcherFile), [])
+  assert.doesNotMatch(callsOf(m), /^(launchctl|systemctl) /m)
 })

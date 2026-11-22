@@ -422,6 +422,13 @@ cmd_install() {
     # here, before anything is written, so a refused install leaves nothing.
     command -v node >/dev/null 2>&1 \
       || die "supervisor:node-not-found the always-on supervisor runs hoai on Node.js and no node is on PATH. Install a current patched Node.js 22 or 24 LTS release (minimum 22.12.0), then run this again."
+    # Switched off stays off (lib/agent-kept.mjs): with this computer's Keep agents running off
+    # (its watcher's fresh answer) no supervisor is installed, which the watcher would remove at
+    # once. Asked before anything is written. No answer (no watcher, a stale or refused
+    # read, no runtime) is not off: the install goes on as before.
+    if [ "$(agent_service_js kept-switch --assistant "$ASSISTANT_ID" --os "$OS" | head -n 1)" = "switch_off" ]; then
+      die "refused: Keep agents running is off for this computer, so agent $ASSISTANT_ID is not kept running and no supervisor was installed; turn it on in HOAI (Settings, Computers), then run this again."
+    fi
     # WHICH claude gets baked. `command -v claude` under the watcher's service PATH
     # returned a stale /usr/local/bin/claude 2.1.22 that does not know the launch flag
     # and exited rc=1 on every launch (board row 84296679, kc-server, 2026-10-12: five

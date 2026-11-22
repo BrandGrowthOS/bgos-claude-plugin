@@ -321,3 +321,12 @@ test('the README documents supervisor generation 2, with every supervised exit c
   assert.doesNotMatch(gateHeader, /copies it into the supervisor's\s*#?\s*run\.expect/)
   assert.doesNotMatch(gateHeader, /which run\.expect derives/)
 })
+
+test('install --always-on asks whether this computer keeps its agents running before anything is written, and refuses in one plain line when the watcher\'s fresh answer says off', () => {
+  const ask = sh.indexOf('agent_service_js kept-switch --assistant "$ASSISTANT_ID" --os "$OS"')
+  assert.ok(ask > 0, 'the shared helper is asked (bin/hoai-agent-service.mjs kept-switch)')
+  assert.ok(ask > sh.indexOf('if [ "${ALWAYS_ON:-}" = "1" ]; then'), 'only for an always-on install')
+  assert.ok(ask < sh.indexOf('date +%s > "$statedir/installed-at"'), 'before anything is written')
+  assert.ok(ask < sh.indexOf('select_claude\n'), 'and before the slower preflight')
+  assert.match(sh, /kept-switch --assistant "\$ASSISTANT_ID" --os "\$OS" \| head -n 1\)" = "switch_off" \]; then\n\s+die "refused: Keep agents running is off for this computer, [^"\n]*"\n/)
+})

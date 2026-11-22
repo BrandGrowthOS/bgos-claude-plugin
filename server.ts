@@ -140,11 +140,14 @@ import { buildCallOwnerBody, CALL_OWNER_OTHER_CHAT_REFUSAL } from './lib/call-ow
 import {
   INSTALL_GRACE_MS,
   INSTALLED_AT_FILE_NAME,
+  KEPT_CACHE_FRESH_MS,
   KEPT_SEEN_FILE_NAME,
   decideKeptSupervisor,
   keepAliveCacheFile,
   keepAliveStandingFromCache,
+  markInstallSeenKept,
   releasePosixSupervisor,
+  watcherServiceInstalled,
 } from './lib/agent-kept.mjs'
 import {
   buildReachableChatsPath,
@@ -20398,19 +20401,21 @@ async function reconcileAlwaysOn(): Promise<void> {
     // down a wanted supervisor just because the field is missing.
     if (typeof a?.alwaysOn !== 'boolean') return
     const installed = await isAlwaysOnInstalled()
-    // Switched off stays off (lib/agent-kept.mjs, ruling 2026-11-22). Kept is Always on for this agent
-    // AND Keep agents running for this computer, read from the watcher's cached keep-alive answer (none
-    // there: a computer with no watcher, which has no switch). Not kept: the switch off removes the
-    // supervisor at once, an install once seen kept goes at once, an install never seen kept keeps 15
-    // minutes from its install (desktop one-click records Always on only after the agent connected).
-    // No answer moves nothing. A never set switch, and no watcher, keep today's meaning: Always on.
+    // Switched off stays off (lib/agent-kept.mjs). Kept is Always on for this agent AND Keep agents
+    // running for this computer, read from the watcher's cached keep-alive answer while it is fresh
+    // (KEPT_CACHE_FRESH_MS: the watcher rewrites it every minute while it runs). Not kept: the switch
+    // off removes the supervisor at once, an install once seen kept goes at once, an install never
+    // seen kept keeps 15 minutes from its install (desktop one-click records Always on only after the
+    // agent connected). No answer (a stale, missing or refused cache) moves nothing. A never set
+    // switch, and a computer with no watcher installed, keep today's meaning: Always on.
     const home = homedir()
     const stateDir = joinPath(home, '.bgos-agent', String(ASSISTANT_ID))
     const installedAt = readTextOrNull(joinPath(stateDir, INSTALLED_AT_FILE_NAME))
     const now = Date.now()
+    const watcherInstalled = watcherServiceInstalled({ platform: process.platform, home, env: process.env, exists: (path: string) => existsSync(path) })
     const kept = decideKeptSupervisor({
       alwaysOn: a.alwaysOn,
-      standing: keepAliveStandingFromCache(readTextOrNull(keepAliveCacheFile(home)), ASSISTANT_ID, now),
+      standing: keepAliveStandingFromCache(readTextOrNull(keepAliveCacheFile(home)), ASSISTANT_ID, now, { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled }),
       installed,
       installedAt,
       keptSeen: readTextOrNull(joinPath(stateDir, KEPT_SEEN_FILE_NAME)),
@@ -20494,6 +20499,8 @@ async function reconcileAlwaysOn(): Promise<void> {
         { timeout: 120_000 },
       )
       logAgentServiceNotes(installed)
+      // Installed because this agent is kept: seen kept now, so it goes at once when it stops being kept.
+      markInstallSeenKept({ stateDir, readFile: readTextOrNull, writeFile: (path: string, text: string) => writeFileSync(path, text) })
       log('always-on: supervisor installed (takes over when this session ends)')
     }
   } catch (err) {

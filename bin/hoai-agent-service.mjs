@@ -24,6 +24,13 @@
  *   records-home --file <plist or unit> --os <Darwin|Linux>
  *       yes when that service file records $HOME (by real path, in any layout
  *       plutil may have rewritten it to), else no.
+ *   kept-switch --assistant <id> --os <Darwin|Linux>
+ *       What this computer's watcher last heard about keeping that agent running
+ *       (lib/agent-kept.mjs keepAliveStandingFromCache, read the way the agent's
+ *       daemon reads it: fresh within KEPT_CACHE_FRESH_MS, a refusal is no answer,
+ *       no watcher installed is no switch). One word: kept, not_listed,
+ *       switch_off, never_set, unknown or no_watcher. An always-on install is
+ *       refused on switch_off: the watcher would remove it at once.
  *
  * Exit 0 whenever it answered (a refusal is an answer), 2 on a usage error.
  * Plain JavaScript, node >= 18 or bun, builtins only.
@@ -33,6 +40,7 @@ import { realpathSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { agentHomeId, agentServiceNamesFor, validAssistantId } from '../lib/agent-inventory.mjs'
+import { KEPT_CACHE_FRESH_MS, keepAliveCacheFile, keepAliveStandingFromCache, watcherServiceInstalled } from '../lib/agent-kept.mjs'
 import { agentLeftAlone, fileRecordsAgentHome, posixAgentServiceSpec, readBackAgentService } from '../lib/agent-service.mjs'
 import { nodeExec, nodeFs } from '../lib/watcher-bundle.mjs'
 
@@ -56,10 +64,10 @@ export const PROBE_TIMEOUT_MS = 30_000
 /**
  * @param {string[]} [argv]
  * @param {{ env?: Record<string, string | undefined>, exec?: import('../lib/watcher-bundle.mjs').Exec, fs?: import('../lib/watcher-bundle.mjs').WatcherFs,
- *   out?: (line: string) => unknown, err?: (line: string) => unknown, uid?: number | null }} [deps]
+ *   out?: (line: string) => unknown, err?: (line: string) => unknown, uid?: number | null, now?: () => number }} [deps]
  * @returns {Promise<number>}
  */
-export async function main(argv = process.argv.slice(2), { env = process.env, exec = nodeExec(), fs = nodeFs(), out = (l) => process.stdout.write(`${l}\n`), err = (l) => process.stderr.write(`${l}\n`), uid = typeof process.getuid === 'function' ? process.getuid() : null } = {}) {
+export async function main(argv = process.argv.slice(2), { env = process.env, exec = nodeExec(), fs = nodeFs(), out = (l) => process.stdout.write(`${l}\n`), err = (l) => process.stderr.write(`${l}\n`), uid = typeof process.getuid === 'function' ? process.getuid() : null, now = Date.now } = {}) {
   const [command, ...rest] = argv
   const f = flags(rest)
   const platform = PLATFORMS[f.os]
@@ -100,7 +108,17 @@ export async function main(argv = process.argv.slice(2), { env = process.env, ex
     out(content != null && fileRecordsAgentHome(content, platform, home) ? 'yes' : 'no')
     return 0
   }
-  err('hoai-agent-service: home-id | probe | records-home')
+  if (command === 'kept-switch') {
+    const id = validAssistantId(f.assistant)
+    if (!id) {
+      err('hoai-agent-service: kept-switch --assistant <digits>')
+      return 2
+    }
+    const watcherInstalled = watcherServiceInstalled({ platform, home, env, exists: (path) => fs.exists(path) })
+    out(keepAliveStandingFromCache(fs.readFile(keepAliveCacheFile(home)), id, now(), { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled }))
+    return 0
+  }
+  err('hoai-agent-service: home-id | probe | records-home | kept-switch')
   return 2
 }
 

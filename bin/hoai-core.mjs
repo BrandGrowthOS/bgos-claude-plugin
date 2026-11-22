@@ -135,7 +135,7 @@ import {
   writePrivateText,
 } from '../lib/agent-identity.mjs'
 import { PROBE_TIMEOUT_MS, classifyFlagProbe } from '../lib/claude-binary.mjs'
-import { launchSupervisorGone } from '../lib/agent-kept.mjs'
+import { KEPT_CHECK_CAPABILITY, launchSupervisorGone } from '../lib/agent-kept.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -1166,13 +1166,16 @@ export function folderIdentity(cwd, readFile = defaultReadText) {
  * `relaunchBy` (ISO) is written only while the launcher is between two
  * children on purpose, the keep-alive backoff: it has no child then, and
  * says by when it will have one again (holderActivity).
+ * KEPT_CHECK_CAPABILITY says this launcher stops once its supervisor is
+ * removed (lib/agent-kept.mjs launchSupervisorGone); a live launcher without
+ * it is from an older version, which the watcher names when it removes one.
  * @param {number} pid
  * @param {string} startedAt
  * @param {{ id: string, uptimeMs: number } | null} [boot]
  * @param {{ relaunchBy?: string }} [extra]
  * @returns {string} */
 export function supervisorFileBody(pid, startedAt, boot = null, { relaunchBy } = {}) {
-  return JSON.stringify({ pid, capabilities: ['relaunch'], startedAt, ...(boot ? { boot } : {}), ...(relaunchBy ? { relaunchBy } : {}) })
+  return JSON.stringify({ pid, capabilities: ['relaunch', KEPT_CHECK_CAPABILITY], startedAt, ...(boot ? { boot } : {}), ...(relaunchBy ? { relaunchBy } : {}) })
 }
 
 /**

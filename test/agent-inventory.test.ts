@@ -197,7 +197,7 @@ test('readFolderPin: digits only, else empty', () => {
 test('parseSupervisorFile: fail-closed mirror of lib/update-readiness.ts', () => {
   assert.deepEqual(parseSupervisorFile(supervisorFileBody(42, 'x')), {
     pid: 42,
-    capabilities: ['relaunch'],
+    capabilities: ['relaunch', 'kept-check'],
   })
   assert.equal(parseSupervisorFile(null), null)
   assert.equal(parseSupervisorFile(''), null)
