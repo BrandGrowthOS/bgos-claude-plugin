@@ -170,6 +170,7 @@ test(
     assert.equal(startTimeProbeChild(list.file, list.args), false)
     assert.equal(throughStartTimeProbe(() => startTimeProbeChild('ps', ['-e', '-o', 'pid=,args='])), false)
     assert.equal(throughStartTimeProbe(() => startTimeProbeChild(process.execPath, ['-e', 'process.exit(0)'])), false)
+    assert.equal(throughStartTimeProbe(() => startTimeProbeChild('env', ['sh', '-c', 'true', '1'])), false)
     const one = claudeStartCommand(process.pid)
     assert.throws(() => spawnSync(one.file, one.args), RealOsRefused)
     assert.equal(takeRealOsRefusals().length, 1)
@@ -187,6 +188,7 @@ test(
       })
       const listing = await listProcesses({
         platform: process.platform,
+        env: process.env,
         exec: (file, args, opts) => throughStartTimeProbe(() => nodeExec()(file, [...args], opts)),
       })
       if (!listing.ok) assert.fail(`the real listing reads: ${listing.error}`)
@@ -195,6 +197,9 @@ test(
       assert.equal(typeof stamped, 'number', 'the daemon side reads a start')
       assert.equal(stamped, row.startedAtMs, 'the stamp start and the listing start are the same number')
       assert.deepEqual(takeRealOsRefusals(), [])
+      // The door's child is not one a signal may reach.
+      assert.throws(() => process.kill(pid, 0), RealOsRefused)
+      assert.equal(takeRealOsRefusals().length, 1)
     } finally {
       child.stdin?.end()
       await exited

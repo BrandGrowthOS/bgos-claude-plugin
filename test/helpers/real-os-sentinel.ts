@@ -20,7 +20,8 @@
  * One narrow door, for the start time case of test/watcher-real-os.guard.test.ts only: inside
  * throughStartTimeProbe, and only for the launch made synchronously inside it, three shapes may run
  * (a node child that only waits for its stdin to close, the watcher's own posix `ps` listing, and the
- * daemon's `ps -o lstart=` of one pid). None of them can signal or close anything.
+ * daemon's `ps -o lstart=` of one pid). None of them can signal or close anything, and none is added
+ * to the children a signal may reach: a door launch can never be signalled from the test.
  *
  * The production defaults are unchanged (the watcher still uses process.kill and the real
  * execFile/spawn); this only makes a test that forgot to inject its fakes fail instead of acting.
@@ -114,9 +115,11 @@ if (!realOsSentinelInstalled()) {
     const sentinel = function (this: unknown, file: unknown, ...rest: unknown[]) {
       const args = Array.isArray(rest[0]) ? (rest[0] as unknown[]) : []
       // exec and execSync take a shell command line, and fork runs a module: never a probe.
-      if (api !== 'exec' && api !== 'execSync' && api !== 'fork' && (allowedRealChild(file, args) || startTimeProbeChild(file, args))) {
+      const probe = api !== 'exec' && api !== 'execSync' && api !== 'fork' && allowedRealChild(file, args)
+      // A door launch runs but is never added to ownChildren, so no signal may reach it.
+      if (probe || (api !== 'exec' && api !== 'execSync' && api !== 'fork' && startTimeProbeChild(file, args))) {
         const child = real.call(this, file, ...rest) as { pid?: number } | undefined
-        if (typeof child?.pid === 'number') ownChildren.add(child.pid)
+        if (probe && typeof child?.pid === 'number') ownChildren.add(child.pid)
         return child
       }
       return refuse(`child_process.${api}`, [file, ...args].map(String).join(' '))
