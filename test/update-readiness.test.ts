@@ -60,7 +60,7 @@ describe('the launcher file-name mirror', () => {
 
   test('the launcher writes exactly what parseSupervisorFile accepts', () => {
     const parsed = parseSupervisorFile(supervisorFileBody(4242, '2026-08-22T00:00:00.000Z'))
-    expect(parsed).toEqual({ pid: 4242, capabilities: ['relaunch'] })
+    expect(parsed).toEqual({ pid: 4242, capabilities: ['relaunch', 'launch-choice'] })
   })
 })
 

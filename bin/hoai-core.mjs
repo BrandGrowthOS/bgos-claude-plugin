@@ -135,6 +135,17 @@ import {
   writePrivateText,
 } from '../lib/agent-identity.mjs'
 import { PROBE_TIMEOUT_MS, classifyFlagProbe } from '../lib/claude-binary.mjs'
+import {
+  LAUNCH_CHOICE_CAPABILITY,
+  LAUNCH_CHOICE_FILE_NAME,
+  MODEL_SWITCH_FILE_NAME,
+  launchChoiceArgs,
+  launchChoiceBody,
+  modelSwitchBody,
+  parseLaunchChoice,
+  parseModelSwitch,
+} from '../lib/launch-choice.mjs'
+import { ensureHelperModelControl, modelControlDir } from '../lib/model-control-store.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -1013,6 +1024,10 @@ export const MAX_RELAUNCHES_PER_WINDOW = 3
  *  rolling hour too: a gate that keeps failing must never use up the update restarts, nor an update
  *  loop the relaunches that bring a broken launch back (board row 31583f86). */
 export const MAX_HEALTH_RELAUNCHES_PER_WINDOW = 3
+/** A model switch the owner asked for (the daemon's restart route wrote it pending) is a marker
+ *  restart too, and on an agent with no pane every pick is one. It has a budget of its own on the
+ *  same rolling hour, which never latches and which update markers never spend. */
+export const MAX_SWITCH_RELAUNCHES_PER_WINDOW = 12
 export const RELAUNCH_WINDOW_MS = 60 * 60 * 1000
 export const MARKER_POLL_MS = 3000
 
@@ -1171,7 +1186,10 @@ export function folderIdentity(cwd, readFile = defaultReadText) {
  * @param {{ relaunchBy?: string }} [extra]
  * @returns {string} */
 export function supervisorFileBody(pid, startedAt, boot = null, { relaunchBy } = {}) {
-  return JSON.stringify({ pid, capabilities: ['relaunch'], startedAt, ...(boot ? { boot } : {}), ...(relaunchBy ? { relaunchBy } : {}) })
+  // `launch-choice`: every launch and relaunch here carries the agent's launch
+  // choice (lib/launch-choice.mjs), so a daemon may switch its model by a
+  // restart (lib/model-effort-restart.ts).
+  return JSON.stringify({ pid, capabilities: ['relaunch', LAUNCH_CHOICE_CAPABILITY], startedAt, ...(boot ? { boot } : {}), ...(relaunchBy ? { relaunchBy } : {}) })
 }
 
 /**
@@ -2378,7 +2396,8 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  *     today's behavior;
  *   - at most MAX_RELAUNCHES_PER_WINDOW marker relaunches per rolling hour,
  *     then supervision stops (printed) and the session runs on to a normal
- *     exit;
+ *     exit; a model switch the owner asked for has its own rolling budget,
+ *     MAX_SWITCH_RELAUNCHES_PER_WINDOW, which never latches;
  *   - supervisor.json is written at start and removed on the way out, and
  *     carries this launcher's pid so the daemon can verify liveness.
  * @param {readonly string[]} args
@@ -3310,6 +3329,60 @@ export async function superviseClaude(args, opts = {}) {
     return out.args
   }
   const relaunchIdentityArgs = () => personIdentity ?? identityArgsNow()
+  // The model and effort the owner picked in the app for this agent
+  // (lib/launch-choice.mjs): `--model <id> --effort <level>` on every launch
+  // and relaunch, read again each time, so a choice sticks across any later
+  // restart. Junk in the file adds nothing. A person's own --model or --effort
+  // on the command line wins at the first launch, like their identity flag.
+  const choicePath = joinDir(stateDir, LAUNCH_CHOICE_FILE_NAME)
+  const switchPath = joinDir(stateDir, MODEL_SWITCH_FILE_NAME)
+  const personChoseModel = args.some((a) => {
+    const text = String(a)
+    return text === '--model' || text === '--effort' || text.startsWith('--model=') || text.startsWith('--effort=')
+  })
+  // Set after a saved choice the CLI would not start on (below): it is left out, not deleted, until a
+  // restart someone asks for (an update, a new pick) tries it again.
+  let choiceOff = false
+  const choiceArgsNow = (first = false) =>
+    choiceOff || (first && personChoseModel) ? [] : launchChoiceArgs(parseLaunchChoice(readFile(choicePath)))
+  // The switch a launch carries (the daemon's restart route wrote it pending):
+  // its launch is recorded on it, and a fast death of that launch undoes it below.
+  let switchLaunch = null
+  // Every switch record this launcher launched, by what names it. The record is
+  // a file the agent itself can write; this list is not. A record named here is
+  // spent whatever the file says later, so taking its launch stamp off buys no
+  // restart, and only the go back from a switch named here skips the switch budget.
+  const launchedSwitches = new Set()
+  const switchKey = (record, state = record.state) =>
+    [state, record.requestedAtMs, record.sessionId, record.chatId].join('\u0000')
+  const markSwitchLaunch = (choiceArgs) => {
+    switchLaunch = null
+    const record = parseModelSwitch(readFile(switchPath))
+    if (record && record.state === 'restoring' && record.launchedAtMs === null) {
+      // The launch back onto the previous choice: stamped, so the daemon that
+      // comes back reads its own launch and the record is no switch any more.
+      // Also when the chat was already told it is late (noted): it is the one
+      // restart back, and stamped it never stands for a later marker.
+      launchedSwitches.add(switchKey(record))
+      try {
+        writeFile(switchPath, modelSwitchBody({ ...record, launchedAtMs: now() }))
+      } catch {
+        // The daemon then waits from its own start instead.
+      }
+      return
+    }
+    if (!record || record.state !== 'pending') return
+    const target = launchChoiceArgs(record.target)
+    if (target.length === 0 || target.join('\u0000') !== choiceArgs.join('\u0000')) return
+    launchedSwitches.add(switchKey(record))
+    const launched = { ...record, launchedAtMs: now() }
+    try {
+      writeFile(switchPath, modelSwitchBody(launched))
+    } catch {
+      // The daemon reads a switch with no launch as not restarted: still safe.
+    }
+    switchLaunch = launched
+  }
   // Before every launch and relaunch, the identity file is read again from
   // integrations/me (Data's review of #281, the Medium): a rename in the app
   // otherwise reached only the daemon's boot refresh, after claude had read
@@ -3450,8 +3523,13 @@ export async function superviseClaude(args, opts = {}) {
   let relaunchesAt = []
   let healthRelaunchesAt = []
   let exhausted = false
+  let switchRelaunchesAt = []
+  // Fast deaths of launches that carried the saved launch choice (no switch in flight); see below.
+  let choiceFastDeaths = 0
   await refreshIdentityFile()
-  let currentArgs = [...args, ...identityArgsNow(), ...sessionArgsFor(pinnedId, sessionExistsNow())]
+  const firstChoiceArgs = choiceArgsNow(true)
+  let currentArgs = [...args, ...identityArgsNow(), ...firstChoiceArgs, ...sessionArgsFor(pinnedId, sessionExistsNow())]
+  markSwitchLaunch(firstChoiceArgs)
   // The never-leave-dead fresh fallback is one-shot per relaunch cycle; a
   // marker relaunch (a genuine update) resets it below. Recovery keys on whether
   // the exited child was RESUMING a session (--resume present), which covers a
@@ -3638,20 +3716,50 @@ export async function superviseClaude(args, opts = {}) {
         if (pinTimer && typeof pinTimer === 'object' && typeof pinTimer.unref === 'function') pinTimer.unref()
       }
       const poller = setInterval(() => {
-        if (exhausted || restartRequested || !childRef) return
+        if (restartRequested || !childRef) return
         if (!exists(markerPath)) return
+        // A switch the owner asked for: pending and not launched yet, or the
+        // restart back after the new model did not work, also one the chat was
+        // already told is late. Its own budget, never latched; the update budget
+        // is never spent on it. Each go back is stamped at its launch, so it is
+        // one restart. A record this launcher already launched is no switch,
+        // whatever the file says now: its marker meets the update budget. A
+        // missing or unreadable record is no switch either.
+        const asked = parseModelSwitch(readFile(switchPath))
+        const switching = Boolean(
+          asked &&
+            asked.launchedAtMs === null &&
+            (asked.state === 'pending' || asked.state === 'restoring') &&
+            !launchedSwitches.has(switchKey(asked)),
+        )
+        if (exhausted && !switching) return
         removeFile(markerPath)
-        const decision = decideMarkerRelaunch(relaunchesAt, now())
-        relaunchesAt = decision.recent
-        if (!decision.allow) {
-          exhausted = true
-          print(
-            `[hoai] restart marker ignored: ${MAX_RELAUNCHES_PER_WINDOW} relaunches in the ` +
-              'last hour. Not relaunching again; exit and run hoai to pick up the update.',
-          )
-          return
+        if (switching) {
+          const decision = decideMarkerRelaunch(switchRelaunchesAt, now(), MAX_SWITCH_RELAUNCHES_PER_WINDOW)
+          switchRelaunchesAt = decision.recent
+          // The restart back after a new model did not work ends a switch already counted: never
+          // refused, or the agent would stay on that model. It still counts for the next switch.
+          // Only the go back from a switch this launcher launched: any other counts like a switch.
+          const ownGoBack = asked.state === 'restoring' && launchedSwitches.has(switchKey(asked, 'pending'))
+          if (!decision.allow && !ownGoBack) {
+            // Not restarted: the daemon fails the switch and tells the chat the agent stays on its model.
+            print(`[hoai] model switch not restarted: ${MAX_SWITCH_RELAUNCHES_PER_WINDOW} switches in the last hour.`)
+            return
+          }
+          switchRelaunchesAt.push(now())
+        } else {
+          const decision = decideMarkerRelaunch(relaunchesAt, now())
+          relaunchesAt = decision.recent
+          if (!decision.allow) {
+            exhausted = true
+            print(
+              `[hoai] restart marker ignored: ${MAX_RELAUNCHES_PER_WINDOW} relaunches in the ` +
+                'last hour. Not relaunching again; exit and run hoai to pick up the update.',
+            )
+            return
+          }
+          relaunchesAt.push(now())
         }
-        relaunchesAt.push(now())
         restartRequested = true
         markerRestart = true
         print('[hoai] restart requested by the daemon; restarting claude to pick up the update...')
@@ -3696,6 +3804,8 @@ export async function superviseClaude(args, opts = {}) {
         // marker: a health relaunch hoai makes itself keeps both as they are.
         const identityWasOff = markerRestart && identityOff
         if (markerRestart) {
+          choiceFastDeaths = 0
+          choiceOff = false
           if (identityOff) {
             identityOff = false
             identityFastDeaths = 0
@@ -3718,8 +3828,10 @@ export async function superviseClaude(args, opts = {}) {
         await refreshIdentityFile()
         if (stopSignal?.aborted) return code
         const identityArgs = relaunchIdentityArgs()
-        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs, extraArgs: identityArgs })
+        const relaunchChoice = choiceArgsNow()
+        const relaunchArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs, extraArgs: [...identityArgs, ...relaunchChoice] })
         if (!relaunchArgs) return stopUnresolved()
+        markSwitchLaunch(relaunchChoice)
         if (identityWasOff && identityArgs.includes(IDENTITY_FLAG)) {
           noteStatus('identity-flag-restored')
           print(`[hoai] this agent's identity is back: the relaunch passes ${IDENTITY_FLAG} ${identityPath} again`)
@@ -3740,6 +3852,59 @@ export async function superviseClaude(args, opts = {}) {
       // resume: a fresh session meets the same wall, and the retry would spend
       // the one-shot fallback (and overwrite launch-status) for nothing.
       const namedSupervisedExit = supervised && SUPERVISED_NO_FRESH_RETRY.has(code)
+      // A launch onto the model the owner just picked that died at once: the
+      // CLI refused it (a model this account or CLI cannot run). The previous
+      // choice goes back, the switch is failed for the daemon to tell the chat,
+      // and the SAME conversation comes back without it, before the fresh
+      // fallback below could start a new one (design: the restart route,
+      // lib/model-effort-restart.ts).
+      // As for the identity flag: a clean exit counts only where any exit is
+      // relaunched, so a person who quits their own `hoai` is not restarted.
+      const switchDeath = code !== 0 || keepAlive || supervised
+      // Read again: the new daemon may have confirmed the switch, and told the chat, meanwhile. A
+      // confirmed switch is never undone here.
+      const switchOnDisk = switchLaunch ? parseModelSwitch(readFile(switchPath)) : null
+      if (switchLaunch && !(switchOnDisk && switchOnDisk.state === 'pending' && switchOnDisk.requestedAtMs === switchLaunch.requestedAtMs)) {
+        switchLaunch = null
+      }
+      const failedSwitch = switchLaunch && switchDeath && elapsedMs < healthyMs && !namedSupervisedExit ? switchLaunch : null
+      if (elapsedMs >= healthyMs) {
+        switchLaunch = null
+        choiceFastDeaths = 0
+      }
+      if (failedSwitch) {
+        switchLaunch = null
+        try {
+          if (failedSwitch.previous) writeFile(choicePath, launchChoiceBody(failedSwitch.previous))
+          else removeFile(choicePath)
+          writeFile(switchPath, modelSwitchBody({ ...failedSwitch, state: 'failed', reason: 'start_failed', noted: false }))
+        } catch {
+          // Best effort: the relaunch below carries whatever the file says now.
+        }
+        noteStatus('model-switch-failed', { exit: code })
+        print(
+          `[hoai] claude exited at once (code ${code}) on the model the owner picked (${failedSwitch.target.model}); ` +
+            "this agent stays on the model it had: relaunching its own session without the switch",
+        )
+        rereadPin()
+        await refreshIdentityFile()
+        if (stopSignal?.aborted) return code
+        const backArgs = relaunchClaudeArgs({
+          scriptDir,
+          env,
+          home,
+          cwd,
+          readFile,
+          sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
+          extraArgs: [...relaunchIdentityArgs(), ...choiceArgsNow()],
+        })
+        if (!backArgs) return stopUnresolved()
+        currentArgs = backArgs
+        lastLaunchWasRelaunch = true
+        freshTried = false
+        recordRecipe(currentArgs)
+        continue
+      }
       const recovery = namedSupervisedExit
         ? { action: 'return' }
         : decideRelaunchRecovery({
@@ -3749,6 +3914,48 @@ export async function superviseClaude(args, opts = {}) {
             freshTried,
             healthyMs,
           })
+      // A saved launch choice the CLI will not start on (a CLI older than
+      // --effort back on PATH, a model the account lost): with no switch in
+      // flight nothing else would drop it, and every launch carries it. As
+      // for the identity flag below: after two fast deaths that carried it,
+      // or when this one would end the launcher, it is left out and this
+      // agent's own session comes back without it, on its default model. The
+      // file stays: two fast exits can have another cause, and a restart
+      // someone asks for tries the pick again.
+      const savedChoice = launchChoiceArgs(parseLaunchChoice(readFile(choicePath)))
+      const carriedChoice = savedChoice.length > 0 && currentArgs.join('\u0000').includes(savedChoice.join('\u0000'))
+      if (carriedChoice && switchDeath && !namedSupervisedExit && elapsedMs < healthyMs) {
+        choiceFastDeaths += 1
+        const lastChance = recovery.action !== 'retry-fresh' && !keepAlive
+        if (choiceFastDeaths >= 2 || lastChance) {
+          choiceFastDeaths = 0
+          choiceOff = true
+          noteStatus('launch-choice-set-aside', { exit: code })
+          print(
+            `[hoai] claude exited at once (code ${code}) on the model the owner picked (${savedChoice.join(' ')}), ` +
+              "which may be the cause; relaunching this agent's own session without the model the owner picked, " +
+              'on its default model. Update Claude Code, then pick the model again in the app.',
+          )
+          rereadPin()
+          await refreshIdentityFile()
+          if (stopSignal?.aborted) return code
+          const plainArgs = relaunchClaudeArgs({
+            scriptDir,
+            env,
+            home,
+            cwd,
+            readFile,
+            sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
+            extraArgs: relaunchIdentityArgs(),
+          })
+          if (!plainArgs) return stopUnresolved()
+          currentArgs = plainArgs
+          if (freshTried) lastLaunchWasRelaunch = true
+          freshTried = false
+          recordRecipe(currentArgs)
+          continue
+        }
+      }
       // A launch that carried the identity flag and died at once may have
       // died OF it: the CLI under a long lived launcher can change (a
       // reinstall, an old binary back on PATH), and one can parse the flag and
@@ -3781,7 +3988,7 @@ export async function superviseClaude(args, opts = {}) {
             cwd,
             readFile,
             sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
-            extraArgs: [],
+            extraArgs: choiceArgsNow(),
           })
           if (!plainArgs) return stopUnresolved()
           // A new cycle without the flag, with its own one fresh retry: the
@@ -3822,7 +4029,7 @@ export async function superviseClaude(args, opts = {}) {
           cwd,
           readFile,
           sessionArgs: freshSessionArgs,
-          extraArgs: relaunchIdentityArgs(),
+          extraArgs: [...relaunchIdentityArgs(), ...choiceArgsNow()],
         })
         if (!freshArgs) return stopUnresolved()
         currentArgs = freshArgs
@@ -3888,7 +4095,7 @@ export async function superviseClaude(args, opts = {}) {
         cwd,
         readFile,
         sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
-        extraArgs: relaunchIdentityArgs(),
+        extraArgs: [...relaunchIdentityArgs(), ...choiceArgsNow()],
       })
       if (!keepArgs) return stopUnresolved()
       currentArgs = keepArgs
@@ -4596,6 +4803,36 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       register(plan.hooks)
     } catch (err) {
       console.error(`[hoai] could not register the activity hooks: ${err?.message ?? err}`)
+    }
+  }
+  // Owner model control for this agent, turned on by the Helper: the status
+  // line bridge in this folder's own
+  // .claude/settings.local.json, never the shared user settings, and the opt
+  // in recorded `by: helper`; never after the owner's own `off`
+  // (lib/model-control-store.mjs ensureHelperModelControl). Whether the app
+  // shows the picker stays the owner's switch in the app, off by default. Only
+  // a real launch: a test that fakes the spawn injects its own, or none.
+  const ensureModelControl = opts.ensureModelControl ?? (opts.spawnImpl ? null : ensureHelperModelControl)
+  if (ensureModelControl) {
+    const controlId = supervisedServiceId(env) || superviseAssistantId({ cwd, env, home, readFile, listDir })
+    if (controlId) {
+      try {
+        const out = ensureModelControl({
+          cwd,
+          assistantId: String(controlId),
+          dir: modelControlDir({ env, home }),
+          pluginRoot: dirname(scriptDir),
+          nodePath: process.execPath,
+          platform,
+          configDir: resolvePath(cwd, claudeConfigDir({ env, home })),
+          nowMs: Date.now(),
+          // Never in the home folder; and where the paired agents are, when an older opt in file is settled.
+          home,
+        })
+        if (!out.on && out.reason !== 'owner_off') console.log(`[hoai] remote model control is not on for this agent (${out.reason})`)
+      } catch (err) {
+        console.error(`[hoai] could not turn on remote model control: ${err?.message ?? err}`)
+      }
     }
   }
   // Pre-seed Claude Code's one-time prompts for THIS launch folder, on EVERY

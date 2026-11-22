@@ -25,6 +25,7 @@
 
 import { EXACT_MODEL_LABELS, EXACT_MODEL_LITERALS, EXACT_MODEL_SINCE, isEffortLevel, isModelFamily, MODEL_LITERALS, type EffortLevel, type ModelFamily } from './compact-inject.ts'
 import type { ModelObservation } from './model-control-store.mjs'
+import { isLaunchModel } from './launch-choice.mjs'
 
 export interface HostCatalog {
   efforts: EffortLevel[]
@@ -86,6 +87,57 @@ export function parseHelpCatalog(help: string | null | undefined, version?: stri
     return { efforts, models: ids }
   }
   return { efforts, models }
+}
+
+/** At most this many server ids are read from one frame. */
+export const SERVER_MODELS_MAX = 60
+
+export interface ServerModel {
+  id: string
+  label: string
+}
+
+/**
+ * The server's Claude model catalog as BGOS sends it in a picker frame
+ * (`claudeModels`, from backend claude-model-catalog.ts): a `claude-` id of
+ * the launch pattern (lib/launch-choice.mjs, the backend's own pattern) with a
+ * plain label. Anything else is dropped, item by item; the first of a repeated
+ * id is kept. Never more than SERVER_MODELS_MAX.
+ */
+export function readServerModels(raw: unknown): ServerModel[] {
+  if (!Array.isArray(raw)) return []
+  const out: ServerModel[] = []
+  for (const item of raw) {
+    if (out.length >= SERVER_MODELS_MAX) break
+    if (!isRecord(item) || !isLaunchModel(item.id) || isModelFamily(item.id) || !isText(item.label, 100)) continue
+    if (out.some((m) => m.id === item.id)) continue
+    out.push({ id: item.id as string, label: item.label })
+  }
+  return out
+}
+
+/**
+ * The CLI's catalog widened by the server's ids, for the restart route only
+ * (an id there is one argv element of the relaunch, never typed). Only an
+ * EXACT catalog (2.1.319 and later: it names ids, not only families) is
+ * widened, since an older CLI may not know an id; a retired id stays out.
+ * The server's ids come from a public list of names, which need not be names
+ * the installed CLI knows: one is added only when the CLI's own file names it
+ * (`cliNames`, lib/cli-model-names.ts), and none while those are unknown.
+ */
+export function mergeServerModels(
+  catalog: HostCatalog,
+  serverModels: readonly string[] | null | undefined,
+  cliNames: ReadonlySet<string> | null,
+): HostCatalog {
+  if (!serverModels || serverModels.length === 0 || !cliNames) return catalog
+  if (!catalog.models.some((id) => !isModelFamily(id))) return catalog
+  const models = [...catalog.models]
+  for (const id of serverModels.slice(0, SERVER_MODELS_MAX)) {
+    if (!isLaunchModel(id) || isModelFamily(id) || CLI319_RETIRED_MODELS.has(id) || models.includes(id) || !cliNames.has(id)) continue
+    models.push(id)
+  }
+  return { efforts: catalog.efforts, models }
 }
 
 /** Is `version` a plain x.y.z at least `floor`? False for anything else. */
@@ -283,6 +335,8 @@ export function buildPickerCatalog(input: {
   catalog: HostCatalog
   observation: ModelObservation | null
   sessionId: string | null
+  /** The server's labels for its own ids (readServerModels). */
+  serverLabels?: ReadonlyMap<string, string>
 }): PickerCatalog | null {
   const { catalog, observation: o, sessionId } = input
   if (!sessionId || !PICKER_SESSION_ID_PATTERN.test(sessionId)) return null
@@ -304,7 +358,7 @@ export function buildPickerCatalog(input: {
       id,
       label: isModelFamily(id) ? familyLabel(id) : Object.hasOwn(EXACT_MODEL_LITERALS, id)
         ? exactModelLabel(id)
-        : (runningLabel ?? id),
+        : id === running ? (runningLabel ?? id) : (input.serverLabels?.get(id) ?? id),
       description: Object.hasOwn(EXACT_MODEL_LITERALS, id) ? id : '',
       enabled: true,
       defaultEffort,

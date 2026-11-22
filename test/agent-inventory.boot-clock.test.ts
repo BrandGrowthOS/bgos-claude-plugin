@@ -260,8 +260,8 @@ test('F1: readBootClock reads /proc on Linux only, and anything junk is null; pa
 })
 
 test('F1: every writer stamps the boot clock with startedAt (and only when it has one): hoai, the keepalive marker, the daemon', () => {
-  assert.deepEqual(JSON.parse(supervisorFileBody(42, STAMP, STAMP_BOOT)), { pid: 42, capabilities: ['relaunch'], startedAt: STAMP, boot: STAMP_BOOT })
-  assert.deepEqual(JSON.parse(supervisorFileBody(42, STAMP)), { pid: 42, capabilities: ['relaunch'], startedAt: STAMP })
+  assert.deepEqual(JSON.parse(supervisorFileBody(42, STAMP, STAMP_BOOT)), { pid: 42, capabilities: ['relaunch', 'launch-choice'], startedAt: STAMP, boot: STAMP_BOOT })
+  assert.deepEqual(JSON.parse(supervisorFileBody(42, STAMP)), { pid: 42, capabilities: ['relaunch', 'launch-choice'], startedAt: STAMP })
   assert.deepEqual(JSON.parse(keepaliveMarkerBody({ pid: 3100, claudePid: 3200, startedAt: STAMP, boot: STAMP_BOOT })).boot, STAMP_BOOT)
   assert.equal('boot' in JSON.parse(keepaliveMarkerBody({ pid: 3100, claudePid: 3200, startedAt: STAMP })), false)
   const write = decideKeepaliveMarkerWrite({ argv: ['--assistant', '912', '--keepalive-pid', '3100', '--claude-pid', '3200'], home: HOME, startedAt: STAMP, boot: STAMP_BOOT })

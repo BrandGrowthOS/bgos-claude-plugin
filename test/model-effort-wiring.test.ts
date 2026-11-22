@@ -22,7 +22,7 @@ import { rpcLogOp, rpcLogTag } from '../lib/model-effort-rpc.ts'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const server = readFileSync(join(ROOT, 'server.ts'), 'utf8')
 
-test('model_effort_picker is declared only on a pairing, only when the daemon can control, and never on Windows', () => {
+test('model_effort_picker is declared only on a pairing, only when the daemon can control, Windows included', () => {
   assert.equal(MODEL_EFFORT_PICKER_TOKEN, 'model_effort_picker')
   const base = { canInjectGoal: true, floorHook: true, authMode: 'pairing' as const, platform: 'darwin' as const }
   assert.ok(declaredCapabilities({ ...base, modelEffortPicker: true }).includes(MODEL_EFFORT_PICKER_TOKEN))
@@ -30,7 +30,11 @@ test('model_effort_picker is declared only on a pairing, only when the daemon ca
   assert.ok(!declaredCapabilities({ ...base, modelEffortPicker: false }).includes(MODEL_EFFORT_PICKER_TOKEN))
   assert.ok(!declaredCapabilities(base).includes(MODEL_EFFORT_PICKER_TOKEN), 'absent means not declared')
   assert.ok(!declaredCapabilities({ ...base, authMode: 'apikey', modelEffortPicker: true }).includes(MODEL_EFFORT_PICKER_TOKEN))
-  assert.ok(!declaredCapabilities({ ...base, platform: 'win32', modelEffortPicker: true }).includes(MODEL_EFFORT_PICKER_TOKEN), 'a Windows host cannot prove or type into a tmux pane')
+  // A Windows host has no tmux pane to type into: it switches by a restart of
+  // the agent through its own hoai launcher (lib/model-effort-restart.ts), and
+  // modelEffortDeclared() answers whether that route is there.
+  assert.ok(declaredCapabilities({ ...base, platform: 'win32', modelEffortPicker: true }).includes(MODEL_EFFORT_PICKER_TOKEN), 'the restart route switches a Windows agent')
+  assert.ok(!declaredCapabilities({ ...base, platform: 'win32', modelEffortPicker: false }).includes(MODEL_EFFORT_PICKER_TOKEN))
   for (const old of ['owner_model_effort_control', 'session_model_control']) {
     assert.ok(!declaredCapabilities({ ...base, modelEffortPicker: true }).includes(old), old)
   }
@@ -44,9 +48,38 @@ test('the heartbeat declares from the live answer, so a lost precondition withdr
   assert.doesNotMatch(server, /modelEffortPicker: true/)
   const declared = server.slice(server.indexOf('function modelEffortDeclared(): boolean'))
   const body = declared.slice(0, 1200)
-  assert.match(body, /if \(compactTarget === null\) return false/)
+  // No pane and no launcher that starts this agent on its launch choice: no route.
+  assert.match(body, /if \(compactTarget === null && !modelEffortRestart\.launcherDeclared\(\)\) return false/)
   assert.match(body, /readOptIn\(MODEL_CONTROL_DIR/)
   assert.match(body, /MODEL_EFFORT_STALE_MS\) return false/)
+})
+
+test('the restart route restarts through the Helper\'s own restart, drains first, proves the launcher, and is finished at boot', () => {
+  const at = server.indexOf('const modelEffortRestart: RestartRouteDeps = {')
+  assert.ok(at > 0, 'the restart route is built in server.ts')
+  const deps = server.slice(at, server.indexOf('\n}\n', at))
+  assert.match(deps, /restartAgent\(\{ assistantId: String\(ASSISTANT_ID\), supervisor: 'launcher-live', stateDir \}\)/)
+  assert.match(deps, /out\.how === 'marker'/)
+  assert.match(deps, /drain: setUpdateDrainMode,/)
+  assert.match(deps, /proveOwnLauncher\(\{ ownPid: process\.pid, launcherPid: launcher\.pid, processes: listed\.processes \}\)\.proven/)
+  assert.match(server, /capabilities\.includes\(LAUNCH_CHOICE_CAPABILITY\)/)
+  const control = server.slice(server.indexOf('const modelEffortControl: ModelEffortControl = new ModelEffortControl('))
+  assert.match(control.slice(0, 2500), /restart: modelEffortRestart,/)
+  assert.equal(server.split('void finishPendingSwitch({').length - 1, 1, 'finished once, at boot')
+})
+
+// The switch is confirmed from a real reply in the proven session's own
+// transcript, asked for with the liveness check card, and a server id needs the CLI's own names.
+test('the switch reads the proven transcript, asks with the liveness check card, and server ids need the CLI\'s names', () => {
+  assert.match(server, /const switchReplyTail = new GoalTail\(\(\) => sessionBinder\.provenTranscriptPath\(\)/)
+  const boot = server.slice(server.indexOf('void finishPendingSwitch({'))
+  const call = boot.slice(0, boot.indexOf('}).catch(() => {})'))
+  assert.match(call, /readTranscript: \(\) => switchReplyTail\.read\(\),/)
+  assert.match(call, /buildLivenessProbeNotification\(\{ chatId, afterRestart: true \}\)/)
+  assert.match(call, /channelNotify\(\(\) => \(\{ content: probe\.content, meta: probe\.meta \}\)\)/)
+  assert.match(server, /exe: \(\) => resolveClaude\(\),/)
+  const control = server.slice(server.indexOf('const modelEffortControl: ModelEffortControl = new ModelEffortControl('))
+  assert.match(control.slice(0, 2500), /cliModelNames: \(\) => cliModelNames\.now\(\),/)
 })
 
 test('the picker rides voice_rpc: the old model_effort_rpc wire and its ops are gone', () => {

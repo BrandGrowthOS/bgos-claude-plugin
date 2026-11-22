@@ -16,11 +16,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -52,20 +54,27 @@ function tmp(): string {
   return scratchDir('hoai-model-control-')
 }
 
+/** The environment of a spawned CLI or bridge: this process's, with a fresh fake home, so no test ever sees the real one. */
+function isolatedEnv(over: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const home = tmp()
+  return { ...process.env, HOME: home, USERPROFILE: home, ...over }
+}
+
 const SID = '6f1c2b8e-3d4a-4f5b-9c0d-1e2f3a4b5c6d'
 
 /**
  * Seven cases assert POSIX behaviour: forward slash paths, owner only file
  * modes (the store skips its mode check on win32 by design, see
  * lib/model-control-store.mjs) and the owner's status line run through a
- * POSIX shell. model_effort_picker is never declared on Windows (server.ts),
- * so the store never runs there; these skip on win32 rather than assert
- * something the code deliberately does not do (CI test (windows), 7 failures
- * on ce62db1).
+ * POSIX shell. The store runs on Windows too, for the restart route, but
+ * without those: there the Helper never wraps an owner's
+ * line (test/model-control-agent.test.ts), so these skip on win32 rather than
+ * assert something the code deliberately does not do (CI test (windows)
+ * failed 7 of them).
  */
 const POSIX_ONLY =
   process.platform === 'win32'
-    ? 'POSIX paths, modes and status line shell; the picker is never declared on Windows'
+    ? 'POSIX paths, modes and status line shell, which the store does not use on Windows'
     : false
 
 function statusJson(over: Record<string, unknown> = {}): string {
@@ -218,7 +227,7 @@ test('the bridge records the observation and prints the wrapped status line', { 
   }), { mode: 0o600 })
   const input = statusJson()
   const run = spawnSync(process.execPath, [BRIDGE], {
-    input, env: { ...process.env, BGOS_PLUGIN_STATE_DIR: state }, encoding: 'utf8', timeout: 10_000,
+    input, env: isolatedEnv({ BGOS_PLUGIN_STATE_DIR: state }), encoding: 'utf8', timeout: 10_000,
   })
   assert.equal(run.status, 0, run.stderr)
   assert.equal(run.stdout, `mine:${Buffer.byteLength(input)}`, 'the owner\'s own line, fed the same JSON')
@@ -241,42 +250,171 @@ test('the daemon refreshes an existing copy only while an agent is opted in, and
 test('the bridge never fails the status line, even on garbage', () => {
   const state = tmp()
   const run = spawnSync(process.execPath, [BRIDGE], {
-    input: 'garbage', env: { ...process.env, BGOS_PLUGIN_STATE_DIR: state }, encoding: 'utf8', timeout: 10_000,
+    input: 'garbage', env: isolatedEnv({ BGOS_PLUGIN_STATE_DIR: state }), encoding: 'utf8', timeout: 10_000,
   })
   assert.equal(run.status, 0)
   assert.equal(existsSync(join(state, 'model-control', 'observations')), false)
 })
 
-test('the owner CLI turns control on for one agent, installing the bridge, and off again', { skip: POSIX_ONLY }, () => {
+test('the owner CLI turns control on for one agent in its own folder, never in the shared settings, and off again', () => {
   const state = tmp()
   const config = tmp()
-  writeFileSync(join(config, 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'echo hi' } }))
-  const env = { ...process.env, BGOS_PLUGIN_STATE_DIR: state, CLAUDE_CONFIG_DIR: config }
-  const on = spawnSync(process.execPath, [CLI, 'on', '--assistant', '42'], { env, encoding: 'utf8' })
+  const folder = join(tmp(), 'agent-42')
+  mkdirSync(join(folder, '.claude'), { recursive: true })
+  const sharedText = JSON.stringify({ theme: 'dark' })
+  writeFileSync(join(config, 'settings.json'), sharedText)
+  const env = isolatedEnv({ BGOS_PLUGIN_STATE_DIR: state, CLAUDE_CONFIG_DIR: config })
+  const local = join(folder, '.claude', 'settings.local.json')
+  const on = spawnSync(process.execPath, [CLI, 'on', '--assistant', '42', '--folder', folder], { env, encoding: 'utf8' })
   assert.equal(on.status, 0, on.stderr)
   const dir = join(state, 'model-control')
   assert.equal(readOptIn(dir, '42'), true)
-  const settings = JSON.parse(readFileSync(join(config, 'settings.json'), 'utf8'))
-  assert.match(settings.statusLine.command, /hoai-statusline-bridge\.mjs/)
+  assert.equal(readFileSync(join(config, 'settings.json'), 'utf8'), sharedText, 'the shared settings file is byte for byte as it was')
+  const command = JSON.parse(readFileSync(local, 'utf8')).statusLine.command as string
+  assert.match(command, /hoai-statusline-bridge\.mjs["']? --agent 42$/)
   // The status line runs the stable copy in the owner only folder, never the
   // plugin's own file, whose folder a marketplace update moves.
-  assert.ok(settings.statusLine.command.includes(join(dir, 'bridge', 'bin', 'hoai-statusline-bridge.mjs')))
-  assert.ok(!settings.statusLine.command.includes(join(ROOT, 'bin')))
-  // And the copy really works as a status line.
+  const fwd = (p: string) => p.replace(/\\/g, '/')
+  assert.ok(fwd(command).includes(fwd(join(dir, 'bridge', 'bin', 'hoai-statusline-bridge.mjs'))))
+  assert.ok(!fwd(command).includes(fwd(join(ROOT, 'bin'))))
+  // And the copy really works as this agent's status line.
   const sid = '99999999-8888-4777-8666-555555555555'
-  const copy = spawnSync(process.execPath, [join(dir, 'bridge', 'bin', 'hoai-statusline-bridge.mjs')], {
+  const copy = spawnSync(process.execPath, [join(dir, 'bridge', 'bin', 'hoai-statusline-bridge.mjs'), '--agent', '42'], {
     input: JSON.stringify({ session_id: sid, model: { id: 'claude-fable-5-1' } }), env, encoding: 'utf8',
   })
   assert.equal(copy.status, 0, copy.stderr)
-  assert.equal(copy.stdout, 'hi\n', 'the owner\'s own line still prints')
   assert.equal(readObservation(dir, sid)!.modelId, 'claude-fable-5-1')
-  const status = spawnSync(process.execPath, [CLI, 'status', '--assistant', '42'], { env, encoding: 'utf8' })
+  const status = spawnSync(process.execPath, [CLI, 'status', '--assistant', '42', '--folder', folder], { env, encoding: 'utf8' })
   assert.equal(status.status, 0)
-  assert.match(status.stdout, /on for agent 42/)
-  const off = spawnSync(process.execPath, [CLI, 'off', '--assistant', '42'], { env, encoding: 'utf8' })
+  assert.match(status.stdout, /on for agent 42; the status line bridge is installed/)
+  const off = spawnSync(process.execPath, [CLI, 'off', '--assistant', '42', '--folder', folder], { env, encoding: 'utf8' })
   assert.equal(off.status, 0, off.stderr)
   assert.equal(readOptIn(dir, '42'), false)
-  assert.deepEqual(JSON.parse(readFileSync(join(config, 'settings.json'), 'utf8')).statusLine, { type: 'command', command: 'echo hi' })
+  assert.equal('statusLine' in JSON.parse(readFileSync(local, 'utf8')), false)
+  assert.equal(readFileSync(join(config, 'settings.json'), 'utf8'), sharedText)
+  // The owner's own on works again after their off (the Helper's never does).
+  const again = spawnSync(process.execPath, [CLI, 'on', '--assistant', '42', '--folder', folder], { env, encoding: 'utf8' })
+  assert.equal(again.status, 0, again.stderr)
+  assert.equal(readOptIn(dir, '42'), true)
   const bad = spawnSync(process.execPath, [CLI, 'on'], { env, encoding: 'utf8' })
   assert.notEqual(bad.status, 0, 'no agent named, nothing is turned on')
+})
+
+// Nothing here ever writes the shared user settings, not even to take an older version's bridge out
+// of it: `off` tells the owner the bridge is there and that they may remove it.
+test('the owner CLI off leaves an older bridge in the shared settings byte for byte, and says the owner can remove it', () => {
+  const state = tmp()
+  const config = tmp()
+  const home = tmp()
+  const folder = join(tmp(), 'agent-42')
+  mkdirSync(join(folder, '.claude'), { recursive: true })
+  const dir = join(state, 'model-control')
+  const shared = join(config, 'settings.json')
+  // Exactly what an older `hoai-model-control on` left: its bridge in the shared file, the owner's line kept aside.
+  writeFileSync(shared, JSON.stringify({ theme: 'dark', statusLine: { type: 'command', command: 'echo mine' } }, null, 2))
+  installBridge({ settingsPath: shared, dir, bridgeCommand: 'node /old/hoai-statusline-bridge.mjs' })
+  const sha = () => createHash('sha256').update(readFileSync(shared)).digest('hex')
+  const before = sha()
+  const env = isolatedEnv({ BGOS_PLUGIN_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, HOME: home, USERPROFILE: home })
+  const off = spawnSync(process.execPath, [CLI, 'off', '--assistant', '42', '--folder', folder], { env, encoding: 'utf8' })
+  assert.equal(off.status, 0, off.stderr)
+  assert.equal(sha(), before, 'the shared settings file is byte for byte as it was')
+  assert.match(off.stdout, /older version left its status line bridge in .*settings\.json.*You can remove it from that file yourself.*did not change that file/s)
+  // With no older bridge there, nothing is said about it.
+  writeFileSync(shared, JSON.stringify({ theme: 'dark' }))
+  const quiet = spawnSync(process.execPath, [CLI, 'off', '--assistant', '42', '--folder', folder], { env, encoding: 'utf8' })
+  assert.equal(quiet.status, 0, quiet.stderr)
+  assert.doesNotMatch(quiet.stdout, /older version/)
+})
+
+test('the owner CLI refuses an agent folder that is the home folder, and writes nothing there', () => {
+  const state = tmp()
+  const config = tmp()
+  const home = tmp()
+  mkdirSync(join(home, '.claude'), { recursive: true })
+  const env = isolatedEnv({ BGOS_PLUGIN_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, HOME: home, USERPROFILE: home })
+  const on = spawnSync(process.execPath, [CLI, 'on', '--assistant', '42', '--folder', home], { env, encoding: 'utf8' })
+  assert.notEqual(on.status, 0)
+  assert.match(on.stderr, /home folder.*Nothing was changed/s)
+  assert.equal(existsSync(join(home, '.claude', 'settings.local.json')), false)
+  assert.equal(readOptIn(join(state, 'model-control'), '42'), false)
+  // An off there records the off and leaves the home folder's .claude files as they are.
+  const homeLocal = join(home, '.claude', 'settings.local.json')
+  writeFileSync(homeLocal, JSON.stringify({ statusLine: { type: 'command', command: 'node /x/hoai-statusline-bridge.mjs --agent 42' } }))
+  const before = readFileSync(homeLocal, 'utf8')
+  const off = spawnSync(process.execPath, [CLI, 'off', '--assistant', '42', '--folder', home], { env, encoding: 'utf8' })
+  assert.equal(off.status, 0, off.stderr)
+  assert.equal(readFileSync(homeLocal, 'utf8'), before)
+  const status = spawnSync(process.execPath, [CLI, 'status', '--assistant', '42', '--folder', home], { env, encoding: 'utf8' })
+  assert.match(status.stdout, /off for agent 42; its folder is your home folder, where nothing is written\./)
+})
+
+// A `~` the shell did not expand (quoted, or passed by a program) is a folder named `~` under
+// wherever the command runs, and `on` would create it there. Refused, by every verb, and so is
+// `~name`, another person's home in a shell, which is no more expanded here.
+test('the owner CLI refuses a folder with a ~ the shell did not expand, and creates nothing', () => {
+  const state = tmp()
+  const config = tmp()
+  const here = tmp()
+  const env = isolatedEnv({ BGOS_PLUGIN_STATE_DIR: state, CLAUDE_CONFIG_DIR: config })
+  for (const raw of ['~', '~/agent-42', '~\\agent-42', '~bob', '~bob/agent-42', '~bob\\agent-42']) {
+    for (const verb of ['on', 'off', 'status']) {
+      const run = spawnSync(process.execPath, [CLI, verb, '--assistant', '42', '--folder', raw], { env, cwd: here, encoding: 'utf8' })
+      assert.notEqual(run.status, 0, `${verb} ${raw}`)
+      assert.match(run.stderr, /starts with ~, which was not turned into your home folder.*full path.*Nothing was changed/s, `${verb} ${raw}`)
+    }
+  }
+  assert.deepEqual(readdirSync(here), [], 'no folder made where the command ran')
+  assert.equal(existsSync(join(state, 'model-control', 'opt-in.json')), false)
+})
+
+test('the owner CLI finds the agent\'s folder from its launch record, and refuses rather than guess without one', () => {
+  const state = tmp()
+  const config = tmp()
+  const home = tmp()
+  const folder = join(tmp(), 'agent-43')
+  mkdirSync(join(folder, '.claude'), { recursive: true })
+  const here = tmp()
+  mkdirSync(join(here, '.claude'), { recursive: true })
+  const env = {
+    ...isolatedEnv(), BGOS_PLUGIN_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, HOME: home, USERPROFILE: home,
+  }
+  const dir = join(state, 'model-control')
+  // No --folder and no launch record: nothing is turned on, and the folder
+  // the command happens to run in is never written.
+  const guess = spawnSync(process.execPath, [CLI, 'on', '--assistant', '43'], { env, cwd: here, encoding: 'utf8' })
+  assert.notEqual(guess.status, 0)
+  assert.match(guess.stderr, /no record of where agent 43 runs.*--folder.*Nothing was changed/s)
+  assert.equal(readOptIn(dir, '43'), false)
+  assert.equal(existsSync(join(here, '.claude', 'settings.local.json')), false)
+  // With the launch record, its folder is the one turned on.
+  mkdirSync(join(home, '.bgos-agent', '43'), { recursive: true })
+  writeFileSync(join(home, '.bgos-agent', '43', 'launch.json'), JSON.stringify({ cwd: folder }))
+  const on = spawnSync(process.execPath, [CLI, 'on', '--assistant', '43'], { env, cwd: here, encoding: 'utf8' })
+  assert.equal(on.status, 0, on.stderr)
+  assert.equal(readOptIn(dir, '43'), true)
+  const local = JSON.parse(readFileSync(join(folder, '.claude', 'settings.local.json'), 'utf8'))
+  assert.match(local.statusLine.command as string, /--agent 43$/)
+  assert.equal(existsSync(join(here, '.claude', 'settings.local.json')), false)
+})
+
+test('the owner CLI keeps the owner\'s own user line printing behind the bridge, and puts nothing back in the shared file', { skip: POSIX_ONLY }, () => {
+  const state = tmp()
+  const config = tmp()
+  const folder = join(tmp(), 'agent-42')
+  mkdirSync(join(folder, '.claude'), { recursive: true })
+  const sharedText = JSON.stringify({ statusLine: { type: 'command', command: 'echo hi' } })
+  writeFileSync(join(config, 'settings.json'), sharedText)
+  const env = isolatedEnv({ BGOS_PLUGIN_STATE_DIR: state, CLAUDE_CONFIG_DIR: config })
+  const on = spawnSync(process.execPath, [CLI, 'on', '--assistant', '42', '--folder', folder], { env, encoding: 'utf8' })
+  assert.equal(on.status, 0, on.stderr)
+  const dir = join(state, 'model-control')
+  const copy = spawnSync(process.execPath, [join(dir, 'bridge', 'bin', 'hoai-statusline-bridge.mjs'), '--agent', '42'], {
+    input: JSON.stringify({ session_id: SID, model: { id: 'claude-fable-5-1' } }), env, encoding: 'utf8',
+  })
+  assert.equal(copy.status, 0, copy.stderr)
+  assert.equal(copy.stdout, 'hi\n', 'the owner\'s own line still prints')
+  const off = spawnSync(process.execPath, [CLI, 'off', '--assistant', '42', '--folder', folder], { env, encoding: 'utf8' })
+  assert.equal(off.status, 0, off.stderr)
+  assert.equal(readFileSync(join(config, 'settings.json'), 'utf8'), sharedText)
 })

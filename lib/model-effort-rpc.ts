@@ -39,17 +39,28 @@
  *     noted in the chat (the canon's "post a switched-to note"); neither holds
  *     the answer back.
  *  5. Always an answer: a throw is answered failed.
+ *  6. An agent with no pane is switched by a restart of that one agent
+ *     (lib/model-effort-restart.ts), only when the apply frame says the app and
+ *     backend can show it (`restartOk: true`). That answer is
+ *     { ok: true, payload: { state: 'restarting', sessionId, target } } at once,
+ *     with no note and no pill yet: the daemon that comes back confirms from
+ *     the new session's own status line and notes the result. While a switch
+ *     is in flight a list answers busy, so the app keeps waiting.
+ *  7. Both frames may carry BGOS's `claudeModels` (the server's model
+ *     catalog): read strictly (readServerModels) and offered on the restart
+ *     route only, never typed.
  */
 
 import { createHash } from 'node:crypto'
 
-import type { ApplySelection, ControlOutcome, ControlSnapshot, RefusalCode } from './model-effort-control.ts'
+import { REFUSAL_MESSAGES, type ApplyOptions, type ApplySelection, type ControlOutcome, type ControlSnapshot, type RefusalCode } from './model-effort-control.ts'
 import {
   buildPickerCatalog,
   effortLabel,
   familyLabel,
   pickerModelOf,
   readModelEffortCatalog,
+  readServerModels,
   type ModelEffortReport,
 } from './model-effort-catalog.ts'
 import { isModelFamily } from './compact-inject.ts'
@@ -78,7 +89,7 @@ export const APPLY_BUDGET_MS = 15_000
 export const PICKER_REFUSAL_CODES = Object.freeze(['busy', 'not_allowed', 'failed'] as const)
 export type PickerRefusalCode = (typeof PICKER_REFUSAL_CODES)[number]
 
-const BUSY: ReadonlySet<RefusalCode> = new Set<RefusalCode>(['control_busy', 'busy_turn', 'turn_unknown', 'dialog_open'])
+const BUSY: ReadonlySet<RefusalCode> = new Set<RefusalCode>(['control_busy', 'busy_turn', 'turn_unknown', 'dialog_open', 'switch_pending'])
 const NOT_ALLOWED: ReadonlySet<RefusalCode> = new Set<RefusalCode>([
   'unsupported_op',
   'unsupported_value',
@@ -178,8 +189,8 @@ export interface ModelEffortPickerDeps {
   /** Is this chat the owner's own main chat (pickerChatAllowed)? */
   chatAllowed: (chatId: string) => boolean
   control: {
-    snapshot: () => Promise<ControlSnapshot>
-    apply: (selection: ApplySelection, opts: { deadlineAtMs: number }) => Promise<ControlOutcome>
+    snapshot: (opts?: { serverModels?: readonly string[] }) => Promise<ControlSnapshot>
+    apply: (selection: ApplySelection, opts: ApplyOptions) => Promise<ControlOutcome>
   }
   reportSettings: (chatId: string, body: SessionSettingsBody) => Promise<unknown>
   sendNote: (chatId: string, text: string) => Promise<unknown>
@@ -207,7 +218,7 @@ export class ModelEffortPickerHandler {
         this.deps.log(`model effort picker: refused not_owner_main_chat (${rpcLogOp(frame.op)})`)
         return refuse('not_owner_main_chat', 'The model and effort are changed by the agent\'s owner, from the agent\'s main chat only.')
       }
-      if (frame.op === LIST_MODEL_EFFORT) return await this.list()
+      if (frame.op === LIST_MODEL_EFFORT) return await this.list(frame.payload)
       if (frame.op === APPLY_MODEL_EFFORT) return await this.apply(chatId, frame.payload, frame.receivedAtMs ?? this.deps.now())
       return refuse('unsupported_op', 'Only the model or the effort of this agent\'s session can be changed.')
     } catch (err) {
@@ -216,12 +227,20 @@ export class ModelEffortPickerHandler {
     }
   }
 
-  private async list(): Promise<PickerAnswer> {
-    const snap = await this.deps.control.snapshot()
+  private async list(payload: Record<string, unknown> | undefined): Promise<PickerAnswer> {
+    const server = readServerModels(payload?.claudeModels)
+    const snap = await this.deps.control.snapshot({ serverModels: server.map((m) => m.id) })
     if (!snap.optedIn) {
       return refuse('not_opted_in', 'Remote model and effort control is off for this agent. Its owner can turn it on on the agent\'s machine with hoai-model-control on.')
     }
-    const built = buildPickerCatalog({ catalog: snap.catalog, observation: snap.observation, sessionId: snap.sessionId })
+    // The agent is being restarted onto another model: what runs now is not the answer.
+    if (snap.switchPending) return refuse('switch_pending', REFUSAL_MESSAGES.switch_pending)
+    const built = buildPickerCatalog({
+      catalog: snap.catalog,
+      observation: snap.observation,
+      sessionId: snap.sessionId,
+      serverLabels: new Map(server.map((m) => [m.id, m.label])),
+    })
     // Read back through BGOS's own reader: never send what it would refuse.
     const catalog = built ? readModelEffortCatalog(JSON.parse(JSON.stringify(built))) : null
     if (!catalog) {
@@ -238,7 +257,16 @@ export class ModelEffortPickerHandler {
     ) {
       return refuse('unsupported_value', 'Choose a model and effort from this session\'s picker.')
     }
-    const outcome = await this.deps.control.apply({ sessionId, model, effort }, { deadlineAtMs: receivedAtMs + APPLY_BUDGET_MS })
+    const outcome = await this.deps.control.apply({ sessionId, model, effort }, {
+      deadlineAtMs: receivedAtMs + APPLY_BUDGET_MS,
+      chatId,
+      restartOk: payload.restartOk === true,
+      serverModels: readServerModels(payload.claudeModels).map((m) => m.id),
+    })
+    if (outcome.ok && outcome.restarting) {
+      // Not switched yet: the daemon that comes back confirms and notes it.
+      return { ok: true, payload: { state: 'restarting', sessionId, target: { model: outcome.restarting.model, effort: outcome.restarting.effort } } }
+    }
     // The pill and the note never hold the answer back: they are sent, not
     // awaited, and the result is posted at once (review M1 of round 3).
     const settings = sessionSettingsBody(outcome.report, this.deps.now())

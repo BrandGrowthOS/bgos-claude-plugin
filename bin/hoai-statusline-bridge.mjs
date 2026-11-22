@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /**
- * hoai-statusline-bridge: the status line command installed by
- * `hoai-model-control on` (lib/model-control-store.mjs explains why).
+ * hoai-statusline-bridge: the status line command the Helper's launcher (or
+ * `hoai-model-control on`) installs in one agent's own folder settings
+ * (lib/model-control-store.mjs explains why). `--agent <id>` names the agent
+ * whose wrapped line it runs; without it, the machine wide one an older
+ * install wrote.
  *
  * Claude Code runs it with its own session JSON on stdin. It stores the
  * session's model and effort as one numbered observation in the owner only
@@ -32,6 +35,8 @@ function readStdin() {
   })
 }
 
+const at = process.argv.indexOf('--agent')
+const agent = at >= 0 ? process.argv[at + 1] : undefined
 const raw = await readStdin()
 const dir = modelControlDir()
 try {
@@ -41,7 +46,7 @@ try {
   /* an observation is best effort; the owner's status line still prints */
 }
 try {
-  const wrapped = readWrappedStatusLine(dir)
+  const wrapped = agent === undefined ? readWrappedStatusLine(dir) : readWrappedStatusLine(dir, agent)
   if (wrapped) {
     const run = spawnSync(wrapped.command, {
       input: raw,

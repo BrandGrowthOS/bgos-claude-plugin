@@ -115,6 +115,7 @@ import {
   isCleanEnd,
   isVersionHeldBad,
   nodeIdleUpdateFs,
+  proveOwnLauncher,
   scaleFromEnv,
   scaledDurations,
   sessionWakePending,
@@ -197,6 +198,10 @@ import { SessionSettingsLiveReporter } from './lib/model-effort-live-report.js'
 import { parseHelpCatalog } from './lib/model-effort-catalog.js'
 import { processAncestry } from './lib/model-effort-pane.js'
 import { modelControlDir, readObservation, readOptIn, refreshBridgeCopy } from './lib/model-control-store.mjs'
+import { finishPendingSwitch, type RestartRouteDeps } from './lib/model-effort-restart.ts'
+import { CliModelNames } from './lib/cli-model-names.ts'
+import { LAUNCH_CHOICE_CAPABILITY } from './lib/launch-choice.mjs'
+import { restartAgent } from './lib/agent-restart.mjs'
 import {
   buildHealthLogEventBody,
   buildHealthLogListPath,
@@ -741,6 +746,7 @@ import {
   chooseRestartAuthority,
   decideSupervisorWrite,
   detectSupervision,
+  parseSupervisorFile,
   probeServiceOwnership,
   resolveSupervision,
   serviceOwnsProcess,
@@ -1210,6 +1216,7 @@ import {
   appendFileSync,
   chmodSync,
   copyFileSync,
+  createReadStream,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -2970,6 +2977,96 @@ function provenSessionId(): string | null {
   return name.endsWith('.jsonl') ? name.slice(0, -'.jsonl'.length) : null
 }
 
+/**
+ * The hoai launcher that supervises this agent and starts it on its launch
+ * choice (bin/hoai-core.mjs supervisorFileBody: `relaunch` and
+ * `launch-choice`), alive, or null.
+ */
+function launchChoiceLauncher(): { pid: number } | null {
+  const dir = agentStateDir(homedir(), ASSISTANT_ID)
+  if (!dir) return null
+  const supervisor = parseSupervisorFile(readTextOrNull(pathJoin(dir, 'supervisor.json')))
+  if (!supervisor || !supervisor.capabilities.includes('relaunch') || !supervisor.capabilities.includes(LAUNCH_CHOICE_CAPABILITY)) return null
+  return defaultPidAlive(supervisor.pid) ? { pid: supervisor.pid } : null
+}
+
+/** Whole file by rename, owner only, so the launcher never reads half of one. */
+function writeSwitchFile(path: string, text: string): void {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(tmp, text, { mode: 0o600 })
+  renameSync(tmp, path)
+}
+
+// The restart route (lib/model-effort-restart.ts): an agent with no tmux pane,
+// every Windows agent among them, is switched by a restart of this one agent
+// through its own hoai launcher, onto the same conversation, with the chosen
+// model and effort. The marker is written by
+// restartAgent, the restart the Helper's Fix and the app's Restart use.
+const modelEffortRestart: RestartRouteDeps = {
+  get stateDir(): string {
+    return agentStateDir(homedir(), ASSISTANT_ID) ?? pathJoin(homedir(), '.bgos-agent', 'unknown')
+  },
+  launcherDeclared: () => launchChoiceLauncher() !== null,
+  launcherProven: async () => {
+    const launcher = launchChoiceLauncher()
+    if (!launcher) return false
+    const listed = await listProcesses({ platform: process.platform, exec: nodeExec(), env: process.env })
+    return listed.ok === true && proveOwnLauncher({ ownPid: process.pid, launcherPid: launcher.pid, processes: listed.processes }).proven
+  },
+  readFile: readTextOrNull,
+  writeFile: writeSwitchFile,
+  removeFile: (path) => rmSync(path, { force: true }),
+  requestRestart: async () => {
+    const stateDir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (!stateDir) return false
+    const out = await restartAgent({ assistantId: String(ASSISTANT_ID), supervisor: 'launcher-live', stateDir })
+    return out?.ok === true && out.how === 'marker'
+  },
+  drain: setUpdateDrainMode,
+  note: (chatId, text) => {
+    void modelEffortNote(chatId, text).catch((err: unknown) => {
+      log(`model control: switch note failed (${err instanceof Error ? err.name : 'error'})`)
+    })
+  },
+  setTimer: (fn, ms) => {
+    setTimeout(fn, ms).unref?.()
+  },
+}
+
+// The model names the installed CLI knows, read once per CLI file from the
+// file itself (lib/cli-model-names.ts): a server catalog id is offered on the
+// restart route only when it is one of them.
+const cliModelNames = new CliModelNames({
+  exe: () => resolveClaude(),
+  stat: (path) => {
+    try {
+      const st = statSync(path)
+      return st.isFile() ? { size: st.size, mtimeMs: st.mtimeMs } : null
+    } catch {
+      return null
+    }
+  },
+  read: (path) => createReadStream(path, { highWaterMark: 1024 * 1024 }),
+  log,
+})
+
+// The switch's own reader of the proven session's transcript: the reply on
+// the new model, or the API's refusal of it (lib/model-effort-restart.ts).
+const switchReplyTail = new GoalTail(() => sessionBinder.provenTranscriptPath(), { startupTailBytes: 256 * 1024 })
+
+/** A note from this agent in one of its chats: the switched-to note's one route. */
+function modelEffortNote(chatId: string, text: string): Promise<unknown> {
+  return bgosPost('send-message', {
+    chatId: Number(chatId),
+    assistantId: Number(ASSISTANT_ID),
+    text,
+    sender: 'assistant',
+    sentDate: new Date().toISOString(),
+    hasAttachment: false,
+    files: [],
+  })
+}
+
 const modelEffortControl: ModelEffortControl = new ModelEffortControl({
   optedIn: () => readOptIn(MODEL_CONTROL_DIR, String(ASSISTANT_ID ?? '')),
   target: () => compactTarget,
@@ -2990,20 +3087,23 @@ const modelEffortControl: ModelEffortControl = new ModelEffortControl({
   sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
   now: Date.now,
   log,
+  restart: modelEffortRestart,
+  cliModelNames: () => cliModelNames.now(),
 }, { staleMs: MODEL_EFFORT_STALE_MS })
 
 /**
- * Declare model_effort_picker on this beat (never on Windows:
- * lib/declared-capabilities.ts)? Opted in, the injector
- * answers, the bridge has a fresh observation of the proven session, and the
- * installed CLI's help offers something. The help is read in the background
+ * Declare model_effort_picker on this beat? Opted in, a route that can switch
+ * (the injector's tmux pane, or a launcher that starts this agent on its
+ * launch choice: the restart route, Windows included), the bridge has a
+ * fresh observation of the proven session, and the installed CLI's help
+ * offers something. The help is read in the background
  * the first time, so the boot beat never carries the token: the heartbeat's
  * one minute poll re-sends a changed capability set (lib/version-heartbeat.ts),
  * so it goes out within a minute instead of on the 6h beat.
  */
 function modelEffortDeclared(): boolean {
   try {
-    if (compactTarget === null) return false
+    if (compactTarget === null && !modelEffortRestart.launcherDeclared()) return false
     if (!readOptIn(MODEL_CONTROL_DIR, String(ASSISTANT_ID ?? ''))) return false
     const sessionId = provenSessionId()
     const observation = sessionId ? readObservation(MODEL_CONTROL_DIR, sessionId) : null
@@ -3058,16 +3158,7 @@ const modelEffortPicker = new ModelEffortPickerHandler({
       modelEffortLiveReporter.noteReported(chatId, body)
       return answer
     }),
-  sendNote: (chatId, text) =>
-    bgosPost('send-message', {
-      chatId: Number(chatId),
-      assistantId: Number(ASSISTANT_ID),
-      text,
-      sender: 'assistant',
-      sentDate: new Date().toISOString(),
-      hasAttachment: false,
-      files: [],
-    }),
+  sendNote: modelEffortNote,
   log,
   now: Date.now,
 })
@@ -21847,6 +21938,29 @@ async function main(): Promise<void> {
     // so the owner's chat never shows a silently dead agent. Cheap (reads only
     // appended bytes) and deduped per rest episode inside reportResting.
     setInterval(reportResting, 30_000).unref()
+    // A model switch by restart that this daemon came back from: confirmed
+    // only by a real reply on the new model, else undone by a restart back
+    // onto the previous choice, and the chat told either way
+    // (lib/model-effort-restart.ts). The reply is asked for with the liveness
+    // check card, which tells the owner nothing.
+    void finishPendingSwitch({
+      deps: modelEffortRestart,
+      sessionId: () => provenSessionId(),
+      readObservation: (sessionId) => readObservation(MODEL_CONTROL_DIR, sessionId),
+      readTranscript: () => switchReplyTail.read(),
+      askForReply: (chatId) => {
+        const probe = buildLivenessProbeNotification({ chatId, afterRestart: true })
+        log('model control: asking the session for one reply on the new model')
+        void trackMessageOperation(() => channelNotify(() => ({ content: probe.content, meta: probe.meta }))).catch((err) =>
+          log(`model control: the reply check was not delivered (${err instanceof Error ? err.name : 'error'})`),
+        )
+      },
+      now: Date.now,
+      sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.()),
+      log,
+    }).catch(() => {})
+    // The CLI's own model names, read in the background where the restart route can offer server ids.
+    if (modelEffortRestart.launcherDeclared()) void cliModelNames.ready()
     // The pill follows the session: one look now, then on a timer.
     void modelEffortLiveReporter.tick()
     setInterval(() => void modelEffortLiveReporter.tick(), MODEL_EFFORT_LIVE_REPORT_MS).unref()
