@@ -107,12 +107,25 @@ export function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any> }
 export function watcherRun(
   L: Layout,
   fs: MemoryFs,
-  opts: { now?: number; probeCode?: number; backend?: ReturnType<typeof fakeBackend>; modules?: Record<string, unknown>; spawnPid?: number | null; host?: FakeWindowHost } = {},
+  opts: {
+    now?: number
+    probeCode?: number
+    backend?: ReturnType<typeof fakeBackend>
+    modules?: Record<string, unknown>
+    spawnPid?: number | null
+    host?: FakeWindowHost
+    /** The keep-alive sweep's answer (default: switch off, Show agent windows off). */
+    keepAliveSweep?: () => Promise<Record<string, unknown>>
+    /** The loop's windows pass (default: the real one). */
+    windowsPass?: (ctx: any) => Promise<any>
+  } = {},
 ) {
   let nowMs = opts.now ?? T0
   const host = opts.host ?? fakeWindowHost()
   const execs: Array<{ file: string; args: string[] }> = []
   const spawns: Array<{ file: string; args: string[] }> = []
+  /** The options of each spawn, in the order of `spawns` (the working folder above all). */
+  const spawnOptions: any[] = []
   const logs: string[] = []
   const backend = opts.backend ?? fakeBackend()
   const deps = {
@@ -129,8 +142,9 @@ export function watcherRun(
       return host.exec(file, args, execOpts)
     },
     kill: host.kill,
-    spawnDetached: (file: string, args: readonly string[]) => {
+    spawnDetached: (file: string, args: readonly string[], spawnOpts?: unknown) => {
       spawns.push({ file, args: [...args] })
+      spawnOptions.push(spawnOpts)
       return { pid: opts.spawnPid === undefined ? 4343 : opts.spawnPid }
     },
     now: () => nowMs,
@@ -146,7 +160,8 @@ export function watcherRun(
     hasTmux: false,
     hasScript: false,
     echo: (line: string) => logs.push(line),
-    keepAliveSweep: async () => ({ enabled: false, agents: [] }),
+    keepAliveSweep: opts.keepAliveSweep ?? (async () => ({ enabled: false, agents: [] })),
+    ...(opts.windowsPass ? { windowsPass: opts.windowsPass } : {}),
     modules: {
       planMachine: () => ({ verdict: 'nothing_to_do', targetVersion: null, steps: [] }),
       executePlan: async () => {
@@ -163,6 +178,7 @@ export function watcherRun(
     run: () => runWatcher(deps as any),
     execs,
     spawns,
+    spawnOptions,
     logs,
     backend,
     host,
