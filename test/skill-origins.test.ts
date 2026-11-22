@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, unlinkSy
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { SkillItem, SkillScope } from '../lib/skills-inventory.ts'
+import './helpers/warm-volumes.ts'
 import { scratchDir } from './helpers/scratch-dirs.ts'
 import { createTurnChatTracker } from '../lib/turn-chat.ts'
 import { linkFolder } from './helpers/links.ts'

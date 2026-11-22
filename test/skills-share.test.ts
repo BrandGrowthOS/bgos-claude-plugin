@@ -35,6 +35,7 @@ import type { IdentFs } from '../lib/skills-inventory.ts'
 import { fakeIdentFs, type FolderNumbers } from './helpers/fake-ident-fs.ts'
 import { fileSymlinkRefused, linkFolder } from './helpers/links.ts'
 import { scratchDir } from './helpers/scratch-dirs.ts'
+import './helpers/warm-volumes.ts'
 
 const SKILL = '---\nname: notes\ndescription: Take notes.\n---\n\n# Notes\n'
 

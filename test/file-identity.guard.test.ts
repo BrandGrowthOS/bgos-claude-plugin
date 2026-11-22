@@ -1,13 +1,22 @@
 /**
  * No new plain device or inode comparisons anywhere in the plugin's source
- * tree (lib, bin, scripts, server.ts and every other shipping file; tests and
- * docs are not scanned). Missing file numbers are unknown, number stats can
- * round large file ids, and a ReFS or Dev Drive volume shows only 64 bits of a
- * 128 bit id: lib/file-numbers.mjs holds that rule and is the one file where a
- * plain compare is allowed. The existing sites are debt, not examples to copy:
- * remove entries from the allow list as they are fixed, lowering the pinned
- * count too; never add entries. Unused allowances fail so fixed sites cannot
- * leave credits. This guard does no type inference.
+ * tree (lib, bin, scripts, server.ts and every other shipping file; the
+ * top level tests, docs, installs and dot folders are not scanned). Missing
+ * file numbers are unknown, number stats can round large file ids, and a ReFS
+ * or Dev Drive volume shows only 64 bits of a 128 bit id: lib/file-numbers.mjs
+ * holds that rule, and a number read through its wholeNumber is not a plain
+ * one. The rule files have no exemption of their own: they read every number
+ * through wholeNumber (so does the vendored BGOS copy,
+ * lib/browser-profile-core/file-numbers.js). The existing sites are debt, not
+ * examples to copy: remove entries from the allow list as they are fixed,
+ * lowering the pinned count too; never add entries. Unused allowances fail so
+ * fixed sites cannot leave credits.
+ *
+ * A compare is a comparison operator, Object.is, a `case` of a switch, or an
+ * includes, has, indexOf or lastIndexOf call, with a file number on either
+ * side. This guard does no type inference and follows no data: a number first
+ * copied into a variable of another name, or a compare written some other way
+ * (a Map key, a sort callback, a find), is not seen.
  *
  * Sites use a relative path and a printed comparison, not a line number, so
  * comments and unrelated line shifts do not require refreshing the baseline.
@@ -15,17 +24,22 @@
  */
 import assert from 'node:assert/strict'
 import { appendFileSync, cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, join, relative } from 'node:path'
+import { join, relative } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 import { scratchDir } from './helpers/scratch-dirs.ts'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
-/** The one file where the device and file numbers may be compared plainly: it holds the rule. */
-const RULE_HOME = 'lib/file-numbers.mjs'
-/** Folders that ship no code: the tests, the docs, installs and every dot folder (.git, .github, .claude-plugin). */
+/**
+ * Top level folders that ship no code: the tests, the docs, installs and every dot folder (.git, .github,
+ * .claude-plugin). Only the first segment of a path is checked: the same names deeper in a shipping folder are scanned.
+ */
 const NOT_SOURCE = new Set(['node_modules', 'test', 'docs'])
+const notSource = (relativePath: string): boolean => {
+  const first = relativePath.split(/[\\/]/)[0]
+  return first !== '' && (first.startsWith('.') || NOT_SOURCE.has(first))
+}
 const ALLOWED_SITE_COUNT = 37
 /**
  * Today's allowed sites, listed one by one (path and printed compare) in the fixture. Every one is in lib: bin,
@@ -46,6 +60,8 @@ type Site = { key: string, location: string }
 function readsFileNumber(node: ts.Node): boolean {
   // A type check compares a type name, not the device or inode value itself.
   if (ts.isTypeOfExpression(node)) return false
+  // wholeNumber keeps the number whole and gives null when it is unknown, the rule this guard asks for.
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'wholeNumber') return false
   if (ts.isPropertyAccessExpression(node) && /^(dev|ino)$/.test(node.name.text)) return true
   if (ts.isElementAccessExpression(node) && node.argumentExpression &&
       ts.isStringLiteralLike(node.argumentExpression) && /^(dev|ino)$/.test(node.argumentExpression.text)) return true
@@ -61,16 +77,35 @@ function isObjectIs(node: ts.CallExpression): boolean {
   return name === 'is' && ts.isIdentifier(callee.expression) && callee.expression.text === 'Object'
 }
 
+/** The methods that find an equal value in a list or a set: a compare of their argument with what is in it. */
+const MEMBERSHIP = new Set(['includes', 'has', 'indexOf', 'lastIndexOf'])
+
+/** [a.ino].includes(b.ino), seen.has(stat.dev), list.indexOf(a.ino): a compare written as a membership call. */
+function isMembership(node: ts.CallExpression): boolean {
+  const callee = node.expression
+  const name = ts.isPropertyAccessExpression(callee) ? callee.name.text
+    : ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression) ? callee.argumentExpression.text : ''
+  return MEMBERSHIP.has(name)
+}
+
 function comparisonSites(file: string, source: string): Site[] {
   const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
   const sites: Site[] = []
+  const print = (node: ts.Node) => printer.printNode(ts.EmitHint.Expression, node, parsed)
+  const add = (node: ts.Node, expression: string): void => {
+    const { line, character } = parsed.getLineAndCharacterOfPosition(node.getStart(parsed))
+    sites.push({ key: `${file}: ${expression}`, location: `${file}:${line + 1}:${character + 1}` })
+  }
   const visit = (node: ts.Node): void => {
     if ((ts.isBinaryExpression(node) && COMPARISONS.has(node.operatorToken.kind) &&
         (readsFileNumber(node.left) || readsFileNumber(node.right))) ||
-        (ts.isCallExpression(node) && isObjectIs(node) && node.arguments.some(readsFileNumber))) {
-      const { line, character } = parsed.getLineAndCharacterOfPosition(node.getStart(parsed))
-      const expression = printer.printNode(ts.EmitHint.Expression, node, parsed)
-      sites.push({ key: `${file}: ${expression}`, location: `${file}:${line + 1}:${character + 1}` })
+        (ts.isCallExpression(node) && (isObjectIs(node) || isMembership(node)) && node.arguments.some(readsFileNumber))) {
+      add(node, print(node))
+    }
+    // switch (a.dev) { case b.dev: } compares the switch value with every case: each case is one site.
+    if (ts.isCaseClause(node) && ts.isCaseBlock(node.parent) && ts.isSwitchStatement(node.parent.parent)) {
+      const value = node.parent.parent.expression
+      if (readsFileNumber(value) || readsFileNumber(node.expression)) add(node, `switch (${print(value)}) case ${print(node.expression)}`)
     }
     ts.forEachChild(node, visit)
   }
@@ -78,17 +113,17 @@ function comparisonSites(file: string, source: string): Site[] {
   return sites
 }
 
-/** Every source file under `root` (a checkout, or a scratch copy of one) except the tests, the docs and RULE_HOME. */
+/** Every source file under `root` (a checkout, or a scratch copy of one) except the top level non-source folders. */
 function scanTree(root: string): Site[] {
   const sites: Site[] = []
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const path = join(dir, entry.name)
+      const file = relative(root, path).split('\\').join('/')
       if (entry.isDirectory()) {
-        if (!entry.name.startsWith('.') && !NOT_SOURCE.has(entry.name)) walk(path)
+        if (!notSource(file)) walk(path)
       } else if (entry.isFile() && SOURCE_FILE.test(entry.name)) {
-        const file = relative(root, path).split('\\').join('/')
-        if (file !== RULE_HOME) sites.push(...comparisonSites(file, readFileSync(path, 'utf8')))
+        sites.push(...comparisonSites(file, readFileSync(path, 'utf8')))
       }
     }
   }
@@ -170,6 +205,39 @@ test('comments, strings, other properties, type checks and non-comparison uses a
   assert.deepEqual(comparisonSites('lib/example.ts', source), [])
 })
 
+test('a number read whole through wholeNumber is not a plain site, and a plain operand beside it still is', () => {
+  // wholeNumber (lib/file-numbers.mjs, lib/browser-profile-core/file-numbers.js) keeps a 64 bit number whole and gives null when it is unknown.
+  assert.deepEqual(comparisonSites('lib/example.js', 'wholeNumber(stat?.dev) !== null && wholeNumber(stat?.ino) !== null'), [])
+  assert.deepEqual(comparisonSites('lib/example.js', 'wholeNumber(a?.["ino"]) === wholeNumber(b.ino)'), [])
+  assert.equal(comparisonSites('lib/example.js', 'wholeNumber(a.ino) === b.ino').length, 1)
+  assert.equal(comparisonSites('lib/example.js', 'Number(wholeNumber(a.ino)) === b.ino').length, 1)
+  assert.equal(comparisonSites('lib/example.js', 'other.wholeNumber(a.ino) === null').length, 1, 'only the plain helper name counts')
+  assert.equal(comparisonSites('lib/example.js', 'wholeNumber(a.ino, a.dev === b.dev) === null').length, 1, 'a comparison inside its arguments is still a site')
+})
+
+test('compares written as a switch, includes, has or indexOf are sites too', () => {
+  for (const expression of [
+    '[a.ino].includes(b.ino)',
+    'new Set([a.ino]).has(b.ino)',
+    'seen.has(stat.dev)',
+    'list.indexOf(a.ino)',
+    'list.lastIndexOf(a?.["dev"])',
+    'inodes.includes(Number(b.ino))',
+  ]) {
+    assert.equal(comparisonSites('lib/example.ts', expression).length, 1, expression)
+  }
+  assert.equal(comparisonSites('lib/example.ts', 'switch (a.dev) { case b.dev: break; case 7: break }').length, 2, 'every case against a file number')
+  assert.equal(comparisonSites('lib/example.ts', 'switch (kind) { case a.ino: break; case "x": break }').length, 1, 'a case that reads one')
+  // Not compares of a file number: other arguments, other methods, and a number read whole.
+  assert.deepEqual(comparisonSites('lib/example.ts', [
+    'seen.has(stat.size)', 'names.includes(entry.name)', 'map.get(a.ino)', 'list.push(a.dev)',
+    'seen.has(wholeNumber(a.ino))', 'switch (kind) { case "dev": break }',
+  ].join('\n')), [])
+  const [site] = comparisonSites('lib/example.ts', 'switch (a.dev) {\n  case b.dev: break\n}')
+  assert.equal(site.key, 'lib/example.ts: switch (a.dev) case b.dev')
+  assert.equal(site.location, 'lib/example.ts:2:3')
+})
+
 test('allowances are tied to the file, expression and number of occurrences', () => {
   const [site] = comparisonSites('lib/known.mjs', 'a.ino === b.ino')
   assert.deepEqual(auditAllowances([site], [site.key]), { unlisted: [], unused: [] })
@@ -229,32 +297,51 @@ test('every shipping folder is scanned; the tests, the docs, installs and dot fo
   ])
 })
 
-test('lib/file-numbers.mjs is the one file whose plain compares are allowed', () => {
-  const root = scratchDir('file-identity-home-')
-  mkdirSync(join(root, 'lib', 'nested'), { recursive: true })
-  writeFileSync(join(root, 'lib', 'file-numbers.mjs'), 'a.ino === b.ino && a.dev !== b.dev')
-  // The exemption is that one path: the same name elsewhere is scanned.
-  writeFileSync(join(root, 'lib', 'nested', 'file-numbers.mjs'), 'a.ino === b.ino')
-  writeFileSync(join(root, 'file-numbers.mjs'), 'a.ino === b.ino')
-  writeFileSync(join(root, 'lib', 'file-numbers.ts'), 'a.ino === b.ino')
+test('only the top level tests, docs, installs and dot folders are skipped; the same names deeper are scanned', () => {
+  const root = scratchDir('file-identity-depth-')
+  for (const [file, compare] of [
+    ['lib/docs/leak.mjs', 'before.ino !== after.ino'],
+    ['scripts/test/leak.mjs', 'before.dev !== after.dev'],
+    ['lib/.generated/leak.mjs', 'Object.is(before.ino, after.ino)'],
+    ['bin/node_modules/leak.js', 'before.ino === after.ino'],
+    ['test/leak.mjs', 'before.ino === after.ino'],
+    ['.github/leak.mjs', 'before.ino === after.ino'],
+  ]) {
+    mkdirSync(join(root, file, '..'), { recursive: true })
+    writeFileSync(join(root, file), `export const moved = (before, after) => ${compare}\n`)
+  }
   assert.deepEqual(scanTree(root).map(site => site.key), [
-    'file-numbers.mjs: a.ino === b.ino',
-    'lib/file-numbers.ts: a.ino === b.ino',
-    'lib/nested/file-numbers.mjs: a.ino === b.ino',
+    'bin/node_modules/leak.js: before.ino === after.ino',
+    'lib/.generated/leak.mjs: Object.is(before.ino, after.ino)',
+    'lib/docs/leak.mjs: before.ino !== after.ino',
+    'scripts/test/leak.mjs: before.dev !== after.dev',
   ])
-  assert.ok(readdirSync(join(ROOT, 'lib')).includes(basename(RULE_HOME)), 'the rule home exists')
+})
+
+test('the rule files have no exemption: they read the numbers through wholeNumber and pass like any other file', () => {
+  const root = scratchDir('file-identity-home-')
+  mkdirSync(join(root, 'lib', 'browser-profile-core'), { recursive: true })
+  // The rule as this checkout ships it, and the compares of the vendored BGOS copy (park/plugfilenum d448cf29).
+  writeFileSync(join(root, 'lib', 'file-numbers.mjs'), readFileSync(join(ROOT, 'lib', 'file-numbers.mjs'), 'utf8'))
+  writeFileSync(join(root, 'lib', 'browser-profile-core', 'file-numbers.js'), [
+    'const knownNumbers = stat => wholeNumber(stat?.dev) !== null && wholeNumber(stat?.ino) !== null;',
+    'const numberPairs = (a, b) => ["dev", "ino"].map(key => [wholeNumber(a?.[key]), wholeNumber(b?.[key])]);',
+    'const sameGivenNumbers = (a, b) => ["dev", "ino"].every(key => a?.[key] === b?.[key]);',
+  ].join('\n'))
+  assert.deepEqual(scanTree(root), [])
+  // A plain compare in either rule file is a site like anywhere else.
+  appendFileSync(join(root, 'lib', 'file-numbers.mjs'), '\nexport const plain = (a, b) => a.ino === b.ino\n')
+  appendFileSync(join(root, 'lib', 'browser-profile-core', 'file-numbers.js'), '\nconst plain = (a, b) => a.dev !== b.dev;\n')
+  assert.deepEqual(scanTree(root).map(site => site.key), [
+    'lib/browser-profile-core/file-numbers.js: a.dev !== b.dev',
+    'lib/file-numbers.mjs: a.ino === b.ino',
+  ])
 })
 
 test('a throwaway compare added to a scratch copy of this checkout fails the guard', () => {
   // The copy holds the shipping source exactly as this checkout has it, so it passes as the checkout does.
   const copy = scratchDir('file-identity-copy-')
-  cpSync(ROOT, copy, {
-    recursive: true,
-    filter: source => {
-      const name = relative(ROOT, source).split(/[\\/]/)[0]
-      return name === '' || !(name.startsWith('.') || NOT_SOURCE.has(name))
-    },
-  })
+  cpSync(ROOT, copy, { recursive: true, filter: source => !notSource(relative(ROOT, source)) })
   assert.deepEqual(auditAllowances(scanTree(copy), ALLOW_LIST), { unlisted: [], unused: [] })
   // A throwaway compare in server.ts, in bin and in a new lib file: each one alone fails it.
   const throwaways: Array<[string, string]> = [

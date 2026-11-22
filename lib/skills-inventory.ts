@@ -55,7 +55,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
-import { fileSystemOf, lookOn } from './file-numbers.mjs'
+import { fileSystemOf, knownNumbers, lookOn, renameKept } from './file-numbers.mjs'
 import { scanText } from './secret-scan.ts'
 import type { SkillOrigin } from './skill-origins.ts'
 
@@ -149,10 +149,14 @@ export function inside(child: string, parent: string): boolean {
   return child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
 }
 
-/** What the identity of a folder needs of a stat: its device number and file number. */
+/**
+ * What the identity of a folder needs of a stat: its device number and file number, and its birth time, which a
+ * rename keeps (removeAgentSkill's check of the moved entry where the file number is unknown).
+ */
 export interface IdentStat {
   dev?: number | bigint
   ino?: number | bigint
+  birthtimeNs?: bigint
 }
 
 /**
@@ -163,9 +167,10 @@ export interface IdentFs {
   statSync(path: string, options: { bigint: true }): IdentStat
   lstatSync(path: string, options: { bigint: true }): IdentStat
   /**
-   * The file system name of the volume `path` is on, or null where it does not matter (lib/file-numbers.mjs
-   * fileSystemOf: only Windows is asked). On ReFS or a Dev Drive the file number is unknown. A test's file system
-   * may leave it out: then the numbers are taken as they come.
+   * The file system name of the volume `path` is on, null where it does not matter, or UNKNOWN_VOLUME where it is
+   * not known yet or its look failed (lib/file-numbers.mjs fileSystemOf: only Windows is asked, and never while the
+   * caller waits). On ReFS, a Dev Drive or an unknown volume the file number is unknown. A test's file system may
+   * leave it out: then the numbers are taken as they come.
    */
   fileSystem?(path: string, stat: IdentStat): string | null
 }
@@ -174,34 +179,61 @@ export interface IdentFs {
 export const REAL_IDENT_FS: IdentFs = { statSync, lstatSync, fileSystem: (path, stat) => fileSystemOf(path, stat) }
 
 /**
- * A look at a folder as an identity reads it: the stat, with its file number unknown on a volume whose file ids are
- * 128 bits (ReFS, a Dev Drive), where Node's 64 bits of the id are not unique.
+ * The path the volume is asked by: the one the stat describes. A followed look describes where the path leads, so its
+ * real path (a link on C: into a Dev Drive is asked about the Dev Drive, whose device number the look carries); a look
+ * at the entry itself describes an entry in its folder, so the real path of that folder.
  */
-export function identLook(path: string, follow: boolean, fs: IdentFs): IdentStat {
-  const st = follow ? fs.statSync(path, { bigint: true }) : fs.lstatSync(path, { bigint: true })
-  return fs.fileSystem ? lookOn(st, fs.fileSystem(path, st)) : st
+function volumePathOf(path: string, follow: boolean): string {
+  if (follow) return realOrNull(path) ?? path
+  const parent = dirname(path)
+  return parent === path ? path : realOrNull(parent) ?? parent
 }
 
 /**
- * A number the system gave for a folder: one left out, or a zero, is unknown (a drive that keeps no file numbers
- * reports a zero for every folder). The same rule lib/email-outbound-files.ts holds for a file.
+ * A look at a folder as an identity reads it: the stat, with its file number unknown on a volume whose file ids are
+ * 128 bits (ReFS, a Dev Drive), where Node's 64 bits of the id are not unique, or whose file system is not known.
  */
-const given = (v: unknown): boolean => v !== undefined && v !== null && String(v) !== '0'
+export function identLook(path: string, follow: boolean, fs: IdentFs): IdentStat {
+  const st = follow ? fs.statSync(path, { bigint: true }) : fs.lstatSync(path, { bigint: true })
+  return fs.fileSystem ? lookOn(st, fs.fileSystem(volumePathOf(path, follow), st)) : st
+}
 
 /**
  * A folder's identity on disk, so no spelling (case, NFD, a link) can hide it. The numbers are read as whole
  * numbers: on NTFS a file number passes 2^53, and as plain numbers two different folders can round to one.
  * On ReFS or a Dev Drive the file number is unknown (identLook). Null when the stat fails or either number is
- * unknown, and an unknown identity is never taken for a match.
+ * unknown by lib/file-numbers.mjs's rule (left out, zero, all ones, or a plain number past 2^53), and an unknown
+ * identity is never taken for a match.
  */
 export function identOf(path: string, follow = true, fs: IdentFs = REAL_IDENT_FS): string | null {
   try {
     const st = identLook(path, follow, fs)
-    if (!given(st.dev) || !given(st.ino)) return null
+    if (!knownNumbers(st)) return null
     return `${String(st.dev)}:${String(st.ino)}`
   } catch {
     return null
   }
+}
+
+/** The entry itself at `path`, never followed, with its numbers whole; null when it cannot be read. */
+function entryLook(path: string, fs: IdentFs): IdentStat | null {
+  try {
+    return fs.lstatSync(path, { bigint: true })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The entry now at `moved` is the one a rename took from the target: by identity where either is known (they must
+ * be equal); where both are unknown (ReFS, a Dev Drive, a drive with no file numbers), by what a rename keeps, the
+ * device number and the birth time (lib/file-numbers.mjs renameKept), so an unknown identity is never a match by
+ * itself.
+ */
+function movedIsTarget(targetId: string | null, targetLook: IdentStat | null, moved: string, fs: IdentFs): boolean {
+  const movedId = identOf(moved, false, fs)
+  if (targetId !== null || movedId !== null) return movedId === targetId
+  return renameKept(targetLook, entryLook(moved, fs))
 }
 
 /** The identities of a folder and of every folder above its real location. */
@@ -848,8 +880,11 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
   }
 
   const shown = displayPath(target, home)
-  // Read the way the moved entry is read after the move, or the two would never agree past 2^53.
-  const targetId = identOf(target, false, input.fs)
+  // Read the way the moved entry is read after the move, or the two would never agree past 2^53. The look itself is
+  // kept for a volume whose file numbers are unknown, where what a rename keeps decides (movedIsTarget).
+  const identFs = input.fs ?? REAL_IDENT_FS
+  const targetId = identOf(target, false, identFs)
+  const targetLook = entryLook(target, identFs)
   const skillsMark = markOf(agentSkills, input.fs)
   let dest: string
   try {
@@ -878,7 +913,7 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
     }
     return refuse('write_failed', 'the skill could not be moved to the trash')
   }
-  if (identOf(dest, false, input.fs) !== targetId || !agentParentsSafe(agentDir) || !sameMark(markOf(agentSkills, input.fs), skillsMark)) {
+  if (!movedIsTarget(targetId, targetLook, dest, identFs) || !agentParentsSafe(agentDir) || !sameMark(markOf(agentSkills, input.fs), skillsMark)) {
     try {
       // put back with the real move, wherever the path now leads: it came from there
       renameSync(dest, target)

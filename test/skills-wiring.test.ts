@@ -42,6 +42,14 @@ test('inventory list applies origins from the sidecar beside the skills trash', 
   assert.match(server, /const SKILL_ORIGINS_FILE = pathJoin\(pathDirname\(skillsTrashDir\(\)\), 'skill-origins.json'\)/)
 })
 
+test('the volumes the skills checks read are asked about at start, without blocking (lib/file-numbers.mjs warmVolumes)', () => {
+  assert.match(server, /\nimport \{ warmVolumes \} from '\.\/lib\/file-numbers\.mjs'\n/)
+  const warm = /\nvoid warmVolumes\(\[SKILLS_AGENT_DIR, CLAUDE_CONFIG_DIR, pathJoin\(homedir\(\), '\.claude'\), pathDirname\(SKILL_ORIGINS_FILE\)\]\)\n/
+  assert.match(server, warm)
+  assert.ok(server.search(warm) > server.indexOf('const SKILL_ORIGINS_FILE = '), 'after the folders it reads are known')
+  assert.equal((server.match(/\bwarmVolumes\(/g) ?? []).length, 1)
+})
+
 test('all six tap delivery sites note the teach window through one wrapper', () => {
   assert.equal((server.match(/\bprivateTapCard\(/g) ?? []).length, 1)
   assert.equal((server.match(/\bprivateTapCardNoting\(\{/g) ?? []).length, 6)

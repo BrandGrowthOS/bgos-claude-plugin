@@ -10,10 +10,14 @@ import { lstatSync, statSync } from 'node:fs'
 
 import type { IdentFs, IdentStat } from '../../lib/skills-inventory.ts'
 
-/** The device and file number a fake file system gives for one folder. */
-export type FolderNumbers = { dev?: bigint; ino?: bigint }
+/** The device and file number a fake file system gives for one folder, and its birth time where it gives one. */
+export type FolderNumbers = { dev?: bigint; ino?: bigint; birthtimeNs?: bigint }
 
-export function fakeIdentFs(given: Map<string, FolderNumbers>): IdentFs {
+/**
+ * `fileSystem`, when given, is the name every volume reports (lib/file-numbers.mjs): 'ReFS' makes the fake a Dev
+ * Drive, where every file number is unknown. Left out, the fake has no volume look and the numbers count as they come.
+ */
+export function fakeIdentFs(given: Map<string, FolderNumbers>, fileSystem?: string): IdentFs {
   const plain = (v: bigint | undefined) => (v === undefined ? undefined : Number(v))
   const answer = (path: string, options: { bigint?: boolean } | undefined, follow: boolean): IdentStat => {
     const mine = given.get(path) ?? (follow ? statSync(path, { bigint: true }) : lstatSync(path, { bigint: true }))
@@ -22,5 +26,6 @@ export function fakeIdentFs(given: Map<string, FolderNumbers>): IdentFs {
   return {
     statSync: (path: string, options?: { bigint?: boolean }) => answer(path, options, true),
     lstatSync: (path: string, options?: { bigint?: boolean }) => answer(path, options, false),
+    ...(fileSystem === undefined ? {} : { fileSystem: () => fileSystem }),
   }
 }

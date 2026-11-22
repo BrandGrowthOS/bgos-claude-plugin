@@ -17,8 +17,10 @@ Running commands is not available for people you share with yet. Your own tools 
 **fix(files): on a ReFS volume or a Dev Drive a file number counts as unknown, and no new plain file number compare can creep in.**
 
 - ReFS, and so every Dev Drive, gives each file a 128 bit id, and Node shows only 64 bits of it, which Windows does not promise are unique. On those volumes a folder's identity for skill sharing and skill origin marks is now unknown instead of possibly another folder's: an unknown identity is never taken for a match. Windows is asked which file system a volume uses once per volume (PowerShell `Get-Volume`, then `DriveInfo`, no administrator); Linux and macOS are never asked.
-- New `lib/file-numbers.mjs` holds the rule: whole device and file numbers (left out, zero, all ones or past 2^53 is unknown), the same-file check, and the volume check.
-- The file identity guard now scans the whole source tree (lib, bin, scripts, server.ts), not lib only, and catches `Object.is` as a compare. `lib/file-numbers.mjs` is the one file allowed a plain compare. The 37 allowed sites are unchanged.
+- The Windows volume check never blocks the plugin. The plugin asks about the agent folder, the config folder, `~/.claude` and its state folder at start, without waiting. Until a volume's answer arrives, and for a minute after a check that failed (a timeout, a blocked or missing PowerShell), its file numbers count as unknown, never as fitting. PowerShell is started by its whole System32 path, never by a bare name that the agent folder could answer.
+- Removing a skill on a Dev Drive still puts back an entry that is not the one it meant to move: where the file number is unknown, the device number and the birth time that a rename keeps must agree. A followed link is checked against the volume it leads to.
+- New `lib/file-numbers.mjs` holds the rule: whole device and file numbers (left out, zero, all ones or past 2^53 is unknown), the same-file check, and the volume check. The skill identity and the origin mark read their numbers through it too.
+- The file identity guard now scans the whole source tree (lib, bin, scripts, server.ts), not lib only. It skips the tests, docs, installs and dot folders only at the top level. It catches `Object.is`, a `switch` case, and `includes`, `has` and `indexOf` as compares. A number read through `wholeNumber` is not a plain one, so the rule files (this one, and the vendored BGOS copy) pass with no exemption. The 37 allowed sites are unchanged.
 
 ## 0.90.17 (2026-11-21)
 
