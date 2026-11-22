@@ -23,7 +23,7 @@ import {
   readLimitScreen,
   usageBackFrom,
 } from '../lib/limit-screen.mjs'
-import { accountTokenFrom } from '../lib/claude-account-id.mjs'
+import { seatToken } from './helpers/claude-auth-status.ts'
 
 const T0 = Date.parse('2026-11-01T16:39:03.000Z')
 const MIN = 60_000
@@ -161,8 +161,9 @@ function pick(seen: { ok: boolean; reason: string }) {
 // -- usageBackFrom: usage is back only on proof, never a guess -------------------------------------------
 
 // The proof a login gives is the ACCOUNT (lib/claude-account-id.mjs tokens), never a file's mtime.
-const ACCT_A = accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: 'aaaa0000-0000-4000-8000-00000000000a' }))
-const ACCT_B = accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: 'bbbb0000-0000-4000-8000-00000000000b' }))
+// Two seats of one Team organization, in the CLI's real key set (orgId and email).
+const ACCT_A = seatToken('a')
+const ACCT_B = seatToken('b')
 
 test('usage is back once the reset time from the transcript has passed (with a minute of grace)', () => {
   const limit = { atMs: T0, resetsAtMs: RESETS_AT }

@@ -5,10 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createHelperAccounts } from '../lib/helper-accounts.mjs'
-import { accountTokenFrom } from '../lib/claude-account-id.mjs'
+import { seatToken } from './helpers/claude-auth-status.ts'
 
 /** The fake Claude account a status read names, as lib/claude-account-id.mjs tokens it. */
-const accountToken = (seed: string) => accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: `acct-${seed}` }))!
+// Each seed is another seat (email) of one Team organization: the CLI's real key set.
+const accountToken = (seed: string) => seatToken(`seat-${seed}`)
 
 const now = Date.UTC(2026, 10, 19, 12)
 const usage = (short: number, week: number, model: number) => ({
@@ -36,6 +37,7 @@ function fixture(t: any) {
     model: 'opus',
   }
   let returns = true
+  const clockRef = { at: now }
   // The agent's own login (no saved one): the account a status read of its launch folder names.
   const own = { read: true, account: accountToken('own') as string | null }
   const atLimit: boolean[] = []
@@ -43,9 +45,10 @@ function fixture(t: any) {
   const deps = {
     home,
     credentials,
-    now: () => now,
+    now: () => clockRef.at,
     inventory: async () => [row],
-    measure: async (account: any) => readings.get(account.id) ?? { signedIn: false, usage: null },
+    // A reading is taken now unless a test says when (readAt).
+    measure: async (account: any) => ({ readAt: clockRef.at, ...(readings.get(account.id) ?? { signedIn: false, usage: null }) }),
     ownAccount: async () => ({ ...own }),
     restart: async (r: any, choice: string | null, opts: any = {}) => {
       if (holds.count > 0) {
@@ -90,6 +93,7 @@ function fixture(t: any) {
     readings,
     own,
     restarts,
+    setNow: (ms: number) => (clockRef.at = ms),
     atLimit,
     holds,
     // The capkeeper statusline sample of one saved login, as its tap writes it.
@@ -177,19 +181,23 @@ test('Auto picks the most week room now and at each limit, never an account out 
   await f.assign('auto', undefined, 41)
   assert.deepEqual(f.restarts.map((r: any) => r.choice), [c])
   assert.deepEqual(await agentOf(f), { assistantId: 41, accountId: c, status: 'back_online', rule: { mode: 'auto' } })
-  // C hits its Opus limit: C has no Opus room until the reset, B has the most week room left.
-  f.row.limit = limitAt(now + 1, 'opus')
+  // C hits its Opus limit: C has no Opus room until the reset, B has the most week room left. Each limit
+  // comes after the last switch, and the looks after it read each login since the limit began.
+  f.row.limit = limitAt(now + 10_000, 'opus')
+  f.setNow(now + 11_000)
   await f.watcher.tick()
   assert.deepEqual(f.restarts.map((r: any) => r.choice), [c, b])
   // B hits its session limit: only A is left with room for Opus.
-  f.row.limit = limitAt(now + 2)
+  f.row.limit = limitAt(now + 20_000)
+  f.setNow(now + 21_000)
   await f.watcher.tick()
   assert.deepEqual(f.restarts.map((r: any) => r.choice), [c, b, a])
   const limits = Object.fromEntries((await f.watcher.snapshot()).accounts.map((x: any) => [x.label, x.limits]))
   assert.deepEqual(limits.C, [{ model: 'opus', until: new Date(now + 4 * HOUR).toISOString() }])
   assert.deepEqual(limits.B, [{ model: null, until: new Date(now + 4 * HOUR).toISOString() }])
   // A hits its limit too: nothing has room, so Auto waits instead of switching back.
-  f.row.limit = limitAt(now + 3)
+  f.row.limit = limitAt(now + 30_000)
+  f.setNow(now + 31_000)
   await f.watcher.tick()
   assert.equal(f.restarts.length, 3)
   assert.equal((await agentOf(f)).status, 'waiting_for_room')
@@ -285,6 +293,53 @@ test('rule A: the account at the limit is the one read AT it; the own login sign
   }
 })
 
+test('m7 (r2): the account kept for one limit never stands in for the next: at a second limit, a login on that seat is not "another"', async (t) => {
+  const f = fixture(t)
+  const s1 = await f.add('S1'),
+    s2 = await f.add('S2'),
+    s3 = await f.add('S3')
+  f.sign(s1, 1, 1, 1, accountToken('one'))
+  f.sign(s2, 1, 1, 1, accountToken('two'))
+  f.sign(s3, 1, 1, 1, accountToken('two'))
+  f.row.accountId = s1
+  await f.assign('limit', s2, 41)
+  f.row.limit = limitAt(now - 1000)
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [s2], 'limit 1 was on seat one: S2 is another seat')
+  // On S2 the agent works again, then hits a second limit, on seat two. Switch at limit to S3 (seat two too).
+  f.setNow(now + 60_000)
+  await f.assign('limit', s3, 41)
+  f.row.limit = limitAt(now + 30_000)
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [s2], 'S3 is the seat of THIS limit: no move')
+  const snapshot = JSON.stringify(await f.watcher.snapshot())
+  for (const seat of ['one', 'two']) assert.ok(!snapshot.includes(accountToken(seat).split(':')[1]), 'no token reaches the heartbeat')
+  assert.ok(!snapshot.includes('seats.example.test'), 'no email either')
+})
+
+test('m7 (r5): at a limit Auto counts a login only on a read taken since the limit began, never an older one', async (t) => {
+  const f = fixture(t)
+  const s1 = await f.add('S1'),
+    s2 = await f.add('S2')
+  f.sign(s1, 1, 1, 1, accountToken('one'))
+  f.row.accountId = s1
+  f.row.limit = limitAt(now - 1000)
+  // S2 read as seat two 30 s BEFORE the limit; it may have been signed in to seat one (the limited) since.
+  f.readings.set(s2, { signedIn: true, usage: usage(1, 1, 1), account: accountToken('two'), readAt: now - 30_000 })
+  await f.assign('auto', undefined, 41)
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts, [], 'a read from before the limit is no proof of another seat')
+  // The next read (since the limit) names seat one, the limited one: still no move.
+  f.readings.set(s2, { signedIn: true, usage: usage(1, 1, 1), account: accountToken('one'), readAt: now })
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts, [])
+  // Read again as seat two: now it moves.
+  f.setNow(now + 61_000)
+  f.readings.set(s2, { signedIn: true, usage: usage(1, 1, 1), account: accountToken('two'), readAt: now + 61_000 })
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [s2])
+})
+
 test('rule A: a first read later than 15 minutes after the limit cannot say which account hit it: nothing switches', async (t) => {
   const f = fixture(t)
   const other = await f.add('Other')
@@ -311,7 +366,7 @@ test('rule C: a status read of the saved login that fails or times out at the li
     f.deps.measure = async (account: any) => {
       if (account.id !== b || f.readings.get(b) === good) return measure(account)
       if (failure === 'rejects') throw new Error('claude auth status timed out')
-      return { readFailed: true, signedIn: false, usage: null }
+      return { readFailed: true, signedIn: false, usage: null, readAt: now } // stamped, as the real reader stamps a failure
     }
     const watcher = createHelperAccounts(f.deps)
     f.readings.set(b, { ...good })

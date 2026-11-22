@@ -32,7 +32,7 @@ import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
 import { CHANNEL_CORE_FILES } from '../lib/keepalive-plan.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
-import { accountTokenFrom } from '../lib/claude-account-id.mjs'
+import { seatToken } from './helpers/claude-auth-status.ts'
 
 const HOME = '/home/person'
 const USER = 'kc'
@@ -471,8 +471,9 @@ const LIMIT_SCREEN = [
 ].join('\n')
 const SOCKET = agentServiceNamesFor('912', HOME, 'linux')!.current.tmuxSocket
 
-const ACCOUNT_A = accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: 'aaaa0000-0000-4000-8000-00000000000a' }))!
-const ACCOUNT_B = accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: 'bbbb0000-0000-4000-8000-00000000000b' }))!
+// Two seats of one Team organization, in the CLI's real key set (orgId and email).
+const ACCOUNT_A = seatToken('a')
+const ACCOUNT_B = seatToken('b')
 /** What the limit watch's first look at a limit writes: the account signed in at it, as a token. */
 function seenAtLimit(fs: MemoryFs, limitAtMs: number, token: string) {
   const limitAccount = { limitAt: new Date(limitAtMs).toISOString(), token }

@@ -20,7 +20,7 @@ import assert from 'node:assert/strict'
 import { agentServiceNamesFor, buildLaunchRecipe, listAgents } from '../lib/agent-inventory.mjs'
 import { LIMIT_NOTICE_FILE_NAME, LIMIT_WATCH_FILE_NAME, limitFreeObservation, runLimitPass } from '../lib/watcher-limit.mjs'
 import { limitNoticeText, parseLimitNotice } from '../lib/limit-screen.mjs'
-import { accountTokenFrom } from '../lib/claude-account-id.mjs'
+import { FIXTURE_ORG, seatToken } from './helpers/claude-auth-status.ts'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
@@ -148,7 +148,8 @@ function appendTranscript(fs: MemoryFs, r: Rig, line: string) {
 // -- the signed in account: a fake `claude auth status --json` --------------------------------------------
 
 /** The token the reader gives for a named fake account (A, B, ...), as lib/claude-account-id.mjs makes it. */
-const tokenOf = (name: string) => accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: `${name.toLowerCase()}000000-0000-4000-8000-000000000000`.slice(0, 36) }))!
+// Each name is another seat of one Team organization, in the CLI's real key set (orgId and email).
+const tokenOf = (name: string) => seatToken(name)
 /** Which fake account is signed in, by time: the owner switches by adding a row. Starts on A. */
 const accountsOf = new WeakMap<MemoryFs, Array<[number, string]>>()
 function accountAt(fs: MemoryFs, atMs: number) {
@@ -1036,6 +1037,47 @@ test('a first look later than 15 minutes after the limit records no account: the
   clock.set(LIMIT_AT + 30 * MIN)
   assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
   assert.deepEqual(tmux.calls, [])
+})
+
+test('m7 (r1): the account kept for one limit never stands in for the next: a second limit, on another seat, is read afresh', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.equal(limitWatch(fs, r).limitAccount.token, tokenOf('A'))
+  // The owner moves the agent to seat B; it works again, then hits a second limit, on B.
+  const LIMIT2 = LIMIT_AT + 3 * HOUR
+  owner(fs, LIMIT_AT + 30 * MIN, 'B')
+  appendTranscript(fs, r, assistantTurn(LIMIT_AT + 31 * MIN))
+  appendTranscript(fs, r, limitRecord(LIMIT2))
+  clock.set(LIMIT2 + MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', 'B is the seat AT this limit, never proof that usage is back')
+  assert.deepEqual(limitWatch(fs, r).limitAccount, { limitAt: new Date(LIMIT2).toISOString(), token: tokenOf('B') })
+  assert.deepEqual(enters(tmux.calls), [])
+})
+
+test('m2: the account token, the email and the organization never reach a log line, a notice or the pass result', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx, logs } = ctxFor(r, fs, clock, tmux.exec)
+  const results: unknown[] = [await runLimitPass(ctx)]
+  const ok = ctx.readAccount
+  ctx.readAccount = () => ({ ok: false, why: 'timed_out' })
+  clock.set(LIMIT_AT + 5 * MIN)
+  results.push(await runLimitPass(ctx))
+  ctx.readAccount = ok
+  owner(fs, SWAP_AT, 'B')
+  clock.set(SWAP_AT + MIN)
+  const freed: any = await runLimitPass(ctx)
+  results.push(freed)
+  assert.equal(freed.agents[0].how, 'login_changed', 'the whole path ran, to a notice')
+  const secrets = [tokenOf('A'), tokenOf('B'), tokenOf('A').split(':')[1], tokenOf('B').split(':')[1], 'a@seats.example.test', 'b@seats.example.test', FIXTURE_ORG]
+  const watchFile = watchPathOf(r)
+  const said = [
+    ...logs,
+    ...results.map((x) => JSON.stringify(x)),
+    ...[...fs.files].filter(([path]) => !path.startsWith(watchFile)).map(([, text]) => text),
+  ]
+  for (const text of said) for (const secret of secrets) assert.ok(!text.includes(secret), `${secret.slice(0, 12)}... reached: ${text.slice(0, 120)}`)
+  assert.ok(fs.readFile(watchFile)!.includes(tokenOf('A')), 'the watch record on this computer is the one place the token lives')
 })
 
 test('the same account again (a saved login on the same account, or signed out and back in): no press, the screen is not read', async () => {
