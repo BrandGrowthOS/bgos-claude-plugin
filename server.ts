@@ -5390,7 +5390,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               'question with the options Yes and No (values yes and no), which the app draws as two buttons. ' +
               'It returns as ask_user_input does with wait_seconds 0 (pending, with an ask_id) and the tap ' +
               'arrives as one ask_answered event. Only in your own chat with your owner: refused, with ' +
-              'nothing posted, in a group or a channel (use buttons there), a meeting or a side thread. Not ' +
+              'nothing posted, in any other chat (in a group or a channel, use buttons). Not ' +
               'with files, buttons or reply_to_id. For two words of your own on the buttons, call ' +
               'ask_user_input with the values yes and no.',
           },
@@ -12390,18 +12390,20 @@ function resolveAuthorizedChat(rawChatId: string):
 }
 
 /**
- * The kind of chat a reply's chat_id names, when a yes or no card is refused
- * there (lib/yes-no-ask.ts yesNoRefusedKind), from this daemon's own records.
- * Only a chat this daemon knows is resolved, so resolveAuthorizedChat never
- * logs a refusal here; an unknown chat goes on to the card's own check, which
- * refuses it and logs it once.
+ * Why a yes or no card is refused in the chat a reply's chat_id names
+ * (lib/yes-no-ask.ts yesNoRefusedKind), from this daemon's own records, or
+ * null in the owner's own main chat (modelEffortChatAllowed, the picker's one
+ * rule). Fail closed: a chat this daemon does not know or cannot resolve is
+ * refused. Only a known chat is resolved, so resolveAuthorizedChat never logs
+ * a refusal here.
  */
 function yesNoRefusedKindOf(rawChatId: unknown): YesNoRefusedKind | null {
   const raw = String(rawChatId ?? '')
-  if (!monitoredChatSet.has(raw) && !knownSessionHandles.has(raw)) return null
+  if (!monitoredChatSet.has(raw) && !knownSessionHandles.has(raw)) return 'not_own_chat'
   const auth = resolveAuthorizedChat(raw)
-  if (!auth.ok) return null
+  if (!auth.ok) return 'not_own_chat'
   return yesNoRefusedKind(String(auth.chatId), {
+    ownersOwnChat: modelEffortChatAllowed,
     groups: [groupChatIds],
     meetings: [meetingIdByChatId, meetingChatIds],
     sideThreads: [peerSideThreadChats, peerConvByChat, closedPeerChats, peerReplyRefusedChats, a2aRouteRefusedChats],

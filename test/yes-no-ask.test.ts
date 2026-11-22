@@ -33,6 +33,7 @@ import { readFileSync } from 'node:fs'
 
 import { askQuestionsError } from '../lib/ask-tracker.ts'
 import { BGOS_CAPABILITIES_FALLBACK } from '../lib/capabilities.ts'
+import { pickerChatAllowed } from '../lib/model-effort-rpc.ts'
 import {
   REPLY_YES_NO_SHORTHAND,
   YES_NO_PASSIVE_REFUSAL,
@@ -157,8 +158,21 @@ function serverFunction(signature: string): string {
 }
 
 /** A daemon's chat records. The owner's own chat, 42, is in none of them. */
-function records(): YesNoChatRecords {
+/**
+ * The owner's main chats on a shared agent, as the daemon's records hold
+ * them: 42 proven the owner's, 43 a share recipient's own main chat, 44 a
+ * second main chat nobody has proven the owner's. 801 is in no record (an
+ * email chat, or a room or a channel the daemon knows with no kind mark).
+ */
+const OWNERS = new Set(['42'])
+const OTHERS = new Set(['43'])
+function ownersOwnChat(mainChatIds: readonly string[]) {
+  return (chatId: string) =>
+    pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => OWNERS.has(c), isOthers: (c) => OTHERS.has(c) })
+}
+function records(mainChatIds: readonly string[] = ['42', '43', '44']): YesNoChatRecords {
   return {
+    ownersOwnChat: ownersOwnChat(mainChatIds),
     groups: [new Set(['501'])],
     meetings: [new Map([['601', 9]]), new Set(['602'])],
     sideThreads: [
@@ -171,8 +185,8 @@ function records(): YesNoChatRecords {
   }
 }
 
-function facts(connected = true) {
-  return { connected, refusedKind: (chatId: unknown) => yesNoRefusedKind(String(chatId), records()) }
+function facts(connected = true, mainChatIds?: readonly string[]) {
+  return { connected, refusedKind: (chatId: unknown) => yesNoRefusedKind(String(chatId), records(mainChatIds)) }
 }
 
 function yesNoReply(chatId: string, extra: Record<string, unknown> = {}) {
@@ -204,6 +218,33 @@ test("in the owner's own chat a yes_no reply is sent on as the ask_user_input ca
     ],
     wait_seconds: 0,
   })
+})
+
+test("the owner's own main chat still posts: proven on a shared agent, or the agent's only main chat", () => {
+  for (const [chatId, mains] of [['42', ['42', '43', '44']], ['42', ['42']], ['44', ['44']]] as const) {
+    const routed = routeYesNoReply(yesNoReply(chatId), facts(true, mains))
+    assert.ok('params' in routed, `chat ${chatId} of ${mains.join(',')} is not refused`)
+    assert.equal(routed.params.name, 'ask_user_input')
+  }
+})
+
+test("a share recipient's own main chat is refused, nothing posted, with the own chat sentence", () => {
+  assert.deepEqual(routeYesNoReply(yesNoReply('43'), facts()), { refusal: YES_NO_REFUSED.not_own_chat })
+  assert.equal(
+    YES_NO_REFUSED.not_own_chat,
+    'Error: nothing was posted, because yes_no is only for your own chat with your owner, so ask with reply buttons here instead.',
+  )
+  assertOneSentence(YES_NO_REFUSED.not_own_chat)
+})
+
+test('a second main chat not proven the owner\'s is refused, nothing posted: fail closed', () => {
+  assert.deepEqual(routeYesNoReply(yesNoReply('44'), facts()), { refusal: YES_NO_REFUSED.not_own_chat })
+})
+
+test('a chat in no record (an email chat, a room or a channel with no kind mark) is refused, nothing posted', () => {
+  assert.deepEqual(routeYesNoReply(yesNoReply('801'), facts()), { refusal: YES_NO_REFUSED.not_own_chat })
+  // Even on an agent with one main chat: only that chat is the owner's.
+  assert.deepEqual(routeYesNoReply(yesNoReply('801'), facts(true, ['42'])), { refusal: YES_NO_REFUSED.not_own_chat })
 })
 
 test('in a group or a channel yes_no is refused, nothing posted, and the sentence names reply buttons', () => {
@@ -253,7 +294,7 @@ test('a call that cannot be one plain card is refused for that first, wherever i
   assert.match(routed.refusal, /cannot carry buttons/)
 })
 
-test('server.ts sends every tool call through routeYesNoReply before the dispatch, with its real chat records', () => {
+test("server.ts asks routeYesNoReply for a reply before the dispatch, with its real chat records and the owner's main chat rule", () => {
   const route = server.indexOf("if (req.params.name === 'reply') {\n    const yesNo = routeYesNoReply(req.params, { connected: lockHeld, refusedKind: yesNoRefusedKindOf })")
   const swap = server.indexOf('req.params = yesNo.params', route)
   const dispatch = server.indexOf('\n  return trackMessageOperation(async () => {\n  const rawArgs', route)
@@ -264,6 +305,10 @@ test('server.ts sends every tool call through routeYesNoReply before the dispatc
   assert.match(kindOf, /groups: \[groupChatIds\]/)
   assert.match(kindOf, /meetings: \[meetingIdByChatId, meetingChatIds\]/)
   assert.match(kindOf, /sideThreads: \[peerSideThreadChats, peerConvByChat, closedPeerChats, peerReplyRefusedChats, a2aRouteRefusedChats\]/)
-  // Only a chat this daemon knows is resolved, so resolveAuthorizedChat never logs a refusal twice.
-  assert.match(kindOf, /if \(!monitoredChatSet\.has\(raw\) && !knownSessionHandles\.has\(raw\)\) return null/)
+  // The owner's own main chat, by the picker's one rule (pickerChatAllowed): owner only, main only.
+  assert.match(kindOf, /ownersOwnChat: modelEffortChatAllowed,/)
+  // Fail closed: a chat this daemon does not know, or cannot resolve, is refused. Only a
+  // known chat is resolved, so resolveAuthorizedChat never logs a refusal twice.
+  assert.match(kindOf, /if \(!monitoredChatSet\.has\(raw\) && !knownSessionHandles\.has\(raw\)\) return 'not_own_chat'/)
+  assert.match(kindOf, /if \(!auth\.ok\) return 'not_own_chat'/)
 })

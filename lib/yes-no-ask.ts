@@ -18,13 +18,12 @@
  * side by side; it reads the VALUES, so an agent may put two words of its own
  * on the buttons (Deploy now, Not yet) and keep the values yes and no.
  *
- * Only in the agent's own chat with its owner. An ask's answer names nobody,
- * so in a group or a channel any member could tap it and the agent would hear
- * that its owner answered; reply buttons name who tapped. A meeting takes
- * text only, and a peer side thread is read by another agent. routeYesNoReply
- * refuses the shorthand in all three, and in a session that does not hold the
- * agent's connection, where the tap could never come back, before anything is
- * posted.
+ * Only in the agent's own chat with its owner. An ask's answer names nobody;
+ * reply buttons name who tapped. routeYesNoReply lets the shorthand through
+ * only in the owner's own main chat, by the daemon's own records, and refuses
+ * it everywhere else before anything is posted, with a sentence for a group or
+ * a channel, a meeting, a peer side thread, any other chat, and a session that
+ * does not hold the agent's connection, where the tap could never come back.
  *
  * No em or en dashes anywhere in this file: its sentences are injected into
  * prompts.
@@ -99,26 +98,34 @@ export function replyYesNoAsk(
 }
 
 /** A chat where a yes or no card is refused: anything but the agent's own chat with its owner. */
-export type YesNoRefusedKind = 'group' | 'meeting' | 'side_thread'
+export type YesNoRefusedKind = 'group' | 'meeting' | 'side_thread' | 'not_own_chat'
 
 /** Anything that says whether it holds a chat id: a Set, a Map, a refused chats list. */
 export interface HoldsChats {
   has(chatId: string): boolean
 }
 
-/** The daemon's own records of each kind of chat that is not the owner's own chat. */
+/** The daemon's own records: the owner's own main chat, and each kind of chat that is not. */
 export interface YesNoChatRecords {
+  /** Is this the owner's own main chat? Owner only, main only, fail closed (pickerChatAllowed). */
+  ownersOwnChat: (chatId: string) => boolean
   groups: readonly HoldsChats[]
   meetings: readonly HoldsChats[]
   sideThreads: readonly HoldsChats[]
 }
 
-/** The kind of a chat a yes or no card is refused in, or null (the owner's own chat, or one no record holds). */
+/**
+ * Why a yes or no card is refused in this chat, or null in the owner's own
+ * main chat, the only chat it is allowed in. A meeting, a side thread and a
+ * group each keep their own sentence; any other chat is refused as not the
+ * owner's own.
+ */
 export function yesNoRefusedKind(chatId: string, records: YesNoChatRecords): YesNoRefusedKind | null {
   const held = (list: readonly HoldsChats[]) => list.some((record) => record.has(chatId))
   if (held(records.meetings)) return 'meeting'
   if (held(records.sideThreads)) return 'side_thread'
   if (held(records.groups)) return 'group'
+  if (!records.ownersOwnChat(chatId)) return 'not_own_chat'
   return null
 }
 
@@ -133,6 +140,9 @@ export const YES_NO_REFUSED: Readonly<Record<YesNoRefusedKind, string>> = {
   side_thread:
     'Error: nothing was posted, because yes_no is only for your own chat with your owner and a side ' +
     'thread is read by another agent, so ask in words there instead.',
+  not_own_chat:
+    'Error: nothing was posted, because yes_no is only for your own chat with your owner, so ask with ' +
+    'reply buttons here instead.',
 }
 
 /** A session that does not hold the agent's connection never hears the tap. */
