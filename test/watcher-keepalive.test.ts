@@ -2245,6 +2245,29 @@ test('board row 69337efa (win32): an update for an agent whose launcher died wai
   assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].attempts, 0, 'no attempt spent')
 })
 
+// A process of record whose start cannot be read is held, never waited out: the claude its last state
+// names, or its hung daemon (the lock holder, under a claude), still runs, but the listing cannot read
+// its CreationDate, so the start rule cannot tell it from a reused pid. Read as "maybe running", the
+// task would start after 30 quiet minutes: a second session on the same pin. It waits for that session.
+test('win32: a process of record whose start cannot be read holds the task start, even after 30 quiet minutes: never a second session on the pin', async () => {
+  const quietAt = T0 - 40 * MIN
+  const claude = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: null, CommandLine: '"C:\\Users\\user\\.local\\bin\\claude.exe"' }]
+  const fs = crashedMachine({ [`${WPLUGIN_STATE}\\agent-state.json`]: stateBody('912', quietAt + 10_000, { lastActivityAt: new Date(quietAt).toISOString(), sessionId: PIN, claudePid: 5912, runningVersion: '0.62.1' }) }, { activityAt: quietAt })
+  const rec = recorder({ win32Ps: listed(claude) })
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn(claude) }) as any)
+  assert.deepEqual(starts(rec), [], 'the claude its state named, start unreadable')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+  const hungDaemon = [
+    { ProcessId: 5914, ParentProcessId: 4100, CreationDate: quietAt - 60 * MIN, CommandLine: '"C:\\Users\\user\\.local\\bin\\claude.exe"' },
+    { ProcessId: 4912, ParentProcessId: 5914, CreationDate: null, CommandLine: 'bun C:\\x\\server.ts' },
+  ]
+  const hungFs = crashedMachine({}, { activityAt: quietAt })
+  const hungRec = recorder({ win32Ps: listed(hungDaemon) })
+  const hungReport = await runKeepAliveSweep(windowsCtx(hungFs, hungRec, { pidAlive: aliveIn(hungDaemon) }) as any)
+  assert.deepEqual(starts(hungRec), [], 'the hung daemon its lock names, start unreadable')
+  assert.deepEqual(hungReport.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+})
+
 // Review: an agent whose folder is the home folder (the pairing default before 2026-09-21) holds
 // every claude installed under it on a command line; none of them is a session run in it.
 test('board row 69337efa (win32): an agent whose folder holds the claude install (a home folder agent) is still started at once', async () => {
@@ -3264,6 +3287,103 @@ test('deafwatch for every agent: only a look that saw the agent fine names it in
   const report: any = await runKeepAliveSweep(ctxFor(fs, recorder({ ps: retestPs() }), fakeClock(), { fetchKeepAlive: onlyOneKept(), pidAlive: retestAlive }).ctx as any)
   // 301 is not sure either (see the retest above): nobody is named.
   assert.deepEqual(report.looked ?? [], [])
+})
+
+/** The stamp an agent's daemon writes for its claude (lib/claude-stamp.mjs), as the file on disk. */
+function stampClaude(fs: MemoryFs, folderId: string, pid: number, startedAtMs: number, over: Record<string, unknown> = {}) {
+  fs.writeFile(
+    `${HOME}/.bgos-plugin-state/${folderId}/claude-stamp.json`,
+    JSON.stringify({ schemaVersion: 1, assistantId: folderId, claudePid: pid, claudeStartedAtMs: startedAtMs, stampedAt: new Date(T0).toISOString(), ...over }),
+  )
+}
+/** The retest scene's claudes, each stamped by its own agent: 7's (pid 57), 300's (5300), 913's (5913). */
+const RETEST_UP = T0 - 3 * 60 * MIN
+function stampRetest(fs: MemoryFs, skip: string[] = []) {
+  for (const [id, pid] of [['7', 57], ['300', 5300], ['913', 5913]] as const) if (!skip.includes(id)) stampClaude(fs, id, pid, RETEST_UP)
+}
+function retestWithStamps() {
+  const fs = retestScene()
+  stampRetest(fs)
+  return fs
+}
+
+test('lone repair (red first): several agents of one person, every claude stamped by its own agent: the stopped one is named in `looked`, and nothing is touched', async () => {
+  const fs = retestScene()
+  stampRetest(fs)
+  const before = agentWrites(fs).sort()
+  const rec = recorder({ ps: retestPs() })
+  const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { fetchKeepAlive: onlyOneKept(), pidAlive: retestAlive })
+  const report: any = await runKeepAliveSweep(ctx as any)
+  // 301 runs no claude: every claude here is another agent's, by its stamp. 300 beats fresh. 913 is deaf, 7 is kept.
+  assert.deepEqual(report.looked, ['300', '301'])
+  // The watcher only looks: the Helper decides, and it checks up 301 alone. No act here, no extra command.
+  assert.deepEqual(notPs(rec), [])
+  assert.deepEqual(rec.kills, [])
+  assert.deepEqual(rec.spawns, [])
+  assert.deepEqual(agentWrites(fs).sort(), before)
+  assert.deepEqual(linesFor(logs, '301'), [])
+  // With the switch off nothing is kept, and the stopped agent is named the same way.
+  const off: any = await runKeepAliveSweep(ctxFor(fs, recorder({ ps: retestPs() }), fakeClock(), { fetchKeepAlive: switchOff(), pidAlive: retestAlive }).ctx as any)
+  assert.deepEqual(off.looked, ['7', '300', '301'])
+})
+
+test('lone repair: a look alike claude, with no stamp, another agent\'s stamp from an older process, a copied stamp, two stamps, or the stopped agent\'s own, keeps the stopped agent out of `looked`; an older plugin with no stamps keeps today\'s answer', async () => {
+  const cases: Array<{ name: string; setup: (fs: MemoryFs) => void; ps?: string }> = [
+    { name: 'an older plugin: no stamps at all', setup: () => {} },
+    { name: 'one claude nobody stamped', setup: (fs) => stampRetest(fs, ['300']) },
+    { name: 'a stamp of an older process with that pid', setup: (fs) => { stampRetest(fs, ['300']); stampClaude(fs, '300', 5300, RETEST_UP - 1_000) } },
+    { name: 'a stamp copied into another agent\'s folder', setup: (fs) => { stampRetest(fs, ['300']); stampClaude(fs, '300', 5300, RETEST_UP, { assistantId: '7' }) } },
+    { name: 'two agents claim one claude', setup: (fs) => { stampRetest(fs); stampClaude(fs, '7', 5300, RETEST_UP) } },
+    { name: 'the stopped agent\'s own stamp on a live claude', setup: (fs) => { stampRetest(fs, ['300']); stampClaude(fs, '301', 5300, RETEST_UP) } },
+    {
+      name: 'a person\'s claude session beside the agents',
+      setup: (fs) => stampRetest(fs),
+      ps: [retestPs(), psLine(7000, 1, 'claude', lstartOf(T0 - 10 * MIN))].join('\n'),
+    },
+    {
+      name: 'a claude whose start the listing cannot read',
+      setup: (fs) => stampRetest(fs),
+      ps: retestPs().replace(` 5300 1 501 ${lstartOf(RETEST_UP)}`, ' 5300 1 501 Tue Okt  6 16:00:00 2026'),
+    },
+  ]
+  for (const c of cases) {
+    const fs = retestScene()
+    c.setup(fs)
+    const rec = recorder({ ps: c.ps ?? retestPs() })
+    const report: any = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { fetchKeepAlive: onlyOneKept(), pidAlive: (pid: number) => retestAlive(pid) || pid === 7000 }).ctx as any)
+    assert.ok(!(report.looked ?? []).includes('301'), `${c.name}: ${JSON.stringify(report.looked)}`)
+    assert.deepEqual(rec.kills, [], c.name)
+    assert.deepEqual(rec.spawns, [], c.name)
+  }
+})
+
+test('lone repair: a stamp does not lift the other holds. A claude naming the stopped agent\'s folder and a hidden command line still keep it out of `looked`', async () => {
+  // Every agent claude stamped, plus a claude that names 301's folder (a look alike started there by hand).
+  const fs = retestScene()
+  stampRetest(fs)
+  const rec = recorder({ ps: [retestPs(), psLine(800, 1, `claude --add-dir ${THIRD}`, lstartOf(T0 - 10 * MIN))].join('\n') })
+  const report: any = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { fetchKeepAlive: onlyOneKept(), pidAlive: (pid: number) => retestAlive(pid) || pid === 800 }).ctx as any)
+  assert.ok(!(report.looked ?? []).includes('301'), JSON.stringify(report.looked))
+  // And stamped as another agent's, it is still the folder's look alike: never named.
+  stampClaude(fs, '913', 800, T0 - 10 * MIN)
+  const again: any = await runKeepAliveSweep(ctxFor(fs, recorder({ ps: [retestPs(), psLine(800, 1, `claude --add-dir ${THIRD}`, lstartOf(T0 - 10 * MIN))].join('\n') }), fakeClock(), { fetchKeepAlive: onlyOneKept(), pidAlive: (pid: number) => retestAlive(pid) || pid === 800 }).ctx as any)
+  assert.ok(!(again.looked ?? []).includes('301'), JSON.stringify(again.looked))
+  // A process whose command line cannot be read may be a claude of 301's: stamps prove nothing about it.
+  const hidden: any = await runKeepAliveSweep(ctxFor(retestWithStamps(), recorder({ ps: [retestPs(), ' 9100 1 501 ' + lstartOf(T0 - 10 * MIN)].join('\n') }), fakeClock(), { fetchKeepAlive: onlyOneKept(), pidAlive: retestAlive }).ctx as any)
+  assert.ok(!(hidden.looked ?? []).includes('301'), JSON.stringify(hidden.looked))
+  // A stamp file the watcher cannot read is no stamp: never a throw that stops the other agents' looks.
+  const broken = retestScene()
+  stampRetest(broken)
+  const read = broken.readFile.bind(broken)
+  broken.readFile = ((path: string) => {
+    if (path === `${HOME}/.bgos-plugin-state/300/claude-stamp.json`) throw new Error('EIO: read failed')
+    return read(path)
+  }) as typeof broken.readFile
+  const brokenRun = ctxFor(broken, recorder({ ps: retestPs() }), fakeClock(), { fetchKeepAlive: onlyOneKept(), pidAlive: retestAlive })
+  const report2: any = await runKeepAliveSweep(brokenRun.ctx as any)
+  assert.deepEqual(report2.looked, ['300'])
+  // 301's look ran to its end (not sure: 300's claude is nobody's now), it did not fail on the file.
+  assert.deepEqual(linesFor(brokenRun.logs, '301'), [])
 })
 
 test('deafwatch for every agent: on Windows a command line the watcher cannot read (an elevated claude.exe shows none) may be the agent\'s, so the agent is not named in `looked`', async () => {

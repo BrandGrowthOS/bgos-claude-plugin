@@ -128,7 +128,8 @@ test('a probe that could not be read is unreadable, never "no claude"', () => {
   assert.deepEqual(read(() => ({ code: 0, stdout: '[]' })), { readable: false }, 'an empty chain')
   assert.deepEqual(read(() => ({ code: 0, stdout: JSON.stringify([LAUNCH, CLAUDE]) })), { readable: false }, 'a chain without this process')
   // A chain that was read is an answer, either way.
-  assert.deepEqual(read(() => ({ code: 0, stdout: JSON.stringify(CHAIN) })), { readable: true, pid: CLAUDE.ProcessId })
+  // The claude's start rides along (lib/claude-stamp.mjs): the stamp needs it, and this walk already read it.
+  assert.deepEqual(read(() => ({ code: 0, stdout: JSON.stringify(CHAIN) })), { readable: true, pid: CLAUDE.ProcessId, startedAtMs: CLAUDE.CreationDate })
   assert.deepEqual(read(noClaude), { readable: true, pid: null })
   assert.deepEqual(read(() => ({ code: 0, stdout: JSON.stringify([DAEMON, LAUNCH, { ...CLAUDE, CreationDate: T0 + 1 }]) })), { readable: true, pid: null }, 'a reused parent pid ends the walk: read, no claude')
   assert.equal(agentState.readClaudeAncestorWin32(0, () => ({ code: 0, stdout: '[]' })).readable, true, 'no pid to walk from: nothing to retry')
@@ -136,7 +137,7 @@ test('a probe that could not be read is unreadable, never "no claude"', () => {
 
 test('readClaudeAncestor: PowerShell on win32; elsewhere ps, whose every answer is read as before', () => {
   const { exec } = busyPowerShell(CHAIN)
-  assert.deepEqual(agentState.readClaudeAncestor({ platform: 'win32', ownPid: DAEMON.ProcessId, execSync: exec }), { readable: true, pid: CLAUDE.ProcessId })
+  assert.deepEqual(agentState.readClaudeAncestor({ platform: 'win32', ownPid: DAEMON.ProcessId, execSync: exec }), { readable: true, pid: CLAUDE.ProcessId, startedAtMs: CLAUDE.CreationDate })
   const ppid: Record<number, number> = { 500: 400, 400: 300, 300: 1 }
   const comm: Record<number, string> = { 400: 'bun', 300: '/Users/x/.local/bin/claude' }
   const ps = (_file: string, args: string[]) => {
@@ -247,6 +248,6 @@ test('server.ts wires the probe with a short retry for a failed read and the 10 
   assert.match(server, /const CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS = 30_000\n/)
   assert.match(
     server,
-    /const agentClaudePid = memoizeAncestorReading\(CLAUDE_ANCESTOR_RETRY_MS, CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS, Date\.now, \(\) =>\s*readClaudeAncestor\(\{ platform: process\.platform, ownPid: process\.pid, execSync: defaultExecSync \}\),?\s*\)/,
+    /const agentClaudePid = memoizeAncestorReading\(CLAUDE_ANCESTOR_RETRY_MS, CLAUDE_ANCESTOR_UNREADABLE_RETRY_MS, Date\.now, \(\) => \{\n  const reading = readClaudeAncestor\(\{ platform: process\.platform, ownPid: process\.pid, execSync: defaultExecSync \}\)\n  claudeAncestorStartedAtMs = reading\.readable && reading\.pid !== null \? reading\.startedAtMs \?\? null : null\n  return reading\n\}\)/,
   )
 })

@@ -26,15 +26,15 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { freeLimitResult, runWatcher } from '../lib/watcher-core.mjs'
-import { checkupTarget, endOldClaudes, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
-import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
+import { checkupTarget, endOldClaudes, isOwnerChannelText, observeAgentForCheckup, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
+import { agentServiceNamesFor, buildLaunchRecipe, listAgents } from '../lib/agent-inventory.mjs'
 import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
 import { CHANNEL_CORE_FILES } from '../lib/keepalive-plan.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
 const HOME = '/home/person'
-const USER = 'kc'
+const USER = 'person'
 const TOKEN = 'bgp_' + 'S3cretPairingTokenValue0123456789'
 const CONFIG = '/home/person/.claude'
 const ROOT = `${CONFIG}/plugins/cache/hoai/hoai/0.38.4`
@@ -658,6 +658,111 @@ test('board row 23415823, round 2: the same records with the pairing moved to an
   assert.equal(restartRequested(fs), false)
 })
 
+// Lone repair, owner switched off. The app marks a check up it starts with nobody pressing
+// (`alone`); the watcher asks the server's keep-alive list itself and never starts or restarts an agent not on it.
+const keptList = (ids: string[]) => ({ enabled: true, enabledAt: '2026-08-25T00:00:00.000Z', assistantIds: ids, switchState: 'on', showAgentWindows: false })
+const switchOff = { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false }
+function aloneCheckup(keepAlive: any, alone: unknown = true) {
+  const job = checkupJob()
+  job.jobs['chk-1'] = { ...job.jobs['chk-1'], ...(alone === null ? {} : { alone }) }
+  return fakeBackend({ ...job, ...(keepAlive === undefined ? {} : { keepAlive }) })
+}
+async function stoppedAgentCheckup(backend: ReturnType<typeof fakeBackend>) {
+  const fs = agentFs({ [`${STATE_DIR}/supervisor.json`]: '' })
+  writeTranscript(fs, [ownerMessage(T0 - 50 * MIN), assistantTurn(T0 - 49 * MIN)], T0 - 49 * MIN)
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, psLine(1, 0, '/sbin/init'))
+  await runWatcher(run.deps as any)
+  return { run, terminal: terminalOf(backend), fs }
+}
+function assertHeldNotKept(out: Awaited<ReturnType<typeof stoppedAgentCheckup>>, backend: ReturnType<typeof fakeBackend>, label: string) {
+  assert.deepEqual(out.terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['dead_session', 'start_agent', 'not_fixed']], label)
+  assert.match(JSON.stringify(backend.progress('chk-1')), /not_kept_running: it is not on this computer's keep-alive list, so the Helper did not start it alone\)\. Press Fix, or keep it running again\./, label)
+  assert.deepEqual(out.run.spawns, [], `${label}: nothing started`)
+  assert.equal(restartRequested(out.fs), false, label)
+  assert.ok(backend.calls.some((c) => c.method === 'GET' && c.path.endsWith('/integrations/watchers/keep-alive')), `${label}: the server's own list was asked`)
+}
+
+test('alone, Always on off (the switch on, another agent kept): the stopped agent is not started, and the check up says why', async () => {
+  for (const alone of [true, 'step']) {
+    const backend = aloneCheckup(keptList(['913']), alone)
+    assertHeldNotKept(await stoppedAgentCheckup(backend), backend, `always on off, ${alone}`)
+  }
+})
+
+test("alone, the computer's keep-alive switch off: the stopped agent is not started, and the check up says why, for a step check up too", async () => {
+  for (const alone of [true, 'step']) {
+    const backend = aloneCheckup(switchOff, alone)
+    assertHeldNotKept(await stoppedAgentCheckup(backend), backend, `switch off, ${alone}`)
+  }
+})
+
+test('alone, with no keep-alive answer and no cache: nobody is known kept, so nothing is started', async () => {
+  const backend = aloneCheckup(undefined)
+  assertHeldNotKept(await stoppedAgentCheckup(backend), backend, 'no answer')
+})
+
+test('alone, a kept agent stopped past 15 minutes IS started (the guard is not vacuous), as a step check up too', async () => {
+  for (const alone of [true, 'step']) {
+    const backend = aloneCheckup(keptList(['912']), alone)
+    const out = await stoppedAgentCheckup(backend)
+    assert.deepEqual(out.terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['dead_session', 'start_agent', 'fixed']], String(alone))
+    assert.equal(out.run.spawns.length, 1, String(alone))
+  }
+})
+
+test('several agents on one computer, alone: two stopped agents, one list, two jobs, only the kept one is started', async () => {
+  // A second agent, 913 in ~/hoai-agents/bo, stopped like 912. The list keeps 913 only.
+  const BO = `${HOME}/hoai-agents/bo`
+  const SID2 = '8c1f0000-0000-4000-8000-000000000002'
+  const BO_STATE = `${HOME}/.bgos-agent/913`
+  const BO_TRANSCRIPT = `${CONFIG}/projects/${BO.replace(/[^a-zA-Z0-9]/g, '-')}/${SID2}.jsonl`
+  const fs = agentFs({
+    [`${STATE_DIR}/supervisor.json`]: '',
+    [`${HOME}/.bgos-agent/credentials-913.json`]: JSON.stringify({ pairingToken: 'agent-secret-913', backendUrl: 'x' }),
+    [`${BO_STATE}/launch.json`]: JSON.stringify(buildLaunchRecipe({ assistantId: '913', cwd: BO, argv: ['--x'], installMethod: 'marketplace', pluginRoot: ROOT, node: '/usr/bin/node', startedAt: 'x', pid: 4242 })),
+    [`${BO_STATE}/supervisor.json`]: '',
+    [`${BO_STATE}/session-id`]: `${SID2}\n`,
+    [`${BO}/.bgos-agent-id`]: '913\n',
+  })
+  fs.mkdir(BO)
+  writeTranscript(fs, [ownerMessage(T0 - 50 * MIN), assistantTurn(T0 - 49 * MIN)], T0 - 49 * MIN)
+  fs.writeFile(BO_TRANSCRIPT, `${[ownerMessage(T0 - 50 * MIN), assistantTurn(T0 - 49 * MIN)].join('\n')}\n`)
+  fs.touch(BO_TRANSCRIPT, T0 - 49 * MIN)
+  const clock = fakeClock()
+  clock.onSleep((_ms, nowMs) => {
+    for (const id of ['912', '913']) {
+      if (fs.files.has(`${HOME}/.bgos-agent/${id}/probe-requested.json`)) {
+        fs.writeFile(`${HOME}/.bgos-plugin-state/${id}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
+      }
+    }
+  })
+  const job = (rpcId: string, assistantId: number, pairingId: number) => ({ rpcId, op: 'reconcile', machineId: MACHINE_ID, intent: 'checkup', targets: [{ pairingId, assistantId }], alone: true })
+  const backend = fakeBackend({
+    frames: [{ rpcId: 'chk-1', op: 'reconcile' }, { rpcId: 'chk-2', op: 'reconcile' }],
+    jobs: { 'chk-1': job('chk-1', 912, 3), 'chk-2': job('chk-2', 913, 4) },
+    keepAlive: keptList(['913']),
+  })
+  const run = rig(fs, backend, clock, psLine(1, 0, '/sbin/init'))
+  await runWatcher(run.deps as any)
+  const did = (rpcId: string) => terminalOf(backend, rpcId).actions.map((a: any) => [a.cause, a.did, a.outcome])
+  assert.deepEqual(did('chk-1'), [['dead_session', 'start_agent', 'not_fixed']], '912 is not kept: held')
+  assert.match(JSON.stringify(backend.progress('chk-1')), /not_kept_running/)
+  assert.deepEqual(did('chk-2'), [['dead_session', 'start_agent', 'fixed']], '913 is kept: started')
+  assert.equal(run.spawns.length, 1, 'one start, for the kept agent only')
+  assert.match(run.spawns[0]!.args.join(' '), /913/, 'the start names 913')
+  assert.equal(restartRequested(fs), false, '912 was not restarted')
+})
+
+test("the owner's own press (no alone mark) still starts an agent nobody keeps running, and asks no list", async () => {
+  const backend = aloneCheckup(switchOff, null)
+  const out = await stoppedAgentCheckup(backend)
+  assert.deepEqual(out.terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['dead_session', 'start_agent', 'fixed']])
+  assert.equal(out.run.spawns.length, 1)
+  assert.equal(backend.calls.some((c) => c.method === 'GET' && c.path.endsWith('/integrations/watchers/keep-alive')), false)
+})
+
 test('the op checkup is a checkup too', async () => {
   const fs = agentFs()
   const backend = fakeBackend({ frames: [{ rpcId: 'chk-1', op: 'checkup' }], jobs: { 'chk-1': { op: 'checkup', targets: [] } } })
@@ -1162,6 +1267,126 @@ test('finding 3: parseTranscriptTail reads an owner enqueue as a delivery, and n
   assert.equal(parseTranscriptTail(owner, T0).lastActivityAtMs, null)
 })
 
+// Security review F1: a stale agent-state.json names a claude pid that another agent's claude holds now.
+// Agent A (912) died without removing its state, which still names claude 5300 (two days old). After a
+// reboot agent B's claude got pid 5300, started later than A's state was written. That claude is B's,
+// never A's: nothing is proven as A's claude, and neither a check up the Helper starts alone nor the
+// owner's Restart signals it.
+function reusedPidFs() {
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState({ claudePid: 5300, updatedAt: new Date(T0 - 2 * 24 * 60 * MIN).toISOString(), lastActivityAt: new Date(T0 - 2 * 24 * 60 * MIN).toISOString() }),
+  })
+  writeTranscript(fs, [assistantTurn(T0 - 20 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
+  return fs
+}
+const B_SID = '8c1f0000-0000-4000-8000-0000000000b2'
+const REUSED_PS = [psLine(1, 0, '/sbin/init'), psLine(5300, 1, `claude --resume ${B_SID}`), psLine(5301, 5300, `node ${ROOT}/server.ts`)].join('\n')
+
+test("F1: the observation proves no claude of A from a stale state's pid that a later claude holds: claudeAlive null", async () => {
+  const fs = reusedPidFs()
+  const live = new Set([5300, 5301])
+  const pidAlive = (pid: number) => live.has(pid)
+  const row = listAgents({ home: HOME, env: { USER }, platform: 'linux', fs: fs as any, pidAlive, execSync: () => ({ code: 1, stdout: '' }), now: T0, uid: 501 }).find((a: any) => a.assistantId === '912')
+  assert.ok(row, '912 is listed')
+  const exec = async (file: string) => (file === 'ps' ? { code: 0, stdout: `${REUSED_PS}\n`, stderr: '', error: null, timedOut: false } : { code: 1, stdout: '', stderr: '', error: null, timedOut: false })
+  const seen = await observeAgentForCheckup({ row, install: { configDir: CONFIG } as any, home: HOME, env: { USER }, platform: 'linux', fs, exec, now: T0, pidAlive, uid: 501 })
+  assert.deepEqual(seen.claudes, [], 'nothing proven as A\'s claude')
+  assert.equal(seen.observation.claudeAlive, null)
+})
+
+test("F1: a stale state's claude pid, reused by another agent's later claude, proves nothing: a lone check up signals nothing", async () => {
+  const fs = reusedPidFs()
+  const backend = aloneCheckup(keptList(['912']))
+  const run = rig(fs, backend, fakeClock(), REUSED_PS, { alive: [5300, 5301] })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(run.kills, [], "agent B's claude is never signalled")
+  assert.deepEqual(run.spawns, [])
+  assert.equal(restartRequested(fs), false)
+  assert.equal(terminal.findings.some((f: any) => f.cause === 'wedged_session'), false, 'no live claude of A, so no wedge')
+  assert.equal(terminal.actions.some((a: any) => a.did === 'restart_agent' && a.outcome === 'fixed'), false, JSON.stringify(terminal.actions))
+})
+
+test("F1: the owner's Restart reads the same proof: the reused pid is not A's claude and is never signalled", async () => {
+  const fs = reusedPidFs()
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, fakeClock(), REUSED_PS, { alive: [5300, 5301] })
+  await runWatcher(run.deps as any)
+  assert.match(JSON.stringify(backend.progress('rst-1')), /claude none/, 'nothing proven as 912\'s claude')
+  assert.equal(run.kills.some(([pid]) => pid === 5300), false, JSON.stringify(run.kills))
+})
+
+// M1: A's daemon pid, by its pairing lock, is held now by another agent's process. A crashed; its lock
+// was stamped 30 s ago and names daemon 4912, which is still "fresh". Windows hands a pid out again
+// within seconds: 4912 is now a process under agent B's claude 5300, started after that stamp. The
+// daemon route is held to the same start rule as the state's own claude pid: nothing is proven as A's
+// claude, and the owner's Restart signals nothing.
+test("M1: a daemon pid a later process of another agent holds proves nothing: the owner's Restart signals nothing", async () => {
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState({ claudePid: 5912, updatedAt: new Date(T0 - 2 * 24 * 60 * MIN).toISOString() }),
+    [`${HOME}/.bgos-agent/credentials-912.json.lock`]: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 30_000 }),
+  })
+  writeTranscript(fs, [assistantTurn(T0 - 20 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
+  const later = 'Wed Aug 26 12:00:00 2026'
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(5300, 1, `claude --resume ${B_SID}`, later), psLine(4912, 5300, `node ${ROOT}/server.ts`, later)].join('\n')
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, fakeClock(), ps, { alive: [5300, 4912] })
+  await runWatcher(run.deps as any)
+  assert.match(JSON.stringify(backend.progress('rst-1')), /claude none/, "nothing proven as 912's claude")
+  assert.equal(run.kills.some(([pid]) => pid === 5300 || pid === 4912), false, JSON.stringify(run.kills))
+})
+
+// M3: a start time that cannot be read proves nothing. A's stale state names claude 5300; the claude
+// holding 5300 has a start this watcher cannot read. The start rule refuses it (fails closed) instead of
+// skipping the check: nothing proven, claudeAlive null, no signal.
+test('M3: an unreadable start time proves nothing: no claude of A, claudeAlive null, no signal', async () => {
+  const fs = reusedPidFs()
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(5300, 1, `claude --resume ${B_SID}`, 'Tue Okt 25 08:00:00 2026'), psLine(5301, 5300, `node ${ROOT}/server.ts`)].join('\n')
+  const live = new Set([5300, 5301])
+  const pidAlive = (pid: number) => live.has(pid)
+  const row = listAgents({ home: HOME, env: { USER }, platform: 'linux', fs: fs as any, pidAlive, execSync: () => ({ code: 1, stdout: '' }), now: T0, uid: 501 }).find((a: any) => a.assistantId === '912')
+  assert.ok(row, '912 is listed')
+  const exec = async (file: string) => (file === 'ps' ? { code: 0, stdout: `${ps}\n`, stderr: '', error: null, timedOut: false } : { code: 1, stdout: '', stderr: '', error: null, timedOut: false })
+  const seen = await observeAgentForCheckup({ row, install: { configDir: CONFIG } as any, home: HOME, env: { USER }, platform: 'linux', fs, exec, now: T0, pidAlive, uid: 501 })
+  assert.deepEqual(seen.claudes, [], "nothing proven as A's claude")
+  assert.equal(seen.observation.claudeAlive, null)
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, fakeClock(), ps, { alive: [5300, 5301] })
+  await runWatcher(run.deps as any)
+  assert.match(JSON.stringify(backend.progress('rst-1')), /claude none/)
+  assert.equal(run.kills.some(([pid]) => pid === 5300), false, JSON.stringify(run.kills))
+})
+
+// The two record routes still PROVE a claude: one with no pin on its command line (a hand run, say),
+// proven only by the claude pid its state names, or only as the claude above its live daemon, each
+// started before its record. A wrong record time (another field, seconds for ms) would leave such an
+// agent unknown, never repaired.
+async function observeOnly(fs: MemoryFs, ps: string, alive: number[]) {
+  const live = new Set(alive)
+  const pidAlive = (pid: number) => live.has(pid)
+  const row = listAgents({ home: HOME, env: { USER }, platform: 'linux', fs: fs as any, pidAlive, execSync: () => ({ code: 1, stdout: '' }), now: T0, uid: 501 }).find((a: any) => a.assistantId === '912')
+  assert.ok(row, '912 is listed')
+  const exec = async (file: string) => (file === 'ps' ? { code: 0, stdout: `${ps}\n`, stderr: '', error: null, timedOut: false } : { code: 1, stdout: '', stderr: '', error: null, timedOut: false })
+  return observeAgentForCheckup({ row, install: { configDir: CONFIG } as any, home: HOME, env: { USER }, platform: 'linux', fs, exec, now: T0, pidAlive, uid: 501 })
+}
+const EARLIER = 'Mon Aug 24 08:00:00 2026'
+
+test("the state's claude pid route proves a claude with no pin that started before the state", async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ pid: 4999, claudePid: 5912, updatedAt: new Date(T0 - 10 * MIN).toISOString() }) })
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(5912, 1, 'claude --dangerously-skip-permissions', EARLIER)].join('\n')
+  const seen = await observeOnly(fs, ps, [5912])
+  assert.deepEqual(seen.claudes.map((c: any) => c.pid), [5912])
+  assert.equal(seen.observation.claudeAlive, true)
+})
+
+test('the live daemon route proves the claude above a daemon that started before its record, with no pin', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ claudePid: null }) })
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(5912, 1, 'claude --dangerously-skip-permissions', EARLIER), psLine(4912, 5912, `node ${ROOT}/server.ts`, EARLIER)].join('\n')
+  const seen = await observeOnly(fs, ps, [5912, 4912])
+  assert.deepEqual(seen.claudes.map((c: any) => c.pid), [5912])
+  assert.equal(seen.observation.claudeAlive, true)
+})
+
 // -- item 5: the owner's Restart, which the Helper always carries out ---------------------------------
 
 function ownerRestartJob(rpcId = 'rst-1', body: Record<string, unknown> = {}) {
@@ -1351,6 +1576,19 @@ test('review F2 (M8): SIGKILL only reaches the SAME claude: a reused pid or a ch
   assert.deepEqual((await run(null)).kills, [], 'gone from the listing')
   const same = await run({ ...old })
   assert.deepEqual(same.kills, [[5912, 'SIGCONT'], [5912, 'SIGKILL']])
+})
+
+test('SIGKILL needs both start times: a command line match alone (a relaunch on the old pid whose start cannot be read) is never killed', async () => {
+  const old = { pid: 5912, command: `claude --resume ${SID}`, startedAtMs: T0 - 60 * MIN }
+  const run = async (was: typeof old | { pid: number, command: string, startedAtMs: null }, now: Record<string, unknown>) => {
+    const kills: Array<[number, string]> = []
+    const clock = fakeClock()
+    await endOldClaudes({ claudes: [was as any], kill: (pid: number, signal: string) => void kills.push([pid, signal]), pidAlive: () => true, sleep: clock.sleep, now: clock.now, relist: async () => [now as any], id: '912', platform: 'linux' })
+    return kills
+  }
+  assert.deepEqual(await run(old, { pid: 5912, command: old.command, startedAtMs: null }), [], 'the fresh listing cannot read its start')
+  assert.deepEqual(await run({ ...old, startedAtMs: null }, { ...old }), [], 'the check up could not read it')
+  assert.deepEqual(await run({ ...old, startedAtMs: null }, { pid: 5912, command: old.command }), [], 'neither')
 })
 
 test('review F2 (M10): a claude tied to the folder only by a cwd lookup (a person\'s own session) is never signalled', async () => {

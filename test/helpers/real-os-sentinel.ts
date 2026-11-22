@@ -17,6 +17,12 @@
  * .../bin/hoai-watcher.mjs with `help`), and tsx's own esbuild service. A signal is allowed only
  * to a child one of those started, or to this test process itself.
  *
+ * One narrow door, for the start time case of test/watcher-real-os.guard.test.ts only: inside
+ * throughStartTimeProbe, and only for the launch made synchronously inside it, three shapes may run
+ * (a node child that only waits for its stdin to close, the watcher's own posix `ps` listing, and the
+ * daemon's `ps -o lstart=` of one pid). None of them can signal or close anything, and none is added
+ * to the children a signal may reach: a door launch can never be signalled from the test.
+ *
  * The production defaults are unchanged (the watcher still uses process.kill and the real
  * execFile/spawn); this only makes a test that forgot to inject its fakes fail instead of acting.
  * Every refusal is kept: the file's root after hook fails while any is left untaken, so a refusal
@@ -29,6 +35,9 @@ import childProcess from 'node:child_process'
 import { syncBuiltinESMExports } from 'node:module'
 import { basename } from 'node:path'
 import { after } from 'node:test'
+
+import { claudeStartCommand } from '../../lib/claude-stamp.mjs'
+import { psCommand } from '../../lib/process-tree.mjs'
 
 export type RealOsRefusal = { api: string; target: string }
 
@@ -64,6 +73,36 @@ export function allowedRealChild(file: unknown, args: readonly unknown[]): boole
   return sameFile(path, process.execPath) && args.length === 2 && /[\\/]bin[\\/]hoai-watcher\.mjs$/.test(String(args[0])) && args[1] === 'help'
 }
 
+/** The child the start time case starts: it waits for its stdin to close, then exits by itself. */
+export const START_PROBE_CHILD_SOURCE = "process.stdin.resume(); process.stdin.on('end', () => process.exit(0))"
+
+let startTimeProbeOpen = false
+
+/** Run one launch with the start time door open. The launch must happen synchronously inside it. */
+export function throughStartTimeProbe<T>(launch: () => T): T {
+  startTimeProbeOpen = true
+  try {
+    return launch()
+  } finally {
+    startTimeProbeOpen = false
+  }
+}
+
+const sameArgs = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((v, i) => v === b[i])
+
+/** The three shapes the door lets through, and only while it is open. */
+export function startTimeProbeChild(file: unknown, args: readonly unknown[]): boolean {
+  if (!startTimeProbeOpen || process.platform === 'win32') return false
+  const path = String(file ?? '')
+  if (sameFile(path, process.execPath)) return sameArgs(args, ['-e', START_PROBE_CHILD_SOURCE])
+  const list = psCommand(process.platform)
+  if (path === list.file) return sameArgs(args, list.args)
+  const pid = Number(args.at(-1))
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false
+  const one = claudeStartCommand(pid)
+  return path === one.file && sameArgs(args, one.args)
+}
+
 function refuse(api: string, target: string): never {
   const refusal = { api, target: target.length > 240 ? `${target.slice(0, 240)}...` : target }
   refusals.push(refusal)
@@ -76,9 +115,11 @@ if (!realOsSentinelInstalled()) {
     const sentinel = function (this: unknown, file: unknown, ...rest: unknown[]) {
       const args = Array.isArray(rest[0]) ? (rest[0] as unknown[]) : []
       // exec and execSync take a shell command line, and fork runs a module: never a probe.
-      if (api !== 'exec' && api !== 'execSync' && api !== 'fork' && allowedRealChild(file, args)) {
+      const probe = api !== 'exec' && api !== 'execSync' && api !== 'fork' && allowedRealChild(file, args)
+      // A door launch runs but is never added to ownChildren, so no signal may reach it.
+      if (probe || (api !== 'exec' && api !== 'execSync' && api !== 'fork' && startTimeProbeChild(file, args))) {
         const child = real.call(this, file, ...rest) as { pid?: number } | undefined
-        if (typeof child?.pid === 'number') ownChildren.add(child.pid)
+        if (probe && typeof child?.pid === 'number') ownChildren.add(child.pid)
         return child
       }
       return refuse(`child_process.${api}`, [file, ...args].map(String).join(' '))

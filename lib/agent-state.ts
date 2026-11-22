@@ -332,7 +332,7 @@ export function isWin32ClaudeProcess(proc: { name: string | null | undefined; co
  * holds no claude (HOAI board row 7046de2a: a timed out probe used to read as
  * the second, and was held for 10 minutes).
  */
-export type ClaudeAncestorReading = { readable: true; pid: number | null } | { readable: false }
+export type ClaudeAncestorReading = { readable: true; pid: number | null; startedAtMs?: number | null } | { readable: false }
 
 /**
  * The claude this daemon serves on Windows: the NEAREST ancestor that
@@ -363,7 +363,9 @@ export function readClaudeAncestorWin32(
       const parent = byPid.get(child.ppid)
       if (!parent || parent.pid <= 0 || parent.pid === child.pid) break
       if (parent.createdAtMs !== null && child.createdAtMs !== null && parent.createdAtMs > child.createdAtMs) break
-      if (isWin32ClaudeProcess(parent)) return { readable: true, pid: parent.pid }
+      // Its start rides along: the daemon stamps its claude with it (lib/claude-stamp.mjs), and this walk
+      // read the same CreationDate the watcher's listing shows, so no second call is needed.
+      if (isWin32ClaudeProcess(parent)) return { readable: true, pid: parent.pid, startedAtMs: parent.createdAtMs }
       child = parent
     }
     return { readable: true, pid: null }

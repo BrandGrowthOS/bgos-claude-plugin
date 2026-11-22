@@ -88,6 +88,8 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/limit-screen.mjs',
     'bin/win32-limit-screen.ps1',
     'lib/process-tree.mjs',
+    // Lone repair: each agent's claude stamp, read by the keep-alive sweep (watcher-keepalive.mjs imports it).
+    'lib/claude-stamp.mjs',
     'lib/agent-task-win32.mjs',
     // The read-back of an agent's own service before the sweep or a restart acts on it
     // (board row d6198bb6): agent-task-win32 and agent-restart import it, so a bundle
