@@ -12,11 +12,11 @@
  * succeeded before.
  *
  * `hoai-agent install --always-on` stamps <statedir>/installed-at for a paired
- * folder. Since the switched-off-stays-off ruling (2026-11-22) the grace is
- * one rule of lib/agent-kept.mjs decideKeptSupervisor, the only place it is
- * applied: an install never yet seen kept keeps it, never longer; a computer
- * switched off and an install once seen kept get none. These names stay for
- * their readers and are that module's, so there is one grace.
+ * folder. The grace is one rule of lib/agent-kept.mjs decideKeptSupervisor,
+ * the only place it is applied: an install never yet seen kept keeps it, never
+ * longer; a computer switched off and an install once seen kept get none.
+ * These names stay for their readers and are that module's, so there is one
+ * grace.
  */
 export {
   INSTALL_GRACE_MS as ALWAYS_ON_INSTALL_GRACE_MS,

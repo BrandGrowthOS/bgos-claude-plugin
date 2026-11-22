@@ -441,6 +441,46 @@ test('m5: a hoai launcher of this version says it stops once its supervisor is r
   assert.equal(olderLiveLauncher({ launcherLive: true, stateDir: SD, readFile: fs.readFile }), null)
 })
 
+// The cache a watcher from before the format mark wrote: the same body without `format`.
+const unmarked = (text: string) => `${JSON.stringify({ ...JSON.parse(text), format: undefined }, null, 2)}\n`
+
+test('round 4 m2: every cache the watcher writes carries its format mark; one without it (a watcher from before the mark wrote a 401 as a plain OFF) is no answer for every kept reader, never the switch off', async () => {
+  const on = buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'], switchState: 'on', showAgentWindows: false }, NOW - MIN)
+  for (const text of [offCache(MIN), offCache(MIN, { refused: true }), on]) assert.equal(JSON.parse(text).format, 2, 'live and refused alike')
+  const fresh = { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled: true }
+  // An older watcher's refusal: OFF, fresh, not marked refused, no format mark.
+  const old = unmarked(offCache(MIN))
+  assert.equal('format' in JSON.parse(old), false)
+  assert.equal(keepAliveStandingFromCache(old, '912', NOW, fresh), 'unknown', 'the daemon')
+  assert.equal(keepAliveStandingFromCache(old, '912', NOW), 'unknown', 'the restart handoff (the cache\'s own 24 h rule)')
+  assert.equal(keepAliveStandingFromCache(unmarked(on), '912', NOW, fresh), 'unknown', 'unmarked is no answer whatever it says')
+  assert.equal(keepAliveStandingFromCache(offCache(MIN), '912', NOW, fresh), 'switch_off', 'the same OFF with the mark is the owner\'s switch')
+  // The installer's question (kept-switch) reads it the same way.
+  const home = '/Users/user'
+  const fs = memoryFs()
+  fs.writeFile(watcherServiceFiles({ platform: 'darwin', home, env: {} })[0]!, 'x')
+  fs.writeFile(keepAliveCacheFile(home), old)
+  const lines: string[] = []
+  const code = await agentServiceMain(['kept-switch', '--assistant', '912', '--os', 'Darwin'], { env: { HOME: home }, fs, out: (l: string) => void lines.push(l), err: () => undefined, now: () => NOW } as any)
+  assert.deepEqual([code, ...lines], [0, 'unknown'])
+})
+
+test('round 4 m5: "cannot tell" is a watcher, never none: a watcher spec that cannot be built, or a service file that cannot be checked, reads as installed, so the switch read still counts', () => {
+  const absent = () => false
+  assert.equal(watcherServiceFiles({ platform: 'sunos', home: '/home/user', env: {} }).length, 0, 'no spec for that platform')
+  assert.equal(watcherServiceInstalled({ platform: 'sunos', home: '/home/user', env: {}, exists: absent }), true, 'a spec that cannot be built')
+  assert.equal(watcherServiceInstalled({ platform: 'linux', home: '', env: {}, exists: absent }), true, 'no HOME to name it by')
+  const unreadable = () => {
+    throw new Error('EACCES: permission denied')
+  }
+  for (const platform of ['darwin', 'linux']) {
+    const home = platform === 'darwin' ? '/Users/user' : '/home/user'
+    assert.equal(watcherServiceInstalled({ platform, home, env: {}, exists: unreadable }), true, `${platform}: a check that throws`)
+  }
+  // What it guards: with a watcher read as installed, a fresh OFF is the switch, never "no watcher" (which installs on Always on alone).
+  assert.equal(keepAliveStandingFromCache(offCache(MIN), '912', NOW, { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled: watcherServiceInstalled({ platform: 'linux', home: '/home/user', env: {}, exists: unreadable }) }), 'switch_off')
+})
+
 test('m7: hoai-agent install --always-on asks first (bin/hoai-agent-service.mjs kept-switch): a fresh cache saying this computer\'s switch is off is "switch_off"; stale, refused or no watcher is not', async () => {
   const home = '/Users/user'
   const fs = memoryFs()

@@ -67,8 +67,8 @@ type Scene = {
   seen?: boolean
   /** This HOME's watcher service file is there (default yes). */
   watcher?: boolean
-  /** The watcher's cached keep-alive answer, written `agoMs` ago; none when absent. */
-  cache?: { answer: Record<string, unknown>; agoMs: number }
+  /** The watcher's cached keep-alive answer, written `agoMs` ago; none when absent. `unmarked`: as a watcher from before the format mark wrote it. */
+  cache?: { answer: Record<string, unknown>; agoMs: number; unmarked?: boolean; emptyAgoMs?: number }
 }
 
 const ON = { enabled: true, assistantIds: ['912'], switchState: 'on' }
@@ -91,7 +91,9 @@ async function reconcile(scene: Scene) {
   }
   if (scene.watcher !== false) files.set(kept.watcherServiceFiles({ platform, home, env: {} })[0]!, 'x')
   if (scene.cache) {
-    files.set(kept.keepAliveCacheFile(home), buildKeepAliveCache({ enabledAt: null, showAgentWindows: false, ...scene.cache.answer }, now - scene.cache.agoMs))
+    const empty = scene.cache.emptyAgoMs != null ? { emptySinceMs: now - scene.cache.emptyAgoMs } : {}
+    const text = buildKeepAliveCache({ enabledAt: null, showAgentWindows: false, ...scene.cache.answer, ...empty }, now - scene.cache.agoMs)
+    files.set(kept.keepAliveCacheFile(home), scene.cache.unmarked ? `${JSON.stringify({ ...JSON.parse(text), format: undefined }, null, 2)}\n` : text)
   }
   const installStamp = stampAgo(0)
   const logs: string[] = []
@@ -206,6 +208,33 @@ test('B1: a refusal the watcher cached (401/403, marked refused) is no answer: t
   assert.equal(installed.logs.some((l) => /not kept|switch_off/.test(l)), false, installed.logs.join('\n'))
   const bare = await reconcile({ cache: { answer, agoMs: MIN } })
   assert.equal(bare.installs, 0, 'no answer: nothing installed either')
+})
+
+test('round 4 m2: an older watcher\'s refusal (OFF, fresh, written before the format mark, so not marked refused) is no answer: the daemon removes nothing, on Mac or Linux', async () => {
+  for (const platform of ['darwin', 'linux'] as const) {
+    const old = await reconcile({ platform, installed: true, seen: true, cache: { answer: OFF, agoMs: MIN, unmarked: true } })
+    assert.equal(old.installed, true, `${platform}: ${old.logs.join('\n')}`)
+    assert.equal(old.runSh, '#!/usr/bin/env bash\nexec hoai-core\n')
+    assert.deepEqual(old.releaseCalls, [])
+    assert.equal(old.logs.some((l) => /not kept|switch_off/.test(l)), false, old.logs.join('\n'))
+    const bare = await reconcile({ platform, cache: { answer: ON, agoMs: MIN, unmarked: true } })
+    assert.equal(bare.installs, 0, `${platform}: unmarked is no answer whatever it says: nothing installed either`)
+  }
+  // The control: the same OFF from this watcher (marked) is the owner's switch.
+  const marked = await reconcile({ installed: true, seen: true, cache: { answer: OFF, agoMs: MIN } })
+  assert.equal(marked.installed, false)
+})
+
+test('round 4 m1 (the maintainer\'s ruling): an empty list with the switch on is no answer to the daemon until the watcher read it twice a minute apart; then the agent is not listed', async () => {
+  const EMPTY = { enabled: true, assistantIds: [], switchState: 'on' }
+  // The watcher's first empty read: the run began with this very read.
+  const once = await reconcile({ installed: true, seen: true, cache: { answer: EMPTY, agoMs: MIN, emptyAgoMs: MIN } })
+  assert.equal(once.installed, true, once.logs.join('\n'))
+  assert.equal(once.logs.some((l) => /not kept/.test(l)), false, once.logs.join('\n'))
+  // A second empty read a minute after the first.
+  const twice = await reconcile({ installed: true, seen: true, cache: { answer: EMPTY, agoMs: MIN, emptyAgoMs: 2 * MIN } })
+  assert.equal(twice.installed, false, twice.logs.join('\n'))
+  assert.ok(twice.logs.some((l) => /not kept running \(not_listed/.test(l)), twice.logs.join('\n'))
 })
 
 test('M1: the daemon trusts the watcher\'s cache only while it is fresh: OFF older than 5 minutes removes nothing, and ON older than 5 minutes installs nothing', async () => {

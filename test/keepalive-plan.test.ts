@@ -620,7 +620,7 @@ test('agentWindows rides the live answer, the cache and the decision; a refusal 
   assert.equal('agentWindows' in decideKeepAliveConsent({ live: null, cache, now: NOW, refused: true }), false)
   assert.equal('agentWindows' in decideKeepAliveConsent({ live: null, cache: null, now: NOW }), false)
   const plain = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: true }
-  assert.equal(buildKeepAliveCache(plain, NOW), `${JSON.stringify({ schemaVersion: 1, enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() }, null, 2)}\n`, 'no field, the same bytes as before')
+  assert.equal(buildKeepAliveCache(plain, NOW), `${JSON.stringify({ schemaVersion: 1, format: 2, enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() }, null, 2)}\n`, 'no field, the same bytes as before (with the format mark)')
 })
 
 test('decideKeepAliveConsent: live answer wins; a failure falls back to a cache younger than 24 h; otherwise OFF', () => {
@@ -645,8 +645,9 @@ test('decideKeepAliveConsent: a refusal of the watcher pairing (401, 403) is OFF
 
 test('buildKeepAliveCache / parseKeepAliveCache: the design 3.4 file shape round trips (with the switch and the windows setting); a cache written before them reads as today; junk is null', () => {
   const body = buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true }, NOW)
-  assert.deepEqual(JSON.parse(body), { schemaVersion: 1, enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() })
-  assert.deepEqual(parseKeepAliveCache(body), { enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true, fetchedAtMs: NOW })
+  // format 2: this writer marks a refusal refused (lib/agent-kept.mjs reads a cache without it as no answer).
+  assert.deepEqual(JSON.parse(body), { schemaVersion: 1, format: 2, enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() })
+  assert.deepEqual(parseKeepAliveCache(body), { enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true, format: 2, fetchedAtMs: NOW })
   const older = JSON.stringify({ schemaVersion: 1, enabled: false, enabledAt: null, assistantIds: [], fetchedAt: new Date(NOW).toISOString() })
   assert.deepEqual(parseKeepAliveCache(older), { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, fetchedAtMs: NOW })
   const neverSet = buildKeepAliveCache({ enabled: false, enabledAt: null, assistantIds: [], switchState: 'never_set', showAgentWindows: false }, NOW)
