@@ -526,7 +526,7 @@ function insideBundle(dir: unknown) {
 test('viewercwd: no viewer, and no viewer helper, is started with its working folder inside the watcher bundle (Windows, Linux)', async () => {
   // Windows: a viewer opened, and a console hidden in place (the same script, hide mode).
   const fs = winMachine({ '912': 4242, '2': 202 })
-  const rows = [winRow('912', 'C:\\Users\\kc\\hoai-agents\\Wolf'), winRow('2', 'C:\\a\\recipe')]
+  const rows = [winRow('912', 'C:\\Users\\sample\\hoai-agents\\agent-a'), winRow('2', 'C:\\a\\recipe')]
   const fx = winEffects([proc(4242, 1, 'node hoai-core.mjs'), proc(22, 1, 'cmd  /k ""C:\\node.exe" "C:\\root\\bin\\hoai-core.mjs""'), proc(202, 22, '"C:\\node.exe" "C:\\root\\bin\\hoai-core.mjs"')])
   await runWindowsPass(winCtx(fx, fs, rows, true) as any)
   assert.equal(fx.spawns.length, 2, 'both agents got a viewer')
@@ -543,14 +543,14 @@ test('viewercwd: no viewer, and no viewer helper, is started with its working fo
   // Linux: the terminal running the read only attach.
   const tmux = tmuxEffects({ 'hoai-912': { sessions: [['hoai-912', 1794600000]], clients: [] } })
   const pfs = memoryFs()
-  await runWindowsPass({ ...posixCtx('linux', tmux, pfs, [posixRow('912', '/home/p/Wolf')], true, emptyViewerMemory(), { DISPLAY: ':0', PATH: '/usr/bin' }), hasCommand: (n: string) => n === 'xterm' } as any)
+  await runWindowsPass({ ...posixCtx('linux', tmux, pfs, [posixRow('912', '/home/p/agent-a')], true, emptyViewerMemory(), { DISPLAY: ':0', PATH: '/usr/bin' }), hasCommand: (n: string) => n === 'xterm' } as any)
   assert.ok(tmux.spawns.length >= 1, 'the Linux viewer opened')
   for (const s of tmux.spawns) assert.equal(String(s.opts?.cwd ?? '').includes('.bgos-agent'), false, `Linux viewer runs in ${s.opts?.cwd}`)
 })
 
 test('viewercwd: each pass remembers the viewers it keeps (pid, start time, agent), and the memory survives a watcher restart', async () => {
   const fs = winMachine({ '912': 4242 })
-  const rows = [winRow('912', 'C:\\Users\\kc\\hoai-agents\\Wolf')]
+  const rows = [winRow('912', 'C:\\Users\\sample\\hoai-agents\\agent-a')]
   const fx = winEffects([proc(4242, 1, 'node hoai-core.mjs'), proc(6001, 1, viewerCommand(4242, '912'))])
   const out = await runWindowsPass(winCtx(fx, fs, rows, true) as any)
   assert.deepEqual(fx.spawns, [], 'the open viewer is adopted, none opened')
@@ -598,7 +598,7 @@ test('viewercwd: before a bundle swap the watcher closes ONLY the viewers it kno
 
 test('viewercwd: the successor reopens the viewers closed for the swap; a viewer the OWNER closed still stays closed', async () => {
   const fs = winMachine({ '912': 4242 })
-  const rows = [winRow('912', 'C:\\Users\\kc\\hoai-agents\\Wolf')]
+  const rows = [winRow('912', 'C:\\Users\\sample\\hoai-agents\\agent-a')]
   const memory = { ...emptyViewerMemory(), lastShow: true, scanned: true, opened: { '912': 'pid:4242' }, lastOpenAt: { '912': T0 - MIN }, viewerPids: [{ pid: 6001, startedAtMs: T0 - 60_000, id: '912' }] }
   const before = winEffects([proc(4242, 1, 'node hoai-core.mjs'), proc(6001, 1, viewerCommand(4242, '912'))])
   const released = await closeViewersForSwap({ platform: 'win32', env: {}, exec: before.exec, kill: before.kill, log: () => {}, viewerDir: VIEWER_DIR, memory } as any)

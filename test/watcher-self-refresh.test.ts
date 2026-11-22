@@ -444,7 +444,7 @@ function showingWindows(m: { fs: any; host: ReturnType<typeof fakeWindowHost> })
   m.host.processes.set(CONSOLE_PID, { pid: CONSOLE_PID, ppid: 4, command: '"C:\\Program Files\\nodejs\\node.exe" hoai-core.mjs', startedAtMs: VIEWER_STARTED - MINUTE })
   const stateDir = at(WINDOWS, WINDOWS.home, '.bgos-agent', '912')
   m.fs.writeFile(at(WINDOWS, stateDir, 'supervisor.json'), supervisorFileBody(CONSOLE_PID, new Date(VIEWER_STARTED - MINUTE).toISOString()))
-  const row = { assistantId: '912', cwd: at(WINDOWS, WINDOWS.home, 'hoai-agents', 'Wolf'), stateDir, launcherLive: true, supervisor: 'launcher-live', keepalive: null }
+  const row = { assistantId: '912', cwd: at(WINDOWS, WINDOWS.home, 'hoai-agents', 'agent-a'), stateDir, launcherLive: true, supervisor: 'launcher-live', keepalive: null }
   return {
     keepAliveSweep: async () => ({ enabled: false, agents: [], showAgentWindows: true }),
     windowsPass: (ctx: any) => runWindowsPass({ ...ctx, listAgents: () => [row], viewerDir: at(WINDOWS, watcherDir(WINDOWS), 'bin') }),
