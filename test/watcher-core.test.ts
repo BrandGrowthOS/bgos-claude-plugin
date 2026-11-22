@@ -28,6 +28,7 @@ import {
   EXIT_NO_CREDENTIALS,
   EXIT_SELF_REFRESH,
   StepLedger,
+  MAX_NOT_RESTORED,
   WATCHER_LOG_MAX_BYTES,
   autoUpdateEnabledFrom,
   buildRpcClient,
@@ -35,6 +36,7 @@ import {
   jobFolderName,
   nextBackoff,
   normalizeApiBase,
+  notRestoredForReport,
   readRollbackLatch,
   refreshWatcherIfStale,
   runWatcher,
@@ -79,7 +81,7 @@ function fakeClock(start = T0) {
 type Call = { method: string; path: string; body: any; headers: Record<string, string> }
 
 /** An in-process fake backend: records every call; serves one batch of frames, then none. */
-function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any>; failPending?: boolean; status?: number; keepAlive?: Record<string, unknown> } = {}) {
+function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any>; failPending?: boolean; status?: number; keepAlive?: Record<string, unknown>; refuseProgress?: (body: any) => number | undefined } = {}) {
   const calls: Call[] = []
   let served = false
   const respond = (status: number, json: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(json) })
@@ -90,6 +92,8 @@ function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any>; failPen
     calls.push({ method: init?.method ?? 'GET', path, body, headers: init?.headers ?? {} })
     if (opts.failPending && path.includes('/machine-rpc/pending')) throw new Error('ECONNREFUSED 127.0.0.1:1')
     if (opts.status && opts.status >= 400) return respond(opts.status, { error: 'nope' })
+    const refused = path.endsWith('/progress') ? opts.refuseProgress?.(body) : undefined
+    if (refused) return respond(refused, { error: 'refused' })
     if (path.includes('/machine-rpc/pending')) {
       if (served) return respond(200, { frames: [] })
       served = true
@@ -2067,6 +2071,56 @@ test('runWatcher: agents a rollback could not restart are named in the job log',
   const { deps, logs } = baseDeps(fs, backend, fakeClock(), { modules: stubModules({ plan, execute }), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
   await runWatcher(deps as any)
   assert.ok(logs.some((l) => l.includes('left on the rejected build: 7, 912')), logs.filter((l) => l.includes('job-left')).join('\n'))
+})
+
+/** A restart_only job on agent 7 whose executor rolled back and left `notRestored` behind. */
+function leftBehindRun(notRestored: unknown, backendOpts: Parameters<typeof fakeBackend>[0] = {}) {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend({
+    frames: [{ rpcId: 'job-left', op: 'restart_only' }],
+    jobs: { 'job-left': { op: 'restart_only', intent: 'restart_only', targets: [{ pairingId: 2, assistantId: '7' }] } },
+    ...backendOpts,
+  })
+  const plan = () => ({ verdict: 'plan', targetVersion: null, steps: [{ id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' }] })
+  const execute = async () => ({ ok: false, verdict: 'rolled_back', failedStep: { id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', message: 'x' }, rolledBack: true, targetVersion: null, installedVersion: '0.38.3', steps: [], notRestored })
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules({ plan, execute }), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  return { deps, backend }
+}
+
+test('runWatcher: a rollback reports the agents left on the rejected build with its outcome, as assistant ids only', async () => {
+  const { deps, backend } = leftBehindRun(['7', '912'])
+  await runWatcher(deps as any)
+  const terminal = backend.progress('job-left').filter((b) => b.state === 'rolled_back')
+  assert.equal(terminal.length, 1)
+  assert.deepEqual(terminal[0].notRestored, ['7', '912'])
+})
+
+test('runWatcher: a run that left nobody behind sends no notRestored key, so its report is the one an older server knows', async () => {
+  const { deps, backend } = leftBehindRun([])
+  await runWatcher(deps as any)
+  const terminal = backend.progress('job-left').filter((b) => b.state === 'rolled_back')
+  assert.equal(terminal.length, 1)
+  assert.equal('notRestored' in terminal[0], false)
+})
+
+test('runWatcher: a server that refuses the list (400) still gets the outcome, sent again without it', async () => {
+  const { deps, backend } = leftBehindRun(['7'], { refuseProgress: (body) => (body && 'notRestored' in body ? 400 : undefined) })
+  await runWatcher(deps as any)
+  const terminal = backend.progress('job-left').filter((b) => b.state === 'rolled_back')
+  assert.equal(terminal.length, 2)
+  assert.deepEqual(terminal[0].notRestored, ['7'])
+  assert.equal('notRestored' in terminal[1], false)
+  assert.equal(terminal[1].failedStep?.id, 's1-restart_agent:7')
+})
+
+test('notRestoredForReport: digits only, each once, at most MAX_NOT_RESTORED, never a name, path or machine detail', () => {
+  assert.deepEqual(notRestoredForReport(['7', '912', '7', ' 8', 'Maya', 'C:\\Users\\kc', '/home/kc/x', '', 12, null, '1'.repeat(17)]), ['7', '912'])
+  assert.deepEqual(notRestoredForReport(undefined), [])
+  assert.deepEqual(notRestoredForReport('7'), [])
+  const many = Array.from({ length: MAX_NOT_RESTORED + 6 }, (_, i) => String(i + 1))
+  assert.deepEqual(notRestoredForReport(many), many.slice(0, MAX_NOT_RESTORED))
+  assert.equal(MAX_NOT_RESTORED, 64)
 })
 
 test('runWatcher: the first heartbeat after a restart carries the keep-alive states the previous process persisted', async () => {

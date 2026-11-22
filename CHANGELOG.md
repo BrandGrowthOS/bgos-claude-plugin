@@ -12,6 +12,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.18 (2026-11-22)
+
+**feat(update): a rolled back update names every agent it left on the new version.** When the Helper undoes an update and cannot restart an agent back onto the previous version, that agent keeps running the new one until someone restarts it. The Helper already wrote those agents in its own log; it now also sends them with the update's outcome, as agent ids only (digits, each once, at most 64), so the app can name each one to restart. Nothing is sent when no agent was left behind, so that report is exactly as before. A server that refuses a field it does not know answers 400; the outcome is then sent again without the list, so it still lands. Guard: `test/watcher-core.test.ts`, four new cases, each red first, with a mutant for each named in the pull request.
+
 ## 0.90.17 (2026-11-21)
 
 **feat(chat): hear reactions to the agent's replies.** With a matching server, the agent hears who reacted and which emoji they chose. A later line can report a changed or removed reaction and how many people reacted. A room member speaks only as themselves. A reaction never grants permission to use a tool.
