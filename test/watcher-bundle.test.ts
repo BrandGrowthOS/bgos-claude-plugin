@@ -77,6 +77,7 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     // The keep-alive sweep (design 5) and its imports.
     'lib/watcher-keepalive.mjs',
     'lib/keepalive-plan.mjs',
+    'lib/agent-kept.mjs',
     'lib/watcher-checkup.mjs',
     'lib/agent-checkup.mjs',
     // A lost login file named as such (board row 23415823): watcher-core imports it, so a bundle

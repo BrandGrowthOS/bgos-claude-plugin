@@ -41,7 +41,7 @@ import {
   runKeepAliveSweep,
   supervisorInstallCommand,
 } from '../lib/watcher-keepalive.mjs'
-import { buildLaunchRecipe } from '../lib/agent-inventory.mjs'
+import { buildLaunchRecipe, listAgents } from '../lib/agent-inventory.mjs'
 import { agentTaskSpec } from '../lib/agent-task-win32.mjs'
 import { RESTART_EXEC_TIMEOUT_MS } from '../lib/agent-restart.mjs'
 import { CHANNEL_DEAF_CONFIRM_MS, CHANNEL_DEAF_EPISODE_CLEAR_MS, buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
@@ -3109,6 +3109,14 @@ const switchOff = () => consent({ enabled: false, enabledAt: null, assistantIds:
 const watchedOf = (report: any) => (report.watched ?? []).map((a: any) => [a.id, a.state, a.reason])
 const watchedRecords = (fs: MemoryFs) => JSON.parse(fs.files.get(keepAliveStatePath(HOME))!).watched ?? {}
 const linesFor = (logs: string[], id: string) => logs.filter((l) => l.includes(`keep-alive ${id}:`))
+/**
+ * Switched off stays off (lib/agent-kept.mjs): an agent that is not kept loses its canonical supervisor at
+ * the first read that finds it so, said once, and the run.sh it leaves starts nothing. That line and that
+ * file are the removal's, not the deaf watch's; nothing that runs is touched by either.
+ */
+const REMOVED_LINE = /: supervisor removed \(/
+const deafLinesFor = (logs: string[], id: string) => linesFor(logs, id).filter((l) => !REMOVED_LINE.test(l))
+const withNotKeptRunSh = (before: string[], ...ids: string[]) => [...before, ...ids.map((id) => `${HOME}/.bgos-agent/${id}/run.sh`)].sort()
 /** Everything the sweep ran that is not the read only process listing. */
 const notPs = (rec: ReturnType<typeof recorder>) => rec.calls.filter((c) => c.file !== 'ps')
 
@@ -3168,7 +3176,7 @@ function retestPs() {
 }
 const retestAlive = (pid: number) => [47, 57, 4300, 5300, 3913, 5913].includes(pid)
 
-test('deafwatch for every agent: the retest scene. Only one agent is cleared, and the launcher-live agent whose channel process stopped is noticed, logged once and reported, with nothing touched', async () => {
+test('deafwatch for every agent: the retest scene. Only one agent is cleared, and the launcher-live agent whose channel process stopped is noticed, logged once and reported, with nothing that runs touched', async () => {
   const clock = fakeClock()
   const fs = retestScene()
   const before = agentWrites(fs).sort()
@@ -3195,12 +3203,18 @@ test('deafwatch for every agent: the retest scene. Only one agent is cleared, an
   assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['7', 'supervised', 'canonical']])
   // One plain line in watcher.log, and none for the healthy agent or the one that is not running.
   assert.deepEqual(linesFor(logs, '913'), ['keep-alive 913: claude up 182 min with no live channel (no_channel_process, last beacon 22 min ago); not restarted, this agent is not kept running'])
-  assert.deepEqual([...linesFor(logs, '300'), ...linesFor(logs, '301')], [])
-  // Nothing was touched: no command but the process listing, no signal, no spawn, no file in any agent's folder.
+  assert.deepEqual([...deafLinesFor(logs, '300'), ...linesFor(logs, '301')], [])
+  // Agent 300 is not kept (not on the list) and was installed long ago: its supervisor went at the first
+  // sweep, said once; agent 7's stays (lib/agent-kept.mjs).
+  assert.deepEqual(linesFor(logs, '300'), ['keep-alive 300: supervisor removed (not_listed:grace_over); what runs now is left to finish and is not started again'])
+  assert.equal(fs.files.has(`${HOME}/Library/LaunchAgents/ai.bgos.agent.300.plist`), false)
+  assert.equal(fs.files.has(`${HOME}/Library/LaunchAgents/ai.bgos.agent.7.plist`), true)
+  // Nothing that runs was touched: no command but the process listing, no signal, no spawn, no file in any
+  // agent's folder but the run.sh of the removal.
   assert.deepEqual(notPs(rec), [])
   assert.deepEqual(rec.kills, [])
   assert.deepEqual(rec.spawns, [])
-  assert.deepEqual(agentWrites(fs).sort(), before)
+  assert.deepEqual(agentWrites(fs).sort(), withNotKeptRunSh(before, '300'))
   // On disk: the cleared agent's record under `agents`, the watched one apart from it.
   const state = JSON.parse(fs.files.get(keepAliveStatePath(HOME))!)
   assert.deepEqual(Object.keys(state.agents), ['7'])
@@ -3305,7 +3319,7 @@ test('deafwatch for every agent: one process listing a sweep serves the cleared 
   assert.deepEqual(rec.calls.map((c) => c.file), ['ps'])
 })
 
-test('deafwatch for every agent: with the switch off for the whole computer a deaf agent is still noticed, logged once and reported, and still nothing is touched', async () => {
+test('deafwatch for every agent: with the switch off for the whole computer a deaf agent is still noticed, logged once and reported, and still nothing that runs is touched', async () => {
   const clock = fakeClock()
   const fs = deafMachine({ beaconAt: T0 - 20 * MIN })
   const before = agentWrites(fs).sort()
@@ -3323,7 +3337,8 @@ test('deafwatch for every agent: with the switch off for the whole computer a de
   assert.deepEqual(notPs(rec), [])
   assert.deepEqual(rec.kills, [])
   assert.deepEqual(rec.spawns, [])
-  assert.deepEqual(agentWrites(fs).sort(), before)
+  // Its supervisor went at the first sweep with the switch off (lib/agent-kept.mjs): the run.sh it left starts nothing.
+  assert.deepEqual(agentWrites(fs).sort(), withNotKeptRunSh(before, '912'))
   // The state file still says the switch is off (the idle update reads that), and holds the finding.
   const state = JSON.parse(fs.files.get(keepAliveStatePath(HOME))!)
   assert.equal(state.enabled, false)
@@ -3343,11 +3358,12 @@ test('deafwatch for every agent: a deaf agent that is not cleared is never resta
   assert.deepEqual(notPs(rec), [])
   assert.deepEqual(rec.kills, [])
   assert.deepEqual(rec.spawns, [])
-  assert.deepEqual(agentWrites(fs).sort(), before, 'no restart marker, no probe request, no file in the agent folder')
+  assert.deepEqual(agentWrites(fs).sort(), withNotKeptRunSh(before, '912'), 'no restart marker, no probe request, no file in the agent folder but the removal\'s run.sh')
   assert.deepEqual(watchedOf(later), [['912', 'failed', 'no-channel-heartbeat: missing bin/bgos-launch.mjs; no live channel (not_cleared)']])
   assert.equal(later.watched[0].since, found.watched[0].since, 'the finding holds, it does not churn')
   assert.deepEqual(watchedRecords(fs)['912'].missingFiles, ['bin/bgos-launch.mjs'])
-  assert.deepEqual(linesFor(logs, '912'), ['keep-alive 912: claude up 662 min with no live channel (no_channel_process, last beacon 662 min ago); not restarted, this agent is not kept running; plugin files missing at the plugin root: bin/bgos-launch.mjs'])
+  assert.deepEqual(deafLinesFor(logs, '912'), ['keep-alive 912: claude up 662 min with no live channel (no_channel_process, last beacon 662 min ago); not restarted, this agent is not kept running; plugin files missing at the plugin root: bin/bgos-launch.mjs'])
+  assert.equal(linesFor(logs, '912').filter((l) => REMOVED_LINE.test(l)).length, 1, 'its supervisor went once, at the first sweep')
   // No personal path rides the heartbeat, and nothing offers a restart for it.
   assert.ok(!later.watched[0].reason.includes(HOME))
   assert.equal('pending' in later.watched[0], false)
@@ -3393,7 +3409,7 @@ test('deafwatch for every agent: no false alarm for an agent that is not cleared
       report = await runKeepAliveSweep(ctx as any)
     }
     assert.equal('watched' in report, false, c.name)
-    assert.deepEqual(linesFor(logs, '912'), [], c.name)
+    assert.deepEqual(deafLinesFor(logs, '912'), [], c.name)
     assert.deepEqual(notPs(rec), [], c.name)
     assert.deepEqual(watchedRecords(c.fs), {}, c.name)
     // A beacon that beat inside the fresh window answers from the file: a healthy agent costs no process listing.
@@ -3413,10 +3429,10 @@ test('deafwatch for every agent: one look is never reported, and a sleep between
   clock.advance(120 * MIN)
   assert.equal('watched' in (await runKeepAliveSweep(ctx as any)), false, 'the first look after the sleep')
   assert.equal('watched' in (await sweepFor(ctx, clock, 1)), false, 'one minute awake')
-  assert.deepEqual(linesFor(logs, '912'), [])
+  assert.deepEqual(deafLinesFor(logs, '912'), [])
   // Awake and deaf at every minute's sweep for 2 min: confirmed.
   assert.deepEqual(watchedOf(await sweepFor(ctx, clock, 1)), [['912', 'failed', NOT_KEPT]])
-  assert.equal(linesFor(logs, '912').length, 1)
+  assert.equal(deafLinesFor(logs, '912').length, 1)
 })
 
 test('deafwatch for every agent: a deaf channel its launcher explains (the shared Claude login failed) is reported as the login, never as not kept running; an earlier launch\'s status explains nothing', async () => {
@@ -3435,10 +3451,10 @@ test('deafwatch for every agent: a deaf channel its launcher explains (the share
     if (which === 'this launch') {
       assert.match(report.watched[0].reason, /^claude-login-expired: /, 'the Helper reads Signed out')
       assert.ok(!report.watched[0].reason.includes('no-channel-heartbeat'))
-      assert.deepEqual(linesFor(logs, '912'), ['keep-alive 912: no live channel, and its launcher says the Claude login failed (claude-login-expired); not restarted, sign in with /login'])
+      assert.deepEqual(deafLinesFor(logs, '912'), ['keep-alive 912: no live channel, and its launcher says the Claude login failed (claude-login-expired); not restarted, sign in with /login'])
     } else {
       assert.equal(report.watched[0].reason, NOT_KEPT)
-      assert.equal(linesFor(logs, '912').length, 1)
+      assert.equal(deafLinesFor(logs, '912').length, 1)
     }
     assert.deepEqual(notPs(rec), [], which)
   }
@@ -3476,12 +3492,15 @@ test('deafwatch for every agent: a reported finding ends when the channel is liv
   relaunched.clock.advance(10 * MIN)
   const still = await relaunched.next(deafPs(relaunched.clock.now() - 11 * MIN))
   assert.deepEqual(still.watched, relaunched.found.watched)
-  assert.equal(linesFor(relaunched.logs, '912').length, 1, relaunched.logs.join('\n'))
+  assert.equal(deafLinesFor(relaunched.logs, '912').length, 1, relaunched.logs.join('\n'))
 })
 
 test('deafwatch for every agent: once the owner keeps a watched deaf agent running, the very next sweep restarts it (its confirmed looks carry over), and it leaves the watched list', async () => {
   const clock = fakeClock()
   const fs = deafMachine({ beaconAt: T0 - 20 * MIN })
+  // Installed a minute ago and never seen kept yet: it keeps its supervisor for 15 minutes from the install
+  // while it is not on the list (lib/agent-kept.mjs), so the owner's press finds it there to restart.
+  fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, `${Math.floor((T0 - MIN) / 1000)}\n`)
   const rec = recorder({ ps: deafPs(T0 - 3 * 60 * MIN) })
   answerProbes(fs, clock, ['912'])
   let ids = [7]
@@ -3605,7 +3624,7 @@ test('deafwatch for every agent: a look that throws is that agent\'s alone. The 
   assert.deepEqual(watchedOf(report), [['913', 'failed', NOT_KEPT]])
   assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['7', 'supervised', 'canonical']])
   // Five sweeps, one line about the look that keeps failing, and it is not a finding.
-  assert.deepEqual(linesFor(logs, '300'), ['keep-alive 300: deaf check failed: EIO: read failed'])
+  assert.deepEqual(deafLinesFor(logs, '300'), ['keep-alive 300: deaf check failed: EIO: read failed'])
   assert.equal(linesFor(logs, '913').length, 1)
   assert.deepEqual(notPs(rec), [])
   // The adapter works again: the next look is a plain healthy one, and a later failure would be said again.
@@ -3629,7 +3648,7 @@ test('deafwatch for every agent: with the keep-alive list unreadable (no answer,
   assert.deepEqual(notPs(rec), [])
 })
 
-test('deafwatch for every agent: the switch goes off and on again. The first sweep that may restart the agent uses the look of the last minute, never an old one frozen on its cleared record', async () => {
+test('deafwatch for every agent: the switch goes off and on again. Off, the supervisor goes at once and nothing restarts the agent; on again, the first sweep puts its supervisor back, never a restart on an old look frozen on its cleared record', async () => {
   const clock = fakeClock()
   const fs = deafMachine({ beaconAt: T0 - 20 * MIN })
   const rec = recorder({ ps: deafPs(T0 - 3 * 60 * MIN) })
@@ -3647,11 +3666,14 @@ test('deafwatch for every agent: the switch goes off and on again. The first swe
   assert.equal(kicks(rec), 0)
   // Its cleared record sat frozen all that time with the look of ten minutes ago.
   assert.equal(deafRecord(fs).deafSeenAt, new Date(T0).toISOString())
-  // The switch goes on again: this sweep restarts it, on the look it was watched with a minute ago.
+  // Switched off stays off (lib/agent-kept.mjs): its supervisor went at the first sweep with the switch off.
+  assert.equal(fs.files.has(`${HOME}/Library/LaunchAgents/ai.bgos.agent.912.plist`), false)
+  // The switch goes on again: the agent is kept, and this sweep installs its supervisor again. It is not
+  // restarted, on the frozen look or any other: what runs is left to the supervisor it gets back.
   answer = { enabled: true, enabledAt: 'e', assistantIds: [912] }
   const on = await sweepFor(ctx, clock, 1)
-  assert.equal(kicks(rec), 1, 'no second confirmation')
-  assert.deepEqual(on.agents.map((a: any) => [a.id, a.state, a.reason]), [['912', 'restarted', 'service']])
+  assert.equal(kicks(rec), 0)
+  assert.deepEqual(on.agents.map((a: any) => [a.id, a.state, a.reason]), [['912', 'installing', 'installed']])
 })
 
 test('deafwatch for every agent: after the switch goes off, a run of looks that ended stays ended. The frozen cleared record does not start it again', async () => {
@@ -3707,4 +3729,160 @@ test('deafwatch for every agent (F8): the state written BEFORE an act on a clear
   assert.equal(atKick.agents['912'].reason.startsWith('no-channel-heartbeat'), true, 'the act in flight is on disk')
   assert.equal(atKick.watched['913'].state, 'failed', 'and so is the watched finding')
   assert.equal(atKick.watched['913'].reason, NOT_KEPT)
+})
+
+// -- switched off stays off (lib/agent-kept.mjs, ruling 2026-11-22) ---------------------------------------
+//
+// The keep-alive read is where a supervisor stops existing for an agent that is not kept: the
+// computer's switch OFF removes every one at once; an agent off the list loses one that was ever seen
+// kept at once, and one never seen kept after its 15 minutes. Never by ending what runs: a Mac job is
+// left loaded with a run.sh that starts nothing, a Linux unit is disabled, deleted and reloaded, a
+// Windows task is unregistered with its launcher. No answer moves nothing.
+
+const PLIST = (id: string) => `${HOME}/Library/LaunchAgents/ai.bgos.agent.${id}.home-${HID}.plist`
+const UNIT_FILE = (id: string) => `${HOME}/.config/systemd/user/bgos-agent-${id}-home-${HID}.service`
+const RUN_SH = (id: string) => `${HOME}/.bgos-agent/${id}/run.sh`
+/** The installed-at text bin/bgos-agent writes (`date +%s`), `msAgo` before the sweep's clock. */
+const installedAt = (msAgo: number) => `${Math.floor((T0 - msAgo) / 1000)}\n`
+const SWITCH_OFF = (ids: number[] = [912]) => consent({ enabled: false, enabledAt: null, assistantIds: ids }).fetchKeepAlive
+const bootouts = (rec: ReturnType<typeof recorder>) => rec.calls.filter((c) => (c.file === 'launchctl' && c.args[0] === 'bootout') || (c.file === 'systemctl' && c.args.includes('stop')))
+
+test('switched off stays off (brief case 1): with the computer switch OFF and Always on ON, the Mac supervisor goes at this read; the job is not booted out (that would end the agent) and its run.sh now starts nothing', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical' }], { scoped: true })
+  fs.writeFile(RUN_SH('912'), '#!/usr/bin/env bash\nexec hoai-core\n')
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { fetchKeepAlive: SWITCH_OFF([912]) })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.equal(report.enabled, false)
+  assert.equal(fs.files.has(PLIST('912')), false, 'no login loads it again')
+  assert.doesNotMatch(fs.files.get(RUN_SH('912')) ?? '', /hoai-core/, 'the next relaunch starts nothing')
+  assert.match(fs.files.get(RUN_SH('912')) ?? '', /launchctl bootout/)
+  assert.deepEqual(bootouts(rec), [], 'nothing that runs is ended')
+  assert.deepEqual(rec.kills, [])
+  assert.ok(logs.some((l) => /keep-alive 912: supervisor removed \(switch_off\)/.test(l)), logs.join('\n'))
+})
+
+test('switched off stays off (round 2): a once-kept Linux agent switched off inside 15 minutes of its install is removed at once: disable, unit file deleted, daemon-reload, never a stop', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical' }], { platform: 'linux', scoped: true })
+  fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, installedAt(2 * MIN))
+  fs.writeFile(`${HOME}/.bgos-agent/912/kept-seen`, installedAt(2 * MIN))
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx } = ctxFor(fs, rec, fakeClock(), { platform: 'linux', fetchKeepAlive: SWITCH_OFF([912]) })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(fs.files.has(UNIT_FILE('912')), false)
+  assert.deepEqual(
+    rec.calls.filter((c) => c.file === 'systemctl' && !c.args.includes('show')).map((c) => c.args),
+    [['--user', 'disable', `bgos-agent-912-home-${HID}`], ['--user', 'daemon-reload']],
+  )
+  assert.deepEqual(bootouts(rec), [])
+})
+
+test('switched off stays off (brief case 5 and round 2): several agents on one computer, only the kept one keeps its supervisor; one never seen kept keeps its 15 minutes, one past them goes', async () => {
+  const fs = machine(
+    [
+      { id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.1' } },
+      { id: '913', cwd: GURU, service: 'canonical' },
+      { id: '914', cwd: `${HOME}/hoai-agents/nova`, service: 'canonical' },
+      { id: '915', cwd: `${HOME}/hoai-agents/zed`, service: 'none' },
+    ],
+    { scoped: true },
+  )
+  fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, installedAt(3 * MIN))
+  fs.writeFile(`${HOME}/.bgos-agent/913/installed-at`, installedAt(60 * MIN))
+  fs.writeFile(`${HOME}/.bgos-agent/914/installed-at`, installedAt(4 * MIN))
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx } = ctxFor(fs, rec, fakeClock(), { fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [912] }).fetchKeepAlive })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(fs.files.has(PLIST('912')), true, 'the kept agent keeps its supervisor (brief case 4)')
+  assert.equal(fs.files.get(`${HOME}/.bgos-agent/912/kept-seen`), installedAt(3 * MIN), 'and this install is now seen kept')
+  assert.equal(fs.files.has(PLIST('913')), false, 'not listed, past its 15 minutes: removed')
+  assert.equal(fs.files.has(PLIST('914')), true, 'not listed yet, never seen kept, 4 minutes old: left alone')
+  assert.equal(fs.files.has(`${HOME}/.bgos-agent/914/kept-seen`), false)
+  assert.deepEqual(bootouts(rec), [])
+})
+
+test('switched off stays off (brief case 3): on Windows the switch OFF unregisters the agent\'s logon task and removes its launcher; the running launcher is left alone', async () => {
+  const fs = windowsMachine({ [`${WSTATE}\\run-agent.vbs`]: 'Set shell = CreateObject("WScript.Shell")\r\n' })
+  const rec = recorder()
+  const ctx = windowsCtx(fs, rec, { fetchKeepAlive: SWITCH_OFF([912]) })
+  const tasks = rec.useTaskHost(fs)
+  tasks.seed.task(WTASK, `${WSTATE}\\run-agent.vbs`, { description: `HOAI agent 912, installed from home=${WHOME}`, running: true })
+  await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.calls.filter(acting).map((c) => [c.file, c.args[c.args.length - 1]]), [['powershell.exe', 'uninstall']])
+  assert.equal(tasks.tasks.has(WTASK), false, 'the task is gone')
+  assert.equal(tasks.instances.has(WTASK), true, 'what it runs now is not ended')
+  assert.equal(fs.files.has(`${WSTATE}\\run-agent.vbs`), false)
+  assert.ok(fs.files.has(`${WSTATE}\\not-kept`), 'its --keep-alive launcher sees both and relaunches nothing')
+  assert.deepEqual(rec.kills, [])
+})
+
+test('switched off stays off (round 2): a failed read moves nothing, even for a supervisor long past its grace; a never set switch keeps today\'s meaning (no act)', async () => {
+  for (const fetchKeepAlive of [
+    consent(null, false, 503).fetchKeepAlive,
+    consent({ enabled: false, enabledAt: null, assistantIds: [], switchState: 'never_set' }).fetchKeepAlive,
+  ]) {
+    const fs = machine([{ id: '913', cwd: GURU, service: 'canonical' }], { scoped: true })
+    fs.writeFile(`${HOME}/.bgos-agent/913/installed-at`, installedAt(60 * MIN))
+    const rec = recorder({ ps: IDLE_PS })
+    const { ctx } = ctxFor(fs, rec, fakeClock(), { fetchKeepAlive })
+    await runKeepAliveSweep(ctx as any)
+    assert.equal(fs.files.has(PLIST('913')), true)
+    assert.equal(fs.files.get(RUN_SH('913')) ?? null, null, 'run.sh untouched')
+  }
+})
+
+test('switched off stays off: a Windows task the sweep installs is stamped, so an install never seen kept has its 15 minutes there too; a removal\'s marker goes with it', async () => {
+  const fs = windowsMachine({ [`${WSTATE}\\not-kept`]: 'switch_off\n' })
+  const rec = recorder({ win32Task: 'absent' })
+  await runKeepAliveSweep(windowsCtx(fs, rec) as any)
+  assert.equal(fs.files.get(`${WSTATE}\\installed-at`), `${Math.floor(T0 / 1000)}\n`)
+  assert.equal(fs.files.has(`${WSTATE}\\not-kept`), false)
+})
+
+test('switched off stays off: only this HOME\'s canonical supervisor is ever removed; a job some other launcher installed for the agent is left exactly as it is', async () => {
+  const fs = machine([{ id: '913', cwd: GURU, service: 'none' }], { platform: 'linux' })
+  // The owner's own unit, in the agent's folder: found by the inventory (G11), never installed by HOAI.
+  const OWN_UNIT = `${HOME}/.config/systemd/user/my-guru.service`
+  fs.writeFile(OWN_UNIT, `[Service]\nWorkingDirectory=${GURU}\nExecStart=/usr/local/bin/claude\nRestart=always\n`)
+  const execSync = (file: string, args: string[]) =>
+    file === 'systemctl' && args.includes('list-units') ? { code: 0, stdout: 'my-guru.service loaded active running guru\n' } : { code: 1, stdout: '' }
+  const row = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: () => false, execSync, now: T0, uid: 501 } as any).find((r: any) => r.assistantId === '913')
+  assert.equal(row?.service?.file, OWN_UNIT, 'the scene: the agent is supervised by its owner\'s unit')
+  assert.notEqual(row?.service?.via, 'canonical-file')
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx } = ctxFor(fs, rec, fakeClock(), { platform: 'linux', execSync, fetchKeepAlive: SWITCH_OFF([913]) })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(fs.files.has(OWN_UNIT), true)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'systemctl' && !c.args.includes('show')), [])
+  assert.equal(fs.files.has(RUN_SH('913')), false)
+})
+
+test('switched off stays off: a removal that fails is said once and tried again after 10 minutes, not every minute', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical' }], { platform: 'linux', scoped: true })
+  const rec = recorder({ ps: IDLE_PS })
+  let refuse = true
+  const disables: number[] = []
+  const clock = fakeClock()
+  const exec = async (file: string, args: string[], opts?: unknown) => {
+    if (file === 'systemctl' && args[1] === 'disable') {
+      disables.push(clock.now())
+      if (refuse) return { code: 1, stdout: '', stderr: 'Failed to disable unit: Access denied', error: null, timedOut: false }
+    }
+    return rec.exec(file, args, opts as any)
+  }
+  const { ctx, logs } = ctxFor(fs, rec, clock, { platform: 'linux', exec, fetchKeepAlive: SWITCH_OFF([912]) })
+  await runKeepAliveSweep(ctx as any)
+  clock.advance(MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(disables.length, 1, 'not again a minute later')
+  clock.advance(10 * MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(disables.length, 2, 'again after 10 minutes')
+  assert.equal(fs.files.has(UNIT_FILE('912')), true, 'nothing removed while the disable fails')
+  assert.equal(linesFor(logs, '912').filter((l) => /supervisor not removed/.test(l)).length, 1, logs.join('\n'))
+  refuse = false
+  clock.advance(10 * MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(fs.files.has(UNIT_FILE('912')), false)
+  assert.ok(linesFor(logs, '912').some((l) => /supervisor removed \(switch_off\)/.test(l)))
 })

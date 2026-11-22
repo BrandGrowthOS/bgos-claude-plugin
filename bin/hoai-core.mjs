@@ -135,6 +135,7 @@ import {
   writePrivateText,
 } from '../lib/agent-identity.mjs'
 import { PROBE_TIMEOUT_MS, classifyFlagProbe } from '../lib/claude-binary.mjs'
+import { launchSupervisorGone } from '../lib/agent-kept.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -2984,6 +2985,22 @@ export async function superviseClaude(args, opts = {}) {
     )
   }
   if (supervised) supervisedStateDir = stateDir
+  // Switched off stays off (lib/agent-kept.mjs): a supervisor removed because this agent is no longer
+  // kept running left what ran alone. What it started must not bring the agent back: a launch it made
+  // after that (a run.sh that was waiting, a task launcher between two relaunches) starts nothing.
+  const supervisorGone = () => launchSupervisorGone({ platform, supervised, keepAlive, stateDir, exists, readFile })
+  const stopNotKept = (why) => {
+    noteStatus('not-kept', { supervisor: why })
+    print(
+      `[hoai] agent ${id} is not kept running (Keep agents running is off for this computer, or Always on is off ` +
+        'for this agent), and its supervisor was removed: not starting it. Turn it back on to have it kept running.',
+    )
+    return 0
+  }
+  {
+    const gone = supervisorGone()
+    if (gone) return stopNotKept(gone)
+  }
   // Nobody at the terminal: the launches noteStatus reports on, and the only ones hoai relaunches
   // for a gate that is not proven answered or a channel that never sent a heartbeat (board row
   // d806c69f). A person at the terminal sees the screen and is never relaunched under.
@@ -3876,6 +3893,11 @@ export async function superviseClaude(args, opts = {}) {
       )
       await sleep(backoff.delayMs)
       if (stopSignal?.aborted) return code
+      // Its task went while claude ran or while this waited: no relaunch (lib/agent-kept.mjs).
+      {
+        const gone = supervisorGone()
+        if (gone) return stopNotKept(gone)
+      }
       // The channel is re-resolved, and the session args are the identity-safe
       // pair: --resume <pin> when its transcript exists, else --session-id <pin>.
       rereadPin()
