@@ -350,13 +350,14 @@ test('the owner CLI refuses an agent folder that is the home folder, and writes 
 })
 
 // A `~` the shell did not expand (quoted, or passed by a program) is a folder named `~` under
-// wherever the command runs, and `on` would create it there. Refused, by every verb.
+// wherever the command runs, and `on` would create it there. Refused, by every verb, and so is
+// `~name`, another person's home in a shell, which is no more expanded here.
 test('the owner CLI refuses a folder with a ~ the shell did not expand, and creates nothing', () => {
   const state = tmp()
   const config = tmp()
   const here = tmp()
   const env = isolatedEnv({ BGOS_PLUGIN_STATE_DIR: state, CLAUDE_CONFIG_DIR: config })
-  for (const raw of ['~', '~/agent-42', '~\\agent-42']) {
+  for (const raw of ['~', '~/agent-42', '~\\agent-42', '~bob', '~bob/agent-42', '~bob\\agent-42']) {
     for (const verb of ['on', 'off', 'status']) {
       const run = spawnSync(process.execPath, [CLI, verb, '--assistant', '42', '--folder', raw], { env, cwd: here, encoding: 'utf8' })
       assert.notEqual(run.status, 0, `${verb} ${raw}`)

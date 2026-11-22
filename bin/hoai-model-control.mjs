@@ -53,10 +53,11 @@ if (!['on', 'off', 'status'].includes(verb ?? '') || !assistantId || !/^[A-Za-z0
   process.exit(2)
 }
 
-// A `~` the shell did not turn into the home folder (quoted, or passed on by a program) would be a
-// folder named `~` under wherever this runs, and `on` would create it there.
+// A `~` the shell did not turn into a home folder (quoted, or passed on by a program), alone, as
+// `~/...` or as `~name`, would be a folder named so under wherever this runs, and `on` would create
+// it there. Any folder that starts with `~` is refused.
 const folderArg = flag('--folder')
-if (folderArg !== undefined && /^~(?:[\\/]|$)/.test(folderArg)) {
+if (folderArg !== undefined && folderArg.startsWith('~')) {
   console.error(
     `The folder ${folderArg} starts with ~, which was not turned into your home folder. ` +
       'Give the full path, for example --folder "$HOME/my-agent". Nothing was changed.',
