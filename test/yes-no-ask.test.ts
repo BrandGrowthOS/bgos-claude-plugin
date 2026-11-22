@@ -14,9 +14,11 @@
  *  - the shorthand never guesses: without `yes_no: true` a reply is a reply,
  *    whatever its text says;
  *  - the card is for the agent's own chat with its owner only: in a group
- *    or a channel anyone could tap the answer, a meeting takes
+ *    or a channel reply buttons name who tapped, a meeting takes
  *    text only and a side thread is read by another agent, so yes_no is
- *    refused there, with nothing posted and one plain sentence; a session that
+ *    refused there, with nothing posted and one plain sentence; so is any chat
+ *    this connection has not proven the owner's own, before the chats load
+ *    included, with a sentence that never says it is not; a session that
  *    does not hold the connection is refused with a sentence of its own
  *    that a reply can act on, never the card's "leave wait_seconds out";
  *  - those are behaviour tests of routeYesNoReply, the dispatcher's one door,
@@ -232,7 +234,7 @@ test("a share recipient's own main chat is refused, nothing posted, with the own
   assert.deepEqual(routeYesNoReply(yesNoReply('43'), facts()), { refusal: YES_NO_REFUSED.not_own_chat })
   assert.equal(
     YES_NO_REFUSED.not_own_chat,
-    'Error: nothing was posted, because yes_no is only for your own chat with your owner, so ask with reply buttons here instead.',
+    "Error: nothing was posted, because yes_no is only for a chat this connection has proven is your owner's own, so ask with reply buttons here instead.",
   )
   assertOneSentence(YES_NO_REFUSED.not_own_chat)
 })
@@ -247,11 +249,29 @@ test('a chat in no record (an email chat, a room or a channel with no kind mark)
   assert.deepEqual(routeYesNoReply(yesNoReply('801'), facts(true, ['42'])), { refusal: YES_NO_REFUSED.not_own_chat })
 })
 
+test('before the chats load (no main chat yet) yes_no is refused, nothing posted, with the proven chat sentence', () => {
+  for (const chatId of ['42', '44', '801']) {
+    assert.deepEqual(routeYesNoReply(yesNoReply(chatId), facts(true, [])), { refusal: YES_NO_REFUSED.not_own_chat })
+  }
+  // A false refusal there (or in a brand new chat) never claims the chat is not the owner's:
+  // it says the connection has not proven it yet.
+  assert.match(YES_NO_REFUSED.not_own_chat, /a chat this connection has proven is your owner's own/)
+  assert.doesNotMatch(YES_NO_REFUSED.not_own_chat, /not your owner|not the owner/)
+})
+
+test('no refusal says who could tap where', () => {
+  for (const refusal of [...Object.values(YES_NO_REFUSED), YES_NO_PASSIVE_REFUSAL]) {
+    assert.doesNotMatch(refusal, /anyone|any member|could tap/)
+  }
+})
+
 test('in a group or a channel yes_no is refused, nothing posted, and the sentence names reply buttons', () => {
   assert.deepEqual(routeYesNoReply(yesNoReply('501'), facts()), { refusal: YES_NO_REFUSED.group })
   assertOneSentence(YES_NO_REFUSED.group)
-  assert.match(YES_NO_REFUSED.group, /your own chat with your owner/)
-  assert.match(YES_NO_REFUSED.group, /reply buttons/)
+  assert.equal(
+    YES_NO_REFUSED.group,
+    'Error: nothing was posted, because yes_no is only for your own chat with your owner, and reply buttons there name who tapped, so ask with reply buttons there instead.',
+  )
 })
 
 test('in a meeting yes_no is refused, nothing posted, whichever record knows the meeting', () => {

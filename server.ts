@@ -7090,8 +7090,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   // Yes and No (lib/yes-no-ask.ts): the call is turned into that call here, so
   // it takes the card's own path and answer event and nothing else. Refused
   // before anything is posted when it cannot be one plain card, from a session
-  // that does not hold the connection, and anywhere but the agent's own chat
-  // with its owner (a group or channel, a meeting, a peer side thread). Asked
+  // that does not hold the connection, and anywhere but the owner's own main
+  // chat (a group or channel, a meeting, a peer side thread, any other). Asked
   // only for a reply: routeYesNoReply leaves every other tool as it came, and
   // the harnesses that lift this admission code for other tools never reach it.
   if (req.params.name === 'reply') {

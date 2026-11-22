@@ -132,17 +132,19 @@ export function yesNoRefusedKind(chatId: string, records: YesNoChatRecords): Yes
 /** One plain sentence back to the agent for each refused kind; nothing was posted. */
 export const YES_NO_REFUSED: Readonly<Record<YesNoRefusedKind, string>> = {
   group:
-    'Error: nothing was posted, because yes_no is only for your own chat with your owner and in a group ' +
-    'or a channel anyone could tap the answer, so ask with reply buttons there instead.',
+    'Error: nothing was posted, because yes_no is only for your own chat with your owner, and reply ' +
+    'buttons there name who tapped, so ask with reply buttons there instead.',
   meeting:
     'Error: nothing was posted, because yes_no is only for your own chat with your owner and a meeting ' +
     'takes text only, so ask the question in words there instead.',
   side_thread:
     'Error: nothing was posted, because yes_no is only for your own chat with your owner and a side ' +
     'thread is read by another agent, so ask in words there instead.',
+  // Never "not your owner's": after a restart, before the chats load, or in a
+  // brand new chat, the owner's own chat is refused until it is proven.
   not_own_chat:
-    'Error: nothing was posted, because yes_no is only for your own chat with your owner, so ask with ' +
-    'reply buttons here instead.',
+    "Error: nothing was posted, because yes_no is only for a chat this connection has proven is your " +
+    "owner's own, so ask with reply buttons here instead.",
 }
 
 /** A session that does not hold the agent's connection never hears the tap. */
@@ -153,7 +155,7 @@ export const YES_NO_PASSIVE_REFUSAL =
 export interface YesNoRouteFacts {
   /** This daemon holds the agent's connection, so a card's answer comes back here. */
   connected: boolean
-  /** The refused kind of the chat a chat_id names, or null; an unknown chat is left to the card's own check. */
+  /** The refused kind of the chat a chat_id names, or null in the owner's own main chat; an unknown chat is refused. */
   refusedKind: (chatId: unknown) => YesNoRefusedKind | null
 }
 
