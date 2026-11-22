@@ -34,7 +34,7 @@ import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
 const HOME = '/home/person'
-const USER = 'kc'
+const USER = 'person'
 const TOKEN = 'bgp_' + 'S3cretPairingTokenValue0123456789'
 const CONFIG = '/home/person/.claude'
 const ROOT = `${CONFIG}/plugins/cache/hoai/hoai/0.38.4`
@@ -1313,6 +1313,47 @@ test("F1: the owner's Restart reads the same proof: the reused pid is not A's cl
   const run = rig(fs, backend, fakeClock(), REUSED_PS, { alive: [5300, 5301] })
   await runWatcher(run.deps as any)
   assert.match(JSON.stringify(backend.progress('rst-1')), /claude none/, 'nothing proven as 912\'s claude')
+  assert.equal(run.kills.some(([pid]) => pid === 5300), false, JSON.stringify(run.kills))
+})
+
+// M1: A's daemon pid, by its pairing lock, is held now by another agent's process. A crashed; its lock
+// was stamped 30 s ago and names daemon 4912, which is still "fresh". Windows hands a pid out again
+// within seconds: 4912 is now a process under agent B's claude 5300, started after that stamp. The
+// daemon route is held to the same start rule as the state's own claude pid: nothing is proven as A's
+// claude, and the owner's Restart signals nothing.
+test("M1: a daemon pid a later process of another agent holds proves nothing: the owner's Restart signals nothing", async () => {
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState({ claudePid: 5912, updatedAt: new Date(T0 - 2 * 24 * 60 * MIN).toISOString() }),
+    [`${HOME}/.bgos-agent/credentials-912.json.lock`]: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 30_000 }),
+  })
+  writeTranscript(fs, [assistantTurn(T0 - 20 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
+  const later = 'Wed Aug 26 12:00:00 2026'
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(5300, 1, `claude --resume ${B_SID}`, later), psLine(4912, 5300, `node ${ROOT}/server.ts`, later)].join('\n')
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, fakeClock(), ps, { alive: [5300, 4912] })
+  await runWatcher(run.deps as any)
+  assert.match(JSON.stringify(backend.progress('rst-1')), /claude none/, "nothing proven as 912's claude")
+  assert.equal(run.kills.some(([pid]) => pid === 5300 || pid === 4912), false, JSON.stringify(run.kills))
+})
+
+// M3: a start time that cannot be read proves nothing. A's stale state names claude 5300; the claude
+// holding 5300 has a start this watcher cannot read. The start rule refuses it (fails closed) instead of
+// skipping the check: nothing proven, claudeAlive null, no signal.
+test('M3: an unreadable start time proves nothing: no claude of A, claudeAlive null, no signal', async () => {
+  const fs = reusedPidFs()
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(5300, 1, `claude --resume ${B_SID}`, 'Tue Okt 25 08:00:00 2026'), psLine(5301, 5300, `node ${ROOT}/server.ts`)].join('\n')
+  const live = new Set([5300, 5301])
+  const pidAlive = (pid: number) => live.has(pid)
+  const row = listAgents({ home: HOME, env: { USER }, platform: 'linux', fs: fs as any, pidAlive, execSync: () => ({ code: 1, stdout: '' }), now: T0, uid: 501 }).find((a: any) => a.assistantId === '912')
+  assert.ok(row, '912 is listed')
+  const exec = async (file: string) => (file === 'ps' ? { code: 0, stdout: `${ps}\n`, stderr: '', error: null, timedOut: false } : { code: 1, stdout: '', stderr: '', error: null, timedOut: false })
+  const seen = await observeAgentForCheckup({ row, install: { configDir: CONFIG } as any, home: HOME, env: { USER }, platform: 'linux', fs, exec, now: T0, pidAlive, uid: 501 })
+  assert.deepEqual(seen.claudes, [], "nothing proven as A's claude")
+  assert.equal(seen.observation.claudeAlive, null)
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, fakeClock(), ps, { alive: [5300, 5301] })
+  await runWatcher(run.deps as any)
+  assert.match(JSON.stringify(backend.progress('rst-1')), /claude none/)
   assert.equal(run.kills.some(([pid]) => pid === 5300), false, JSON.stringify(run.kills))
 })
 
