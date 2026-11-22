@@ -362,7 +362,13 @@ import {
   type AskRow,
   type PendingAsk,
 } from './lib/ask-tracker.ts'
-import { REPLY_YES_NO_SHORTHAND, YES_NO_RULE, replyYesNoAsk } from './lib/yes-no-ask.ts'
+import {
+  REPLY_YES_NO_SHORTHAND,
+  YES_NO_RULE,
+  routeYesNoReply,
+  yesNoRefusedKind,
+  type YesNoRefusedKind,
+} from './lib/yes-no-ask.ts'
 import { retiredOwnNotes, tellRetiredOwnOnTick } from './lib/ask-retired-tell.ts'
 import {
   StopPauseLane,
@@ -3820,7 +3826,7 @@ const mcp = new Server(
       'Any message asking your owner 2 or more decisions is ONE ask_user_input card (up to 4 questions), online or not. A reply with buttons asks exactly one thing. The card returns at once as pending: end your turn and do nothing that depends on the answers; they arrive together as one ask_answered event, however late. Use wait_seconds only if your owner wrote in the last few minutes and you cannot continue without the answer.',
       'The pending return above needs wait_seconds: 0; to wait for the answers, pass wait_seconds from 1 to 600. A call with neither wait_seconds nor timeout_seconds keeps its old behaviour: it waits up to 600 s and returns the answers, or pending if they do not all come in time.',
       '',
-      'A question your owner answers yes or no always goes through ask_user_input as one question with two options, Yes and No (or two short words of your own), with the values yes and no, never as a question in plain text: the app draws it as two buttons to tap.',
+      'In your own chat with your owner, a question your owner answers yes or no, except a dangerous command, which stays on the approval, always goes through ask_user_input as one question with two options, Yes and No (or two short words of your own), with the values yes and no, never as a question in plain text: the app draws it as two buttons to tap. In a group or a channel, ask with reply buttons instead.',
       'From reply, yes_no: true with the question as text sends exactly that card and returns as ask_user_input does with wait_seconds 0.',
       '',
       'The BGOS app shows the card as a sheet over the chat with numbered',
@@ -5383,8 +5389,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               'true: send `text` as a yes or no question card instead of a message: one ask_user_input ' +
               'question with the options Yes and No (values yes and no), which the app draws as two buttons. ' +
               'It returns as ask_user_input does with wait_seconds 0 (pending, with an ask_id) and the tap ' +
-              'arrives as one ask_answered event. Not with files, buttons or reply_to_id. For two words of ' +
-              'your own on the buttons, call ask_user_input with the values yes and no.',
+              'arrives as one ask_answered event. Only in your own chat with your owner: refused, with ' +
+              'nothing posted, in a group or a channel (use buttons there), a meeting or a side thread. Not ' +
+              'with files, buttons or reply_to_id. For two words of your own on the buttons, call ' +
+              'ask_user_input with the values yes and no.',
           },
         },
         required: ['chat_id'],
@@ -7081,12 +7089,18 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   // A reply with yes_no: true IS an ask_user_input card of one question with
   // Yes and No (lib/yes-no-ask.ts): the call is turned into that call here, so
   // it takes the card's own path and answer event and nothing else. Refused
-  // before anything is posted when it cannot be one plain card.
-  const yesNoAsk = req.params.name === 'reply' ? replyYesNoAsk(req.params.arguments as Record<string, unknown> | undefined) : null
-  if (yesNoAsk && 'error' in yesNoAsk) {
-    return Promise.resolve({ content: [{ type: 'text' as const, text: yesNoAsk.error }], isError: true })
+  // before anything is posted when it cannot be one plain card, from a session
+  // that does not hold the connection, and anywhere but the agent's own chat
+  // with its owner (a group or channel, a meeting, a peer side thread). Asked
+  // only for a reply: routeYesNoReply leaves every other tool as it came, and
+  // the harnesses that lift this admission code for other tools never reach it.
+  if (req.params.name === 'reply') {
+    const yesNo = routeYesNoReply(req.params, { connected: lockHeld, refusedKind: yesNoRefusedKindOf })
+    if ('refusal' in yesNo) {
+      return Promise.resolve({ content: [{ type: 'text' as const, text: yesNo.refusal }], isError: true })
+    }
+    req.params = yesNo.params
   }
-  if (yesNoAsk) req.params = { ...req.params, name: 'ask_user_input', arguments: yesNoAsk.args as unknown as Record<string, unknown> }
   return trackMessageOperation(async () => {
   const rawArgs = req.params.arguments as Record<string, unknown>
 
@@ -12373,6 +12387,25 @@ function resolveAuthorizedChat(rawChatId: string):
       isError: true as const,
     },
   }
+}
+
+/**
+ * The kind of chat a reply's chat_id names, when a yes or no card is refused
+ * there (lib/yes-no-ask.ts yesNoRefusedKind), from this daemon's own records.
+ * Only a chat this daemon knows is resolved, so resolveAuthorizedChat never
+ * logs a refusal here; an unknown chat goes on to the card's own check, which
+ * refuses it and logs it once.
+ */
+function yesNoRefusedKindOf(rawChatId: unknown): YesNoRefusedKind | null {
+  const raw = String(rawChatId ?? '')
+  if (!monitoredChatSet.has(raw) && !knownSessionHandles.has(raw)) return null
+  const auth = resolveAuthorizedChat(raw)
+  if (!auth.ok) return null
+  return yesNoRefusedKind(String(auth.chatId), {
+    groups: [groupChatIds],
+    meetings: [meetingIdByChatId, meetingChatIds],
+    sideThreads: [peerSideThreadChats, peerConvByChat, closedPeerChats, peerReplyRefusedChats, a2aRouteRefusedChats],
+  })
 }
 
 async function discoverChats(): Promise<void> {
