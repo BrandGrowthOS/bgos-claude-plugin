@@ -658,6 +658,74 @@ test('board row 23415823, round 2: the same records with the pairing moved to an
   assert.equal(restartRequested(fs), false)
 })
 
+// Lone repair, owner switched off (Data, 22 Nov). The app marks a check up it starts with nobody pressing
+// (`alone`); the watcher asks the server's keep-alive list itself and never starts or restarts an agent not on it.
+const keptList = (ids: string[]) => ({ enabled: true, enabledAt: '2026-08-25T00:00:00.000Z', assistantIds: ids, switchState: 'on', showAgentWindows: false })
+const switchOff = { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false }
+function aloneCheckup(keepAlive: any, alone: unknown = true) {
+  const job = checkupJob()
+  job.jobs['chk-1'] = { ...job.jobs['chk-1'], ...(alone === null ? {} : { alone }) }
+  return fakeBackend({ ...job, ...(keepAlive === undefined ? {} : { keepAlive }) })
+}
+async function stoppedAgentCheckup(backend: ReturnType<typeof fakeBackend>) {
+  const fs = agentFs({ [`${STATE_DIR}/supervisor.json`]: '' })
+  writeTranscript(fs, [ownerMessage(T0 - 50 * MIN), assistantTurn(T0 - 49 * MIN)], T0 - 49 * MIN)
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, psLine(1, 0, '/sbin/init'))
+  await runWatcher(run.deps as any)
+  return { run, terminal: terminalOf(backend), fs }
+}
+function assertHeldNotKept(out: Awaited<ReturnType<typeof stoppedAgentCheckup>>, backend: ReturnType<typeof fakeBackend>, label: string) {
+  assert.deepEqual(out.terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['dead_session', 'start_agent', 'not_fixed']], label)
+  assert.match(JSON.stringify(backend.progress('chk-1')), /not_kept_running: its owner switched it off/, label)
+  assert.deepEqual(out.run.spawns, [], `${label}: nothing started`)
+  assert.equal(restartRequested(out.fs), false, label)
+  assert.ok(backend.calls.some((c) => c.method === 'GET' && c.path.endsWith('/integrations/watchers/keep-alive')), `${label}: the server's own list was asked`)
+}
+
+test('alone, Always on off (the switch on, another agent kept): the stopped agent is not started, and the check up says why', async () => {
+  const backend = aloneCheckup(keptList(['913']))
+  assertHeldNotKept(await stoppedAgentCheckup(backend), backend, 'always on off')
+})
+
+test("alone, the computer's keep-alive switch off: the stopped agent is not started, and the check up says why", async () => {
+  const backend = aloneCheckup(switchOff)
+  assertHeldNotKept(await stoppedAgentCheckup(backend), backend, 'switch off')
+})
+
+test('alone, with no keep-alive answer and no cache: nobody is known kept, so nothing is started', async () => {
+  const backend = aloneCheckup(undefined)
+  assertHeldNotKept(await stoppedAgentCheckup(backend), backend, 'no answer')
+})
+
+test('alone, a kept agent stopped past 15 minutes IS started (the guard is not vacuous), as a step check up too', async () => {
+  for (const alone of [true, 'step']) {
+    const backend = aloneCheckup(keptList(['912']), alone)
+    const out = await stoppedAgentCheckup(backend)
+    assert.deepEqual(out.terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['dead_session', 'start_agent', 'fixed']], String(alone))
+    assert.equal(out.run.spawns.length, 1, String(alone))
+  }
+})
+
+test('several agents on one computer, alone: only the kept one is started', async () => {
+  // The same computer's list, read two ways: 913 kept and 912 not, then 912 kept and 913 not.
+  const notKept = aloneCheckup(keptList(['913']))
+  assertHeldNotKept(await stoppedAgentCheckup(notKept), notKept, '912 not kept')
+  const kept = aloneCheckup(keptList(['912']))
+  const out = await stoppedAgentCheckup(kept)
+  assert.deepEqual(out.terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['dead_session', 'start_agent', 'fixed']])
+  assert.equal(out.run.spawns.length, 1)
+})
+
+test("the owner's own press (no alone mark) still starts an agent nobody keeps running, and asks no list", async () => {
+  const backend = aloneCheckup(switchOff, null)
+  const out = await stoppedAgentCheckup(backend)
+  assert.deepEqual(out.terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]), [['dead_session', 'start_agent', 'fixed']])
+  assert.equal(out.run.spawns.length, 1)
+  assert.equal(backend.calls.some((c) => c.method === 'GET' && c.path.endsWith('/integrations/watchers/keep-alive')), false)
+})
+
 test('the op checkup is a checkup too', async () => {
   const fs = agentFs()
   const backend = fakeBackend({ frames: [{ rpcId: 'chk-1', op: 'checkup' }], jobs: { 'chk-1': { op: 'checkup', targets: [] } } })

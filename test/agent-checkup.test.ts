@@ -569,6 +569,25 @@ test('never a restart or a start for C9: even when every other gate is open', ()
 // P3 (brief decision): the connector is not the model. Restarting a dead daemon needs no login and
 // no quota, and the daemon is what carries the login or limit report, so C3 is fixed in the same pass
 // that reports C8 or C9. Nothing else is restarted or started for them.
+// Lone repair, owner switched off (Data, 22 Nov): a check up the Helper started with nobody pressing never starts or
+// restarts an agent its computer does not keep running. Each shape plans its start or restart when kept (or pressed).
+test('a check up the Helper started alone never starts or restarts an agent nobody keeps running: held, with the reason', () => {
+  for (const over of [
+    { claudeAlive: false, daemonAlive: false },
+    { daemonAlive: false },
+    { runningVersion: '0.73.0', installedVersion: '0.74.0' },
+    { daemonAlive: false, transcriptError: { kind: 'authentication_failed', resetAt: null } },
+  ]) {
+    assert.equal(plannedRestart(checkupPass(obs(over)).actions), true, `kept or pressed: planned ${JSON.stringify(over)}`)
+    const held = checkupPass(obs({ ...over, notKeptAlone: true }))
+    assert.equal(plannedRestart(held.actions), false, JSON.stringify(over))
+    const mutating = held.actions.filter((a: any) => MUTATING.has(a.action))
+    assert.equal(mutating.length, 1, `the fix is found and held, not missed: ${JSON.stringify(over)}`)
+    assert.equal(mutating[0].reason, 'not_kept_running')
+    assert.equal(mutating[0].outcome, 'skipped')
+  }
+})
+
 test('C3 under C8 or C9: the dead connector is restarted and verified, the login or limit still reported first', () => {
   for (const [kind, code] of [['authentication_failed', 'login_expired'], ['rate_limit', 'usage_limit']] as const) {
     for (const over of [{ daemonAlive: false }, { beaconHeartbeatAtMs: NOW - 10 * MIN }]) {
