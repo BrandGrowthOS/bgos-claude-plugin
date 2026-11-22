@@ -5,6 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { createHelperAccounts } from '../lib/helper-accounts.mjs'
+import { accountTokenFrom } from '../lib/claude-account-id.mjs'
+
+/** The fake Claude account a status read names, as lib/claude-account-id.mjs tokens it. */
+const accountToken = (seed: string) => accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: `acct-${seed}` }))!
 
 const now = Date.UTC(2026, 10, 19, 12)
 const usage = (short: number, week: number, model: number) => ({
@@ -32,6 +36,8 @@ function fixture(t: any) {
     model: 'opus',
   }
   let returns = true
+  // The agent's own login (no saved one): the account a status read of its launch folder names.
+  const own = { read: true, account: accountToken('own') as string | null }
   const atLimit: boolean[] = []
   const holds = { count: 0 }
   const deps = {
@@ -40,6 +46,7 @@ function fixture(t: any) {
     now: () => now,
     inventory: async () => [row],
     measure: async (account: any) => readings.get(account.id) ?? { signedIn: false, usage: null },
+    ownAccount: async () => ({ ...own }),
     restart: async (r: any, choice: string | null, opts: any = {}) => {
       if (holds.count > 0) {
         holds.count--
@@ -69,8 +76,9 @@ function fixture(t: any) {
   }
   const assign = (mode: string, id?: string, assistantId?: number) =>
     job({ action: 'assign', mode, ...(id ? { accountId: id } : {}), ...(assistantId ? { assistantId } : {}) })
-  const sign = (id: string, short: number, week: number, model: number) =>
-    readings.set(id, { signedIn: true, usage: usage(short, week, model) })
+  // Each saved login is signed in to its own Claude account unless a test says otherwise.
+  const sign = (id: string, short: number, week: number, model: number, account = accountToken(id)) =>
+    readings.set(id, { signedIn: true, usage: usage(short, week, model), account })
   return {
     watcher,
     deps,
@@ -80,6 +88,7 @@ function fixture(t: any) {
     row,
     sign,
     readings,
+    own,
     restarts,
     atLimit,
     holds,
@@ -202,6 +211,138 @@ test('a switch at limit that is not safe yet waits and is tried again for the sa
   assert.equal((await agentOf(f)).status, 'waiting_for_turn')
   await f.watcher.tick()
   assert.deepEqual(f.restarts.map((r: any) => r.choice), [b])
+})
+
+// -- rule A: a switch at the limit moves only to ANOTHER Claude account; rule C: a status read that
+// fails or times out switches nothing and the rule waits ------------------------------------------------
+
+test('rule A: Switch at limit never moves to a saved login on the same Claude account; it waits, and moves once that login is another account', async (t) => {
+  const f = fixture(t)
+  const a = await f.add('Work'),
+    b = await f.add('Work again')
+  f.sign(a, 1, 1, 1, accountToken('same'))
+  f.sign(b, 1, 1, 1, accountToken('same'))
+  f.row.accountId = a
+  await f.assign('limit', b, 41)
+  f.row.limit = limitAt(now - 1000)
+  await f.watcher.tick()
+  assert.equal(f.restarts.length, 0, 'the same account again is no way out of its limit')
+  assert.deepEqual(await agentOf(f), { assistantId: 41, accountId: a, status: 'waiting_for_room', rule: { mode: 'limit', accountId: b } })
+  f.sign(b, 1, 1, 1, accountToken('other'))
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [b])
+})
+
+test('rule A: Auto at the limit skips a saved login on the same account as the limited one, even with the most room', async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B'),
+    twin = await f.add('Twin')
+  f.sign(a, 1, 1, 1, accountToken('a'))
+  f.sign(b, 1, 1, 1, accountToken('b'))
+  f.sign(twin, 1, 1, 1, accountToken('a'))
+  f.week(a, 90)
+  f.week(b, 60)
+  f.week(twin, 5)
+  f.row.accountId = a
+  f.row.limit = limitAt(now - 1000)
+  await f.assign('auto', undefined, 41)
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [b])
+})
+
+test('rule A: an agent on its own login moves at its limit only to a saved login on another account', async (t) => {
+  const f = fixture(t)
+  const mine = await f.add('Mine'),
+    other = await f.add('Other')
+  f.sign(mine, 1, 1, 1, accountToken('own'))
+  f.sign(other, 1, 1, 1)
+  await f.assign('limit', mine, 41)
+  f.row.limit = limitAt(now - 1000)
+  await f.watcher.tick()
+  assert.equal(f.restarts.length, 0, 'its own account under another folder name')
+  await f.job({ action: 'clear', assistantId: 41 })
+  await f.assign('limit', other, 41)
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [other])
+})
+
+test('rule A: the account at the limit is the one read AT it; the own login signed in elsewhere later never makes the limited account look new', async (t) => {
+  const f = fixture(t)
+  const twin = await f.add('Twin')
+  f.sign(twin, 1, 1, 1, accountToken('own'))
+  await f.assign('limit', twin, 41)
+  f.row.limit = limitAt(now - 1000)
+  await f.watcher.tick()
+  assert.equal(f.restarts.length, 0, 'the twin is the limited account under another folder')
+  // The owner signs the agent's own folder into another account; the running agent is still limited.
+  f.own.account = accountToken('later')
+  await f.watcher.tick()
+  assert.equal(f.restarts.length, 0, 'still the account it hit the limit on: no switch onto it')
+  // The account token stays on this computer: the heartbeat snapshot carries none.
+  for (const account of (await f.watcher.snapshot()).accounts) {
+    assert.equal('account' in account, false)
+    assert.equal('readFailed' in account, false)
+  }
+})
+
+test('rule A: a first read later than 15 minutes after the limit cannot say which account hit it: nothing switches', async (t) => {
+  const f = fixture(t)
+  const other = await f.add('Other')
+  f.sign(other, 1, 1, 1)
+  await f.assign('limit', other, 41)
+  f.row.limit = limitAt(now - 20 * 60_000)
+  await f.watcher.tick()
+  assert.equal(f.restarts.length, 0)
+  const agent = (await f.watcher.snapshot()).agents.find((x: any) => x.assistantId === 41)
+  assert.deepEqual([agent.status, agent.rule], ['waiting_for_room', { mode: 'limit', accountId: other }])
+})
+
+test('rule C: a status read of the saved login that fails or times out at the limit switches nothing and keeps the rule', async (t) => {
+  for (const failure of ['rejects', 'readFailed']) {
+    const f = fixture(t)
+    const a = await f.add('A'),
+      b = await f.add('B')
+    f.sign(a, 1, 1, 1)
+    f.sign(b, 1, 1, 1)
+    f.row.accountId = a
+    await f.assign('limit', b, 41)
+    const good = f.readings.get(b)
+    const measure = f.deps.measure
+    f.deps.measure = async (account: any) => {
+      if (account.id !== b || f.readings.get(b) === good) return measure(account)
+      if (failure === 'rejects') throw new Error('claude auth status timed out')
+      return { readFailed: true, signedIn: false, usage: null }
+    }
+    const watcher = createHelperAccounts(f.deps)
+    f.readings.set(b, { ...good })
+    f.row.limit = limitAt(now - 1000)
+    await watcher.tick()
+    assert.equal(f.restarts.length, 0, failure)
+    const agent = (await watcher.snapshot()).agents.find((x: any) => x.assistantId === 41)
+    assert.deepEqual([agent.status, agent.rule], ['waiting_for_room', { mode: 'limit', accountId: b }], `${failure}: the rule waits, never needs_sign_in`)
+    f.readings.set(b, good)
+    await watcher.tick()
+    assert.deepEqual(f.restarts.map((r: any) => r.choice), [b], `${failure}: the next read that lands switches`)
+  }
+})
+
+test("rule C: the limited login's own account cannot be read: nothing switches, Switch at limit and Auto both wait", async (t) => {
+  for (const mode of ['limit', 'auto']) {
+    const f = fixture(t)
+    const b = await f.add('B')
+    f.sign(b, 1, 1, 1)
+    f.own.read = false
+    f.own.account = null
+    f.row.limit = limitAt(now - 1000)
+    await f.assign(mode, mode === 'limit' ? b : undefined, 41)
+    await f.watcher.tick()
+    assert.equal(f.restarts.length, 0, mode)
+    assert.equal((await agentOf(f)).status, 'waiting_for_room', mode)
+    f.own.read = true
+    f.own.account = accountToken('own')
+    await f.watcher.tick()
+    assert.deepEqual(f.restarts.map((r: any) => r.choice), [b], mode)
+  }
 })
 
 test('Turn Auto off clears the rule; the timings are refused where they make no sense', async (t) => {

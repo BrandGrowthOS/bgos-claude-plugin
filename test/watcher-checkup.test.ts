@@ -32,6 +32,7 @@ import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
 import { CHANNEL_CORE_FILES } from '../lib/keepalive-plan.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
+import { accountTokenFrom } from '../lib/claude-account-id.mjs'
 
 const HOME = '/home/person'
 const USER = 'kc'
@@ -226,6 +227,8 @@ function rig(fs: MemoryFs, backend: ReturnType<typeof fakeBackend>, clock: Retur
     // The sweep and the windows pass are other packets; here they never act.
     keepAliveSweep: async () => ({ enabled: false, agents: [] }),
     windowsPass: async () => ({ memory: {}, report: { mode: 'none', reason: 'unsupported' } }),
+    // A fake `claude auth status --json`: the owner's account B is signed in now. The CLI never runs.
+    readClaudeAccount: () => ({ ok: true, token: ACCOUNT_B }),
     ...overrides,
   }
   delete (deps as any).alive
@@ -468,6 +471,14 @@ const LIMIT_SCREEN = [
 ].join('\n')
 const SOCKET = agentServiceNamesFor('912', HOME, 'linux')!.current.tmuxSocket
 
+const ACCOUNT_A = accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: 'aaaa0000-0000-4000-8000-00000000000a' }))!
+const ACCOUNT_B = accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: 'bbbb0000-0000-4000-8000-00000000000b' }))!
+/** What the limit watch's first look at a limit writes: the account signed in at it, as a token. */
+function seenAtLimit(fs: MemoryFs, limitAtMs: number, token: string) {
+  const limitAccount = { limitAt: new Date(limitAtMs).toISOString(), token }
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/limit-watch.json`, `${JSON.stringify({ schemaVersion: 1, agents: { 912: { limitAccount } } })}\n`)
+}
+
 /** ps for the live claude and daemon of agent 912, and a fake tmux on its socket whose pane is the limit screen until ONE Enter. */
 function limitExec(ps: string) {
   const tmux: string[][] = []
@@ -491,9 +502,9 @@ function limitExec(ps: string) {
 test('a usage limit with usage back (the login changed after it): the checkup presses ONE Enter on the limit screen, verified by a fresh turn', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
   writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), ownerMessage(T0 - 31 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
-  // The owner switched the Claude account 10 minutes ago: the credential file moved (its mtime only; never opened).
-  fs.writeFile(`${CONFIG}/.credentials.json`, 'NEVER-READ')
-  fs.touch(`${CONFIG}/.credentials.json`, T0 - 10 * MIN)
+  // The owner switched the Claude account 10 minutes ago: account A was signed in at the limit (the
+  // watcher's first look recorded it), account B is signed in now.
+  seenAtLimit(fs, T0 - 30 * MIN, ACCOUNT_A)
   const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
   const fake = limitExec(ps)
   const backend = fakeBackend(checkupJob())
@@ -524,9 +535,9 @@ test('a usage limit with usage back (the login changed after it): the checkup pr
 
 test('a usage limit with usage back but a corrupt Enter record: the checkup reads and presses nothing for the hour, and keeps the bad copy', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
-  writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), ownerMessage(T0 - 31 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
-  fs.writeFile(`${CONFIG}/.credentials.json`, 'NEVER-READ')
-  fs.touch(`${CONFIG}/.credentials.json`, T0 - 10 * MIN)
+  // Usage back on the reset time (5 minutes ago): a torn watch record also loses the account seen at the
+  // limit, so the reset is the proof this hold is tested on.
+  writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), ownerMessage(T0 - 31 * MIN), limitEnvelope(T0 - 30 * MIN, T0 - 5 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
   // A torn write: the record may have held an Enter a minute ago, so it counts as one just now.
   const watchFile = `${HOME}/.bgos-agent/watcher/limit-watch.json`
   const torn = '{"schemaVersion":1,"agents":{"912":{"lastEnterAt":"'
@@ -550,9 +561,10 @@ test('a usage limit with usage back but a corrupt Enter record: the checkup read
 test('a usage limit still in force: the checkup reports it and never reads or presses the screen', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
   writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN)], T0 - 30 * MIN)
-  // The login did not change since the limit.
+  // The account did not change since the limit: the first look records B, and B is signed in now. A
+  // credential file touched since (a token refresh) proves nothing.
   fs.writeFile(`${CONFIG}/.credentials.json`, 'NEVER-READ')
-  fs.touch(`${CONFIG}/.credentials.json`, T0 - 5 * 60 * MIN)
+  fs.touch(`${CONFIG}/.credentials.json`, T0 - 5 * MIN)
   const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
   const fake = limitExec(ps)
   const backend = fakeBackend(checkupJob())

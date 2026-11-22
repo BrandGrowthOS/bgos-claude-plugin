@@ -66,6 +66,7 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/helper-account-launch.mjs',
     'lib/helper-account-limits.mjs',
     'lib/claude-subscription-status.mjs',
+    'lib/claude-account-id.mjs',
     'lib/watcher-service.mjs',
     'lib/watcher-bundle.mjs',
     'lib/agent-inventory.mjs',

@@ -11,6 +11,7 @@ import { nodeFs } from '../lib/watcher-bundle.mjs'
 import { applyHelperAccount } from '../lib/helper-account-launch.mjs'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 import { transcriptPathFor } from '../lib/watcher-keepalive.mjs'
+import { accountTokenFrom } from '../lib/claude-account-id.mjs'
 
 test('a watcher reports only fresh capkeeper windows from the matching signed-in profile', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'helper-statusline-'))
@@ -332,7 +333,10 @@ test('review #14: without the pinned transcript the watcher never asks for a res
   assert.equal((await watcher.snapshot()).agents[0].status, 'failed')
 })
 
-test('the real watcher reads the agent limit line from its transcript and switches at the limit with the conversation', async (t) => {
+/** A saved login's folder names its Claude account: a fake status read, never the CLI. */
+const folderAccount = (env: any) => accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: `acct-${String(env.CLAUDE_CONFIG_DIR ?? 'own').split(/[\\/]/).pop()}` }))
+
+async function limitSwitchRig(t: any, probe: (env: any) => Promise<any>) {
   const home = mkdtempSync(join(tmpdir(), 'account-limit-'))
   t.after(() => rmSync(home, { recursive: true, force: true }))
   const write = (p: string, value: string) => {
@@ -360,7 +364,7 @@ test('the real watcher reads the agent limit line from its transcript and switch
   const calls = { eligible: 0, limitEligible: 0 }
   const watcher = createAccountWatcher({ home, credentials, now: () => Date.now(), env: {}, fs: nodeFs(), pidAlive: () => true, sleep: async () => {} }, {
     list: () => [row],
-    probe: async () => true,
+    probe,
     eligible: async () => { calls.eligible++; return false },
     limitEligible: async () => { calls.limitEligible++; return true },
     requestRestart: async () => {
@@ -390,6 +394,11 @@ test('the real watcher reads the agent limit line from its transcript and switch
       apiErrorParams: { rate_limit_info: { resetsAt: Math.floor((at + 3 * 3600000) / 1000) } },
       message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: "You've hit your Opus limit · resets 6pm (Asia/Dubai)" }] } }),
   ].join('\n') + '\n')
+  return { job, watcher, a, b, calls, transcript, cwd, pin, profileB, iso, at }
+}
+
+test('the real watcher reads the agent limit line from its transcript and switches at the limit with the conversation', async (t) => {
+  const { job, watcher, a, b, calls, transcript, cwd, pin, profileB, iso, at } = await limitSwitchRig(t, async (env) => ({ read: true, signedIn: true, account: folderAccount(env) }))
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
   const snap = await watcher.snapshot()
   assert.deepEqual(snap.agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
@@ -397,4 +406,42 @@ test('the real watcher reads the agent limit line from its transcript and switch
   assert.deepEqual(calls, { eligible: 0, limitEligible: 1 })
   // The same conversation, linked into the new login before the restart.
   assert.equal(readFileSync(transcriptPathFor({ configDir: profileB, cwd, sessionId: pin }), 'utf8'), readFileSync(transcript, 'utf8'))
+})
+
+test('end to end on fakes, rule A: a saved login on the SAME Claude account is never switched to at the limit', async (t) => {
+  const same = accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: 'acct-same' }))
+  const { job, watcher, a, b, calls } = await limitSwitchRig(t, async () => ({ read: true, signedIn: true, account: same }))
+  await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
+  await watcher.tick()
+  const snap = await watcher.snapshot()
+  assert.deepEqual(snap.agents, [{ assistantId: 11, accountId: a, status: 'waiting_for_room', rule: { mode: 'limit', accountId: b } }])
+  assert.deepEqual(calls, { eligible: 0, limitEligible: 0 }, 'nothing is even checked for a restart')
+})
+
+test('end to end on fakes, rule C: a status read that times out at the limit switches nothing and keeps the rule', async (t) => {
+  let timedOut = true
+  const { job, watcher, a, b, calls } = await limitSwitchRig(t, async (env) => (timedOut ? { read: false } : { read: true, signedIn: true, account: folderAccount(env) }))
+  await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
+  await watcher.tick()
+  assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: a, status: 'waiting_for_room', rule: { mode: 'limit', accountId: b } }])
+  assert.deepEqual(calls, { eligible: 0, limitEligible: 0 })
+  timedOut = false
+  await watcher.tick()
+  assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
+})
+
+test('end to end on fakes, rule C: only the target login times out (the limited one reads fine): the rule waits, never needs_sign_in', async (t) => {
+  let timedOut = true
+  let target = ''
+  const { job, watcher, a, b, calls } = await limitSwitchRig(t, async (env) =>
+    timedOut && target && String(env.CLAUDE_CONFIG_DIR ?? '').includes(target) ? { read: false } : { read: true, signedIn: true, account: folderAccount(env) },
+  )
+  target = b
+  await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
+  await watcher.tick()
+  assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: a, status: 'waiting_for_room', rule: { mode: 'limit', accountId: b } }])
+  assert.deepEqual(calls, { eligible: 0, limitEligible: 0 })
+  timedOut = false
+  await watcher.tick()
+  assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
 })

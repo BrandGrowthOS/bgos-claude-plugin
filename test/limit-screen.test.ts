@@ -23,6 +23,7 @@ import {
   readLimitScreen,
   usageBackFrom,
 } from '../lib/limit-screen.mjs'
+import { accountTokenFrom } from '../lib/claude-account-id.mjs'
 
 const T0 = Date.parse('2026-11-01T16:39:03.000Z')
 const MIN = 60_000
@@ -159,33 +160,48 @@ function pick(seen: { ok: boolean; reason: string }) {
 
 // -- usageBackFrom: usage is back only on proof, never a guess -------------------------------------------
 
+// The proof a login gives is the ACCOUNT (lib/claude-account-id.mjs tokens), never a file's mtime.
+const ACCT_A = accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: 'aaaa0000-0000-4000-8000-00000000000a' }))
+const ACCT_B = accountTokenFrom(JSON.stringify({ loggedIn: true, accountUuid: 'bbbb0000-0000-4000-8000-00000000000b' }))
+
 test('usage is back once the reset time from the transcript has passed (with a minute of grace)', () => {
   const limit = { atMs: T0, resetsAtMs: RESETS_AT }
-  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 30_000, limit, credentialsMtimeMs: null }), { back: false, how: null })
-  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 61_000, limit, credentialsMtimeMs: null }), { back: true, how: 'reset_passed' })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 30_000, limit, accountAtLimit: null, accountNow: null }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 61_000, limit, accountAtLimit: null, accountNow: null }), { back: true, how: 'reset_passed' })
 })
 
-test('usage is back when the Claude credential file changed AFTER the limit (a different login), by mtime only', () => {
+test('usage is back on a login only when the signed in ACCOUNT differs from the one at the limit', () => {
   const limit = { atMs: T0, resetsAtMs: RESETS_AT }
-  // Ares, 2026-11-01: the limit at 16:39:03, the credential file rewritten at 16:53:14.
-  const swap = Date.parse('2026-11-01T16:53:14.966Z')
-  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, credentialsMtimeMs: swap }), { back: true, how: 'login_changed' })
-  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, credentialsMtimeMs: T0 - MIN }), { back: false, how: null })
-  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, credentialsMtimeMs: T0 }), { back: false, how: null })
+  const now = T0 + 20 * MIN
+  assert.deepEqual(usageBackFrom({ now, limit, accountAtLimit: ACCT_A, accountNow: ACCT_B }), { back: true, how: 'login_changed' })
+  // The same account again, or a token refresh that rewrote the credential file: no proof.
+  assert.deepEqual(usageBackFrom({ now, limit, accountAtLimit: ACCT_A, accountNow: ACCT_A }), { back: false, how: null })
 })
 
-test('no reset time and no credential file (macOS keeps the login in the Keychain): still limited', () => {
-  assert.deepEqual(usageBackFrom({ now: T0 + 30 * 24 * HOUR, limit: { atMs: T0, resetsAtMs: null }, credentialsMtimeMs: null }), { back: false, how: null })
+test('a failed or timed out status read (no account now, or none seen at the limit) is no proof: wait for the reset', () => {
+  const limit = { atMs: T0, resetsAtMs: RESETS_AT }
+  assert.deepEqual(usageBackFrom({ now: T0 + 20 * MIN, limit, accountAtLimit: ACCT_A, accountNow: null }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: T0 + 20 * MIN, limit, accountAtLimit: null, accountNow: ACCT_B }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 2 * MIN, limit, accountAtLimit: ACCT_A, accountNow: null }), { back: true, how: 'reset_passed' })
+})
+
+test('no reset time and no account read: still limited, on every platform', () => {
+  assert.deepEqual(usageBackFrom({ now: T0 + 30 * 24 * HOUR, limit: { atMs: T0, resetsAtMs: null }, accountAtLimit: null, accountNow: null }), { back: false, how: null })
 })
 
 // Ares's ruling (option A, 2026-11-02): once a press on the login proof was followed by the limit
 // again, only the reset time counts for that agent until the reset passes.
-test('a spent login proof is not proof: the credential file moving again does not count, the reset time still does', () => {
+test('a spent login proof is not proof: another account does not count, the reset time still does', () => {
   const limit = { atMs: T0, resetsAtMs: RESETS_AT }
   const moved = T0 + 2 * HOUR
-  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, credentialsMtimeMs: moved, loginProofSpent: true }), { back: false, how: null })
-  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, credentialsMtimeMs: moved, loginProofSpent: false }), { back: true, how: 'login_changed' })
-  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 2 * MIN, limit, credentialsMtimeMs: moved, loginProofSpent: true }), { back: true, how: 'reset_passed' })
+  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, accountAtLimit: ACCT_A, accountNow: ACCT_B, loginProofSpent: true }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, accountAtLimit: ACCT_A, accountNow: ACCT_B, loginProofSpent: false }), { back: true, how: 'login_changed' })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 2 * MIN, limit, accountAtLimit: ACCT_A, accountNow: ACCT_B, loginProofSpent: true }), { back: true, how: 'reset_passed' })
+})
+
+test('usageBackFrom takes no file time: an mtime alone is never proof', () => {
+  const limit = { atMs: T0, resetsAtMs: RESETS_AT }
+  assert.deepEqual(usageBackFrom({ now: T0 + 20 * MIN, limit, credentialsMtimeMs: T0 + 10 * MIN } as any), { back: false, how: null })
 })
 
 // -- decideLimitFree: the gates, in order ----------------------------------------------------------------
