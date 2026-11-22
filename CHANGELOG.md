@@ -12,6 +12,14 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.23 (2026-11-22)
+
+**fix(files): on a ReFS volume or a Dev Drive a file number counts as unknown, and no new plain file number compare can creep in.**
+
+- ReFS, and so every Dev Drive, gives each file a 128 bit id, and Node shows only 64 bits of it, which Windows does not promise are unique. On those volumes a folder's identity for skill sharing and skill origin marks is now unknown instead of possibly another folder's: an unknown identity is never taken for a match. Windows is asked which file system a volume uses once per volume (PowerShell `Get-Volume`, then `DriveInfo`, no administrator); Linux and macOS are never asked.
+- New `lib/file-numbers.mjs` holds the rule: whole device and file numbers (left out, zero, all ones or past 2^53 is unknown), the same-file check, and the volume check.
+- The file identity guard now scans the whole source tree (lib, bin, scripts, server.ts), not lib only, and catches `Object.is` as a compare. `lib/file-numbers.mjs` is the one file allowed a plain compare. The 37 allowed sites are unchanged.
+
 ## 0.90.17 (2026-11-21)
 
 **feat(chat): hear reactions to the agent's replies.** With a matching server, the agent hears who reacted and which emoji they chose. A later line can report a changed or removed reaction and how many people reacted. A room member speaks only as themselves. A reaction never grants permission to use a tool.

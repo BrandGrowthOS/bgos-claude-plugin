@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync,
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { unescapeAgentButtonValue } from './message-text.ts'
-import { SKILL_NAME_RE, type IdentFs, type SkillItem, type SkillsList } from './skills-inventory.ts'
+import { REAL_IDENT_FS, SKILL_NAME_RE, identLook, type IdentFs, type SkillItem, type SkillsList } from './skills-inventory.ts'
 import { OWN_MCP_TOOLS } from './hook-events.ts'
 import { deliveredNeedle, promptCarriesDelivered, type TurnChatNote } from './turn-chat.ts'
 
@@ -279,11 +279,12 @@ const known = (v: unknown): boolean => v !== undefined && v !== null && String(v
  * number comes back (ext4), as long as it is made again after the filesystem's clock tick; on a filesystem with no
  * birth time a reused file number keeps the mark. Birth time is checked on Windows only (node and bun). On Linux
  * without statx node reads the change time as the birth time, which moves when a file is added or renamed inside: the
- * mark drops, never a wrong one. Null when either number is unknown. Never throws.
+ * mark drops, never a wrong one. Null when either number is unknown, which on ReFS or a Dev Drive the file number
+ * always is (identLook). Never throws.
  */
-export function originIdentOf(path: string, fs: IdentFs = { statSync, lstatSync }): string | null {
+export function originIdentOf(path: string, fs: IdentFs = REAL_IDENT_FS): string | null {
   try {
-    const st = fs.lstatSync(path, { bigint: true }) as { dev?: unknown; ino?: unknown; birthtimeNs?: unknown }
+    const st = identLook(path, false, fs) as { dev?: unknown; ino?: unknown; birthtimeNs?: unknown }
     if (!known(st.dev) || !known(st.ino)) return null
     const base = `${String(st.dev)}:${String(st.ino)}`
     return known(st.birthtimeNs) ? `${base}:${String(st.birthtimeNs)}` : base

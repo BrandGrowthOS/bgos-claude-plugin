@@ -55,6 +55,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
+import { fileSystemOf, lookOn } from './file-numbers.mjs'
 import { scanText } from './secret-scan.ts'
 import type { SkillOrigin } from './skill-origins.ts'
 
@@ -155,15 +156,31 @@ export interface IdentStat {
 }
 
 /**
- * The two stat calls an identity makes. Both are always asked for whole numbers. A test hands in its own; the
- * real file system is the default.
+ * The two stat calls an identity makes, and the volume look. Both stats are always asked for whole numbers. A test
+ * hands in its own; the real file system is the default.
  */
 export interface IdentFs {
   statSync(path: string, options: { bigint: true }): IdentStat
   lstatSync(path: string, options: { bigint: true }): IdentStat
+  /**
+   * The file system name of the volume `path` is on, or null where it does not matter (lib/file-numbers.mjs
+   * fileSystemOf: only Windows is asked). On ReFS or a Dev Drive the file number is unknown. A test's file system
+   * may leave it out: then the numbers are taken as they come.
+   */
+  fileSystem?(path: string, stat: IdentStat): string | null
 }
 
-const REAL_IDENT_FS: IdentFs = { statSync, lstatSync }
+/** The real stats, and the real volume look. skill-origins.ts uses it too. */
+export const REAL_IDENT_FS: IdentFs = { statSync, lstatSync, fileSystem: (path, stat) => fileSystemOf(path, stat) }
+
+/**
+ * A look at a folder as an identity reads it: the stat, with its file number unknown on a volume whose file ids are
+ * 128 bits (ReFS, a Dev Drive), where Node's 64 bits of the id are not unique.
+ */
+export function identLook(path: string, follow: boolean, fs: IdentFs): IdentStat {
+  const st = follow ? fs.statSync(path, { bigint: true }) : fs.lstatSync(path, { bigint: true })
+  return fs.fileSystem ? lookOn(st, fs.fileSystem(path, st)) : st
+}
 
 /**
  * A number the system gave for a folder: one left out, or a zero, is unknown (a drive that keeps no file numbers
@@ -174,11 +191,12 @@ const given = (v: unknown): boolean => v !== undefined && v !== null && String(v
 /**
  * A folder's identity on disk, so no spelling (case, NFD, a link) can hide it. The numbers are read as whole
  * numbers: on NTFS a file number passes 2^53, and as plain numbers two different folders can round to one.
- * Null when the stat fails or either number is unknown, and an unknown identity is never taken for a match.
+ * On ReFS or a Dev Drive the file number is unknown (identLook). Null when the stat fails or either number is
+ * unknown, and an unknown identity is never taken for a match.
  */
 export function identOf(path: string, follow = true, fs: IdentFs = REAL_IDENT_FS): string | null {
   try {
-    const st = follow ? fs.statSync(path, { bigint: true }) : fs.lstatSync(path, { bigint: true })
+    const st = identLook(path, follow, fs)
     if (!given(st.dev) || !given(st.ino)) return null
     return `${String(st.dev)}:${String(st.ino)}`
   } catch {
