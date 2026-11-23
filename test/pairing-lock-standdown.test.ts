@@ -49,6 +49,7 @@ const PAIRING_FRAMES = [
   'update_rpc',
   'watcher_install_rpc',
   'inbound_message',
+  'inbound_reaction',
   'message_edited',
   'message_deleted',
   'chat_deleted',

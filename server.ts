@@ -12,6 +12,7 @@
  */
 
 import { cardAnswerClickOf, cardAnswerText } from './lib/card-answer.ts'
+import { groupReactionKey, groupReactionText, reactionCard, REACTION_GUIDANCE, HEARD_REACTIONS_CAPABILITY } from './lib/heard-reaction.ts'
 import { REACT_TOOL, handleReactTool } from './lib/react-tool.ts'
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
@@ -218,7 +219,7 @@ import { vaultHostDir } from './lib/vault-host.mjs'
 import { ensureAutoHost } from './lib/vault-host-auto.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
-import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
+import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, PRIVATE_UNTRACKED_TAG, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_OUTBOUND_FILES_PATH,
@@ -7113,7 +7114,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   switch (req.params.name) {
     case 'bgos_capabilities': {
       const caps = await loadServedCapabilities()
-      return { content: [{ type: 'text', text: caps.text }] }
+      return { content: [{ type: 'text', text: `${caps.text}\n${REACTION_GUIDANCE}` }] }
     }
 
     case 'reply': {
@@ -15847,7 +15848,7 @@ function routeGroupDelivery(
   if (updateDrainMode) return true
   const taken = groupLanes.deliver(readGroupDelivery(records, { chatId, ...input }))
   const id = Number(input.messageId)
-  if (taken && Number.isSafeInteger(id) && !String(input.key).startsWith('tap:')) rememberForwarded(id)
+  if (taken && Number.isSafeInteger(id) && !String(input.key).startsWith('tap:') && !input.key.startsWith('reaction:')) rememberForwarded(id)
   if (taken) log(`groups: ${transport} delivery ${String(input.key)} handed to the lane of group ${chatId}`)
   return true
 }
@@ -18585,7 +18586,7 @@ function connectWebsocket(): void {
     // Person lanes (P5): this socket declares lane memory in its OWN
     // handshake, which is what the server routes a stopped lane's memory
     // frame by (pairing only; nothing else in the handshake changes).
-    ...wsAuthOptions(AUTH, laneSupport().ok ? [LANE_MEMORY_RPC_TOKEN] : []),
+    ...wsAuthOptions(AUTH, [HEARD_REACTIONS_CAPABILITY, ...(laneSupport().ok ? [LANE_MEMORY_RPC_TOKEN] : [])]),
   })
   watchSocketLiveness(realtimeSocket.io, log)
 
@@ -18969,6 +18970,22 @@ function connectWebsocket(): void {
     if (routeStampedInbound(payload, deliver)) return
     void trackMessageOperation(() => applyHumanEdit(payload))
       .catch((err) => log(`message_edited delivery failed: ${err}`))
+  }))
+
+  realtimeSocket.on('inbound_reaction', whenArmed('inbound_reaction', (frame: any) => {
+    if (updateDrainMode) return
+    const card = reactionCard(frame, ASSISTANT_ID)
+    if (!card) return
+    if (routeGroupDelivery([frame], {
+      key: groupReactionKey(String(frame.reactionId), card), messageId: frame.messageId, text: groupReactionText(card),
+    }, 'socket reaction')) return
+    if (!ownerLaneVerdict(frame).deliver) return
+    void trackMessageOperation(() => channelNotify(() => {
+      const marker = card.meta.user_id === USER_ID ? '' : ' ' + PRIVATE_UNTRACKED_TAG
+      // Keep the transport's provenance tags on the same line as this short answer.
+      const content = privateTurns.tagRawCard(card.content + marker).replace(/\n/g, ' ')
+      return { content, meta: card.meta }
+    })).catch((err) => log(`reaction delivery failed: ${String(err)}`))
   }))
 
   realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {

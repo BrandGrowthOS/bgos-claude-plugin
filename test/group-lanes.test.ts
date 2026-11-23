@@ -235,6 +235,30 @@ test('later turns of one group are serialized and reuse the same process, with t
   assert.ok(!second.includes('Keep answers short.'), 'no second seed')
 })
 
+test('a reaction to an older message keeps the later end of the pause summary', async () => {
+  const r = rig()
+  const first = delivery()
+  r.lanes.deliver(first)
+  await settle()
+  const child = r.spawned[0]!.child
+  child.result('Ready.')
+  await settle()
+  const older = first.messageId! - 1
+  r.lanes.deliver(delivery({ messageId: older, key: 'reaction:' + older, text: 'A reaction.' }))
+  await settle()
+  child.result('Ready.')
+  await settle()
+  r.fire(GROUP_LANE_IDLE_MS)
+  await settle()
+  child.result('Work paused.')
+  await settle()
+  child.exit()
+  await settle()
+  const pause = r.posts.find((p) => p.state === 'paused')
+  assert.equal(pause?.firstMessageId, first.messageId)
+  assert.equal(pause?.lastMessageId, first.messageId)
+})
+
 test('idle 30 minutes PAUSES: a summary turn, the process stopped, the session kept, paused posted, the summary queued for the main session', async () => {
   const r = rig()
   r.lanes.deliver(delivery())
