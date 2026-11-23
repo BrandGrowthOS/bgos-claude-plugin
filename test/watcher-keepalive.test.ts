@@ -4469,3 +4469,124 @@ test('r5 M2: slow reads are not said when nothing waits on them: every agent lis
     assert.equal(logs.filter(slowLine).length, 0, `${name}: ${logs.join('\n')}`)
   }
 })
+
+// Review round 6, F2 and F6. A supervisor a removal took (run.sh is the not-kept one on Mac and Linux, the
+// removal's marker is there on Windows) is put back only by a LIVE list naming the agent: a cached list may be
+// older than the removal (Always on turned off, the daemon removed it, then one failed read). And a kept agent
+// whose canonical supervisor still runs a not-kept run.sh (a removal that stopped half way) is installed again.
+const installsOf = (rec: ReturnType<typeof recorder>) => rec.calls.filter((c) => c.file === 'bash' && c.args.includes('install')).length
+const DOWN_503 = () => consent(null, false, 503).fetchKeepAlive
+const NOT_KEPT_RUN = '#!/usr/bin/env bash\n# hoai: this agent is not kept running\nexit 0\n'
+/** The daemon removed 912's Mac supervisor (Always on off): no plist, a not-kept run.sh, the cache of the read before still naming it. */
+const removedByDaemon = () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'none' }], { scoped: true })
+  fs.writeFile(RUN_SH('912'), NOT_KEPT_RUN)
+  fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, installedAt(60 * MIN))
+  fs.writeFile(`${HOME}/.bgos-agent/912/kept-seen`, installedAt(60 * MIN))
+  fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'], switchState: 'on', showAgentWindows: false }, T0 - 50_000))
+  return fs
+}
+
+test('r6 F2: Always on turned off and the daemon removed the supervisor, then one failed read: the older cached list does not put it back; a live list naming it does', async () => {
+  const fs = removedByDaemon()
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { fetchKeepAlive: DOWN_503() })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.equal(report.source, 'cache')
+  assert.equal(installsOf(rec), 0, logs.join('\n'))
+  assert.match(fs.files.get(RUN_SH('912')) ?? '', /not kept running/)
+  // The owner turns it back on: only a live answer says so.
+  const live = recorder({ ps: IDLE_PS })
+  const again = ctxFor(fs, live, fakeClock(), { fetchKeepAlive: ON_912 })
+  await runKeepAliveSweep(again.ctx as any)
+  assert.equal(installsOf(live), 1, again.logs.join('\n'))
+})
+
+test('r6 F2: an agent never removed (a real run.sh, or none) is still installed on a cached list during an outage', async () => {
+  for (const runSh of ['#!/usr/bin/env bash\nexec hoai-core\n', null]) {
+    const fs = removedByDaemon()
+    if (runSh === null) fs.files.delete(RUN_SH('912'))
+    else fs.writeFile(RUN_SH('912'), runSh)
+    const rec = recorder({ ps: IDLE_PS })
+    const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { fetchKeepAlive: DOWN_503() })
+    await runKeepAliveSweep(ctx as any)
+    assert.equal(installsOf(rec), 1, `${runSh === null ? 'no run.sh' : 'a real run.sh'}: ${logs.join('\n')}`)
+  }
+})
+
+test('r6 F2, Windows: a task the removal took (its not-kept marker there) is not registered again on a cached list; a live list naming it registers it', async () => {
+  const cacheNaming912 = () => buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'], switchState: 'on', showAgentWindows: false }, T0 - 50_000)
+  const fs = windowsMachine({ [`${WSTATE}\\not-kept`]: 'always_on_off:was_kept\n' })
+  fs.writeFile(keepAliveCachePath(WHOME), cacheNaming912())
+  const logs: string[] = []
+  const report = await runKeepAliveSweep(windowsCtx(fs, recorder({ win32Task: 'absent' }), { fetchKeepAlive: DOWN_503(), log: (l: string) => void logs.push(l) }) as any)
+  assert.equal(report.source, 'cache')
+  assert.equal(fs.files.has(`${WSTATE}\\run-agent.vbs`), false, logs.join('\n'))
+  assert.equal(fs.files.has(`${WSTATE}\\not-kept`), true)
+  // Never removed (no marker): the cached list still installs it, as before.
+  const fresh = windowsMachine()
+  fresh.writeFile(keepAliveCachePath(WHOME), cacheNaming912())
+  await runKeepAliveSweep(windowsCtx(fresh, recorder({ win32Task: 'absent' }), { fetchKeepAlive: DOWN_503() }) as any)
+  assert.equal(fresh.files.has(`${WSTATE}\\run-agent.vbs`), true, 'an agent never removed')
+  // Live, the removed one comes back, and its marker goes.
+  await runKeepAliveSweep(windowsCtx(fs, recorder({ win32Task: 'absent' }), { fetchKeepAlive: ON_912 }) as any)
+  assert.equal(fs.files.has(`${WSTATE}\\run-agent.vbs`), true, 'a live list naming it')
+  assert.equal(fs.files.has(`${WSTATE}\\not-kept`), false)
+})
+
+test('r6 F6: Mac, run.sh replaced but the plist could not be deleted, then a live list keeps the agent again: it is installed again, so its next exit starts it', async () => {
+  const fs = onceKept()
+  fs.writeFile(RUN_SH('912'), '#!/usr/bin/env bash\nexec hoai-core\n')
+  const realRm = fs.rm
+  fs.rm = (p: string) => {
+    if (p === PLIST('912')) throw new Error('EPERM')
+    realRm(p)
+  }
+  const clock = fakeClock()
+  const runs = new Map()
+  await sweepWith(fs, clock, SWITCH_OFF([912]), runs)
+  assert.match(fs.files.get(RUN_SH('912')) ?? '', /not kept running/)
+  assert.equal(fs.files.has(PLIST('912')), true, 'the removal stopped half way')
+  fs.rm = realRm
+  clock.advance(MIN)
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx, logs } = ctxFor(fs, rec, clock, { fetchKeepAlive: ON_912, listReads: runs })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(installsOf(rec), 1, logs.join('\n'))
+})
+
+test('r6 F6: Linux, a kept agent whose unit is still there but whose run.sh is the not-kept one is installed again; on a cached list it is not, and a real run.sh is left', async () => {
+  for (const [name, runSh, fetchKeepAlive, installs] of [
+    ['live, not-kept run.sh', NOT_KEPT_RUN, LISTS_912, 1],
+    ['cached, not-kept run.sh', NOT_KEPT_RUN, DOWN_503(), 0],
+    ['live, real run.sh', '#!/usr/bin/env bash\nexec hoai-core\n', LISTS_912, 0],
+  ] as const) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'canonical' }], { platform: 'linux', scoped: true })
+    fs.writeFile(RUN_SH('912'), runSh)
+    fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, installedAt(60 * MIN))
+    fs.writeFile(`${HOME}/.bgos-agent/912/kept-seen`, installedAt(60 * MIN))
+    fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['7', '912'], switchState: 'on', showAgentWindows: false }, T0 - 50_000))
+    const rec = recorder({ ps: IDLE_PS })
+    const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { platform: 'linux', fetchKeepAlive })
+    await runKeepAliveSweep(ctx as any)
+    assert.equal(installsOf(rec), installs, `${name}: ${logs.join('\n')}`)
+  }
+})
+
+test('r6 F6, Windows: a kept task that stayed (Windows would not unregister it) keeps its launcher, so it is not registered again for its marker alone', async () => {
+  const fs = windowsMachine({ [`${WSTATE}\\run-agent.vbs`]: 'Set shell = CreateObject("WScript.Shell")\r\n', [`${WSTATE}\\not-kept`]: 'switch_off\n' })
+  const logs: string[] = []
+  await runKeepAliveSweep(windowsCtx(fs, recorder({}), { fetchKeepAlive: ON_912, log: (l: string) => void logs.push(l) }) as any)
+  assert.equal(logs.some((l) => /supervisor install/.test(l)), false, logs.join('\n'))
+  assert.equal(fs.files.has(`${WSTATE}\\not-kept`), true, 'no install removed it')
+})
+
+test('r6 F6: only HOAI\'s own unit or plist is installed again; an agent a keepalive script keeps running gets no second supervisor, not-kept run.sh or not', async () => {
+  const fs = machine([{ id: '7', cwd: GURU, service: 'none', keepalive: { pid: 47, claudePid: 57 } }])
+  fs.writeFile(RUN_SH('7'), NOT_KEPT_RUN)
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { execSync: execSyncFor({ 57: 'claude' }) })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.equal(installsOf(rec), 0, logs.join('\n'))
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['7', 'supervised', 'keepalive']])
+})

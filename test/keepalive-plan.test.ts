@@ -85,6 +85,7 @@ import {
   reportEntry,
   decideHeldFailure,
 } from '../lib/keepalive-plan.mjs'
+import { EMPTY_LIST_CONFIRM_MAX_MS, listReadGapMs, nextListReads } from '../lib/keepalive-plan.mjs'
 
 const NOW = Date.parse('2026-10-06T19:00:00.000Z')
 const MIN = 60_000
@@ -1220,4 +1221,21 @@ test('decideWatchedDeaf: junk in the record never throws and never confirms', ()
     const out = decideWatchedDeaf({ prev: prev as any, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW })
     assert.deepEqual(out, { record: { deafSince: watchIso(WATCH_NOW), deafSeenAt: watchIso(WATCH_NOW) }, found: null }, JSON.stringify(prev))
   }
+})
+
+// Review round 6, V2 and V3: the memory of good list reads (lib/keepalive-plan.mjs, the two-read rule).
+test('r6 V2: listReadGapMs measures from the LAST good read: an old first read beside a recent last one is no slow gap', () => {
+  const reads = [{ atMs: 0, ids: ['7'] }, { atMs: 60_000, ids: ['7'] }]
+  assert.equal(listReadGapMs(reads, 130_000), null, 'the last read is 70 s old')
+  assert.equal(listReadGapMs(reads, 60_000 + EMPTY_LIST_CONFIRM_MAX_MS + 5_000), EMPTY_LIST_CONFIRM_MAX_MS + 5_000)
+  assert.equal(listReadGapMs([], 130_000), null)
+})
+
+test('r6 V3: nextListReads keeps only the reads of the last 120 s, so a day of reads a minute apart holds two or three, never all', () => {
+  let reads: Array<{ atMs: number; ids: string[] }> = []
+  const live = { enabled: true, assistantIds: ['7'] } as any
+  for (let i = 0; i < 1440; i++) reads = nextListReads(reads, { live, steadyMs: i * 60_000 })
+  assert.ok(reads.length <= 3, `${reads.length} reads kept`)
+  assert.deepEqual(reads.map((r) => r.atMs), [1437, 1438, 1439].map((i) => i * 60_000))
+  assert.deepEqual(nextListReads([{ atMs: 0, ids: ['7'] }], { live, steadyMs: EMPTY_LIST_CONFIRM_MAX_MS + 1 }).map((r) => r.atMs), [EMPTY_LIST_CONFIRM_MAX_MS + 1])
 })

@@ -626,3 +626,23 @@ test('switched off stays off: on Mac and Linux a supervised launch whose run.sh 
   real.stop.abort()
   await settled(done, real.stop)
 })
+
+// Review round 6, F1. An agent with no pairing file of its own (connected with a key) is found only through its
+// loaded job, and the switch OFF took that job: once it has stopped, nothing sees it, and the switch coming back
+// on cannot bring it back. Its own daemon can, once it runs, so hoai says to start it once. A paired agent is
+// found by its pairing file, so the switch alone does bring it back.
+test('r6 F1: an agent with no pairing file is told to start once to be kept again; a paired agent is told the switch is enough', async (t) => {
+  for (const paired of [false, true]) {
+    const h = harness()
+    t.after(() => h.stop.abort())
+    h.files.set(RUN_SH, notKeptRunSh({ platform: 'darwin', assistantId: '871', label: 'ai.bgos.agent.871.home-5156882f', stateDir: STATE_DIR }))
+    if (paired) h.files.set(`${HOME}/.bgos-agent/credentials-871.json`, '{}')
+    assert.equal(await settled(h.run({ platform: 'darwin', env: SUPERVISED_ENV, hasExpect: true }), h.stop), 0)
+    assert.equal(h.spawns.length, 0)
+    const said = h.prints.find((l) => /not kept running/.test(l)) ?? ''
+    if (paired) {
+      assert.match(said, /Turn it back on to have it kept running\./, said)
+      assert.doesNotMatch(said, /start it once/, said)
+    } else assert.match(said, /Turn it back on, then start it once and it will be kept again/, said)
+  }
+})

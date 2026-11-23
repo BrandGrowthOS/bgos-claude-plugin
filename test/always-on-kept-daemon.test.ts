@@ -71,6 +71,8 @@ type Scene = {
   cache?: { answer: Record<string, unknown>; agoMs: number; unmarked?: boolean; listedRecently?: string[] }
   /** How this daemon is connected (server.ts AUTH.mode): a pairing by default, or an API key. */
   auth?: 'pairing' | 'apikey'
+  /** The assistant answer carries no alwaysOn at all (an older or transitional backend). */
+  noAlwaysOn?: boolean
 }
 
 const ON = { enabled: true, assistantIds: ['912'], switchState: 'on' }
@@ -124,7 +126,7 @@ async function reconcile(scene: Scene) {
     existsSync: (p: string) => p === BIN || files.has(p),
     readTextOrNull: (p: string) => files.get(p) ?? null,
     writeFileSync: (p: string, text: string) => void files.set(p, String(text)),
-    bgosGetCachedOn304: async () => ({ code: 'claude-code', alwaysOn: scene.alwaysOn ?? true }),
+    bgosGetCachedOn304: async () => ({ code: 'claude-code', ...(scene.noAlwaysOn ? {} : { alwaysOn: scene.alwaysOn ?? true }) }),
     // bin/bgos-agent: is-installed reads the canonical file; install writes it and stamps installed-at.
     execFileAsync: async (file: string, args: string[]) => {
       assert.equal(file, BIN)
@@ -307,4 +309,17 @@ test('r5 pin: connected with a key, the computer switch OFF still removes with A
 test('r5 pin: a paired agent confirmed left out still goes, the two-read rule is unchanged for agents the list could name', async () => {
   const out = await reconcile({ auth: 'pairing', alwaysOn: true, installed: true, seen: true, cache: { answer: OTHERS_ONLY, agoMs: MIN, listedRecently: ['7'] } })
   assert.equal(out.installed, false, out.logs.join('\n'))
+})
+
+// Review round 6, V8: an answer with no `alwaysOn` (an older or transitional backend) moves nothing, whatever the
+// watcher's cache says. Without that guard a cached switch OFF would remove, and a cached list would install.
+test('r6 V8: an assistant answer without alwaysOn moves nothing: a cached switch OFF removes nothing, a cached list installs nothing', async () => {
+  const off = await reconcile({ noAlwaysOn: true, installed: true, seen: true, cache: { answer: OFF, agoMs: MIN } })
+  assert.equal(off.installed, true, off.logs.join('\n'))
+  assert.deepEqual(off.releaseCalls, [])
+  const on = await reconcile({ noAlwaysOn: true, installed: false, cache: { answer: ON, agoMs: MIN } })
+  assert.equal(on.installs, 0, on.logs.join('\n'))
+  // The same answers with alwaysOn act, so the cases above are the guard's.
+  assert.equal((await reconcile({ alwaysOn: true, installed: true, seen: true, cache: { answer: OFF, agoMs: MIN } })).installed, false)
+  assert.equal((await reconcile({ alwaysOn: true, installed: false, cache: { answer: ON, agoMs: MIN } })).installs, 1)
 })
