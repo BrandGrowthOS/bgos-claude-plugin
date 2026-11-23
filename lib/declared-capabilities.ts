@@ -425,7 +425,7 @@ export const GROUP_LEVELS_TOKEN = 'group_levels'
 /**
  * WHEN A ROUTINE RUNS (2026-11-22): this daemon's agent has the end_run tool,
  * which ends one run of a routine with no change (post nothing) or could not
- * check (the owner gets a Could not check card with the reason), through the
+ * check (the owner gets a Could not check card with a reason code), through the
  * server's run end door (POST scheduled-tasks/agent/:id/run-end) with the
  * daemon's own credential and X-Caller-Assistant-Id. The server offers a
  * Claude Code agent the quiet end (quietEnd on the wake), and turns a silent

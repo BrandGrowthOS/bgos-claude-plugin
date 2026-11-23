@@ -238,7 +238,7 @@ test('the bundled instructions say when to call end_run, with which outcome, and
     'the no_change sentence',
   )
   assert.ok(
-    text.includes('When you could not do the check, call `end_run` with outcome "could_not_check" and a short reason; your owner reads it on a card.'),
+    text.includes('When you could not do the check, call `end_run` with outcome "could_not_check" and the closest reason code: site_unreachable, needs_sign_in, ran_out_of_time, missing_access or something_else. Your owner reads fixed words for it on a card. It takes no free text: put any details in a normal reply.'),
     'the could_not_check sentence',
   )
   assert.ok(text.includes('Take task_id and fire_id from that payload (scheduledTaskId and fireId).'), 'where the ids come from')

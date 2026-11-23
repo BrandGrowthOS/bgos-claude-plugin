@@ -226,7 +226,7 @@ export async function sendScheduleCreate(opts: ScheduleSendOptions): Promise<Sch
 // ── end_run: the end of one run of a routine (When a routine runs, 2026-11-22) ──
 //
 // The agent ends one run with no change (post nothing) or could not check (its owner gets a Could not check card with
-// the reason). Only a private turn may call it, as only one may call schedule (server.ts admission), and the daemon
+// the words for its reason code). Only a private turn may call it, as only one may call schedule (server.ts admission), and the daemon
 // posts it as it posts schedule: its own credential and X-Caller-Assistant-Id, plus the acting user header on a share
 // recipient's turn. Every answer reads as one plain sentence. When the end was not taken, the sentence says to reply
 // normally instead: a reply is never wrong for a run, and a run left silent turns into a red card on the server's sweep.
@@ -236,7 +236,7 @@ export const RUN_END_NO_CHANGE_TEXT = 'Run ended: no change. Post nothing more f
 
 /** What the agent reads when its could not check end was taken. */
 export const RUN_END_COULD_NOT_CHECK_TEXT =
-  'Run ended: could not check. Your owner gets a Could not check card with your reason. Post nothing more for this run.'
+  'Run ended: could not check. Your owner gets a Could not check card with the reason you picked. If they need the details, say them in a normal reply.'
 
 /** A 404: the server offers no run ends yet, or this run is not one this agent may end. */
 export const RUN_END_NOT_TAKEN_TEXT =
@@ -265,10 +265,24 @@ export interface RunEndSendOptions {
   post: (path: string, body: Record<string, unknown>) => Promise<unknown>
 }
 
+/**
+ * One post, and once more without the code if a strict older server refuses that field: the refusal ended nothing, and
+ * the body still carries the code's fixed words as `reason`, which every server takes.
+ */
+async function postRunEnd(opts: RunEndSendOptions): Promise<unknown> {
+  try {
+    return await opts.post(opts.path, { ...opts.body })
+  } catch (err) {
+    if (opts.body.reasonCode === undefined || statusOf(err) !== 400 || !textOf(err).includes('reasonCode should not exist')) throw err
+    const { reasonCode: _refused, ...older } = opts.body
+    return await opts.post(opts.path, { ...older })
+  }
+}
+
 export async function sendRunEnd(opts: RunEndSendOptions): Promise<{ ok: boolean; text: string }> {
   let answer: unknown
   try {
-    answer = await opts.post(opts.path, { ...opts.body })
+    answer = await postRunEnd(opts)
   } catch (err) {
     const status = statusOf(err)
     const detail = textOf(err)

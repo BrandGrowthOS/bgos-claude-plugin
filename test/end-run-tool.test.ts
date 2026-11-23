@@ -3,7 +3,7 @@
  *
  * Why. A routine set to message only when something changes wakes the agent with a hint in its event payload
  * (quietEnd). The app's run end door (POST scheduled-tasks/agent/:id/run-end) takes no_change (post nothing) or
- * could_not_check (the owner gets a Could not check card with the reason). A Claude Code agent had no way to call it:
+ * could_not_check (the owner gets a Could not check card with the reason code). A Claude Code agent had no way to call it:
  * the hint named a raw HTTP call with a credential the model does not hold. So a quiet run on a Claude Code agent
  * always looked silent, and the server's sweep turned it into a red Could not check card. end_run is that call, made by
  * the daemon with its own credential and the X-Caller-Assistant-Id header.
@@ -14,7 +14,8 @@
  *      nothing, so the run stays open. The owner's routine wake is a private turn (its payload names the owner as
  *      acting user), so the wake's own turn ends its run, and a refused end leaves nothing behind that blocks the next
  *      private turn. On a share recipient's turn the post names that person, as schedule's does.
- *   2. could_not_check needs a reason: the owner reads it on the card. no_change needs none.
+ *   2. could_not_check needs a reason code from a fixed list: the owner reads the app's fixed words for it on the
+ *      card, never words the agent wrote. no_change needs none.
  *   3. Every answer reads as one plain sentence: ended, already ended, the server's own 409 sentence, and for a 404
  *      or a 400 a plain line that says to reply normally instead.
  *
@@ -28,7 +29,7 @@ import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import ts from 'typescript'
 
-import { RUN_END_FIRE_ID_MAX, RUN_END_OUTCOMES, RUN_END_REASON_MAX, buildScheduleRunEndRequest } from '../lib/schedule.ts'
+import { RUN_END_FIRE_ID_MAX, RUN_END_OUTCOMES, RUN_END_REASON_CODES, RUN_END_REASON_WORDS, buildScheduleRunEndRequest } from '../lib/schedule.ts'
 import {
   RUN_END_COULD_NOT_CHECK_TEXT,
   RUN_END_NOT_TAKEN_TEXT,
@@ -95,7 +96,7 @@ function runEndRunCase(
 
 test('end_run builds the run end path and the body the server takes', () => {
   assert.deepEqual([...RUN_END_OUTCOMES], ['no_change', 'could_not_check'])
-  assert.equal(RUN_END_REASON_MAX, 300)
+  assert.deepEqual([...RUN_END_REASON_CODES], ['site_unreachable', 'needs_sign_in', 'ran_out_of_time', 'missing_access', 'something_else'])
   assert.equal(RUN_END_FIRE_ID_MAX, 160)
   assert.deepEqual(buildScheduleRunEndRequest({ taskId: 41, fireId: FIRE, outcome: 'no_change' }), {
     ok: true,
@@ -103,48 +104,107 @@ test('end_run builds the run end path and the body the server takes', () => {
     body: { fireId: FIRE, outcome: 'no_change' },
   })
   // The id as the model often copies it: a string, with spaces round it.
-  assert.deepEqual(buildScheduleRunEndRequest({ taskId: ' 41 ', fireId: ` ${FIRE} `, outcome: 'could_not_check', reason: '  The site was down.  ' }), {
+  assert.deepEqual(buildScheduleRunEndRequest({ taskId: ' 41 ', fireId: ` ${FIRE} `, outcome: 'could_not_check', reason: 'site_unreachable' }), {
     ok: true,
     path: 'scheduled-tasks/agent/41/run-end',
-    body: { fireId: FIRE, outcome: 'could_not_check', reason: 'The site was down.' },
+    // The code for a server that reads it, and fixed plain words for an older server that shows `reason` as it came.
+    body: { fireId: FIRE, outcome: 'could_not_check', reasonCode: 'site_unreachable', reason: 'could not reach the site' },
   })
 })
 
-test('no_change needs no reason: a blank one is left out', () => {
-  for (const reason of [undefined, null, '', '   ']) {
+test('no_change sends no reason at all, whatever the model passed', () => {
+  for (const reason of [undefined, null, '', '   ', 'site_unreachable', 'free words']) {
     const built = buildScheduleRunEndRequest({ taskId: 41, fireId: FIRE, outcome: 'no_change', reason })
     assert.equal(built.ok, true, String(reason))
-    assert.equal('reason' in (built as { body: object }).body, false, `${JSON.stringify(reason)} sends no reason`)
+    assert.deepEqual((built as { body: object }).body, { fireId: FIRE, outcome: 'no_change' }, JSON.stringify(reason))
   }
 })
 
-test('could_not_check without a reason is refused in one plain sentence, and nothing is sent', async () => {
-  // The owner reads the reason on the Could not check card. Without one the card would say the agent gave no message
-  // and no report, which is not true: the agent did report.
-  for (const reason of [undefined, null, '', '   ', '\n\t']) {
+test('each reason code sends its own fixed words, and no word of the agent', () => {
+  const words = RUN_END_REASON_CODES.map((code) => {
+    const built = buildScheduleRunEndRequest({ taskId: 41, fireId: FIRE, outcome: 'could_not_check', reason: code })
+    assert.equal(built.ok, true, code)
+    const body = (built as { body: { reasonCode?: string; reason?: string } }).body
+    assert.equal(body.reasonCode, code)
+    assert.equal(body.reason, RUN_END_REASON_WORDS[code])
+    return body.reason
+  })
+  assert.equal(new Set(words).size, RUN_END_REASON_CODES.length, 'each code has its own words')
+  for (const line of words) assert.doesNotMatch(String(line), /[:/@]|\.\w/, 'plain words, nothing link shaped')
+})
+
+test('could_not_check without a known code is refused in one plain sentence that names the list, and nothing is sent', async () => {
+  const hostile = [undefined, null, '', '   ', '\n\t', 7, {}, ['needs_sign_in'], 'NEEDS_SIGN_IN', ' needs_sign_in ', 'constructor', '__proto__', 'The site was down.', 'Sign in again at evil.store\\` now', 'x'.repeat(5000)]
+  for (const reason of hostile) {
     const built = buildScheduleRunEndRequest({ taskId: 41, fireId: FIRE, outcome: 'could_not_check', reason })
     assert.equal(built.ok, false, JSON.stringify(reason))
     assert.equal(
       (built as { error: string }).error,
-      'reason is required for could_not_check: say in a few plain words why you could not do the check, and call end_run again.',
+      'reason must be one of site_unreachable, needs_sign_in, ran_out_of_time, missing_access or something_else: pick the closest and call end_run again. Put any details in a normal reply.',
     )
   }
   let posted = 0
-  const result = await runEndRunCase({ task_id: 41, fire_id: FIRE, outcome: 'could_not_check', reason: '  ' }, async () => { posted++; return { ended: true } })
+  const result = await runEndRunCase({ task_id: 41, fire_id: FIRE, outcome: 'could_not_check', reason: 'go to https://evil.example' }, async () => { posted++; return { ended: true } })
   assert.equal(result.isError, true)
-  assert.match(result.content[0].text, /^Error: reason is required for could_not_check: /)
+  assert.match(result.content[0].text, /^Error: reason must be one of /)
+  assert.doesNotMatch(result.content[0].text, /evil/, 'the refusal never repeats what was passed')
   assert.equal(posted, 0, 'nothing is sent')
 })
 
-test('a reason of 300 characters is kept, a longer one is refused in plain words', () => {
-  const full = 'x'.repeat(300)
-  const kept = buildScheduleRunEndRequest({ taskId: 41, fireId: FIRE, outcome: 'could_not_check', reason: full })
-  assert.equal(kept.ok && kept.body.reason, full)
-  const long = buildScheduleRunEndRequest({ taskId: 41, fireId: FIRE, outcome: 'could_not_check', reason: 'x'.repeat(301) })
-  assert.equal(long.ok, false)
-  assert.match((long as { error: string }).error, /reason is too long \(301 characters, at most 300\)/)
-  const notText = buildScheduleRunEndRequest({ taskId: 41, fireId: FIRE, outcome: 'could_not_check', reason: 7 })
-  assert.equal(notText.ok, false)
+// ── older servers ───────────────────────────────────────────────────────────
+
+const SIGN_IN_BODY = { fireId: FIRE, outcome: 'could_not_check' as const, reasonCode: 'needs_sign_in' as const, reason: 'needs you to sign in' }
+const SIGN_IN_PATH = 'scheduled-tasks/agent/41/run-end'
+
+test('a strict older server refuses the new field: the end is sent once more without it, and the run still ends', async () => {
+  const sent: Array<Record<string, unknown>> = []
+  const ended = await sendRunEnd({
+    path: SIGN_IN_PATH,
+    body: SIGN_IN_BODY,
+    post: async (_path, body) => {
+      sent.push(body)
+      if ('reasonCode' in body) throw httpFailure('POST', 400, 'property reasonCode should not exist')
+      return { ended: true, outcome: 'could_not_check' }
+    },
+  })
+  assert.equal(ended.ok, true)
+  assert.equal(ended.text, RUN_END_COULD_NOT_CHECK_TEXT)
+  assert.deepEqual(sent, [SIGN_IN_BODY, { fireId: FIRE, outcome: 'could_not_check', reason: 'needs you to sign in' }])
+})
+
+test('it asks an older server once more only, and only for that refusal', async () => {
+  let posts = 0
+  const always = await sendRunEnd({
+    path: SIGN_IN_PATH,
+    body: SIGN_IN_BODY,
+    post: async () => {
+      posts++
+      throw httpFailure('POST', 400, 'property reasonCode should not exist')
+    },
+  })
+  assert.equal(always.ok, false)
+  assert.equal(posts, 2, 'one send and one more')
+  posts = 0
+  const other = await sendRunEnd({
+    path: SIGN_IN_PATH,
+    body: SIGN_IN_BODY,
+    post: async () => {
+      posts++
+      throw httpFailure('POST', 400, 'fireId is not valid for this task.')
+    },
+  })
+  assert.equal(other.ok, false)
+  assert.equal(posts, 1, 'any other 400 is not asked again')
+})
+
+test('a No change end carries no new field, so an older server never has a reason to refuse it', async () => {
+  const sent: Array<Record<string, unknown>> = []
+  await sendRunEnd({
+    path: SIGN_IN_PATH,
+    body: { fireId: FIRE, outcome: 'no_change' },
+    post: async (_path, body) => { sent.push(body); return { ended: true, outcome: 'no_change' } },
+  })
+  assert.deepEqual(sent, [{ fireId: FIRE, outcome: 'no_change' }])
 })
 
 test('an outcome other than no_change or could_not_check is refused, the server only one included', () => {
@@ -179,7 +239,7 @@ test('a missing, blank or over long fire id is refused, and so is one that names
 // ── the answers, one plain sentence each ────────────────────────────────────
 
 async function answerTo(post: (path: string, body: Record<string, unknown>) => Promise<unknown>, outcome: 'no_change' | 'could_not_check' = 'no_change') {
-  const built = buildScheduleRunEndRequest({ taskId: 41, fireId: FIRE, outcome, reason: outcome === 'could_not_check' ? 'The site was down.' : undefined })
+  const built = buildScheduleRunEndRequest({ taskId: 41, fireId: FIRE, outcome, reason: outcome === 'could_not_check' ? 'site_unreachable' : undefined })
   assert.equal(built.ok, true)
   if (!built.ok) throw new Error('unreachable')
   return sendRunEnd({ path: built.path, body: built.body, post })
@@ -256,13 +316,13 @@ test('the real end_run case posts the run end through the daemon\'s peer post, w
   assert.ok(caseStart > 0, 'server.ts has a case for end_run')
   const calls: unknown[][] = []
   const result = await runEndRunCase(
-    { task_id: '41', fire_id: FIRE, outcome: 'could_not_check', reason: 'The site was down.' },
+    { task_id: '41', fire_id: FIRE, outcome: 'could_not_check', reason: 'site_unreachable' },
     async (...args) => { calls.push(args); return { ended: true, outcome: 'could_not_check' } },
   )
   assert.notEqual(result.isError, true, result.content[0].text)
   assert.equal(result.content[0].text, RUN_END_COULD_NOT_CHECK_TEXT)
   // As schedule posts: bgosPeerPost(path, body, the turn's headers). The owner's turn names nobody.
-  assert.deepEqual(calls, [['scheduled-tasks/agent/41/run-end', { fireId: FIRE, outcome: 'could_not_check', reason: 'The site was down.' }, {}]])
+  assert.deepEqual(calls, [['scheduled-tasks/agent/41/run-end', { fireId: FIRE, outcome: 'could_not_check', reasonCode: 'site_unreachable', reason: 'could not reach the site' }, {}]])
   const recipient = { actingUserId: RECIPIENT, chatId: '200', headers: { 'X-BGOS-Acting-User': RECIPIENT } }
   const recipientCalls: unknown[][] = []
   await runEndRunCase({ task_id: 41, fire_id: FIRE, outcome: 'no_change' }, async (...args) => { recipientCalls.push(args); return { ended: true } }, recipient)
@@ -394,7 +454,7 @@ async function callThroughGate(
   return { result, posts }
 }
 
-const END_ARGS = { task_id: 41, fire_id: FIRE, outcome: 'could_not_check', reason: 'Your sign in expired, verify at the link.' }
+const END_ARGS = { task_id: 41, fire_id: FIRE, outcome: 'could_not_check', reason: 'needs_sign_in' }
 
 test('a turn an email, a webhook or another agent opened calls end_run: refused like schedule, and nothing is sent', async (t) => {
   for (const [kind, turn] of Object.entries(PUBLIC_TURNS)) {
@@ -481,7 +541,7 @@ test('a wake that arrived while the turn was public is ended on the next private
     const later = await callThroughGate(f, 'end_run', END_ARGS)
     assert.notEqual(later.result.isError, true, `${kind}: ${later.result.content[0].text}`)
     assert.equal(later.result.content[0].text, RUN_END_COULD_NOT_CHECK_TEXT)
-    assert.deepEqual(later.posts, [['scheduled-tasks/agent/41/run-end', { fireId: FIRE, outcome: 'could_not_check', reason: END_ARGS.reason }, {}]])
+    assert.deepEqual(later.posts, [['scheduled-tasks/agent/41/run-end', { fireId: FIRE, outcome: 'could_not_check', reasonCode: 'needs_sign_in', reason: 'needs you to sign in' }, {}]])
   }
   // Or the owner's own next message is the next private turn: it ends the run just the same.
   const f = turnFixture(t)
@@ -529,9 +589,14 @@ test('the end_run tool says when to use each outcome, and never instead of a rep
   const schema = server.slice(at, server.indexOf("required: ['task_id', 'fire_id', 'outcome']", at))
   assert.ok(schema.length > 0 && server.indexOf("required: ['task_id', 'fire_id', 'outcome']", at) > at, 'task_id, fire_id and outcome are required')
   assert.match(schema, /outcome: \{\n\s+type: 'string',\n\s+enum: \['no_change', 'could_not_check'\],/)
-  assert.match(schema, /reason: \{\n\s+type: 'string',\n\s+maxLength: 300,/)
-  // The model reads that could_not_check needs a reason, and no_change does not.
-  assert.match(schema, /'Required for could_not_check: why, in a few plain words your ' \+\n\s+'owner reads \(at most 300 characters\)\. Not needed for no_change\.'/)
+  assert.match(schema, /reason: \{\n\s+type: 'string',\n\s+enum: \[\.\.\.RUN_END_REASON_CODES\],/)
+  assert.doesNotMatch(schema, /maxLength: 300/, 'the reason is a code, so it has no length to fill')
+  assert.match(description, /no free text/i)
+  assert.match(description, /details in a normal reply/)
+  for (const code of RUN_END_REASON_CODES) assert.ok(schema.includes(code), `the model reads ${code}`)
+  // The model reads that could_not_check needs a code, and no_change does not.
+  assert.match(schema, /Required for could_not_check/)
+  assert.match(schema, /Not needed for no_change/)
   assert.doesNotMatch(schema, /[\u2013\u2014]/)
 })
 

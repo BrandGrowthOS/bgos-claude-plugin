@@ -21,7 +21,7 @@
  *                                         404 anti-enumeration)
  *   POST   scheduled-tasks/agent/:id/run-end
  *                                         end one run of a routine (end_run):
- *                                         { fireId, outcome, reason? } answers
+ *                                         { fireId, outcome, reasonCode?, reason? } answers
  *                                         { ended, outcome }; 409 when the run
  *                                         must answer or the fire is not the
  *                                         latest; 404 while the server offers
@@ -594,15 +594,42 @@ export function buildScheduleCancelPath(id: unknown): SchedulePathResult {
 /**
  * WHEN A ROUTINE RUNS (2026-11-22): the two ways the agent may end one run of its routine with end_run, the server's
  * RUN_END_OUTCOMES. no_change posts nothing (only a run whose wake carries quietEnd: the server answers 409 with one
- * sentence for any other); could_not_check tells the owner, on a Could not check card, with the reason. The server
+ * sentence for any other); could_not_check tells the owner, on a Could not check card, with a reason code. The server
  * also ends a run itself (no answer); that outcome is the server's alone and never sent from here.
  */
 export const RUN_END_OUTCOMES = Object.freeze(['no_change', 'could_not_check'] as const)
 export type RunEndOutcome = (typeof RUN_END_OUTCOMES)[number]
 
-/** The server's caps on a run end: the reason the owner reads (300) and the fire id (160). */
-export const RUN_END_REASON_MAX = 300
+/**
+ * Why a run could not check: a code from this fixed list, never words the agent wrote. An agent reads hostile pages,
+ * so what it writes must not reach a card the owner trusts. The app holds the words for each code, and the agent puts
+ * any details in a normal reply.
+ */
+export const RUN_END_REASON_CODES = Object.freeze([
+  'site_unreachable',
+  'needs_sign_in',
+  'ran_out_of_time',
+  'missing_access',
+  'something_else',
+] as const)
+export type RunEndReasonCode = (typeof RUN_END_REASON_CODES)[number]
+
+/**
+ * Fixed plain words for each code, sent as `reason` beside the code. A server that reads the code ignores them; an
+ * older one shows `reason` as it came, so it gets these and never the code's raw name or anything the agent wrote.
+ */
+export const RUN_END_REASON_WORDS: Readonly<Record<RunEndReasonCode, string>> = Object.freeze({
+  site_unreachable: 'could not reach the site',
+  needs_sign_in: 'needs you to sign in',
+  ran_out_of_time: 'ran out of time',
+  missing_access: 'missing access or a file',
+  something_else: 'could not finish this run',
+})
+
+/** The server's cap on the fire id. */
 export const RUN_END_FIRE_ID_MAX = 160
+
+const RUN_END_REASON_REFUSAL = `reason must be one of ${RUN_END_REASON_CODES.slice(0, -1).join(', ')} or ${RUN_END_REASON_CODES[RUN_END_REASON_CODES.length - 1]}: pick the closest and call end_run again. Put any details in a normal reply.`
 
 export interface RunEndInput {
   /** The wake's scheduledTaskId: a whole number above 0, as a number or its digits. */
@@ -610,13 +637,16 @@ export interface RunEndInput {
   /** The wake's fireId, as it came. */
   fireId?: unknown
   outcome?: unknown
-  /** Why the check could not be done, in a few plain words the owner reads: required for could_not_check, optional for no_change. */
+  /** Why the check could not be done, a code from RUN_END_REASON_CODES: required for could_not_check, unused for no_change. */
   reason?: unknown
 }
 
 export type RunEndBody = {
   fireId: string
   outcome: RunEndOutcome
+  /** The reason code, for a server that reads it. */
+  reasonCode?: RunEndReasonCode
+  /** The code's fixed words, for an older server that shows this field as it came. */
   reason?: string
 }
 
@@ -657,26 +687,15 @@ export function buildScheduleRunEndRequest(input: RunEndInput): RunEndRequest {
   if (typeof outcome !== 'string' || !(RUN_END_OUTCOMES as readonly string[]).includes(outcome)) {
     return { ok: false, error: 'outcome must be no_change or could_not_check.' }
   }
-  const body: RunEndBody = { fireId, outcome: outcome as RunEndOutcome }
+  if (outcome === 'no_change') {
+    return { ok: true, path: `scheduled-tasks/agent/${taskId}/run-end`, body: { fireId, outcome } }
+  }
+  // Only a known code is sent, and the refusal never repeats what was passed.
   const { reason } = input
-  if (reason != null) {
-    if (typeof reason !== 'string') return { ok: false, error: 'reason must be a few plain words, as text.' }
-    const trimmed = reason.trim()
-    if (trimmed.length > RUN_END_REASON_MAX) {
-      return {
-        ok: false,
-        error: `reason is too long (${trimmed.length} characters, at most ${RUN_END_REASON_MAX}). Say it in fewer words and call end_run again.`,
-      }
-    }
-    if (trimmed) body.reason = trimmed
+  if (!(RUN_END_REASON_CODES as readonly unknown[]).includes(reason)) {
+    return { ok: false, error: RUN_END_REASON_REFUSAL }
   }
-  // The owner reads the reason on the Could not check card: without one the card would say the agent gave no message
-  // and no report, which is not true. So could_not_check needs one, and nothing is sent without it.
-  if (body.outcome === 'could_not_check' && !body.reason) {
-    return {
-      ok: false,
-      error: 'reason is required for could_not_check: say in a few plain words why you could not do the check, and call end_run again.',
-    }
-  }
+  const reasonCode = reason as RunEndReasonCode
+  const body: RunEndBody = { fireId, outcome: outcome as RunEndOutcome, reasonCode, reason: RUN_END_REASON_WORDS[reasonCode] }
   return { ok: true, path: `scheduled-tasks/agent/${taskId}/run-end`, body }
 }

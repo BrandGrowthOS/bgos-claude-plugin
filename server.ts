@@ -299,6 +299,7 @@ import {
   buildScheduleListPath,
   buildScheduleCancelPath,
   buildScheduleRunEndRequest,
+  RUN_END_REASON_CODES,
 } from './lib/schedule.js'
 import { httpFailure, newScheduleRequestId, sendRunEnd, sendScheduleCreate } from './lib/schedule-send.js'
 import {
@@ -3719,8 +3720,11 @@ const mcp = new Server(
       'When a routine\'s wake carries `quietEnd` in its `meta.event_payload` and',
       'nothing changed since the last run, call `end_run` with outcome',
       '"no_change" and post nothing. When you could not do the check, call',
-      '`end_run` with outcome "could_not_check" and a short reason; your owner',
-      'reads it on a card. Take task_id and fire_id from that payload',
+      '`end_run` with outcome "could_not_check" and the closest reason code:',
+      'site_unreachable, needs_sign_in, ran_out_of_time, missing_access or',
+      'something_else. Your owner reads fixed words for it on a card. It takes',
+      'no free text: put any details in a normal reply. Take task_id and',
+      'fire_id from that payload',
       '(scheduledTaskId and fireId). Otherwise reply normally: never end a run',
       'instead of telling your owner what you found.',
       '`when_it_runs` (wakes only) sets how this routine\'s runs show in your',
@@ -6201,8 +6205,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'no_change only when the wake\'s event payload (meta.event_payload) ' +
         'carries quietEnd and nothing changed since the last run: then post ' +
         'nothing. Use could_not_check when you could not do the check (a ' +
-        'site was down, a sign in failed) and give a short reason: your ' +
-        'owner reads it on a Could not check card. Never use it instead of a ' +
+        'site was down, a sign in failed) and pick the closest reason code: ' +
+        'your owner reads the platform\'s fixed words for it on a Could not ' +
+        'check card. It takes no free text, so put any details in a normal ' +
+        'reply. Never use it instead of a ' +
         'reply when you found something: then reply normally. task_id and ' +
         'fire_id are the scheduledTaskId and fireId of that same wake\'s ' +
         'event payload.',
@@ -6223,14 +6229,16 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'no_change: nothing changed since the last run, post nothing (only ' +
               'when the payload carries quietEnd). could_not_check: you could ' +
-              'not do the check; your owner gets a card with your reason.',
+              'not do the check; your owner gets a card with the reason you pick.',
           },
           reason: {
             type: 'string',
-            maxLength: 300,
+            enum: [...RUN_END_REASON_CODES],
             description:
-              'Required for could_not_check: why, in a few plain words your ' +
-              'owner reads (at most 300 characters). Not needed for no_change.',
+              'Required for could_not_check, the closest of: site_unreachable ' +
+              '(could not reach the site), needs_sign_in (needs your owner to ' +
+              'sign in), ran_out_of_time, missing_access (missing access or a ' +
+              'file), something_else. No free text. Not needed for no_change.',
           },
         },
         required: ['task_id', 'fire_id', 'outcome'],
@@ -8861,7 +8869,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
     case 'end_run': {
       // WHEN A ROUTINE RUNS (2026-11-22): end one run of a routine with no change (post nothing) or could not check
-      // (the owner gets the card with the reason). The ids come from the wake's event payload, copied by the model, so
+      // (the owner gets the card with the words for the reason code). The ids come from the wake's event payload, copied by the model, so
       // they are checked first (lib/schedule.ts). Admitted only on a private turn, and posted as schedule posts: the
       // daemon's credential and X-Caller-Assistant-Id, plus the acting user header on a share recipient's turn (none on
       // the owner's). Every answer is one plain sentence (lib/schedule-send.ts sendRunEnd); one that was not taken says
