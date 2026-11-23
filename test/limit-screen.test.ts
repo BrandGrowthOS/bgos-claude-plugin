@@ -161,21 +161,21 @@ function pick(seen: { ok: boolean; reason: string }) {
 
 test('usage is back once the reset time from the transcript has passed (with a minute of grace)', () => {
   const limit = { atMs: T0, resetsAtMs: RESETS_AT }
-  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 30_000, limit, credentialsMtimeMs: null }), { back: false, how: null })
-  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 61_000, limit, credentialsMtimeMs: null }), { back: true, how: 'reset_passed' })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 30_000, limit, accountChanged: false }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 61_000, limit, accountChanged: false }), { back: true, how: 'reset_passed' })
 })
 
-test('usage is back when the Claude credential file changed AFTER the limit (a different login), by mtime only', () => {
+test('usage resumes only after a different account is observed for this refusal', () => {
   const limit = { atMs: T0, resetsAtMs: RESETS_AT }
   // Ares, 2026-11-01: the limit at 16:39:03, the credential file rewritten at 16:53:14.
   const swap = Date.parse('2026-11-01T16:53:14.966Z')
-  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, credentialsMtimeMs: swap }), { back: true, how: 'login_changed' })
-  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, credentialsMtimeMs: T0 - MIN }), { back: false, how: null })
-  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, credentialsMtimeMs: T0 }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, accountChanged: true }), { back: true, how: 'login_changed' })
+  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, accountChanged: false }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, accountChanged: false }), { back: false, how: null })
 })
 
 test('no reset time and no credential file (macOS keeps the login in the Keychain): still limited', () => {
-  assert.deepEqual(usageBackFrom({ now: T0 + 30 * 24 * HOUR, limit: { atMs: T0, resetsAtMs: null }, credentialsMtimeMs: null }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: T0 + 30 * 24 * HOUR, limit: { atMs: T0, resetsAtMs: null }, accountChanged: false }), { back: false, how: null })
 })
 
 // Ares's ruling (option A, 2026-11-02): once a press on the login proof was followed by the limit
@@ -183,9 +183,9 @@ test('no reset time and no credential file (macOS keeps the login in the Keychai
 test('a spent login proof is not proof: the credential file moving again does not count, the reset time still does', () => {
   const limit = { atMs: T0, resetsAtMs: RESETS_AT }
   const moved = T0 + 2 * HOUR
-  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, credentialsMtimeMs: moved, loginProofSpent: true }), { back: false, how: null })
-  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, credentialsMtimeMs: moved, loginProofSpent: false }), { back: true, how: 'login_changed' })
-  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 2 * MIN, limit, credentialsMtimeMs: moved, loginProofSpent: true }), { back: true, how: 'reset_passed' })
+  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, accountChanged: true, loginProofSpent: true }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, accountChanged: true, loginProofSpent: false }), { back: true, how: 'login_changed' })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 2 * MIN, limit, accountChanged: true, loginProofSpent: true }), { back: true, how: 'reset_passed' })
 })
 
 // -- decideLimitFree: the gates, in order ----------------------------------------------------------------

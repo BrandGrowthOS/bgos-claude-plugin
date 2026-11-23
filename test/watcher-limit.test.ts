@@ -17,7 +17,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { agentServiceNamesFor, buildLaunchRecipe, listAgents } from '../lib/agent-inventory.mjs'
-import { LIMIT_NOTICE_FILE_NAME, LIMIT_WATCH_FILE_NAME, limitFreeObservation, runLimitPass } from '../lib/watcher-limit.mjs'
+import { LIMIT_NOTICE_FILE_NAME, LIMIT_WATCH_FILE_NAME, limitAccountChanged, limitFreeObservation, runLimitPass } from '../lib/watcher-limit.mjs'
 import { limitNoticeText, parseLimitNotice } from '../lib/limit-screen.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
@@ -91,6 +91,14 @@ function winRig(): Rig {
 }
 
 const join = (r: Rig, ...parts: string[]) => [r.stateDir.replace(/[\\/]912$/, ''), ...parts].join(r.platform === 'win32' ? '\\' : '/')
+
+function switchAccount(fs: MemoryFs, r: Rig, at: number) {
+  const path = r.home + (r.platform === 'win32' ? '\\' : '/') + '.claude.json'
+  if (!fs.exists(path)) fs.writeFile(path, JSON.stringify({ oauthAccount: { accountUuid: 'first' } }))
+  const refusal = fs.readFile(r.transcript)!.trim().split('\n').map((line) => JSON.parse(line)).filter((row) => row.isApiErrorMessage).at(-1)
+  limitAccountChanged(fs, r.stateDir, path, { atMs: Date.parse(refusal.timestamp) })
+  fs.writeFile(path, JSON.stringify({ oauthAccount: { accountUuid: String(at) } }))
+}
 
 function agentFs(r: Rig): MemoryFs {
   const recipe = JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: r.cwd, argv: ['--x'], installMethod: 'marketplace', pluginRoot: `${r.config}/plugins/cache/hoai/hoai/0.74.4`, node: 'node', startedAt: 'x', pid: 4242 }))
@@ -233,6 +241,96 @@ const noticeOf = (fs: MemoryFs, r: Rig) => {
 
 // -- the brief's cases ---------------------------------------------------------------------------------
 
+test('a token refresh on the same account leaves usage limited', async () => {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  writeTranscript(fs, r, [limitRecord()])
+  const clock = fakeClock(SWAP_AT)
+  const tmux = fakeTmux(socketOf(r), () => picker())
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  fs.writeFile(`${r.home}/.claude.json`, JSON.stringify({ oauthAccount: { accountUuid: 'first' } }))
+  await runLimitPass(ctx)
+  fs.touch(r.credentials, clock.now())
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.deepEqual(tmux.calls, [])
+})
+
+test('a held queue restarts through its launcher only after usage returns and spends the cooldown on disk', async () => {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  const clock = fakeClock(LIMIT_AT + MIN)
+  const tmux = fakeTmux(socketOf(r), () => picker())
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec, { hasTmux: true, hasScript: false })
+  const rows = listAgents({ ...ctx, now: clock.now() } as any)
+  const beacon = `${rows[0]!.pluginStateDir}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  const queue = JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: 'continue', timestamp: new Date(LIMIT_AT - 4 * MIN).toISOString() })
+  const run = async (at: number) => {
+    clock.set(at)
+    fs.touch(beacon, at)
+    return (await runLimitPass(ctx)).agents[0]!
+  }
+  writeTranscript(fs, r, [queue, limitRecord()])
+  assert.equal((await run(LIMIT_AT + MIN)).outcome, 'limited')
+  switchAccount(fs, r, LIMIT_AT + MIN)
+  assert.equal((await run(LIMIT_AT + 2 * MIN)).outcome, 'restarted')
+  const marker = `${r.stateDir}/restart-requested.json`
+  assert.ok(fs.exists(marker))
+  fs.rm(marker)
+  writeTranscript(fs, r, [queue, limitRecord(LIMIT_AT + 3 * MIN)])
+  switchAccount(fs, r, LIMIT_AT + 4 * MIN)
+  assert.equal((await run(LIMIT_AT + 31 * MIN)).outcome, 'waiting')
+  assert.equal(fs.exists(marker), false)
+  assert.equal((await run(LIMIT_AT + 32 * MIN)).outcome, 'restarted')
+  assert.deepEqual(tmux.calls, [])
+})
+
+test('the sweep uses the current launch when an anonymous dequeue follows a restart', async () => {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  const launch = `${r.stateDir}/launch.json`
+  fs.writeFile(launch, JSON.stringify({ ...JSON.parse(fs.readFile(launch)!), startedAt: new Date(LIMIT_AT - 10 * MIN).toISOString() }))
+  const queue = (operation: string, at: number, content?: string) =>
+    JSON.stringify({ type: 'queue-operation', operation, content, timestamp: new Date(at).toISOString() })
+  writeTranscript(fs, r, [queue('enqueue', LIMIT_AT - 20 * MIN, 'old peer card'), queue('enqueue', LIMIT_AT - 4 * MIN, 'new card'),
+    queue('dequeue', LIMIT_AT - 100), limitRecord()])
+  switchAccount(fs, r, SWAP_AT)
+  const clock = fakeClock(SWAP_AT + MIN)
+  const tmux = fakeTmux(socketOf(r), s => s.entered ? IDLE : picker())
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  const [row] = listAgents({ ...ctx, now: clock.now() } as any)
+  const beacon = `${row!.pluginStateDir}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, clock.now())
+  clock.onSleep(at => { if (tmux.state.entered) appendTranscript(fs, r, assistantTurn(at)) })
+  assert.equal((await runLimitPass(ctx)).agents[0]!.outcome, 'freed')
+  assert.equal(enters(tmux.calls).length, 1)
+  assert.equal(fs.exists(`${r.stateDir}/restart-requested.json`), false)
+})
+
+test('an automatic sweep skips a held queue when only the owner fallback is writable', async () => {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  const clock = fakeClock(RESETS_AT + 2 * MIN)
+  const tmux = fakeTmux(socketOf(r), () => picker())
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  const [agent] = listAgents({ ...ctx, now: clock.now() } as any)
+  const beacon = `${agent!.pluginStateDir}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, clock.now())
+  writeTranscript(fs, r, [limitRecord(), JSON.stringify({
+    type: 'queue-operation', operation: 'enqueue', content: 'continue', timestamp: new Date(RESETS_AT - 4 * MIN).toISOString(),
+  })])
+  const watch = join(r, 'watcher', LIMIT_WATCH_FILE_NAME)
+  fs.writeFile(watch, '{}')
+  const read = fs.readFile.bind(fs)
+  fs.readFile = path => path === watch ? null : read(path)
+  assert.equal((await runLimitPass(ctx)).agents[0]!.outcome, 'record_unsaved')
+  assert.equal(fs.exists(`${r.stateDir}/owner-queue-restart.json`), false)
+  assert.equal(fs.exists(`${r.stateDir}/restart-requested.json`), false)
+  assert.deepEqual(tmux.calls, [])
+})
+
 test('a fake stuck screen, still limited: no key, and the screen is not even read', async () => {
   const r = linuxRig()
   const fs = agentFs(r)
@@ -250,7 +348,7 @@ test('usage back (the login changed after the limit): exactly ONE Enter, verifie
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [assistantTurn(LIMIT_AT - 5 * MIN), limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   let recordAtEnter: any = 'unset'
   const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()), () => {
@@ -292,7 +390,7 @@ test('screen unclear (the pointer sits on "Add funds"): no key; the owner is tol
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const flipped = ['Add funds to continue with usage credits', 'Upgrade your plan', 'Stop and wait for limit to reset']
   const tmux = fakeTmux(socketOf(r), () => picker(0, flipped))
@@ -313,7 +411,7 @@ test('a second Enter inside the hour is refused; the next one is allowed only on
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   // The Enter "does not take": the picker stays (a measured CLI quirk would look like this).
   const tmux = fakeTmux(socketOf(r), () => picker())
@@ -344,7 +442,7 @@ function usageBackRig() {
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   return { r, fs, clock: fakeClock(SWAP_AT + MIN) }
 }
 
@@ -536,7 +634,7 @@ test('the screen changed between the read and the press: no key is sent', async 
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   // The second read (the one right before the key) shows another screen: someone pressed already.
   const tmux = fakeTmux(socketOf(r), (s) => (s.captures >= 2 ? IDLE : picker()))
@@ -551,7 +649,7 @@ test('still limited after the Enter (the login changed but to the same capped ac
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
   clock.onSleep((nowMs) => {
@@ -633,7 +731,7 @@ test('option A lasts only until the reset passes: a later limit with a later res
   pickerUp = true
   const again = RESETS_AT + 2 * HOUR
   appendTranscript(fs, r, limitRecord(again, again + 7 * 24 * HOUR))
-  fs.touch(r.credentials, again + 5 * MIN)
+  switchAccount(fs, r, again + 5 * MIN)
   clock.set(again + 10 * MIN)
   const out: any = await runLimitPass(ctx)
   // The fake answers nothing to this press (the picker stays): what counts is that the login change was proof again.
@@ -716,7 +814,7 @@ test('option A late miss is bounded: a refusal days after a press that closed th
   const refusedAt = SWAP_AT + 2 * 24 * HOUR
   appendTranscript(fs, r, limitRecord(refusedAt, RESETS_AT + 3 * 24 * HOUR))
   reopen()
-  fs.touch(r.credentials, refusedAt + 30 * MIN) // the owner switched the account again
+  switchAccount(fs, r, refusedAt + 30 * MIN) // the owner switched the account again
   clock.set(refusedAt + 40 * MIN)
   const out: any = await runLimitPass(ctx)
   assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['login_changed', 2], 'not blamed on the press two days ago')
@@ -748,7 +846,7 @@ test('option A late miss ends at the pressed limit\'s own reset: a new session l
   const fs = agentFs(r)
   const sessionReset = LIMIT_AT + 2 * HOUR // a session limit: it resets two hours after the hit
   writeTranscript(fs, r, [limitRecord(LIMIT_AT, sessionReset)])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   let pickerUp = true
   const tmux = fakeTmux(socketOf(r), () => (pickerUp ? picker() : IDLE), () => {
@@ -760,7 +858,7 @@ test('option A late miss ends at the pressed limit\'s own reset: a new session l
   const refusedAt = sessionReset + HOUR
   appendTranscript(fs, r, limitRecord(refusedAt, refusedAt + 5 * HOUR))
   pickerUp = true
-  fs.touch(r.credentials, refusedAt + 20 * MIN) // the owner switched the account
+  switchAccount(fs, r, refusedAt + 20 * MIN) // the owner switched the account
   clock.set(refusedAt + 30 * MIN)
   const out: any = await runLimitPass(ctx)
   assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['login_changed', 2], 'not blamed on the press before the reset')
@@ -841,7 +939,7 @@ test('option A ends with the episode: after a real turn (the owner fixed it), th
   const back = SWAP_AT + 3 * HOUR
   appendTranscript(fs, r, assistantTurn(back))
   appendTranscript(fs, r, limitRecord(back + HOUR))
-  fs.touch(r.credentials, back + HOUR + 5 * MIN)
+  switchAccount(fs, r, back + HOUR + 5 * MIN)
   clock.set(back + HOUR + 10 * MIN)
   assert.deepEqual(
     [(await runLimitPass(ctx)).agents[0].outcome, enters(tmux.calls).length],
@@ -855,7 +953,7 @@ test('closed but no turn yet (nothing was waiting): the picker is gone, the noti
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
   const { ctx } = ctxFor(r, fs, clock, tmux.exec)
@@ -869,7 +967,7 @@ test('no tmux on this computer: no key; the owner gets the one tap fix (Restart 
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const tmux = fakeTmux(socketOf(r), () => picker())
   const { ctx } = ctxFor(r, fs, clock, tmux.exec, { tmuxPath: null })
@@ -882,7 +980,7 @@ test('a real turn after the limit (the agent already came back): nothing to do',
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord(), assistantTurn(LIMIT_AT + 20 * MIN)])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + 30 * MIN)
   const tmux = fakeTmux(socketOf(r), () => picker())
   const { ctx } = ctxFor(r, fs, clock, tmux.exec)
@@ -895,7 +993,7 @@ test('an agent the keep-alive switch did not clear is never looked at', async ()
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const tmux = fakeTmux(socketOf(r), () => picker())
   const { ctx } = ctxFor(r, fs, clock, tmux.exec, { assistantIds: [] })
@@ -960,7 +1058,7 @@ test('Windows: the helper reads the agent console, and presses ONE Enter only fo
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const helper = fakeHelper((s) => (s.pressed ? IDLE : picker()))
   clock.onSleep((nowMs) => {
@@ -979,7 +1077,7 @@ test('Windows: a dead launcher (no console to attach to) is never pressed; the o
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const helper = fakeHelper(() => picker())
   const { ctx } = ctxFor(r, fs, clock, helper.exec, { pidAlive: () => false })
@@ -996,7 +1094,7 @@ test('Windows: the console pid must still be the hoai launcher (row.launcherLive
     const r = winRig()
     const fs = agentFs(r)
     writeTranscript(fs, r, [limitRecord()])
-    fs.touch(r.credentials, SWAP_AT)
+    switchAccount(fs, r, SWAP_AT)
     const clock = fakeClock(SWAP_AT + MIN)
     // The fake helper only records the read and the press it would get.
     const helper = fakeHelper((s) => (s.pressed ? IDLE : picker()))
@@ -1032,7 +1130,7 @@ test('Windows: the launcher is proven from the process table read NOW; a table t
     const fs = agentFs(r)
     arrange(fs, r)
     writeTranscript(fs, r, [limitRecord()])
-    fs.touch(r.credentials, SWAP_AT)
+    switchAccount(fs, r, SWAP_AT)
     const clock = fakeClock(SWAP_AT + MIN)
     // The fake helper only records the read and the press it would get.
     const helper = fakeHelper(() => picker())
@@ -1047,7 +1145,7 @@ test('Windows: while the hour gate holds the key, the launcher is not proven aga
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const helper = fakeHelper(() => picker()) // the Enter "does not take": the picker stays
   let queries = 0
@@ -1068,7 +1166,7 @@ test('Windows: a checkup inside the hour still proves the console, so the owner 
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const helper = fakeHelper(() => picker()) // the Enter "does not take": the picker stays
   let table = processTable(HOAI_LAUNCHER)
@@ -1094,7 +1192,7 @@ test('Windows: the hour ending between the look and the press never lets an unpr
     const r = winRig()
     const fs = agentFs(r)
     writeTranscript(fs, r, [limitRecord()])
-    fs.touch(r.credentials, SWAP_AT)
+    switchAccount(fs, r, SWAP_AT)
     const t0 = SWAP_AT + MIN
     // A clock that moves 1 ms on every look once racing: the hour runs out somewhere inside the pass.
     let base = t0
@@ -1138,7 +1236,7 @@ test("Windows: a record the agent's daemon declares (its pid is the daemon, not 
     JSON.stringify({ pid: 4242, capabilities: ['relaunch'], startedAt: new Date(LIMIT_AT - 6 * HOUR).toISOString(), supervisor: { kind: 'launcher' } }),
   )
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const helper = fakeHelper(() => picker())
   const { ctx } = ctxFor(r, fs, clock, helper.exec)
@@ -1151,7 +1249,7 @@ test('Windows: a helper answer that does not hash to its own text is unreadable,
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const calls: ExecCall[] = []
   const exec = async (file: string, args: string[]) => {

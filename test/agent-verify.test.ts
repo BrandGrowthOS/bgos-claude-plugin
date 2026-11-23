@@ -24,6 +24,7 @@ import {
   proveLiveBefore,
   verifyAgent,
 } from '../lib/agent-verify.mjs'
+import { ownerRestartProgress } from '../lib/watcher-checkup.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 
 const MARKER = '/home/kc/.bgos-plugin-state/912/channel-live.json'
@@ -66,6 +67,21 @@ function fakeClock(start: number, onTick?: (nowMs: number, tick: number) => void
     },
   }
 }
+
+test('owner verification fails at the deadline with only a fresh lock', async () => {
+  const fs = memoryFs()
+  const row = agentRow()
+  const clock = fakeClock(T0, (at) => fs.writeFile(row.credentialsPath + '.lock', JSON.stringify({ pid: 2, bootedAt: T0 + 1, heartbeatAt: at })))
+  const ownerProgress = () => ownerRestartProgress(row, { configDir: row.stateDir, fs, now: clock.now(), pidAlive: () => true, restartedAtMs: T0 })
+  const result = await verifyAgent(row, {
+    fs, restartedAtMs: T0, now: clock.now, sleep: clock.sleep, timeoutMs: 75_000, ownerProgress,
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.evidence.via, null)
+  assert.equal(result.message, 'agent_deaf_after_restart')
+  assert.equal(clock.now(), T0 + 75_000)
+  assert.equal(JSON.parse(fs.readFile(PROBE)!).afterBootMs, T0)
+})
 
 test('parseLiveMarker mirrors lib/boot-hello.ts (both fields, one field, junk)', () => {
   assert.deepEqual(parseLiveMarker(JSON.stringify({ firstLiveAt: 'a', lastLiveAt: 'b' })), { firstLiveAt: 'a', lastLiveAt: 'b' })

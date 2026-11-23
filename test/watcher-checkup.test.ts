@@ -25,8 +25,9 @@ import './helpers/real-os-sentinel.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
+import { limitAccountChanged } from '../lib/watcher-limit.mjs'
 import { freeLimitResult, runWatcher } from '../lib/watcher-core.mjs'
-import { checkupTarget, endOldClaudes, isOwnerChannelText, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
+import { checkupTarget, endOldClaudes, isOwnerChannelText, ownerRestartProgress, parseTranscriptTail } from '../lib/watcher-checkup.mjs'
 import { agentServiceNamesFor, buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { bundleFingerprint } from '../lib/watcher-bundle.mjs'
 import { CHANNEL_CORE_FILES } from '../lib/keepalive-plan.mjs'
@@ -491,9 +492,10 @@ function limitExec(ps: string) {
 test('a usage limit with usage back (the login changed after it): the checkup presses ONE Enter on the limit screen, verified by a fresh turn', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
   writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), ownerMessage(T0 - 31 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
-  // The owner switched the Claude account 10 minutes ago: the credential file moved (its mtime only; never opened).
-  fs.writeFile(`${CONFIG}/.credentials.json`, 'NEVER-READ')
-  fs.touch(`${CONFIG}/.credentials.json`, T0 - 10 * MIN)
+  const metadata = `${HOME}/.claude.json`
+  fs.writeFile(metadata, JSON.stringify({ oauthAccount: { accountUuid: 'first' } }))
+  limitAccountChanged(fs, STATE_DIR, metadata, { atMs: T0 - 30 * MIN })
+  fs.writeFile(metadata, JSON.stringify({ oauthAccount: { accountUuid: 'second' } }))
   const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 4242, `node ${ROOT}/bin/hoai-core.mjs`), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
   const fake = limitExec(ps)
   const backend = fakeBackend(checkupJob())
@@ -525,8 +527,10 @@ test('a usage limit with usage back (the login changed after it): the checkup pr
 test('a usage limit with usage back but a corrupt Enter record: the checkup reads and presses nothing for the hour, and keeps the bad copy', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
   writeTranscript(fs, [assistantTurn(T0 - 40 * MIN), ownerMessage(T0 - 31 * MIN), limitEnvelope(T0 - 30 * MIN, T0 + 3 * 60 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
-  fs.writeFile(`${CONFIG}/.credentials.json`, 'NEVER-READ')
-  fs.touch(`${CONFIG}/.credentials.json`, T0 - 10 * MIN)
+  const metadata = `${HOME}/.claude.json`
+  fs.writeFile(metadata, JSON.stringify({ oauthAccount: { accountUuid: 'first' } }))
+  limitAccountChanged(fs, STATE_DIR, metadata, { atMs: T0 - 30 * MIN })
+  fs.writeFile(metadata, JSON.stringify({ oauthAccount: { accountUuid: 'second' } }))
   // A torn write: the record may have held an Enter a minute ago, so it counts as one just now.
   const watchFile = `${HOME}/.bgos-agent/watcher/limit-watch.json`
   const torn = '{"schemaVersion":1,"agents":{"912":{"lastEnterAt":"'
@@ -1171,6 +1175,109 @@ function ownerRestartJob(rpcId = 'rst-1', body: Record<string, unknown> = {}) {
   }
 }
 
+test('a usage refusal wins a timestamp tie until a strictly later model turn', () => {
+  const at = T0 - 4 * MIN
+  const refusal = limitEnvelope(at, T0 + MIN)
+  const turn = assistantTurn(at)
+  const queue = enqueueLine(at - MIN)
+  for (const records of [[queue, turn, refusal], [queue, refusal, turn]]) {
+    const tail = parseTranscriptTail(records.join('\n'), T0)
+    assert.equal(tail.heldQueue, true)
+    assert.equal(tail.error?.kind, 'rate_limit')
+    assert.equal(parseTranscriptTail(records.slice(1).join('\n'), T0).error?.kind, 'rate_limit')
+    assert.equal(parseTranscriptTail([...records, assistantTurn(at + 1)].join('\n'), T0).heldQueue, false)
+  }
+})
+
+test('an older model record appended to a refused session preserves its waiting message', () => {
+  const at = T0 - 4 * MIN
+  const records = [limitEnvelope(at, T0 + MIN), enqueueLine(at), assistantTurn(at - 1)]
+  assert.equal(parseTranscriptTail(records.join('\n'), T0).heldQueue, true)
+  assert.equal(parseTranscriptTail([...records, assistantTurn(at + 1)].join('\n'), T0).heldQueue, false)
+})
+
+test('a resumed queue never spends its dequeue on an orphan from the old CLI', () => {
+  const old = enqueueLine(T0 - 65 * MIN, 'peer card')
+  const fresh = enqueueLine(T0 - 6 * MIN, 'fresh')
+  const dequeue = JSON.stringify({ type: 'queue-operation', operation: 'dequeue', timestamp: new Date(T0 - 6 * MIN + 100).toISOString() })
+  const refusal = limitEnvelope(T0 - 6 * MIN + 600, T0 + MIN)
+  const before = limitEnvelope(T0 - 70 * MIN, T0 - 45 * MIN)
+  const resumed = assistantTurn(T0 - 30 * MIN)
+  const parse = (rows: string[], boot?: number) => parseTranscriptTail(rows.join('\n'), T0, false, boot).heldQueue
+  assert.equal(parse([before, old, resumed, fresh, dequeue, refusal]), false)
+  assert.equal(parse([old, fresh, dequeue, refusal], T0 - 40 * MIN), false)
+  assert.equal(parse([old, fresh, dequeue, refusal], T0 - 80 * MIN), true, 'both entries belong to this CLI')
+  assert.equal(parse([before, old, fresh], T0 - 40 * MIN), false, 'the resumed CLI has no refusal')
+  assert.equal(parse([before, old, resumed, fresh, refusal], T0 - 40 * MIN), true)
+})
+
+test('a contentless dequeue takes the oldest entry even across a model turn', () => {
+  const refusal = limitEnvelope(T0 - 4 * MIN, T0 + MIN)
+  const dequeue = JSON.stringify({ type: 'queue-operation', operation: 'dequeue', timestamp: new Date(T0 - 5 * MIN).toISOString() })
+  const first = enqueueLine(T0 - 9 * MIN, 'first')
+  const second = enqueueLine(T0 - 7 * MIN, 'second')
+  const start = assistantTurn(T0 - 10 * MIN)
+  const progress = assistantTurn(T0 - 8 * MIN)
+  const held = (rows: string[]) => parseTranscriptTail([...rows, refusal].join('\n'), T0).heldQueue
+  assert.equal(held([first, dequeue]), false, 'a consumed entry cannot trip the watcher')
+  assert.equal(held([start, first, progress, second, dequeue]), true, 'the second entry still waits')
+  assert.equal(held([start, first, progress, second, dequeue, dequeue]), false)
+})
+
+test('one queue removal preserves the wait of the other message', () => {
+  const limit = limitEnvelope(T0 - 6 * MIN, T0 + MIN)
+  const first = enqueueLine(T0 - 4 * MIN, 'first')
+  const second = enqueueLine(T0 - 3 * MIN, 'second')
+  for (const operation of ['dequeue', 'remove']) {
+    const taken = (content?: string) => JSON.stringify({ type: 'queue-operation', operation, content, timestamp: new Date(T0).toISOString() })
+    for (const target of ['first', 'second', undefined]) {
+      assert.equal(parseTranscriptTail([limit, first, second, taken(target)].join('\n'), T0).heldQueue, true)
+    }
+    assert.equal(parseTranscriptTail([limit, first, second, taken('second'), taken('first')].join('\n'), T0).heldQueue, false)
+    const recent = enqueueLine(T0 - MIN, 'second')
+    assert.equal(parseTranscriptTail([limit, first, recent, taken('first')].join('\n'), T0).heldQueue, false)
+  }
+})
+
+test('checkup reports a held queue with a fresh beacon and a literal usage-limit tail', async () => {
+  const limit = limitEnvelope(T0 - 7 * MIN, T0 + MIN)
+  const queue = [enqueueLine(T0 - 5 * MIN), enqueueLine(T0 - 4 * MIN), enqueueLine(T0 - 2 * MIN)]
+  const tool = JSON.parse(assistantTurn(T0 - 8 * MIN))
+  tool.message.content = [{ type: 'tool_use', id: 'foreground' }]
+  const result = JSON.stringify({ type: 'user', timestamp: new Date(T0 - 6 * MIN).toISOString(),
+    message: { content: [{ type: 'tool_result', tool_use_id: 'foreground' }] } })
+  const remove = JSON.stringify({ ...JSON.parse(queue[0]!), operation: 'remove' })
+  for (const [lines, beat, held] of [
+    [[limit, ...queue], T0, true],
+    [[JSON.stringify({ ...JSON.parse(limit), isSidechain: true }), ...queue], T0, false],
+    [[limit, ...queue, ownerMessage(T0 - MIN)], T0, true],
+    [[JSON.stringify(tool), limit, ...queue], T0, false],
+    [[JSON.stringify(tool), result, limit, ...queue], T0, true],
+    [[limit, ...queue, remove], T0, false],
+    [[limit, ...queue, JSON.stringify({ ...JSON.parse(remove), operation: 'dequeue' })], T0, false],
+    [[limit, ...queue], T0 - 10 * MIN, false],
+    [[limit, enqueueLine(T0 - MIN)], T0, false],
+  ] as const) {
+    const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+    writeTranscript(fs, [...lines], T0)
+    const beacon = `${PLUGIN_STATE}/channel-beacon.json`
+    fs.writeFile(beacon, '{}')
+    fs.touch(beacon, beat)
+    const backend = fakeBackend(checkupJob())
+    const run = rig(fs, backend, fakeClock(), PS_912, { alive: [3000, 5912, 4912] })
+    await runWatcher(run.deps as any)
+    const report = terminalOf(backend)
+    const finding = report.findings.find((f: any) => f.cause === 'held_queue')
+    assert.equal(Boolean(finding), held)
+    if (held) {
+      assert.equal(finding.status, 'WARN')
+      assert.match(finding.detail, /limit_picker/)
+      assert.ok(report.actions.some((a: any) => a.cause === 'held_queue' && a.did === 'report'))
+    }
+    if (beat === T0) assert.equal(restartRequested(fs), false, report.message)
+  }
+})
+
 test('item 5: the owner Restart restarts an agent that looks healthy and busy: no health gate, no turn hold, same conversation', async () => {
   // Busy by every signal: a turn in flight, a reply owed, activity a minute ago, a job under claude.
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1, lastActivityAt: new Date(T0 - MIN).toISOString() }) })
@@ -1198,6 +1305,143 @@ test('item 5: the owner Restart restarts an agent that looks healthy and busy: n
   assert.equal(record.lastRestartAt, new Date(T0).toISOString())
   assert.equal(record.reason, 'owner_restart')
   assertDtoShape(backend.progress('rst-1'))
+})
+
+test('restart progress rejects the old lock, a mismatched pid and a turn at boot', () => {
+  const row = { assistantId: JSON.parse(agentState()).assistantId, credentialsPath: 'pairing', cwd: AVA, pluginStateDir: PLUGIN_STATE }
+  const pid = JSON.parse(agentState()).pid
+  for (const [boot, statePid, turn] of [[T0, pid, T0 + 2], [T0 + 1, pid + 1, T0 + 2], [T0 + 1, pid, T0 + 1]]) {
+    const now = T0 + MIN
+    const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ pid: statePid, updatedAt: new Date(now).toISOString() }) })
+    fs.writeFile(row.credentialsPath + '.lock', JSON.stringify({ pid, bootedAt: boot, heartbeatAt: now }))
+    writeTranscript(fs, [assistantTurn(turn!)], now)
+    assert.equal(ownerRestartProgress(row, { configDir: CONFIG, fs, now, pidAlive: () => true, restartedAtMs: T0 }), null)
+  }
+})
+
+test('a resumed transcript refusal before or at boot does not fail the new restart', () => {
+  const state = JSON.parse(agentState({ updatedAt: new Date(T0 + MIN).toISOString() }))
+  const row = { assistantId: state.assistantId, credentialsPath: 'pairing', cwd: AVA, pluginStateDir: PLUGIN_STATE }
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: JSON.stringify(state) })
+  const boot = T0 + 1
+  fs.writeFile(row.credentialsPath + '.lock', JSON.stringify({ pid: state.pid, bootedAt: boot, heartbeatAt: T0 + MIN }))
+  for (const at of [boot - 1, boot]) {
+    writeTranscript(fs, [limitEnvelope(at, T0 + MIN)], T0 + MIN)
+    assert.equal(ownerRestartProgress(row, { configDir: CONFIG, fs, now: T0 + MIN, pidAlive: () => true, restartedAtMs: T0 }), null)
+  }
+})
+
+for (const limited of [false, true]) test(limited ? 'owner restart into a still limited account fails with its reset' : 'owner restart recognizes a working turn before a late acknowledgement', async () => {
+  const fs = agentFs()
+  const job = ownerRestartJob()
+  const backend = fakeBackend(job)
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  const pid = 7000
+  const bootedAt = T0 + 12_000
+  clock.onSleep((_ms, at) => {
+    if (at < bootedAt) return
+    live.add(pid)
+    const id = job.jobs['rst-1']!.targets[0]!.assistantId
+    fs.writeFile(`${HOME}/.bgos-agent/credentials-${id}.json.lock`, JSON.stringify({ pid, bootedAt, heartbeatAt: at }))
+    fs.writeFile(`${PLUGIN_STATE}/agent-state.json`, agentState({ pid, updatedAt: new Date(at).toISOString() }))
+    const lines = []
+    if (at >= T0 + 16_000) lines.push(ownerMessage(T0 + 16_000))
+    if (at >= T0 + 27_000) lines.push(limited ? limitEnvelope(T0 + 27_000, T0 + 3600_000) : assistantTurn(T0 + 27_000))
+    writeTranscript(fs, lines, at)
+    if (at >= T0 + 96_000) fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({
+      bootedAt: new Date(bootedAt).toISOString(), lastLiveAt: new Date(at).toISOString(),
+    }))
+  })
+  const run = rig(fs, backend, clock, PS_912, { pidAlive: (candidate: number) => live.has(candidate) })
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend, job.frames[0]!.rpcId)
+  if (limited) {
+    assert.equal(terminal.state, 'failed', terminal.message)
+    assert.equal(terminal.message, `not back: restarted via marker; still on the Claude usage limit, resets at ${new Date(T0 + 3600_000).toISOString()}`)
+    return
+  }
+  assert.equal(terminal.state, 'done', terminal.message)
+  assert.match(terminal.message, /; back, catching up$/)
+  assert.ok(clock.now() >= T0 + 27_000 && clock.now() < T0 + 75_000)
+})
+
+test('a second press on a held queue cannot use an earlier restart or answer', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  writeTranscript(fs, [limitEnvelope(T0 - 6 * MIN, T0 + MIN), enqueueLine(T0 - 5 * MIN)], T0)
+  const beacon = `${PLUGIN_STATE}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, T0)
+  const clock = fakeClock()
+  const live = liveSet(fs, clock, { launcherEndsClaude: true })
+  daemonAnswersProbe(fs, clock)
+  for (const first of [true, false]) {
+    const job = ownerRestartJob()
+    const backend = fakeBackend(job)
+    const run = rig(fs, backend, clock, PS_912, { pidAlive: (pid: number) => live.has(pid) })
+    await runWatcher(run.deps as any)
+    const result = terminalOf(backend, job.frames[0]!.rpcId)
+    assert.equal(result.state, first ? 'done' : 'failed', result.message)
+    if (!first) assert.equal(result.message, `The agent is still on the Claude usage limit, resets at ${new Date(T0 + MIN).toISOString()}`)
+    assert.equal(restartRequested(fs), first)
+    fs.rm(`${STATE_DIR}/restart-requested.json`)
+  }
+})
+
+test('a keep-alive restart alone holds the owner reservation and cannot prove a restart', async () => {
+  const id = JSON.parse(agentState()).assistantId
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState(),
+    [KEEPALIVE_STATE]: JSON.stringify({ schemaVersion: 1, agents: { [id]: { lastRestartAt: new Date(T0 - MIN).toISOString() } } }) })
+  writeTranscript(fs, [limitEnvelope(T0 - 6 * MIN, T0 + MIN), enqueueLine(T0 - 5 * MIN)], T0)
+  const beacon = `${PLUGIN_STATE}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, T0)
+  const job = ownerRestartJob()
+  const backend = fakeBackend(job)
+  const run = rig(fs, backend, fakeClock(), PS_912)
+  await runWatcher(run.deps as any)
+  assert.equal(restartRequested(fs), false)
+  assert.match(terminalOf(backend, job.frames[0]!.rpcId).message, /still on the Claude usage limit/)
+})
+
+test('an unreadable watch record logs the problem and allows the owner restart', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState() })
+  writeTranscript(fs, [limitEnvelope(T0 - 6 * MIN, T0 + MIN), enqueueLine(T0 - 5 * MIN)], T0)
+  const beacon = `${PLUGIN_STATE}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, T0)
+  const watch = `${HOME}/.bgos-agent/watcher/limit-watch.json`
+  fs.writeFile(watch, '{}')
+  const read = fs.readFile
+  fs.readFile = (path) => path === watch ? null : read(path)
+  const job = ownerRestartJob()
+  const backend = fakeBackend(job)
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, PS_912)
+  await runWatcher(run.deps as any)
+  assert.equal(restartRequested(fs), true)
+  assert.equal(terminalOf(backend, job.frames[0]!.rpcId).state, 'done')
+  assert.ok(run.logs.some((line) => /unreadable.*owner restart/i.test(line)))
+})
+
+test('a checkup restarts a held queue after the reset without pressing a key', async () => {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1 }) })
+  writeTranscript(fs, [limitEnvelope(T0 - 7 * MIN, T0 - MIN), enqueueLine(T0 - 6 * MIN)], T0)
+  const beacon = `${PLUGIN_STATE}/channel-beacon.json`
+  fs.writeFile(beacon, '{}')
+  fs.touch(beacon, T0)
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, PS_912, { alive: [3000, 5912, 4912] })
+  await runWatcher(run.deps as any)
+  const result = terminalOf(backend)
+  assert.ok(result.actions.some((a: any) => a.cause === 'held_queue' && a.did === 'restart_agent' && a.outcome === 'fixed'), result.message)
+  assert.equal(restartRequested(fs), true)
+  assert.ok(!run.execCalls.some((call) => call.includes('send-keys')))
+  const watch = JSON.parse(fs.readFile(`${HOME}/.bgos-agent/watcher/limit-watch.json`) ?? '{}')
+  assert.equal(watch.agents?.[JSON.parse(agentState()).assistantId]?.lastQueueRestartAt, new Date(T0).toISOString())
 })
 
 test('item 5: only an owner job, for exactly one agent on this computer; anything else is refused and touches nothing', async () => {
@@ -1232,7 +1476,7 @@ test('item 5: a reconcile frame carrying the restart intent is the owner Restart
   assert.equal(planned, false)
 })
 
-test('item 5: a frozen claude is woken and ended, and when the launcher does not bring it back the agent is started again', async () => {
+for (const limited of [false, true]) test(limited ? 'a fallback start reports a usage refusal without a known reset' : 'item 5: a frozen claude is woken and ended, and when the launcher does not bring it back the agent is started again', async () => {
   // The launcher has used its 3 relaunches this hour and ignores the marker: claude stays frozen.
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ turnInFlight: true, pendingMessages: 1 }) })
   writeTranscript(fs, [assistantTurn(T0 - 30 * MIN), ownerMessage(T0 - 20 * MIN)], T0 - 20 * MIN)
@@ -1259,11 +1503,25 @@ test('item 5: a frozen claude is woken and ended, and when the launcher does not
   // Only a session started by the second step answers the probe.
   clock.onSleep((_ms, nowMs) => {
     if (run.spawns.length > 0 && fs.files.has(`${STATE_DIR}/probe-requested.json`)) {
+      if (limited) {
+        const state = JSON.parse(agentState({ updatedAt: new Date(nowMs).toISOString() }))
+        live.add(state.pid)
+        fs.writeFile(`${HOME}/.bgos-agent/credentials-${state.assistantId}.json.lock`, JSON.stringify({ pid: state.pid, bootedAt: nowMs - 1, heartbeatAt: nowMs }))
+        fs.writeFile(`${PLUGIN_STATE}/agent-state.json`, JSON.stringify(state))
+        writeTranscript(fs, [apiError(nowMs, 'rate_limit', 'Usage limit reached')], nowMs)
+        return
+      }
       fs.writeFile(`${PLUGIN_STATE}/channel-live.json`, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(nowMs).toISOString() }))
     }
   })
   await runWatcher(run.deps as any)
   const terminal = terminalOf(backend, 'rst-1')
+  if (limited) {
+    assert.equal(terminal.state, 'failed', terminal.message)
+    const start = terminal.steps.find((step: any) => step.kind === 'start_agent')
+    assert.equal(terminal.message, `not back: started again ${start.message}; still on the Claude usage limit`)
+    return
+  }
   assert.equal(terminal.state, 'done', JSON.stringify(terminal))
   assert.deepEqual(terminal.steps.map((s: any) => `${s.kind}:${s.state}`), ['observe:ok', 'restart_agent:ok', 'verify_agent:skipped', 'start_agent:ok', 'verify_agent:ok'])
   assert.deepEqual(run.kills, [

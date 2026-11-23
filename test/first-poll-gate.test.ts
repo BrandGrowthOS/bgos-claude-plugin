@@ -352,6 +352,10 @@ test('non-boot polls keep the delta path', () => {
 // module load), so pin the load-bearing call sites textually, per this repo's
 // convention (see poll-core.test.ts).
 
+test('boot recovery passes its interrupted turn decision into delivery', () => {
+  assert.match(serverSource, /privateTurns\.deliver\(\{ content, chatId, recoveryWithoutReply: recoveredWithoutReply\.has\(msg\.message\.id\)/)
+})
+
 const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
 
 test('server.ts no longer holds the cursor map in memory only', () => {

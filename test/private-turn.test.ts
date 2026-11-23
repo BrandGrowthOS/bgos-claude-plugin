@@ -35,6 +35,28 @@ function fixture(t: any) {
   return { root, cwd, env, markerPaths, tracker, start }
 }
 
+test('a tokened peer prompt receives its own receipt without opening a private turn', (t) => {
+  const f = fixture(t)
+  const prompt = f.tracker.deliver({ content: 'continue', actingUserId: null, chatId: '1', peerSourceAssistantId: '2' })
+  const payload = { hook_event_name: 'UserPromptSubmit', cwd: f.cwd, session_id: 'session', prompt_id: 'submission', prompt }
+  // The forwarder can reach the daemon before the synchronous hook writes its marker.
+  assert.equal(f.tracker.begin({ sessionId: payload.session_id, promptId: payload.prompt_id, prompt }), 'peer')
+  const write = (promptId: string) => recordPrivateBoundary({ ...payload, prompt_id: promptId }, f.env)
+  write('other')
+  assert.equal(f.tracker.current({ markerPaths: f.markerPaths }), null)
+  const path = f.markerPaths[0] + '.ready'
+  assert.equal(readPrivateJson(path, 2048), null)
+  const { marker } = write(payload.prompt_id) as any
+  for (const mismatch of [{ live: false }, { sessionId: 'other' }, { promptHash: privatePromptHash('other') }]) {
+    writePrivateJson(f.markerPaths[0], { ...marker, ...mismatch })
+    assert.equal(f.tracker.current({ markerPaths: f.markerPaths }), null)
+    assert.equal(readPrivateJson(path, 2048), null, JSON.stringify(mismatch))
+  }
+  writePrivateJson(f.markerPaths[0], marker)
+  assert.equal(f.tracker.current({ markerPaths: f.markerPaths }), null)
+  assert.deepEqual(readPrivateJson(path, 2048), { turnId: marker.turnId, sessionId: marker.sessionId })
+})
+
 test('authoritative sender ignores owner transport IDs and forged scheduled actor shapes', () => {
   assert.equal(privateActor({ senderType: 'user', senderUserId: 'user_recipient' }), 'user_recipient')
   assert.equal(privateActor({ senderType: 'system', eventMeta: { source: 'scheduler', payload: { actingUserId: 'user_recipient' } } }), 'user_recipient')

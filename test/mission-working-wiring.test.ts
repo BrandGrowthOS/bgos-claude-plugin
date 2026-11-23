@@ -214,6 +214,7 @@ for (const delayed of [false, true]) {
 }
 
 test('the actual admitted hook handler refreshes selected goals and clears them on Stop', async () => {
+  const toolSessions: string[] = []
   let now = 1_000_000
   const writes: boolean[] = []
   const pending: Promise<void>[] = []
@@ -228,7 +229,7 @@ test('the actual admitted hook handler refreshes selected goals and clears them 
       missionWorking: { onHook: (...input: any[]) => { const p = (tracker.onHook as any)(...input); pending.push(p); return p } },
       sessionBinder: { noteHookSession: () => {} }, lastHookEventAtMs: null, hookEndedSessionId: null,
       liveSessionId: 'session-a', liveSessionSeenAtMs: 0, floorEntrySession: () => '', floorEntrySessionWritten: '', markFloorAttachedIfHolder: () => {},
-      privateTurns: { end: () => {} }, hookTurn: {}, applyHookEventToTurn: () => ({ next: {}, effects: [] }),
+      privateTurns: { end: () => {}, noteRetryTool: (session: string) => toolSessions.push(session) }, hookTurn: {}, applyHookEventToTurn: () => ({ next: {}, effects: [] }),
       sessionWakePending: () => null, sessionWakeAtMs: null,
       hookLineAt: null, hookLineStartedAt: null, runHookEffects: () => {}, agentStatePublisher: { tick: () => {} }, publishBrowserPrivateTurn: () => {},
       // A tool hook line also goes to the teach window (lib/skill-origins.ts noteSkillToolUse).
@@ -240,6 +241,7 @@ test('the actual admitted hook handler refreshes selected goals and clears them 
   handle('Stop')
   await Promise.all(pending.splice(0))
   assert.deepEqual(writes, [true, true, false])
+  assert.deepEqual(toolSessions, ['session-a'])
 })
 
 test('the actual PATCH transport preserves HTTP 409 for the hook tracker', async () => {

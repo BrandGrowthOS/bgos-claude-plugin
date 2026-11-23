@@ -95,8 +95,19 @@ function liftIfPresent(header: string): string {
 
 type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean }
 
+test('a confirmed reply records only its explicit parent', async () => {
+  const chat = '33001'
+  const pending = 1
+  const h = harness({ declared: () => [], pending: [chat, pending] })
+  await h.reply(chat, 'progress')
+  assert.deepEqual(h.handled, [])
+  await h.reply(chat, 'answer', pending)
+  assert.deepEqual(h.handled, [`reply:${pending}`])
+})
+
 interface Harness {
-  reply(chatId: string, text: string): Promise<ToolResult>
+  reply(chatId: string, text: string, replyTo?: number): Promise<ToolResult>
+  handled: string[]
   /** send_to_peer, the backend answering with this side thread and conversation. */
   sendToPeer(sideThreadChatId: string, conversationId: number, turnState?: string): Promise<ToolResult>
   closedPeerChats: Set<string>
@@ -110,6 +121,7 @@ function harness(opts: {
   declared: () => readonly string[]
   failSend?: boolean
   peerChats?: string[]
+  pending?: [string, number]
   closedChats?: string[]
 }): Harness {
   const source = [
@@ -133,6 +145,7 @@ function harness(opts: {
     }
   }
 
+  const handled: string[] = []
   const sent: string[] = []
   const logs: string[] = []
   const closedPeerChats = new Set<string>(opts.closedChats ?? [])
@@ -151,7 +164,8 @@ function harness(opts: {
     ASSISTANT_ID: '947',
     resolveAuthorizedChat: (id: string) => ({ ok: true, chatId: id, sessionHandle: undefined }),
     peerReplyRefusedChats: new Set<string>(),
-    pendingInbounds: new Map<string, unknown>(),
+    privateTurns: { noteHandled: (key: string) => handled.push(key) },
+    pendingInbounds: new Map(opts.pending ? [[opts.pending[0], { messageId: opts.pending[1] }]] : []),
     meetingIdByChatId: new Map<string, number>(),
     peerConvByChat,
     peerSideThreadChats: new Set<string>(),
@@ -199,7 +213,8 @@ function harness(opts: {
   }
 
   return {
-    reply: (chatId, text) => lifted.replyTool({ chat_id: chatId, text }),
+    handled,
+    reply: (chatId, text, replyTo) => lifted.replyTool({ chat_id: chatId, text, reply_to_id: replyTo }),
     sendToPeer: (sideThreadChatId, conversationId, turnState) => {
       peerSendResult = { sideThreadChatId: Number(sideThreadChatId), conversationId, message: { id: 9100 } }
       return lifted.sendToPeerTool({

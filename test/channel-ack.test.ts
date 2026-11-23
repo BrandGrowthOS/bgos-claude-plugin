@@ -31,6 +31,17 @@ const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf
 
 // ── Pure pieces ──────────────────────────────────────────────────────────────
 
+test('a daemon at or before the requested boot leaves the probe on disk', () => {
+  const start = serverSource.indexOf('let request: string | null = null', serverSource.indexOf('const sendPendingProbe'))
+  const end = serverSource.indexOf('const saysAfterRestart', start)
+  assert.ok(start >= 0 && end > start)
+  const body = serverSource.slice(start, end).replace(': string | null', '')
+  const consume = new Function('DAEMON_START_MS', 'readFileSync', 'PROBE_REQUEST_PATH', body + '\nreturn true')
+  for (const boot of [9, 10, 11]) {
+    assert.equal(Boolean(consume(boot, () => JSON.stringify({ afterBootMs: 10 }), 'probe')), boot > 10)
+  }
+})
+
 test('probeRequestPath lives in the launcher state dir, never the plugin state dir', () => {
   assert.equal(probeRequestPath('/home/x', '871'), join('/home/x', '.bgos-agent', '871', PROBE_REQUEST_FILE))
   assert.equal(probeRequestPath('/home/x', 871), join('/home/x', '.bgos-agent', '871', PROBE_REQUEST_FILE))
@@ -143,4 +154,6 @@ test('the probe poll: a 3s unref timer that rate-limits, unlinks the file, and p
   assert.ok(block.indexOf('probeSaysAfterRestart(') < block.indexOf('unlinkSync(PROBE_REQUEST_PATH)'))
   assert.ok(block.includes('afterRestart: saysAfterRestart'), block)
   assert.ok(!block.includes('afterRestart: true'), 'never hard coded')
+  const firstProbe = serverSource.indexOf('await sendPendingProbe()', start)
+  assert.ok(firstProbe > start && firstProbe < serverSource.indexOf("await phase('boot poll sweep'"))
 })
