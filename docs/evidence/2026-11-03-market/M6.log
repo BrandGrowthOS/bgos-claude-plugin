@@ -17,18 +17,18 @@ test at test/marketplace-attach.e2e.test.ts:2:2907
   [bgos] git self-updater not armed: marketplace install (updates go through `claude plugin update`)
   [bgos] supervisor.json not written at boot (no-confident-authority)
   [bgos] Starting BGOS channel plugin...
-  [bgos] Credential source: pairing-file at /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-agent/credentials-42.json; assistantId: 42; via: env-assistant; cwd: /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/work
-  [bgos] WARN identity here rests ENTIRELY on the environment: 2 credential files in /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-agent and no .bgos-agent-id folder pin. Removing the env pin would not degrade this agent, it would refuse to boot. Write a .bgos-agent-id containing the assistant id to make it survive that.
+  [bgos] Credential source: pairing-file at /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-agent/credentials-42.json; assistantId: 42; via: env-assistant; cwd: /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/work
+  [bgos] WARN identity here rests ENTIRELY on the environment: 2 credential files in /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-agent and no .bgos-agent-id folder pin. Removing the env pin would not degrade this agent, it would refuse to boot. Write a .bgos-agent-id containing the assistant id to make it survive that.
   [bgos] Backend: http://127.0.0.1:9/api/v1
   [bgos] User: u1, Assistant: 42
   [bgos] Auto-approve: false
   [bgos] Permission requests depend on the BGOS backend half (BGOS #1556: the per agent wait clamp and the approval push on POST /messages). Without it a request waits the full 1800s offer and sends no device notification.
   [bgos] Require confirmed dispatch: false
-  [bgos] Log file: /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-agent/logs/bgos-plugin-42.log
-  [bgos] Chat cursor store: /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-plugin-state/42/chat-cursors.json (first run, no cursor file; recent-window backlog gate active)
+  [bgos] Log file: /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-agent/logs/bgos-plugin-42.log
+  [bgos] Chat cursor store: /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-plugin-state/42/chat-cursors.json (first run, no cursor file; recent-window backlog gate active)
   [bgos] MCP server connected over stdio
-  [bgos] floor: the blocking floor hook is NOT registered for this session (no blocking hoai-floor-hook.mjs entry in /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.claude/plugins/cache/hoai/hoai/9.9.9/hooks/hooks.json, /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/work/.claude/settings.local.json, /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/work/.claude/settings.json, /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.claude/settings.json); the floor capability (hard_floor) is NOT declared, so the agent is not told a hook stops a listed action. Relaunch through a launcher to write it
-  [bgos] private turn: the private turn hook is NOT registered for this session (no hoai-private-turn-hook.mjs UserPromptSubmit entry in /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.claude/plugins/cache/hoai/hoai/9.9.9/hooks/hooks.json, /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/work/.claude/settings.local.json, /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/work/.claude/settings.json, /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.claude/settings.json). Boards, schedule and browser tools will refuse every call until it is: a clone's daemon writes it into its workspace at boot (the "hooks:" line), and it loads when this agent restarts
+  [bgos] floor: the blocking floor hook is NOT registered for this session (no blocking hoai-floor-hook.mjs entry in /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.claude/plugins/cache/hoai/hoai/9.9.9/hooks/hooks.json, /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/work/.claude/settings.local.json, /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/work/.claude/settings.json, /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.claude/settings.json); the floor capability (hard_floor) is NOT declared, so the agent is not told a hook stops a listed action. Relaunch through a launcher to write it
+  [bgos] private turn: the private turn hook is NOT registered for this session (no hoai-private-turn-hook.mjs UserPromptSubmit entry in /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.claude/plugins/cache/hoai/hoai/9.9.9/hooks/hooks.json, /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/work/.claude/settings.local.json, /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/work/.claude/settings.json, /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.claude/settings.json). Boards, schedule and browser tools will refuse every call until it is: a clone's daemon writes it into its workspace at boot (the "hooks:" line), and it loads when this agent restarts
   [bgos] startup phase start: capability-canon warm-up
   [bgos] person lanes: this host and CLI can run locked lanes; declaring person_lanes
   [bgos] startup phase start: slash-command registry
@@ -38,7 +38,7 @@ test at test/marketplace-attach.e2e.test.ts:2:2907
   [bgos] startup phase ok: slash-command registry (5ms)
   [bgos] browser host: off (HOAI_BROWSER_HOST=off); not started
   [bgos] pid 25405: channel loaded in this session: unknown (no claude process above this daemon)
-  [bgos] pid 25405: pairing lock acquired (unlocked) at /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-agent/credentials-42.json.lock; this daemon owns the channel for this pairing
+  [bgos] pid 25405: pairing lock acquired (unlocked) at /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-agent/credentials-42.json.lock; this daemon owns the channel for this pairing
   [bgos] startup phase start: discover chats
   [bgos] slash-command sync failed: TypeError: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
   [bgos] Failed to discover chats: TypeError: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
@@ -65,7 +65,7 @@ test at test/marketplace-attach.e2e.test.ts:2:2907
   [bgos] marketplace latest-version refresh armed (local now: unknown; network refresh 30s after boot, then every 6h)
   [bgos] version heartbeat armed (v0.82.0, every 6h; readiness re-sent within a minute of a change; session status within a minute of a change and every 2 min while busy)
   [bgos] auth recheck enabled (every 600s + credentials-file watch)
-  [bgos] hook intake: draining /Users/kc/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-plugin-state/hooks (this daemon holds the pairing lock)
+  [bgos] hook intake: draining /Users/you/hoai-work/mbmarket/.tmp/hoai-scope-e2e-QvNcLm/.bgos-plugin-state/hooks (this daemon holds the pairing lock)
   [bgos] identity: integrations/me unavailable (TypeError: ECONNREFUSED: Unable to connect. Is the computer able to access the url?); the identity file stays as it is
   [bgos] always-on reconcile error: TypeError: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
   [bgos] the launching Claude Code session closed our input, so it is gone: shutting down
@@ -125,8 +125,8 @@ test at test/marketplace-attach.e2e.test.ts:2:2907
   + ]
   - []
 
-      at assertDormant (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:149:10)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:196:5)
+      at assertDormant (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:149:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:196:5)
       at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
@@ -162,7 +162,7 @@ test at test/marketplace-attach.test.ts:1:1775
 
   'attach' !== 'refuse'
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:44:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.test.ts:44:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.start (node:internal/test_runner/test:1096:17)

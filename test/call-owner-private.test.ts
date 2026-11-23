@@ -23,6 +23,7 @@
  *
  * Run with: npx tsx --test test/call-owner-private.test.ts
  */
+import { createScheduleGrantRuns, requireBoardsTurn } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -103,7 +104,7 @@ test('the admission gate is turn aware for call_owner: a verified turn frozen, a
     const run = (turn: unknown, senders: { prompt: string | null; people: string[] }) => execute(admissionSource + '\nreturn privateCall;', {
       req: { params: { name } }, lockHeld: true, privateTurns: { current: () => turn, turnSenders: () => senders }, PRIVATE_MARKER_PATHS: [],
       PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', log: () => {},
-      requirePrivateTurn, turnAwarePrivateTurn,
+      requirePrivateTurn, turnAwarePrivateTurn, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
     })
     const frozen = await run({ actingUserId: 'user_recipient', chatId: '20', turnId: 't' }, { prompt: 'user_recipient', people: [] })
     assert.deepEqual([frozen.actingUserId, frozen.chatId, frozen.headers], ['user_recipient', '20', { 'X-BGOS-Acting-User': 'user_recipient' }], name)

@@ -7,6 +7,13 @@
  *                              register the host with HOAI, show the host
  *                              fingerprint on THIS terminal and record the
  *                              owner's pin confirmation.
+ *   hoai vault-host auto       zero setup, no terminal needed: make this
+ *                              machine's own keys if it has none and offer the
+ *                              public halves to HOAI, which finishes the setup
+ *                              in the owner's app with no question. The daemon
+ *                              does this by itself; the command is for a
+ *                              person who wants to see the state. Prints a
+ *                              status word, never a fingerprint or a key.
  *   hoai vault-host status     show the state and the fingerprint again.
  *   hoai vault-host --new-signing-key
  *                              replace the stored agent signing key (after the
@@ -38,6 +45,7 @@ import {
   showFingerprintOnTerminal,
   vaultHostDir,
 } from '../lib/vault-host.mjs'
+import { ensureAutoHost } from '../lib/vault-host-auto.mjs'
 
 const NEED_TERMINAL =
   'hoai vault-host must run in a terminal on this agent machine. The host fingerprint is shown only there, never in a pipe, a log or chat.\n'
@@ -49,7 +57,7 @@ export function parseArgs(argv) {
     if (a === '--assistant') out.assistant = argv[++i] ?? ''
     else if (a === '--state-dir') out.stateDir = argv[++i] ?? ''
     else if (a === '--new-signing-key') out.newSigningKey = true
-    else if (a === 'status' || a === 'setup') out.command = a
+    else if (a === 'status' || a === 'setup' || a === 'auto') out.command = a
     else out.error = `unknown argument: ${a}`
   }
   return out
@@ -120,6 +128,25 @@ function askLine(prompt) {
   })
 }
 
+/** What each state reads as on a command line. Exported for its test. */
+export const AUTO_TEXT = {
+  installed: 'This computer is set up for the vault. Nothing else to do.',
+  offered: 'This computer offered its vault key. HOAI finishes the setup by itself when the owner has the app open with this agent\'s vault on. That needs HOAI 5.28.3 or later on the owner\'s side. With an older app nothing will finish it: then run `hoai vault-host --new-signing-key` here for the older setup, with a signing key the owner mints in HOAI.',
+  change_offered: 'This computer offered a NEW vault key. In HOAI 5.28.3 or later the owner sees "this computer changed" and taps Use the new computer. With an older app nothing will show: then run `hoai vault-host --new-signing-key` here for the older setup.',
+  off: 'This HOAI server does not set vault hosts up by itself yet.',
+  disabled: 'Automatic vault host setup is switched off on this machine (HOAI_VAULT_AUTO_HOST).',
+  unavailable: 'HOAI could not be reached. Nothing was changed.',
+  problem: 'This computer could not keep its vault key file private to this account, so nothing was set up.',
+}
+
+/** Zero setup from the command line: codes and fixed words only. */
+async function runAuto(agent, stateDir, security) {
+  const result = await ensureAutoHost({
+    stateDir, assistantId: agent.assistantId, ownerId: agent.ownerId, apiBase: agent.apiBase, pairingToken: agent.pairingToken, security,
+  })
+  return result
+}
+
 const STATUS_TEXT = {
   no_identity: 'No agent signing key is stored yet.',
   unregistered: 'The host key is not registered with HOAI yet.',
@@ -132,6 +159,17 @@ export async function main(argv = process.argv.slice(2), { security = undefined 
   if (args.error) {
     process.stderr.write(`[hoai vault-host] ${args.error}\n`)
     return 2
+  }
+  if (args.command === 'auto') {
+    // No terminal needed: nothing secret is shown and nothing is asked.
+    const agent = resolveAgent({ assistant: args.assistant })
+    if (agent.error) {
+      process.stderr.write(`[hoai vault-host] ${agent.error}\n`)
+      return 1
+    }
+    const result = await runAuto(agent, args.stateDir || agent.stateDir, security).catch(() => ({ status: 'unavailable' }))
+    process.stderr.write(`${AUTO_TEXT[result.status] ?? AUTO_TEXT.unavailable}\n`)
+    return ['installed', 'offered', 'change_offered'].includes(result.status) ? 0 : 1
   }
   if (!process.stdin.isTTY || !process.stderr.isTTY) {
     process.stderr.write(NEED_TERMINAL)
@@ -156,6 +194,17 @@ export async function main(argv = process.argv.slice(2), { security = undefined 
       return 1
     }
     let record = await loadOrCreateHostKey(stateDir, agent.assistantId, undefined, security)
+    if (!record.signingSecret && !args.newSigningKey) {
+      // Zero setup first: where HOAI takes host offers there is nothing to
+      // paste, compare or type. Only a server without it falls through to the
+      // older steps below.
+      const auto = await runAuto(agent, stateDir, security).catch(() => ({ status: 'unavailable' }))
+      if (['installed', 'offered', 'change_offered'].includes(auto.status)) {
+        process.stderr.write(`${AUTO_TEXT[auto.status]}\n`)
+        return 0
+      }
+      record = await loadOrCreateHostKey(stateDir, agent.assistantId, undefined, security)
+    }
     if (!record.signingSecret || args.newSigningKey) {
       process.stderr.write(
         'This agent needs its own Ed25519 signing key, minted by the owner for this agent in HOAI.\n' +

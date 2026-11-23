@@ -25,6 +25,7 @@
  *
  * Run with: npx tsx --test test/plan-tap-authority.test.ts
  */
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -38,6 +39,7 @@ import { LoginController } from '../lib/auth-login.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { createPostedButtons, createPrivateTurnTracker, privateTapCard } from '../lib/private-turn.mjs'
+import { isHumanClick } from '../lib/skill-origins.ts'
 
 // Normalized to LF: the working tree is CRLF on a Windows checkout.
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
@@ -312,6 +314,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     ownerLaneVerdict,
     ownerAnnounceRefused,
     noteLaneMisroute: () => undefined,
+    // No group lanes here: no tap is a group's.
+    routeGroupStreamTap: () => false,
     lanesOnForThisAgent: false,
     chatOwnership: { isOthers: () => false },
     USER_ID: OWNER,
@@ -319,7 +323,9 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     // The daemon's own tracker (server.ts): a tap by anyone but the owner is noted with it (70f1898b).
     privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }),
     // Every tap site announces through it (4bf28148): only the owner's own stream tap in its window opens a turn.
-    privateTapCard,
+    privateTapCardNoting: privateTapCard,
+    // The click row's humanPrincipal, read as server.ts reads it at every tap site (lib/skill-origins.ts).
+    isHumanClick,
     // The cards this daemon life posted (server.ts): none here, so no tap of this rig opens a private turn.
     postedButtons: createPostedButtons(),
     streamAuthority: {},
@@ -335,6 +341,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     pendingPermissions: new Map(),
     senderUserIdOf: (m: unknown) => permissionRelay.senderUserIdCandidate(m) ?? OWNER,
     trackMessageOperation: (op: () => Promise<unknown>) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: StreamHarness['notes'][number]) => {
         notes.push(n)

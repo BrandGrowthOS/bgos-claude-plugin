@@ -1,0 +1,57 @@
+THREADCRASH round 2 validation (2026-11-09)
+
+Environment: macOS, Node 25.6.1, bun 1.3.10, Claude Code 2.1.319.
+
+Thread suites:
+npx tsx --test test/thread-lanes.test.ts test/thread-transcript.test.ts test/thread-repo-size.test.ts test/threads-cli.test.ts test/aside-fork.test.ts test/thread-lane-goal.test.ts test/thread-lane-sandbox.test.ts test/group-lanes.test.ts test/thread-lanes.git.test.ts test/lane-process.test.ts test/stream-json-child.test.ts test/thread-lane-args.test.ts test/thread-lanes-wiring.test.ts test/group-threads-wiring.test.ts test/voice-rpc-threads.test.ts test/group-lane-args.test.ts test/group-lane-root.test.ts
+Result: 378 tests, 376 passed, 2 skipped, 0 failed. The skipped tests are the
+separate opt-in real CLI goal and sandbox probes; the required live gate ran.
+
+HOAI_LIVE_THREAD=1 npx tsx --test test/thread-live.e2e.test.ts
+Result: 5 passed, 0 skipped, 0 failed. The fifth case appends an active
+goal_status row parented to the last main transcript uuid, opens a thread,
+asserts exactly 2 API requests with neither naming the condition, and checks
+that the parent transcript is unchanged.
+
+npx tsc --noEmit
+Result: exit 0, no diagnostics.
+
+Mutation controls ran one at a time in an isolated git archive export with
+the changed source and tests copied in. No production file in the working
+tree was mutated. The unmodified THREADCRASH tests passed first.
+
+Unit command:
+npx --no-install tsx --test --test-reporter=tap --test-name-pattern=THREADCRASH test/thread-lanes.test.ts
+
+All 12 mutants named in findings 4 and 5 fail, each with exit 1:
+
+1. Ignore transcripts in clearForkGoal: the later fork start test fails its
+   clearGoal call assertion. The fork's whole read throws and is recorded,
+   so the catch cannot hide a regression back to reading it into memory.
+2. Remove safely from onExit: the exit callback fault escapes.
+3. Remove safely from the turn timer: the turn timer fault escapes.
+4. Remove safely from the idle timer: the idle timer fault escapes.
+5. Omit dropCopiedMain after a close during the copy: the copy remains.
+6. Omit failed-copy cleanup: the partial transcript remains.
+7. Replace copy_failed/NO_COPY with no_session/NO_SESSION: the failure
+   message and code assertions fail.
+8. Treat a thrown size measurement as small: a worktree is made.
+9. Omit rmrf after failed worktree remove: the half folder remains.
+10. Ignore stopping in neverStarted: an exit during an intentional stop
+    before init is misreported as a failure to open. Node can emit an error
+    synchronously from child.kill; spawnStreamJson reports errors through
+    onExit as well. The test reproduces that callback before kill returns.
+11. Leave plain-folder mkdir unguarded: the working copy failure becomes
+    an unexpected error instead of worktree_failed.
+12. Replace errorName with describeError in the unexpected start reply:
+    the exact reply assertion fails because the private diagnostic leaks.
+
+Additional prompt control: omit agentFolder from threadTurnPrompt wiring.
+Result: exit 1; the large repository test rejects the misleading prompt.
+
+Live goal wiring control: replace server.ts copyClearingGoal with an async
+plain copyFileSync and run only the fifth case:
+HOAI_LIVE_THREAD=1 npx --no-install tsx --test --test-reporter=tap --test-name-pattern=THREADGOAL test/thread-live.e2e.test.ts
+Result: exit 1 at the exact API request count assertion, actual 3, expected 2.
+
+All named mutants are pinned; none is left as an equivalence exception.

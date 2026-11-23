@@ -56,6 +56,7 @@ import {
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { scanText } from './secret-scan.ts'
+import type { SkillOrigin } from './skill-origins.ts'
 
 export type SkillScope = 'agent' | 'repo' | 'computer' | 'synced' | 'plugin' | 'managed'
 export type SkillShareBlock = 'runs_commands' | 'too_large' | 'binary' | 'secret' | 'scope'
@@ -68,6 +69,7 @@ export type SkillItem = {
   provenance: 'local' | 'plugin'
   removable: boolean
   scope: SkillScope
+  origin?: SkillOrigin
   path: string
   hiddenBy?: SkillScope
   files?: number

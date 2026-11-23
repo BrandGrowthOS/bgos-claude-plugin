@@ -82,6 +82,47 @@ export function isAdvance(head, base) {
 }
 
 /**
+ * The version in the newest CHANGELOG heading: the first line that starts with "## " and a version
+ * number, so "## Unreleased" is skipped. Null when no heading names a version.
+ */
+export function changelogHeadVersion(text) {
+  const m = /^## (\d+\.\d+\.\d+)(?=[\s(]|$)/m.exec(String(text ?? ''))
+  return m ? m[1] : null
+}
+
+/**
+ * Every place this repo keeps the version, read from the files' text: package.json, the plugin
+ * manifest, the lock file twice (its own version and its root package's) and the newest CHANGELOG
+ * heading. A place that cannot be read is null.
+ */
+export function shippedVersions({ pkg, manifest, lock, changelog }) {
+  const json = (text) => {
+    try {
+      return JSON.parse(text)
+    } catch {
+      return null
+    }
+  }
+  const str = (v) => (typeof v === 'string' ? v : null)
+  const lockJson = json(lock)
+  return {
+    'package.json': str(json(pkg)?.version),
+    '.claude-plugin/plugin.json': str(json(manifest)?.version),
+    'package-lock.json version': str(lockJson?.version),
+    'package-lock.json packages[""].version': str(lockJson?.packages?.['']?.version),
+    'CHANGELOG.md newest heading': changelogHeadVersion(changelog),
+  }
+}
+
+/** The places whose version is not package.json's, or could not be read. Empty when all agree. */
+export function versionDisagreements(versions) {
+  const want = versions['package.json']
+  return Object.entries(versions)
+    .filter(([, v]) => v === null || v !== want)
+    .map(([name]) => name)
+}
+
+/**
  * @param {object} input
  * @param {string} input.headPkg        package.json version on the branch
  * @param {string} input.headManifest   .claude-plugin/plugin.json version on the branch

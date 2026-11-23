@@ -88,6 +88,8 @@ export interface AgentState {
   /** Thread turns, their background steps and By the way forks: what an update's restart would stop. */
   threadWork: number
   lastActivityAt: string | null
+  /** When the first owner message the daemon still owes a reply to reached it (helperwedge finding 3). */
+  ownerWaitingSince: string | null
   sessionId: string | null
   updatedAt: string
 }
@@ -109,6 +111,8 @@ export interface AgentStateSnapshot {
   threadWork?: number
   /** Every activity time the daemon knows (epoch ms; null when never). */
   activityAtMs: Array<number | null | undefined>
+  /** oldestOwnerWaitMs over the pending inbounds: null when no owner message is owed. */
+  ownerWaitingSinceMs?: number | null
   sessionId: string | null | undefined
 }
 
@@ -163,9 +167,28 @@ export function buildAgentState(
     activeOperations: count(input.activeOperations),
     threadWork: count(input.threadWork),
     lastActivityAt: isoOrNull(input.lastActivityAtMs),
+    ownerWaitingSince: isoOrNull(input.ownerWaitingSinceMs),
     sessionId: session && isSessionIdLike(session) ? session : null,
     updatedAt: isoOrNull(input.nowMs) ?? new Date(0).toISOString(),
   }
+}
+
+/**
+ * Since when the daemon has owed the OWNER a reply: the first unanswered owner message of the oldest
+ * chat (`firstTs`, kept when a newer message in the same chat replaces the entry; `ts` for an entry
+ * from before that field). A peer's or the system's message is not the owner waiting. Null when
+ * nothing is owed. The watcher's check up reads it as the delivery a frozen claude never recorded
+ * (the guide's stop then send: no queue line, no user entry; helperwedge finding 3).
+ */
+export function oldestOwnerWaitMs(entries: Iterable<{ ts?: unknown; firstTs?: unknown; ownerInbound?: unknown }>): number | null {
+  let oldest: number | null = null
+  for (const entry of entries) {
+    if (!entry || entry.ownerInbound !== true) continue
+    const at = typeof entry.firstTs === 'number' && Number.isFinite(entry.firstTs) ? entry.firstTs : entry.ts
+    if (typeof at !== 'number' || !Number.isFinite(at)) continue
+    if (oldest === null || at < oldest) oldest = at
+  }
+  return oldest
 }
 
 /** Everything but `updatedAt`: two states with the same signature are the

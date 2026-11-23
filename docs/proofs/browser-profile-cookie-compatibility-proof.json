@@ -217,7 +217,7 @@
       ],
       "exactRestore": true
     },
-    "native144Failure": "AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n... Skipped lines\n\n  [\n    {\n      domain: 'fixture.invalid',\n      expires: -1,\n      httpOnly: true,\n...\n      sameSite: 'Lax',\n+     secure: true,\n-     secure: false,\n      session: true,\n      sourcePort: 62443,\n      sourceScheme: 'Secure',\n      value: 'DUMMY_ONLY'\n    }\n\n    at C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\frontend\\electron-app\\agent-browser\\dev\\profile-cookie-roundtrip.cjs:10:841",
+    "native144Failure": "AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n... Skipped lines\n\n  [\n    {\n      domain: 'fixture.invalid',\n      expires: -1,\n      httpOnly: true,\n...\n      sameSite: 'Lax',\n+     secure: true,\n-     secure: false,\n      session: true,\n      sourcePort: 62443,\n      sourceScheme: 'Secure',\n      value: 'DUMMY_ONLY'\n    }\n\n    at C:\\Users\\you\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\frontend\\electron-app\\agent-browser\\dev\\profile-cookie-roundtrip.cjs:10:841",
     "native153Failure": "AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n... Skipped lines\n\n  [\n    {\n      domain: 'fixture.invalid',\n      expires: -1,\n      httpOnly: true,\n...\n      sameSite: 'Lax',\n+     secure: true,\n-     secure: false,\n      session: true,\n      sourcePort: 62443,\n      sourceScheme: 'Secure',\n      value: 'DUMMY_ONLY'\n    }\n\n    at file:///proof/cookie-compat.Jci3QH/scripts/probe-browser-profile-cookies.mjs:10:709"
   },
   "touchedTests": {

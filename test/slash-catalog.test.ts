@@ -99,6 +99,8 @@ test('registered native command becomes an actionable directive, not a bare slas
     commandArgs: 'project alpha',
     sourceContent: '/model project alpha',
     registry,
+    // The owner's own turn: every entry here but the open built ins is owner only.
+    ownerTurn: true,
   })
 
   assert.notEqual(delivery.content, '/model project alpha')
@@ -125,6 +127,8 @@ test('wire registry preserves native hyphen and colon names and maps the local b
     commandArgs: 'dark mode',
     sourceContent: '/feature-dev:feature-dev dark mode',
     registry: prepared.registry,
+    // The owner's own turn: every entry here but the open built ins is owner only.
+    ownerTurn: true,
   })
 
   assert.deepEqual(prepared.wireCommands, [{
@@ -157,6 +161,8 @@ test('case normalization collisions resolve only to the command actually selecte
     commandName: 'feature-dev',
     commandArgs: '',
     registry: prepared.registry,
+    // The owner's own turn: every entry here but the open built ins is owner only.
+    ownerTurn: true,
   })
 
   assert.equal(prepared.dropped, 1)
@@ -500,6 +506,8 @@ test('/help carries the real catalog, so the model is not asked to list commands
     commandArgs: '',
     registry,
     legacyAliases,
+    // The owner's own turn: every entry here but the open built ins is owner only.
+    ownerTurn: true,
   })
 
   assert.match(delivery.content, /<available_commands>/)
@@ -663,6 +671,8 @@ test('a large catalog is bounded in /help, and the truncation says so', () => {
     commandArgs: '',
     registry,
     legacyAliases,
+    // The owner's own turn: every entry here but the open built ins is owner only.
+    ownerTurn: true,
   })
   const block = delivery.content.slice(
     delivery.content.indexOf('<available_commands>'),

@@ -7,6 +7,11 @@
  * and the tests that order the two read the wrong turn (seen on a Debian 12 arm64 VM and in a Docker VM, at clean
  * HEAD c636ded; CI's x86 runner happened to pass). On a real machine a hook's cold start keeps the two seconds apart.
  * Bounded at a second; instant where file times are fine (macOS).
+ *
+ * The real clock too: the hook now stamps each marker with Date.now() (`writtenAt`, lib/private-turn.mjs
+ * privateMarkerWrittenAt), and the tracker orders that stamp, not the file time, against the same moments. A marker
+ * written in the very millisecond of such a moment is placed before it (fail closed), so a test that means "after"
+ * waits for the real clock to move on as well.
  */
 import { realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -16,6 +21,7 @@ const probe = join(realpathSync(tmpdir()), `hoai-file-clock-${process.pid}`)
 process.on('exit', () => rmSync(probe, { force: true }))
 
 export function fileClockPast(after: number): void {
+  while (Date.now() <= after) { /* spin: the stamp a hook writes next is later than `after` */ }
   const until = Date.now() + 1000
   do {
     writeFileSync(probe, '')

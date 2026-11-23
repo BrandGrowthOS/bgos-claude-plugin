@@ -3,6 +3,7 @@
  * Turn boundaries and delivery provenance remain authoritative regardless of hook arrival order.
  * These tests exercise the production hooks, intake, tracker, tool admission and signed browser context.
  */
+import { createScheduleGrantRuns, requireBoardsTurn } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -238,11 +239,11 @@ async function admit(host: ReturnType<typeof agentHost>, name: string): Promise<
   const result = new Function(
     'req', 'lockHeld', 'privateTurns', 'PRIVATE_MARKER_PATHS', 'PRIVATE_HOOK', 'PRIVATE_HOOK_MISSING_REFUSAL', 'USER_ID', 'log',
     'requirePrivateTurn', 'turnAwarePrivateTurn', 'requireEmailSendTurn', 'PRIVATE_TURN_REFUSAL', 'recordPeerRefusal', 'pathDirname',
-    'CURSOR_FILE_PATH', 'ASSISTANT_ID', 'emailToolNeedsTurn', 'emailTurnRefusalText', admissionJs,
+    'CURSOR_FILE_PATH', 'ASSISTANT_ID', 'emailToolNeedsTurn', 'emailTurnRefusalText', 'requireBoardsTurn', 'scheduleGrantRuns', admissionJs,
   )(
     { params: { name } }, true, host.tracker, host.markerPaths, { registered: true }, 'hook missing', OWNER, () => {},
     requirePrivateTurn, turnAwarePrivateTurn, requireEmailSendTurn, PRIVATE_TURN_REFUSAL, () => ({ line: '' }), () => '/s',
-    '/s/c', AGENT, emailToolNeedsTurn, emailTurnRefusalText,
+    '/s/c', AGENT, emailToolNeedsTurn, emailTurnRefusalText, requireBoardsTurn, createScheduleGrantRuns(),
   )
   if (typeof result?.then === 'function') {
     const settled = await result

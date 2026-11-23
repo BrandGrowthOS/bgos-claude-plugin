@@ -3588,7 +3588,7 @@
 ✔ supervised expect script: a state dir with Tcl specials is quoted, never evaluated (0.044709ms)
 ✔ the person-facing script is unchanged: no launch-status, no supervised exits, interact at the end (0.077333ms)
 [hoai] this host has 2 paired agents (ids: 7, 8) and this folder declares no assistant (no .bgos-agent-id pin and no BGOS_ASSISTANT_ID in .mcp.json), so hoai cannot tell which one to launch. Run hoai from the agent's own folder (pairing bakes the pin there, and bgos-agent / bgos-claim write the id into .mcp.json), or set BGOS_ASSISTANT_ID=7 in this agent's environment.
-[hoai] this command is running from a temporary package-runner directory (/Users/kc/hoai-work/mbmarket/.tmp/hoai-sup-home-5LNedL/.npm/_npx/c00bcfc5e22688dd/node_modules/claude-channel-bgos), which is not an install, and /Users/kc/hoai-work/mbmarket/.tmp/hoai-sup-home-5LNedL/.claude/plugins/installed_plugins.json records no HOAI plugin install, so the channel this machine listens on cannot be determined. Run hoai from the folder the agent was set up in (a clone checkout), or install the plugin with hoai setup, rather than guessing a channel flag. hoai will not launch on a guessed channel: a wrong one starts an agent that looks connected and never receives a message.
+[hoai] this command is running from a temporary package-runner directory (/Users/you/hoai-work/mbmarket/.tmp/hoai-sup-home-5LNedL/.npm/_npx/c00bcfc5e22688dd/node_modules/claude-channel-bgos), which is not an install, and /Users/you/hoai-work/mbmarket/.tmp/hoai-sup-home-5LNedL/.claude/plugins/installed_plugins.json records no HOAI plugin install, so the channel this machine listens on cannot be determined. Run hoai from the folder the agent was set up in (a clone checkout), or install the plugin with hoai setup, rather than guessing a channel flag. hoai will not launch on a guessed channel: a wrong one starts an agent that looks connected and never receives a message.
 [hoai] install method: clone; channel server:bgos
 [hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
 [hoai] install method: clone; channel server:bgos
@@ -3748,7 +3748,7 @@
 ✔ a fresh retry that dies inside the health window leaves the pin on the previous session (925.535167ms)
 [hoai] install method: clone; channel server:bgos
 [hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
-[hoai] waiting for an incumbent claude (pid 4242) in /Users/kc/hoai-work/mbmarket/.tmp/hoai-agent-5WTsd1 to exit before taking over; a pinned session can only be resumed once
+[hoai] waiting for an incumbent claude (pid 4242) in /Users/you/hoai-work/mbmarket/.tmp/hoai-agent-5WTsd1 to exit before taking over; a pinned session can only be resumed once
 [hoai] the incumbent claude (pid 4242) has exited; taking over assistant 871
 [hoai] restart supervisor armed for assistant 871
 ✔ a fresh retry that stays up past the health window becomes the pinned session (1236.603084ms)
@@ -8182,23 +8182,23 @@
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:1421
 ✖ hoai-bootstrap.sh: the owner's own $HOME/.claude/settings.json is never given the deny, whatever it held (52.250459ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-5oh8uq/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-5oh8uq/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-5oh8uq/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-5oh8uq/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:97:7)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:92:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:97:7)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:92:5)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8215,23 +8215,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:1421
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:2005
 ✖ hoai-bootstrap.sh: with no settings anywhere, the deny lands in the agent folder only, and the owner's file gains no permissions (49.675ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-3tm8ss/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-3tm8ss/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-3tm8ss/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-3tm8ss/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:108:7)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:107:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:108:7)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:107:5)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8248,23 +8248,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:2005
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:2381
 ✖ hoai-bootstrap.sh: the agent folder's existing settings (hooks, allow, deny, mode) are kept, the entry added once (51.405167ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-wJxMzH/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-wJxMzH/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-wJxMzH/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-wJxMzH/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:124:7)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:117:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:124:7)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:117:5)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8281,23 +8281,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:2381
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:3050
 ✖ hoai-bootstrap.sh: a list that already denies it is not doubled, and a second run changes neither file (50.079458ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-swpqLy/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-swpqLy/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-swpqLy/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-swpqLy/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:137:7)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:134:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:137:7)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:134:5)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8314,23 +8314,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:3050
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:3624
 ✖ hoai-bootstrap.sh: an agent settings file that does not parse is left byte for byte, and the run still succeeds (50.240458ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-TCDw5E/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-TCDw5E/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-TCDw5E/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-TCDw5E/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:150:17)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:146:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:150:17)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:146:5)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8347,23 +8347,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:3624
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:4079
 ✖ hoai-bootstrap.sh: the activity hook registration that follows keeps the deny (same file, run in the bootstrap's order) (52.339958ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-vBzvVd/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-vBzvVd/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-vBzvVd/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-vBzvVd/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:160:7)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:159:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:160:7)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:159:5)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -8376,23 +8376,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:4079
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:1421
 ✖ hoai-bootstrap.ps1: the owner's own $HOME/.claude/settings.json is never given the deny, whatever it held (50.077417ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-kFiIJU/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-kFiIJU/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-kFiIJU/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-kFiIJU/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:97:7)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:92:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:97:7)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:92:5)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8409,23 +8409,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:1421
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:2005
 ✖ hoai-bootstrap.ps1: with no settings anywhere, the deny lands in the agent folder only, and the owner's file gains no permissions (51.481833ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-MSolHI/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-MSolHI/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-MSolHI/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-MSolHI/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:108:7)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:107:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:108:7)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:107:5)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8442,23 +8442,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:2005
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:2381
 ✖ hoai-bootstrap.ps1: the agent folder's existing settings (hooks, allow, deny, mode) are kept, the entry added once (51.830709ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-s6CFlO/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-s6CFlO/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-s6CFlO/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-s6CFlO/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:124:7)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:117:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:124:7)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:117:5)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8475,23 +8475,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:2381
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:3050
 ✖ hoai-bootstrap.ps1: a list that already denies it is not doubled, and a second run changes neither file (50.478ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-MM2ZiZ/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-MM2ZiZ/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-MM2ZiZ/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-MM2ZiZ/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:137:7)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:134:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:137:7)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:134:5)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8508,23 +8508,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:3050
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:3624
 ✖ hoai-bootstrap.ps1: an agent settings file that does not parse is left byte for byte, and the run still succeeds (50.435375ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-7jQYh0/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-7jQYh0/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-7jQYh0/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-7jQYh0/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:150:17)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:146:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:150:17)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:146:5)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8541,23 +8541,23 @@ test at test/bootstrap-askuserquestion-deny.test.ts:2:3624
 
 test at test/bootstrap-askuserquestion-deny.test.ts:2:4079
 ✖ hoai-bootstrap.ps1: the activity hook registration that follows keeps the deny (same file, run in the bootstrap's order) (49.643416ms)
-  AssertionError [ERR_ASSERTION]: file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-U3J3am/home/preseed.js:1
+  AssertionError [ERR_ASSERTION]: file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-U3J3am/home/preseed.js:1
   const fs = require("fs");
              ^
 
   ReferenceError: require is not defined in ES module scope, you can use import instead
-  This file is being treated as an ES module because it has a '.js' file extension and '/Users/kc/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
-      at file:///Users/kc/hoai-work/mbmarket/.tmp/hoai-deny-U3J3am/home/preseed.js:1:12
+  This file is being treated as an ES module because it has a '.js' file extension and '/Users/you/hoai-work/mbmarket/package.json' contains "type": "module". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.
+      at file:///Users/you/hoai-work/mbmarket/.tmp/hoai-deny-U3J3am/home/preseed.js:1:12
       at ModuleJob.run (node:internal/modules/esm/module_job:437:25)
       at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:642:26)
       at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
 
   Node.js v26.0.0
 
-      at run (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
-      at <anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:160:7)
-      at withWorld (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:159:5)
+      at run (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:84:10)
+      at <anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:160:7)
+      at withWorld (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:65:5)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/bootstrap-askuserquestion-deny.test.ts:159:5)
       at async Test.run (node:internal/test_runner/test:1208:7)
       at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {
     generatedMessage: false,
@@ -8875,7 +8875,7 @@ test at test/changes-wiring.test.ts:1:1709
     '  buildAskWithdrawnEvent,\n' +
     '  type'... 860521 more characters
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/changes-wiring.test.ts:85:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/changes-wiring.test.ts:85:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -8893,7 +8893,7 @@ test at test/changes-wiring.test.ts:1:1709
 test at test/home-refused-server.test.ts:1:4670
 ✖ server.ts serves the notice on a home refusal instead of exiting before the handshake (1.40825ms)
   AssertionError [ERR_ASSERTION]: the refusal branch was not found
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/home-refused-server.test.ts:159:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/home-refused-server.test.ts:159:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -9215,7 +9215,7 @@ test at test/memory-wiring.test.ts:1:1604
     '  buildAskWithdrawnEvent,\n' +
     '  type'... 860521 more characters
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/memory-wiring.test.ts:85:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/memory-wiring.test.ts:85:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -9537,7 +9537,7 @@ test at test/pairing-lock-route.test.ts:1:8892
     '  buildAskWithdrawnEvent,\n' +
     '  type'... 860521 more characters
 
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/pairing-lock-route.test.ts:292:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/pairing-lock-route.test.ts:292:10)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
@@ -9558,8 +9558,8 @@ test at test/stand-down-sites.test.ts:8:1877
 
   0 !== 1
 
-      at one (/Users/kc/hoai-work/mbmarket/test/stand-down-sites.test.ts:142:10)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/stand-down-sites.test.ts:342:16)
+      at one (/Users/you/hoai-work/mbmarket/test/stand-down-sites.test.ts:142:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/stand-down-sites.test.ts:342:16)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.start (node:internal/test_runner/test:1096:17)
@@ -9578,8 +9578,8 @@ test at test/stand-down-sites.test.ts:14:715
 
   0 !== 1
 
-      at one (/Users/kc/hoai-work/mbmarket/test/stand-down-sites.test.ts:142:10)
-      at TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/stand-down-sites.test.ts:652:16)
+      at one (/Users/you/hoai-work/mbmarket/test/stand-down-sites.test.ts:142:10)
+      at TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/stand-down-sites.test.ts:652:16)
       at Test.runInAsyncScope (node:async_hooks:226:14)
       at Test.run (node:internal/test_runner/test:1201:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:831:18)

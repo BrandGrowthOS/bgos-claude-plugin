@@ -7,6 +7,7 @@
  * lifted code reads that this harness does not provide throws, so a stub can
  * never stand in for something silently.
  */
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -18,6 +19,7 @@ import * as askLib from '../lib/ask-tracker.ts'
 import { AskTracker, type PendingAsk } from '../lib/ask-tracker.ts'
 import { parseLockRecord } from '../lib/pairing-lock.ts'
 import { retiredOwnNotes, tellRetiredOwnOnTick } from '../lib/ask-retired-tell.ts'
+import { isHumanClick } from '../lib/skill-origins.ts'
 
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 const START = Date.parse('2026-10-27T09:00:00Z')
@@ -200,13 +202,17 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; handedOn?: number[]; c
     noteLaneMisroute: () => {},
     askDelivering,
     trackMessageOperation: (op: () => Promise<unknown>) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: { params: { content: string; meta: Record<string, string> } }) => {
         notes.push(n)
         await notify()
       },
     },
-    privateTapCard: (o: { content: string }) => o.content,
+    privateTapCardNoting: (o: { content: string }) => o.content,
+    // The click row reader every tap site calls; an ask answer passes none (lib/skill-origins.ts).
+    isHumanClick,
     privateTurns: {},
     tellRetiredOwnOnTick,
     retiredOwnNotes,

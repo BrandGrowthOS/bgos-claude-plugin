@@ -1211,13 +1211,13 @@ not ok 198 - graceful shutdown keeps authority until clears finish, with a bound
   ---
   duration_ms: 97.043666
   type: 'test'
-  location: '/Users/kc/hoai-work/mbplugin084/test/mission-working-wiring.test.ts:17:1696'
+  location: '/Users/you/hoai-work/mbplugin084/test/mission-working-wiring.test.ts:17:1696'
   failureType: 'unhandledRejection'
   error: 'stopThreadChildren is not defined'
   code: 'ERR_TEST_FAILURE'
   name: 'ReferenceError'
   stack: |-
-    finish (eval at <anonymous> (file:///Users/kc/hoai-work/mbplugin084/test/mission-working-wiring.test.ts:17:2849), <anonymous>:24:36)
+    finish (eval at <anonymous> (file:///Users/you/hoai-work/mbplugin084/test/mission-working-wiring.test.ts:17:2849), <anonymous>:24:36)
     <anonymous>
   ...
 # Subtest: the derived tool-case scan can actually see the cases (control for every derived test below)

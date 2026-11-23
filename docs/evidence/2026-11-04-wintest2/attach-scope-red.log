@@ -5,7 +5,7 @@ not ok 1 - bin/hoai-attach-scope.mjs prints the machine tally: what each mode WO
   ---
   duration_ms: 58.669792
   type: 'test'
-  location: '/Users/kc/hoai-work/mbwintest/test/attach-scope.test.ts:1:12308'
+  location: '/Users/you/hoai-work/mbwintest/test/attach-scope.test.ts:1:12308'
   failureType: 'testCodeFailure'
   error: |-
     The input did not match the regular expression /3 starts, 1 right agent, 1 wrong agent, 1 unscoped/. Input:
@@ -20,7 +20,7 @@ not ok 1 - bin/hoai-attach-scope.mjs prints the machine tally: what each mode WO
     
   operator: 'match'
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbwintest/test/attach-scope.test.ts:378:10)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbwintest/test/attach-scope.test.ts:378:10)
     async Test.run (node:internal/test_runner/test:1409:7)
     async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
   ...

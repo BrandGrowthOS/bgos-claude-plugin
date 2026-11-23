@@ -1759,7 +1759,7 @@ cmd_restart() {
 # entry). Best effort: install_hook_entries never fails the update.
 # Is this workspace a CLONE workspace of THIS checkout? Its .mcp.json names a
 # `bgos` server whose server.ts lives in this plugin dir (compared by real path:
-# /Users/fitecho and /Users/bgos are one directory on KC's Mac, and the
+# /Users/you-link and /Users/you are one directory, and the
 # .mcp.json may spell either). Only then does the CLI read its hooks from the
 # workspace settings file and nowhere else, which is the case a refresh must
 # cover even when the folder never carried a hoai-hook entry (board bbbf3438:

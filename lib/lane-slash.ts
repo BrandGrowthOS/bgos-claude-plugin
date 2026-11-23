@@ -50,13 +50,17 @@ export const LANE_HANDLED_COMMANDS = Object.freeze(['new', 'model', 'effort', 'l
  * (nothing about them reaches a model; `/login` is handled but not listed);
  * the rest are the owner's built ins reworded for a lane:
  * none of them reads or edits a settings file, a CLAUDE.md or anything
- * outside the lane's working folder.
+ * outside the lane's working folder. Every entry is written for the person,
+ * who is never the owner, so each is `forAnyone` (lib/slash-catalog.ts):
+ * the lane passes no owner turn, and an entry without it would be answered
+ * as an owner only command.
  */
 export const LANE_COMMANDS: readonly SlashCommandEntry[] = Object.freeze([
   {
     command: '/help',
     description: 'What I can do for you here',
     scope: 'all',
+    forAnyone: true,
     prompt: [
       'List, briefly, what you can do for this person in this chat, from your instructions for this lane:',
       'only what this lane allows.',
@@ -69,11 +73,13 @@ export const LANE_COMMANDS: readonly SlashCommandEntry[] = Object.freeze([
     command: '/new',
     description: 'Start a new conversation with me (my memory of you stays)',
     scope: 'all',
+    forAnyone: true,
   },
   {
     command: '/memory',
     description: 'What I remember about you',
     scope: 'all',
+    forAnyone: true,
     prompt: [
       'Your memory of this person is the memory folder your instructions for this lane name: MEMORY.md is',
       'the index and each memory is its own file there.',
@@ -88,16 +94,19 @@ export const LANE_COMMANDS: readonly SlashCommandEntry[] = Object.freeze([
     command: '/model',
     description: 'Which model I use with you, or switch to one my owner allows',
     scope: 'all',
+    forAnyone: true,
   },
   {
     command: '/effort',
     description: 'Which effort level I use with you, or switch to one my owner allows',
     scope: 'all',
+    forAnyone: true,
   },
   {
     command: '/permissions',
     description: 'What I am allowed to do in our conversations',
     scope: 'all',
+    forAnyone: true,
     prompt: [
       'Tell the person plainly what you can do in this lane, from your instructions for this lane, and that',
       'nothing else on your owner\'s computer is open to you.',
@@ -109,6 +118,7 @@ export const LANE_COMMANDS: readonly SlashCommandEntry[] = Object.freeze([
     command: '/hooks',
     description: 'The checks that run on what I do',
     scope: 'all',
+    forAnyone: true,
     prompt: [
       'Tell the person plainly that every action you take in this lane passes your owner\'s safety checks',
       'first, which hold anything touching secrets or other people\'s conversations, and that you cannot see,',

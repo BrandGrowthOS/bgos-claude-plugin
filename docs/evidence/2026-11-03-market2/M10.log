@@ -4,7 +4,7 @@ not ok 1 - market2 diagnostics: installed marketplace CLI reports effective home
   ---
   duration_ms: 198.742666
   type: 'test'
-  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:7282'
+  location: '/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:2:7282'
   failureType: 'testCodeFailure'
   error: |-
     the installed marketplace enforces home by default
@@ -17,7 +17,7 @@ not ok 1 - market2 diagnostics: installed marketplace CLI reports effective home
   actual: 'off'
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:310:12)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.e2e.test.ts:310:12)
     Test.runInAsyncScope (node:async_hooks:226:14)
     Test.run (node:internal/test_runner/test:1201:25)
     Test.start (node:internal/test_runner/test:1096:17)
@@ -28,7 +28,7 @@ not ok 2 - market2 diagnostics: doctor preserves the effective marketplace home 
   ---
   duration_ms: 3.033042
   type: 'test'
-  location: '/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:1:7082'
+  location: '/Users/you/hoai-work/mbmarket/test/marketplace-attach.test.ts:1:7082'
   failureType: 'testCodeFailure'
   error: |-
     The input did not match the regular expression /^Mode home;/. Input:
@@ -41,7 +41,7 @@ not ok 2 - market2 diagnostics: doctor preserves the effective marketplace home 
   actual: 'Mode off; this session: no launcher named the agent (launcher none), resolved agent 41. This computer, last 7 days: 0 session starts, 0 wrong agent, 0 unscoped, 0 unreadable, 0 refused.'
   operator: 'match'
   stack: |-
-    TestContext.<anonymous> (/Users/kc/hoai-work/mbmarket/test/marketplace-attach.test.ts:148:10)
+    TestContext.<anonymous> (/Users/you/hoai-work/mbmarket/test/marketplace-attach.test.ts:148:10)
     Test.runInAsyncScope (node:async_hooks:226:14)
     Test.run (node:internal/test_runner/test:1201:25)
     Test.start (node:internal/test_runner/test:1096:17)
