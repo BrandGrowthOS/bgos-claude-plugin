@@ -32,6 +32,7 @@
  * New exports are read through namespace imports, so on a build without them
  * only the tests that need them fail and every control still runs.
  */
+import { channelNotifyFor } from './helpers/channel-notify.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -282,6 +283,8 @@ function daemon(laneSource: string, laneName: string, extra: Record<string, unkn
     planSteerFor: () => null,
     deliverInbound: (_steer: unknown, deliver: (interrupted: boolean) => Promise<void>) => deliver(false),
     trackMessageOperation: (op: () => unknown) => op(),
+    // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
+    get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: {
       notification: async (n: { params: { content: string; meta: Record<string, string> } }) => {
         cards.push({ content: n.params.content, meta: n.params.meta })
@@ -653,7 +656,10 @@ test('server.ts: only the watcher\'s probe, which follows a real restart, asks f
   const start = SRC.indexOf('// Step 2.6: liveness probe')
   const end = SRC.indexOf('// Step 2.7:', start)
   assert.ok(start !== -1 && end !== -1)
-  assert.match(SRC.slice(start, end), /buildLivenessProbeNotification\(\{ chatId: monitoredChatIds\[0\], afterRestart: true \}\)/)
+  // Review of #396: the watcher also asks before an update, when nothing was
+  // restarted; the request's purpose decides (probeSaysAfterRestart, pinned in
+  // channel-ack.test.ts).
+  assert.match(SRC.slice(start, end), /buildLivenessProbeNotification\(\{ chatId: monitoredChatIds\[0\], afterRestart: saysAfterRestart \}\)/)
   const ladder = serverFunction('function checkReplyOverdue(')
   assert.match(ladder, /buildLivenessProbeNotification\(\{ chatId \}\)/)
   assert.doesNotMatch(ladder, /afterRestart/)

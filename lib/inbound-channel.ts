@@ -1,3 +1,7 @@
+import { cardAnswerMeta, type CardAnswerClick } from './card-answer.ts'
+// Re-exported so every lane that announces a tap has the card answer's reader
+// and text from the module it already loads.
+export { cardAnswerClickOf, cardAnswerText } from './card-answer.ts'
 import {
   buildInboundContent,
   buildInboundFilesMeta,
@@ -935,6 +939,8 @@ export function buildButtonClickedMeta(opts: {
   assistantId: string | number
   ts?: string | null
   transport?: string
+  /** A card's answer: adds card_answer, action_id and answered_by_person (lib/card-answer.ts). */
+  card?: CardAnswerClick | null
 }): Record<string, string> {
   return {
     chat_id: String(opts.chatId),
@@ -948,6 +954,7 @@ export function buildButtonClickedMeta(opts: {
     assistant_id: String(opts.assistantId),
     ts: String(opts.ts ?? new Date().toISOString()),
     ...(opts.transport ? { transport: String(opts.transport) } : {}),
+    ...cardAnswerMeta(opts.card),
   }
 }
 

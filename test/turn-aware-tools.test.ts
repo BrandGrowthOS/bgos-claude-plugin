@@ -3,6 +3,7 @@
  * Without a verified turn, another person's content cannot grant owner authority.
  * The owner's supported continuation policy and gated tool checks remain enforced.
  */
+import { createScheduleGrantRuns, requireBoardsTurn } from '../lib/schedule-grant-run.mjs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -52,6 +53,24 @@ function session(t: any) {
   }
   return { deliver, prompt, stop, call, tracker, markerPaths }
 }
+
+test('a reaction records a member for turn aware tools and preserves the owner continuation', () => {
+  const tracker = privateTurn.createPrivateTurnTracker({ ownerUserId: OWNER })
+  const call = () => turnAwarePrivateTurn({ tracker, markerPaths: [], ownerUserId: OWNER })
+  tracker.rawCard('Reaction', { event_type: 'reaction', user_id: OWNER })
+  assert.equal(call().actingUserId, OWNER)
+  tracker.rawCard('Reaction', { event_type: 'reaction', user_id: RECIPIENT })
+  assert.deepEqual(tracker.turnSenders().people, [RECIPIENT])
+  assert.throws(call, { message: TURN_AWARE_REFUSAL })
+})
+
+test('a reaction with no verified sender leaves turn aware tools closed', () => {
+  const tracker = privateTurn.createPrivateTurnTracker({ ownerUserId: OWNER })
+  tracker.rawCard('Reaction', { event_type: 'reaction' })
+  assert.throws(() => turnAwarePrivateTurn({ tracker, markerPaths: [], ownerUserId: OWNER }), {
+    message: privateTurn.TURN_AWARE_UNVERIFIED_REFUSAL,
+  })
+})
 
 test('a verified turn is used as requirePrivateTurn answers it', (t) => {
   const s = session(t)
@@ -153,7 +172,7 @@ function admit(name: string, tracker: unknown, lockHeld = true) {
     req: { params: { name } }, lockHeld, privateTurns: tracker, PRIVATE_MARKER_PATHS: [],
     PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: OWNER, log: () => {},
     requirePrivateTurn: (...args: any[]) => { strictCalls++; return (privateTurn as any).requirePrivateTurn(...args) },
-    turnAwarePrivateTurn,
+    turnAwarePrivateTurn, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
     recordPeerRefusal: () => ({ line: '' }), pathDirname: () => '/s', CURSOR_FILE_PATH: '/s/c', ASSISTANT_ID: 900,
   })
   return { result, strictCalls }

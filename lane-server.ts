@@ -60,6 +60,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { io as socketIoClient, type Socket } from 'socket.io-client'
 
 import {
+  personLaneVerdict,
   laneEventLine,
   laneClaudeHome,
   lanePaths,
@@ -68,6 +69,7 @@ import {
   LANE_MEMORY_RPC_TOKEN,
   LANE_TURN_STUCK_MS,
 } from './lib/lane-core.mjs'
+import { HEARD_REACTIONS_CAPABILITY, reactionCard, REACTION_GUIDANCE } from './lib/heard-reaction.ts'
 import { heartbeatToolPolicy, laneMePolicy, readLaneChoices, readToolPolicy } from './lib/lane-policy.mjs'
 import {
   laneChoiceQuestionFor,
@@ -419,7 +421,7 @@ const mcp = new Server(mcpServerInfo(readOwnVersion(ROOT)), {
     // permission request, and never approves one.
     experimental: { 'claude/channel': {} },
   },
-  instructions: laneInstructions(''),
+  instructions: `${laneInstructions('')}\n${REACTION_GUIDANCE}`,
 })
 
 // No turn reaches Claude before Claude has `reply` in its tool pool (0.71.1,
@@ -798,7 +800,7 @@ function connectSocket(): void {
     // the credential that acts as the owner).
     // P5: and `lane_memory_rpc`, declared in THIS socket's own handshake,
     // which is what the server routes the person's memory frames by.
-    auth: (cb: (auth: Record<string, unknown>) => void) => cb({ laneSession: session?.sessionToken ?? '', capabilities: [LANE_MEMORY_RPC_TOKEN] }),
+    auth: (cb: (auth: Record<string, unknown>) => void) => cb({ laneSession: session?.sessionToken ?? '', capabilities: [LANE_MEMORY_RPC_TOKEN, HEARD_REACTIONS_CAPABILITY] }),
   })
   socket.on('connect', () => {
     log('lane socket connected')
@@ -821,6 +823,17 @@ function connectSocket(): void {
     }
   })
   socket.on('connect_error', (err) => log(`lane socket connect error: ${err?.message ?? String(err)}`))
+  socket.on('inbound_reaction', (frame: unknown) => {
+    const card = reactionCard(frame, LANE.assistantId)
+    if (!card || !personLaneVerdict(frame, LANE).deliver) return
+    void claudeReady.whenReady().then(async () => {
+      if (ending || Number(card.meta.message_id) < (inbox.newFrom ?? 0)) return
+      deliveredChats.add(card.meta.chat_id)
+      await mcp.notification({ method: 'notifications/claude/channel', params: card })
+      lastActivityAtMs = Date.now()
+      writeLaneState()
+    }).catch((err) => log(`reaction delivery failed: ${String(err)}`))
+  })
   socket.on('inbound_message', (payload: unknown) => {
     void deliverRaw(payload, 'lane-socket').catch((err) => log(`socket delivery failed: ${String(err)}`))
   })

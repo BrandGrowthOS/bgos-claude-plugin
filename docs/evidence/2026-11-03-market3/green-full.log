@@ -3589,7 +3589,7 @@
 ✔ supervised expect script: a state dir with Tcl specials is quoted, never evaluated (0.426208ms)
 ✔ the person-facing script is unchanged: no launch-status, no supervised exits, interact at the end (0.397708ms)
 [hoai] this host has 2 paired agents (ids: 7, 8) and this folder declares no assistant (no .bgos-agent-id pin and no BGOS_ASSISTANT_ID in .mcp.json), so hoai cannot tell which one to launch. Run hoai from the agent's own folder (pairing bakes the pin there, and bgos-agent / bgos-claim write the id into .mcp.json), or set BGOS_ASSISTANT_ID=7 in this agent's environment.
-[hoai] this command is running from a temporary package-runner directory (/Users/kc/hoai-work/mbmarket/.test-tmp/hoai-sup-home-arqnNe/.npm/_npx/c00bcfc5e22688dd/node_modules/claude-channel-bgos), which is not an install, and /Users/kc/hoai-work/mbmarket/.test-tmp/hoai-sup-home-arqnNe/.claude/plugins/installed_plugins.json records no HOAI plugin install, so the channel this machine listens on cannot be determined. Run hoai from the folder the agent was set up in (a clone checkout), or install the plugin with hoai setup, rather than guessing a channel flag. hoai will not launch on a guessed channel: a wrong one starts an agent that looks connected and never receives a message.
+[hoai] this command is running from a temporary package-runner directory (/Users/you/hoai-work/mbmarket/.test-tmp/hoai-sup-home-arqnNe/.npm/_npx/c00bcfc5e22688dd/node_modules/claude-channel-bgos), which is not an install, and /Users/you/hoai-work/mbmarket/.test-tmp/hoai-sup-home-arqnNe/.claude/plugins/installed_plugins.json records no HOAI plugin install, so the channel this machine listens on cannot be determined. Run hoai from the folder the agent was set up in (a clone checkout), or install the plugin with hoai setup, rather than guessing a channel flag. hoai will not launch on a guessed channel: a wrong one starts an agent that looks connected and never receives a message.
 [hoai] install method: clone; channel server:bgos
 [hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
 [hoai] install method: clone; channel server:bgos
@@ -3749,7 +3749,7 @@
 ✔ a fresh retry that dies inside the health window leaves the pin on the previous session (1209.436208ms)
 [hoai] install method: clone; channel server:bgos
 [hoai] launching as assistant 871 via the .bgos-agent-id folder pin; no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.
-[hoai] waiting for an incumbent claude (pid 4242) in /Users/kc/hoai-work/mbmarket/.test-tmp/hoai-agent-3ktyMj to exit before taking over; a pinned session can only be resumed once
+[hoai] waiting for an incumbent claude (pid 4242) in /Users/you/hoai-work/mbmarket/.test-tmp/hoai-agent-3ktyMj to exit before taking over; a pinned session can only be resumed once
 [hoai] the incumbent claude (pid 4242) has exited; taking over assistant 871
 [hoai] restart supervisor armed for assistant 871
 ✔ a fresh retry that stays up past the health window becomes the pinned session (1502.244125ms)

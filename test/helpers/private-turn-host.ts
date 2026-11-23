@@ -10,6 +10,8 @@
  * peer conversation close, a meeting line) through the notification wrapper's rawCard, the fire keys the ledger was
  * asked to record, and the daemon's private turn log lines.
  */
+import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn } from '../../lib/schedule-grant-run.mjs'
+import { createQuietTurns, holdChannelCardsDuringQuietTurn } from '../../lib/quiet-turn.mjs'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -27,6 +29,7 @@ import { createTurnChatTracker } from '../../lib/turn-chat.ts'
 import * as floorState from '../../lib/floor-state.mjs'
 import { daemonFloorFolders, floorKey, markFloorAttached } from '../../lib/floor-state.mjs'
 import * as privateTurn from '../../lib/private-turn.mjs'
+import { createCardDeliveries, createTeachWindows } from '../../lib/skill-origins.ts'
 import {
   PRIVATE_TURN_REFUSAL,
   createFireLedger,
@@ -244,7 +247,13 @@ export function agentHost(t: any) {
   let life = daemon()
   const notify = (content: string, meta: Record<string, string>): string => {
     const mcp = { notification: (notification: any) => String(notification.params.content) }
-    const notification = new Function('mcp', 'privateTurns', notificationJs)(mcp, life.tracker)
+    // The notification chain as server.ts builds it: group threads' step (summaries, lane verdicts) passes every card
+    // through with no group lane here, and the scheduled run hold (0.86.20) passes every card unchanged with no run open.
+    // The quiet turn hold (2026-11-11) is switched off in this host: its cards are built before they are handed over and
+    // these tests pin what the tracker does with a card that DOES reach a turn (a card let in after its five minutes).
+    // The hold itself is tested over the real tracker in test/quiet-turn-threats.test.ts.
+    const quietTurns = createQuietTurns({ trusted: () => null, deliveryOf: () => null, ownerUserId: OWNER, enabled: () => false })
+    const notification = new Function('mcp', 'groupNotificationStep', 'privateTurns', 'holdChannelCardsDuringGrantedRun', 'scheduleGrantRuns', 'log', 'holdChannelCardsDuringQuietTurn', 'quietTurns', 'teachCards', notificationJs)(mcp, () => null, life.tracker, holdChannelCardsDuringGrantedRun, createScheduleGrantRuns(), () => {}, holdChannelCardsDuringQuietTurn, quietTurns, createCardDeliveries(createTeachWindows()))
     return notification({ method: 'notifications/claude/channel', params: { content, meta } })
   }
   const payloadOf = (event: string, extra: Record<string, unknown> = {}) =>
@@ -493,11 +502,11 @@ export async function admitCall(host: Host, name: string, args?: Record<string, 
   const result = new Function(
     'req', 'lockHeld', 'privateTurns', 'PRIVATE_MARKER_PATHS', 'PRIVATE_HOOK', 'PRIVATE_HOOK_MISSING_REFUSAL', 'USER_ID', 'log',
     'requirePrivateTurn', 'turnAwarePrivateTurn', 'requireEmailSendTurn', 'PRIVATE_TURN_REFUSAL', 'recordPeerRefusal', 'pathDirname',
-    'CURSOR_FILE_PATH', 'ASSISTANT_ID', 'emailToolNeedsTurn', 'emailTurnRefusalText', admissionJs,
+    'CURSOR_FILE_PATH', 'ASSISTANT_ID', 'emailToolNeedsTurn', 'emailTurnRefusalText', 'requireBoardsTurn', 'scheduleGrantRuns', admissionJs,
   )(
     { params: { name, ...(args === undefined ? {} : { arguments: args }) } }, true, host.tracker, host.markerPaths, { registered: true }, 'hook missing', OWNER, () => {},
     requirePrivateTurn, turnAwarePrivateTurn, requireEmailSendTurn, PRIVATE_TURN_REFUSAL, () => ({ line: '' }), () => '/s',
-    '/s/c', AGENT, emailToolNeedsTurn, emailTurnRefusalText,
+    '/s/c', AGENT, emailToolNeedsTurn, emailTurnRefusalText, requireBoardsTurn, createScheduleGrantRuns(),
   )
   if (typeof result?.then === 'function') {
     const settled = await result

@@ -1,0 +1,138 @@
+Growth mutant: add one lib comparison and its allowance, leaving the pinned count at 37.
+$ node --import tsx --test --test-concurrency=2 test/file-identity.guard.test.ts
+
+✖ the allow list has exactly the reviewed number of sites (1.201958ms)
+✔ lib has no new plain device or inode comparison sites (355.593583ms)
+✔ the scanner catches both file numbers, either operand and every comparison operator (1.019042ms)
+✔ formatting, optional and bracket access, casts and numeric conversions cannot hide a comparison (0.492334ms)
+✔ comments, strings, other properties, type checks and non-comparison uses are not sites (0.107583ms)
+✔ allowances are tied to the file, expression and number of occurrences (0.245292ms)
+✔ site keys ignore line shifts and comments while diagnostics retain the source line (0.103125ms)
+✔ the lib walk reads nested source files and detects a new comparison in a scratch lib file (1.927542ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 7
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 719.536834
+
+✖ failing tests:
+
+test at test/file-identity.guard.test.ts:1:2998
+✖ the allow list has exactly the reviewed number of sites (1.201958ms)
+  AssertionError [ERR_ASSERTION]: Allow-list size changed. Remove fixed sites and lower ALLOWED_SITE_COUNT together; do not add allowances.
+
+  38 !== 37
+
+      at TestContext.<anonymous> (<checkout>/test/file-identity.guard.test.ts:89:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.start (node:internal/test_runner/test:1242:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:387:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 38,
+    expected: 37,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+exit status: 1
+
+Growth control: also edit the test constant to 38. Both files must change to permit growth.
+$ node --import tsx --test --test-concurrency=2 test/file-identity.guard.test.ts
+
+✔ the allow list has exactly the reviewed number of sites (0.359625ms)
+✔ lib has no new plain device or inode comparison sites (353.684458ms)
+✔ the scanner catches both file numbers, either operand and every comparison operator (1.422417ms)
+✔ formatting, optional and bracket access, casts and numeric conversions cannot hide a comparison (0.50575ms)
+✔ comments, strings, other properties, type checks and non-comparison uses are not sites (0.099583ms)
+✔ allowances are tied to the file, expression and number of occurrences (0.232834ms)
+✔ site keys ignore line shifts and comments while diagnostics retain the source line (0.106167ms)
+✔ the lib walk reads nested source files and detects a new comparison in a scratch lib file (7.675458ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 727.997042
+
+exit status: 0
+
+Stale allowance mutant: remove the inode comparison in checkpoint-store.js while leaving its allowance.
+$ node --import tsx --test --test-concurrency=2 test/file-identity.guard.test.ts
+
+✔ the allow list has exactly the reviewed number of sites (0.301833ms)
+✖ lib has no new plain device or inode comparison sites (316.043458ms)
+✔ the scanner catches both file numbers, either operand and every comparison operator (0.85825ms)
+✔ formatting, optional and bracket access, casts and numeric conversions cannot hide a comparison (0.427916ms)
+✔ comments, strings, other properties, type checks and non-comparison uses are not sites (0.083459ms)
+✔ allowances are tied to the file, expression and number of occurrences (0.211292ms)
+✔ site keys ignore line shifts and comments while diagnostics retain the source line (0.096125ms)
+✔ the lib walk reads nested source files and detects a new comparison in a scratch lib file (1.725792ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 7
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 692.827125
+
+✖ failing tests:
+
+test at test/file-identity.guard.test.ts:1:3227
+✖ lib has no new plain device or inode comparison sites (316.043458ms)
+  AssertionError [ERR_ASSERTION]: Unused file number comparison allowance(s). Remove fixed sites from test/fixtures/file-identity-allowlist.json and lower ALLOWED_SITE_COUNT.
+  lib/browser-profile-core/checkpoint-store.js: a.ino === b.ino
+  + actual - expected
+
+  + [
+  +   'lib/browser-profile-core/checkpoint-store.js: a.ino === b.ino'
+  + ]
+  - []
+
+      at TestContext.<anonymous> (<checkout>/test/file-identity.guard.test.ts:99:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1382:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+      at Test.postRun (node:internal/test_runner/test:1522:19)
+      at Test.run (node:internal/test_runner/test:1447:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: [ 'lib/browser-profile-core/checkpoint-store.js: a.ino === b.ino' ],
+    expected: [],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+exit status: 1
+
+Stale allowance control: remove the unused entry and lower the test constant to 36.
+$ node --import tsx --test --test-concurrency=2 test/file-identity.guard.test.ts
+
+✔ the allow list has exactly the reviewed number of sites (0.311709ms)
+✔ lib has no new plain device or inode comparison sites (320.383583ms)
+✔ the scanner catches both file numbers, either operand and every comparison operator (1.779583ms)
+✔ formatting, optional and bracket access, casts and numeric conversions cannot hide a comparison (0.754042ms)
+✔ comments, strings, other properties, type checks and non-comparison uses are not sites (0.123292ms)
+✔ allowances are tied to the file, expression and number of occurrences (0.262625ms)
+✔ site keys ignore line shifts and comments while diagnostics retain the source line (0.127542ms)
+✔ the lib walk reads nested source files and detects a new comparison in a scratch lib file (1.874417ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 682.261
+
+exit status: 0
+
+All mutants and controls reverted. The lib source, allow list and guard were restored byte for byte.

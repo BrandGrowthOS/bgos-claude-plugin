@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spoolPath } from '../bin/hoai-hook.mjs'
 import { parseSpoolLine } from '../lib/hook-intake.ts'
-import { privateBeginLine, privateRevokeLine, privatePromptHash, privateTurnRecord, readPrivateJson, EMAIL_SEND_REFUSAL, PRIVATE_TURN_REFUSAL } from '../lib/private-turn.mjs'
+import { privateBeginLine, privateRevokeLine, privatePromptHash, privateTurnRecord, readPrivateJson, EMAIL_SEND_REFUSAL, PRIVATE_TURN_CALL_REFUSAL, PRIVATE_TURN_REFUSAL } from '../lib/private-turn.mjs'
 import {
   GATED, OTHER_CHAT, OWN_CHAT, OWNER, RECIPIENT, RECIPIENT_CHAT, SIDE_CHAT, TURN_AWARE,
   actsFor, agentHost, assertGatedClosed, assertOwnerTurn, assertRecordedOnce, ownerFrame, peerFrame, personFrame,
@@ -25,8 +25,8 @@ const reasonOf = (frame: Frame) => frame.senderType === 'system'
   : { kind: 'owner_message', id: String(frame.messageId) }
 
 /** Boards, schedule and the browser refuse; nothing in this turn acts as the owner on them. */
-async function assertGatedRefused(host: Host, label: string) {
-  for (const name of GATED) assert.equal(await actsFor(host, name), `refused: ${PRIVATE_TURN_REFUSAL}`, `${label}: ${name}`)
+async function assertGatedRefused(host: Host, label: string, refusal: string = PRIVATE_TURN_REFUSAL) {
+  for (const name of GATED) assert.equal(await actsFor(host, name), `refused: ${refusal}`, `${label}: ${name}`)
   assert.equal(host.browser(), 'nobody', `${label}: the Agent Browser has no live context`)
 }
 
@@ -409,7 +409,8 @@ test('review (Low): a carried card run as its own prompt in a voice consult\'s t
   host.submit(content)
   assert.equal(await actsFor(host, 'boards_update'), 'owner', 'the consult\'s own turn')
   host.submit(close)
-  await assertGatedRefused(host, 'a peer conversation close run in the consult\'s turn')
+  // Refused as before; since the quiet turn (2026-11-11) a refusal in a turn a voice call's card reached says to ask again on the call.
+  await assertGatedRefused(host, 'a peer conversation close run in the consult\'s turn', PRIVATE_TURN_CALL_REFUSAL)
 })
 
 test('review: the private turn hook lists the prompts of its CLI turn so far (`prompts`); a Stop starts the list again', async (t) => {

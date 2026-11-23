@@ -487,19 +487,22 @@ export function threadTurnPrompt(input: {
   title: string
   rootText: string
   readOnly?: boolean
+  agentFolder?: string
 }): string {
   if (input.mode === 'summary') return SUMMARY_INSTRUCTION
   if (input.mode === 'reply') return input.text
-  const readOnly = input.readOnly === true
-    ? ' This folder is not a git repository, so this thread is read only: do not edit files.'
-    : ''
+  const folderInstruction = input.readOnly === true
+    ? input.agentFolder
+      ? `This thread is read only: read files in the agent folder ${JSON.stringify(input.agentFolder)} and do not edit files.`
+      : 'This folder is not a git repository, so this thread is read only: do not edit files.'
+    : 'Work on it in this folder only.'
   // The root's own full stop is kept, never doubled.
   const root = input.rootText.trim()
   const rootSentence = /[.!?]$/.test(root) ? root : `${root}.`
   return (
     `[You are now working in a thread of this chat titled "${input.title}". ` +
     `It is a separate conversation about this message: ${rootSentence} ` +
-    `Work on it in this folder only.${readOnly} The main conversation continues without you. ` +
+    `${folderInstruction} The main conversation continues without you. ` +
     'Any goal (/goal) set in the main conversation does not apply in this thread. Answer only this thread\'s message.]\n\n' +
     input.text
   )

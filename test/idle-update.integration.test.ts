@@ -520,6 +520,8 @@ function threadWorld() {
     startTurn: (rootId: string) => lanes.turn({ chatId: '55', rootId, replyId: `${rootId}0`, mode: 'start', text: 'work', title: 'T', rootText: 'root' }),
     finishTurn: (child: StandInChild) => {
       child.frame({ type: 'system', subtype: 'init', session_id: FORK })
+      // The CLI's assistant frame comes first: a lane skips a result before it.
+      child.frame({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'the answer' }] } })
       child.frame({ type: 'result', subtype: 'success', is_error: false, result: 'the answer' })
     },
     startFork: () => runAside({ question: 'why?', quote: '', history: [] }, {

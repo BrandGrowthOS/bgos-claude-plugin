@@ -7,13 +7,13 @@
     "--test-reporter=tap",
     "test/thread-lanes-wiring.test.ts"
   ],
-  "cwd": "/Users/kc/hoai-work/mbplugin084/node_modules/.plugin084/main",
+  "cwd": "/Users/you/hoai-work/mbplugin084/node_modules/.plugin084/main",
   "started_utc": "2026-11-03T20:50:11.595819+00:00",
   "head": "d80e6e2355fceb404f67a7ac647670d6145373e3",
   "environment": {
-    "HOME": "/Users/kc/hoai-work/mbplugin084/node_modules/.plugin084/main-thread-lifecycle/home",
-    "TMPDIR": "/Users/kc/hoai-work/mbplugin084/node_modules/.plugin084/main-thread-lifecycle/tmp",
-    "npm_config_cache": "/Users/kc/hoai-work/mbplugin084/node_modules/.plugin084/main-thread-lifecycle/npm-cache",
+    "HOME": "/Users/you/hoai-work/mbplugin084/node_modules/.plugin084/main-thread-lifecycle/home",
+    "TMPDIR": "/Users/you/hoai-work/mbplugin084/node_modules/.plugin084/main-thread-lifecycle/tmp",
+    "npm_config_cache": "/Users/you/hoai-work/mbplugin084/node_modules/.plugin084/main-thread-lifecycle/npm-cache",
     "npm_config_offline": "true"
   },
   "browser": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
