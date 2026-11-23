@@ -12,6 +12,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.24 (2026-11-24)
+
+**fix(vault): a saved login fills another host of the same site.** `vault_fill_prepare` refused a login saved for `https://mail.google.com` on `https://accounts.google.com`, where Google signs in, because it asked for the exact same origin. It now accepts exactly what the HOAI server issues a fill ticket for: the login's own website, or another host of the same registrable domain by the public suffix list, private domains included, on the same port, https only. One person's site on a shared suffix (github.io, vercel.app, blogspot.com, netlify.app) never fills another's, and another site, a lookalike (an extra label, a hyphen, punycode), another scheme, another port, an address or a website with a credential is refused with the same `VAULT_ORIGIN_MISMATCH` as before. The ticket binds the tab's own origin, and the owner's desktop asks the owner once to confirm that host for that login before it fills. Adds `tldts` 7.4.16, the version the server and the desktop pin.
+
 ## 0.90.17 (2026-11-21)
 
 **feat(chat): hear reactions to the agent's replies.** With a matching server, the agent hears who reacted and which emoji they chose. A later line can report a changed or removed reaction and how many people reacted. A room member speaks only as themselves. A reaction never grants permission to use a tool.

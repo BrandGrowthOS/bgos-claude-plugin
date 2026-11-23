@@ -9,6 +9,7 @@ import {
   vaultCall,
   verifyFillIntent,
 } from './vault-host.mjs'
+import { siteMatch } from './vault-site.ts'
 
 // The agent half of HOAI vault request and fill (capability canon, "Agent
 // vault"). Every tool returns metadata, a request receipt or a one-use fill
@@ -60,7 +61,7 @@ const schemas = {
     itemId: uuid.describe('A login id from vault_items.'),
     sessionId: bounded.describe('The HOAI desktop browser session id.'),
     tabId: bounded.describe('The HOAI desktop browser tab id.'),
-    origin: httpsOrigin.describe('The exact HTTPS origin of that tab; it must match the login website.'),
+    origin: httpsOrigin.describe('The exact HTTPS origin of that tab; it must be the login website or another host of the same site (a login for mail.google.com fills on accounts.google.com).'),
   }),
 }
 type VaultToolName = keyof typeof schemas
@@ -220,7 +221,10 @@ export async function handleVaultTool(name: string, args: unknown, deps: VaultTo
     if (hostPinStatus(host) !== 'pinned') throw new ToolRefusal('VAULT_HOST_NOT_PINNED')
     const item = rows(await call('GET', 'items')).find((row) => row.id === input.itemId)
     if (!item || item.kind !== 'login') throw new ToolRefusal('VAULT_UNAVAILABLE')
-    if (item.website !== input.origin) throw new ToolRefusal('VAULT_ORIGIN_MISMATCH')
+    // The login's own website, or another host of the same site (mail.google.com on
+    // accounts.google.com, where Google signs in): exactly what the server issues a ticket for
+    // (lib/vault-site.ts). Only the saved website counts; no other field of the row widens it.
+    if (!siteMatch(item.website, input.origin)) throw new ToolRefusal('VAULT_ORIGIN_MISMATCH')
     if (item.ownerId !== deps.ownerId || !str(item.vaultId) || !posInt(item.vaultAssistantId) || !posInt(item.revision)) {
       throw new ToolRefusal('VAULT_UNAVAILABLE')
     }
