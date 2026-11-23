@@ -51,11 +51,14 @@ const VAULT_ID = randomUUID()
 const LOGIN = randomUUID()
 const API_KEY_ITEM = randomUUID()
 
-function itemRows() {
+/** The login row's own fields a case sets: its saved website, and extra sites a server might send. */
+interface LoginFields { website?: unknown; sites?: unknown }
+
+function itemRows(login: LoginFields = {}) {
   const base = { ownerId: OWNER, vaultId: VAULT_ID, vaultAssistantId: ASSISTANT, revision: 7, masked: '••••••••' }
   return [
     // Extra fields a buggy or hostile server might add: none may reach a tool result.
-    { ...base, id: LOGIN, name: 'Example login', kind: 'login', labels: [], website: 'https://login.example.test', username: 'owner@example.test', envName: null, reference: `hoai-vault://${ASSISTANT}/${LOGIN}`, password: SECRET, value: SECRET, sealed: { nonce: 'n', ciphertext: SECRET } },
+    { ...base, id: LOGIN, name: 'Example login', kind: 'login', labels: [], website: 'https://login.example.test', username: 'owner@example.test', envName: null, reference: `hoai-vault://${ASSISTANT}/${LOGIN}`, password: SECRET, value: SECRET, sealed: { nonce: 'n', ciphertext: SECRET }, ...login },
     { ...base, id: API_KEY_ITEM, name: 'Example API', kind: 'api_key', labels: ['ci'], website: null, username: null, envName: 'EXAMPLE_API_KEY', reference: `hoai-vault://${ASSISTANT}/${API_KEY_ITEM}`, secret: SECRET },
   ]
 }
@@ -63,7 +66,7 @@ function itemRows() {
 interface Call { method: string; url: string; headers: Record<string, string>; body: string }
 
 /** A fake backend that applies the server contract's checks to every call. */
-function fakeBackend(identityPublic: string, opts: { failWith?: number; failBody?: string } = {}) {
+function fakeBackend(identityPublic: string, opts: { failWith?: number; failBody?: string; login?: LoginFields } = {}) {
   const calls: Call[] = []
   const fetch = async (url: string | URL, init: RequestInit = {}) => {
     const u = new URL(String(url))
@@ -76,7 +79,7 @@ function fakeBackend(identityPublic: string, opts: { failWith?: number; failBody
     if (reason) return reply(403, { message: `refused ${reason} ${SECRET}` })
     if (opts.failWith) return reply(opts.failWith, opts.failBody ?? { message: SECRET })
     const prefix = `/api/v1/vault/agent/${ASSISTANT}`
-    if (method === 'GET' && u.pathname === `${prefix}/items`) return reply(200, { items: itemRows() })
+    if (method === 'GET' && u.pathname === `${prefix}/items`) return reply(200, { items: itemRows(opts.login) })
     if (method === 'POST' && u.pathname === `${prefix}/host-key`) {
       const parsed = JSON.parse(body)
       if (Object.keys(parsed).sort().join() !== 'publicKey,signature') return reply(400, {})
@@ -103,12 +106,12 @@ function fakeBackend(identityPublic: string, opts: { failWith?: number; failBody
 }
 
 /** A provisioned, registered and owner-confirmed host in a fresh folder. */
-async function pinnedHost() {
+async function pinnedHost(opts: Parameters<typeof fakeBackend>[1] = {}) {
   const dir = tempDir()
   const key = agentSigningKey()
   await loadOrCreateHostKey(dir, ASSISTANT)
   await provisionSigningIdentity(dir, ASSISTANT, key.secret)
-  const backend = fakeBackend(key.identityPublic)
+  const backend = fakeBackend(key.identityPublic, opts)
   await registerHostKey({ stateDir: dir, assistantId: ASSISTANT, ownerId: OWNER, apiBase: API, pairingToken: PAIRING, fetch: backend.fetch })
   await confirmHostPin(dir)
   return { dir, key, backend }
@@ -388,7 +391,8 @@ test('vault_fill_prepare: refuses a non-login item, a mismatched website and mal
     const d = deps(dir, backend.fetch, logs)
     let out = parse(await handleVaultTool('vault_fill_prepare', { itemId: API_KEY_ITEM, sessionId: 's', tabId: 't', origin: 'https://login.example.test' }, d))
     assert.equal(out.error, 'VAULT_UNAVAILABLE')
-    out = parse(await handleVaultTool('vault_fill_prepare', { itemId: LOGIN, sessionId: 's', tabId: 't', origin: 'https://other.example.test' }, d))
+    // Another registrable domain (other.example.test would be another host of the same site).
+    out = parse(await handleVaultTool('vault_fill_prepare', { itemId: LOGIN, sessionId: 's', tabId: 't', origin: 'https://login.other.test' }, d))
     assert.equal(out.error, 'VAULT_ORIGIN_MISMATCH')
     for (const bad of [
       { itemId: 'not-a-uuid', sessionId: 's', tabId: 't', origin: 'https://login.example.test' },
@@ -402,6 +406,109 @@ test('vault_fill_prepare: refuses a non-login item, a mismatched website and mal
       assertClean(r.content[0].text, [SECRET], 'input refusal')
     }
     assert.equal(backend.calls.filter(c => c.url.includes('/fill')).length, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// A saved login on another host of the same site. The server issues a fill ticket when the tab is
+// the login's own origin, or another host of the same registrable domain by the public suffix list
+// (private domains included) on the same port, https only (BGOS backend/src/agent-vault/vault-site.ts,
+// its vault-site.spec.ts and vault-same-site-fill.spec.ts, and the desktop twin's
+// vault-site-match.test.js). vault_fill_prepare accepts exactly those and refuses the rest before
+// anything is sent. Each row: the saved website, the tab origin, and the tool's answer.
+const TICKET = 'ticket'
+const SAME_SITE_CASES: Array<[string, unknown, string, string]> = [
+  // The same origin is exact.
+  ['exact', 'https://mail.google.com', 'https://mail.google.com', TICKET],
+  ['exact address', 'https://10.0.0.1', 'https://10.0.0.1', TICKET],
+  ['exact with its own port', 'https://login.example.com:8443', 'https://login.example.com:8443', TICKET],
+  // Same site, different host.
+  ['same site', 'https://mail.google.com', 'https://accounts.google.com', TICKET],
+  ['same site from the bare domain', 'https://google.com', 'https://accounts.google.com', TICKET],
+  ['same site under a two label suffix', 'https://www.bbc.co.uk', 'https://account.bbc.co.uk', TICKET],
+  ['same site inside one person\'s site', 'https://alice.github.io', 'https://docs.alice.github.io', TICKET],
+  ['a saved website with a trailing slash', 'https://mail.google.com/', 'https://accounts.google.com', TICKET],
+  ['a saved website in capitals', 'https://MAIL.google.com', 'https://accounts.google.com', TICKET],
+  // Different sites never match, lookalikes included.
+  ['another site', 'https://mail.google.com', 'https://accounts.google.co', 'VAULT_ORIGIN_MISMATCH'],
+  ['a lookalike with the site as labels', 'https://mail.google.com', 'https://google.com.evil.example', 'VAULT_ORIGIN_MISMATCH'],
+  ['an extra label lookalike', 'https://accounts.google.com', 'https://accounts.google.com.evil.test', 'VAULT_ORIGIN_MISMATCH'],
+  ['a hyphen lookalike', 'https://mail.google.com', 'https://accounts-google.com', 'VAULT_ORIGIN_MISMATCH'],
+  // googIe.com (a capital I for the l), as the exact origin a tab reports it.
+  ['a letter lookalike', 'https://mail.google.com', new URL('https://googIe.com').origin, 'VAULT_ORIGIN_MISMATCH'],
+  ['a punycode lookalike', 'https://mail.google.com', `https://${new URL(`https://g${String.fromCharCode(0x43e, 0x43e)}gle.com`).hostname}`, 'VAULT_ORIGIN_MISMATCH'],
+  ['a parent that is another site', 'https://bank.example.com', 'https://example.co.uk', 'VAULT_ORIGIN_MISMATCH'],
+  // Public suffix user sites are separate: one person's site never fills another's.
+  ['two github.io sites', 'https://alice.github.io', 'https://bob.github.io', 'VAULT_ORIGIN_MISMATCH'],
+  ['a github.io site and the suffix', 'https://alice.github.io', 'https://github.io', 'VAULT_ORIGIN_MISMATCH'],
+  ['two vercel.app sites', 'https://shop-a.vercel.app', 'https://shop-b.vercel.app', 'VAULT_ORIGIN_MISMATCH'],
+  ['two blogspot.com sites', 'https://one.blogspot.com', 'https://two.blogspot.com', 'VAULT_ORIGIN_MISMATCH'],
+  ['two netlify.app sites', 'https://a.netlify.app', 'https://b.netlify.app', 'VAULT_ORIGIN_MISMATCH'],
+  ['two herokuapp.com sites', 'https://a.herokuapp.com', 'https://b.herokuapp.com', 'VAULT_ORIGIN_MISMATCH'],
+  // Never another scheme, port, an address or a credential.
+  ['another port on the tab', 'https://mail.google.com', 'https://accounts.google.com:8443', 'VAULT_ORIGIN_MISMATCH'],
+  ['another port on the saved website', 'https://a.google.com:8443', 'https://b.google.com', 'VAULT_ORIGIN_MISMATCH'],
+  ['two addresses', 'https://10.0.0.1', 'https://10.0.0.2', 'VAULT_ORIGIN_MISMATCH'],
+  ['two IPv6 addresses', 'https://[::1]', 'https://[::2]', 'VAULT_ORIGIN_MISMATCH'],
+  ['a saved website with a credential', 'https://user:pw@mail.google.com', 'https://accounts.google.com', 'VAULT_ORIGIN_MISMATCH'],
+  ['localhost names', 'https://localhost', 'https://app.localhost', 'VAULT_ORIGIN_MISMATCH'],
+  ['a saved website that is not a URL', 'not a url', 'https://accounts.google.com', 'VAULT_ORIGIN_MISMATCH'],
+  ['a saved http website', 'http://mail.google.com', 'https://accounts.google.com', 'VAULT_ORIGIN_MISMATCH'],
+  ['a saved http website on its own origin', 'http://mail.google.com', 'https://mail.google.com', 'VAULT_ORIGIN_MISMATCH'],
+  ['no saved website', null, 'https://accounts.google.com', 'VAULT_ORIGIN_MISMATCH'],
+  // The tab must be an exact https origin before the site is even compared.
+  ['an http tab', 'https://mail.google.com', 'http://accounts.google.com', 'VAULT_INPUT_INVALID'],
+  ['an http tab and saved website', 'http://mail.google.com', 'http://accounts.google.com', 'VAULT_INPUT_INVALID'],
+  ['an empty tab', 'https://mail.google.com', '', 'VAULT_INPUT_INVALID'],
+  ['a tab with a credential', 'https://mail.google.com', 'https://user:pw@accounts.google.com', 'VAULT_INPUT_INVALID'],
+]
+
+test('vault_fill_prepare: a saved login fills another host of the same site, and never another site', async () => {
+  const opts: { login?: LoginFields } = {}
+  const { dir, key, backend } = await pinnedHost(opts)
+  const logs: string[] = []
+  try {
+    const d = deps(dir, backend.fetch, logs)
+    const wrong: string[] = []
+    for (const [what, website, origin, expected] of SAME_SITE_CASES) {
+      opts.login = { website }
+      const before = backend.calls.filter(c => c.url.includes('/fill')).length
+      const out = parse(await handleVaultTool('vault_fill_prepare', { itemId: LOGIN, sessionId: 's', tabId: 't', origin }, d))
+      const sent = backend.calls.filter(c => c.url.includes('/fill')).slice(before)
+      const answer = out.error ?? (out.ticket ? TICKET : 'no answer')
+      if (answer !== expected) { wrong.push(`${what}: ${String(website)} on ${origin} gave ${answer}, expected ${expected}`); continue }
+      if (expected !== TICKET) {
+        if (sent.length) wrong.push(`${what}: a fill was requested although it was refused`)
+        continue
+      }
+      // The ticket binds the tab's own origin: the tab is what the server and the desktop check.
+      const body = JSON.parse(sent[0].body)
+      if (sent.length !== 1 || body.origin !== origin || body.intent.origin !== origin || out.origin !== origin || out.request.intent.origin !== origin) {
+        wrong.push(`${what}: the fill did not bind the tab origin ${origin}`)
+      }
+      assert.doesNotThrow(() => checkFillIntent(out.request.intent, out.request.signature, key.identityPublic))
+    }
+    assert.deepEqual(wrong, [])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('vault_fill_prepare: extra sites a server sends never widen the match beyond the saved website', async () => {
+  // The server's fill reads only the login's saved website (its confirmed extra hosts are the
+  // desktop's to ask about, and are always hosts of that same site). A site list on the row,
+  // whatever it says, is not a second website.
+  const opts: { login?: LoginFields } = {}
+  const { dir, backend } = await pinnedHost(opts)
+  const logs: string[] = []
+  try {
+    const d = deps(dir, backend.fetch, logs)
+    const fill = (origin: string) => handleVaultTool('vault_fill_prepare', { itemId: LOGIN, sessionId: 's', tabId: 't', origin }, d).then(parse)
+    for (const sites of [['https://login.other.test'], [{ origin: 'https://login.other.test' }], 'https://login.other.test']) {
+      opts.login = { website: 'https://mail.google.com', sites }
+      assert.equal((await fill('https://login.other.test')).error, 'VAULT_ORIGIN_MISMATCH', JSON.stringify(sites))
+    }
+    assert.equal(backend.calls.filter(c => c.url.includes('/fill')).length, 0)
+    // A listed host of the saved site fills by the rule itself, as it does with no list.
+    opts.login = { website: 'https://mail.google.com', sites: ['https://accounts.google.com'] }
+    assert.equal((await fill('https://accounts.google.com')).ticket, 'T'.repeat(43))
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
