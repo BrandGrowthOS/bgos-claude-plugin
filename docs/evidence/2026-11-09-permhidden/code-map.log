@@ -1,0 +1,83 @@
+Per-file query checks before edits and final evidence updates
+node scripts/codegraph/query.mjs .claude-plugin/plugin.json
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs CHANGELOG.md
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs bin/hoai-floor-hook.mjs
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs package.json
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs package-lock.json
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs server.ts
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs test/floor-check.test.ts
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs lib/permission-input.mjs
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs scripts/probe-permission-input.mjs
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs test/permission-hidden-input.test.ts
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs REPORT-PERMHIDDEN.md
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs docs/evidence/2026-11-09-permhidden/payload.json
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs docs/evidence/2026-11-09-permhidden/red.log
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs docs/evidence/2026-11-09-permhidden/green.log
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs docs/evidence/2026-11-09-permhidden/full-suite.log
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs docs/evidence/2026-11-09-permhidden/tsc.log
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs docs/evidence/2026-11-09-permhidden/code-map.log
+Exit: 1; MODULE_NOT_FOUND
+
+node scripts/codegraph/query.mjs docs/evidence/2026-11-09-permhidden/probe.log
+Exit: 1; MODULE_NOT_FOUND
+
+No query script exists in this checkout. No guard, mirror, test or contract names could be produced.
+Final changed-file query before the commit
+Command: node scripts/codegraph/query.mjs --changed origin/main
+Exit: 1
+node:internal/modules/cjs/loader:1572
+  throw err;
+  ^
+
+Error: Cannot find module '<repo>/scripts/codegraph/query.mjs'
+    at Module._resolveFilename (node:internal/modules/cjs/loader:1568:15)
+    at wrapResolveFilename (node:internal/modules/cjs/loader:1122:27)
+    at defaultResolveImplForCJSLoading (node:internal/modules/cjs/loader:1146:10)
+    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1173:12)
+    at Module._load (node:internal/modules/cjs/loader:1345:5)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:260:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47 {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: []
+}
+
+Node.js v26.4.0
+
+Command: git show-ref --verify refs/remotes/origin/main
+Exit: 128
+fatal: 'refs/remotes/origin/main' - not a valid ref
+
+No guard, mirror, test or contract names were returned because the query script is missing. Manual related-contract audit and unchanged-file reasons are in REPORT-PERMHIDDEN.md.

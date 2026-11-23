@@ -438,7 +438,7 @@ test('the floor is asked BEFORE the auto approve branch, from the hook record fi
   const record = handler.indexOf('const floorRecord = takeOwnFloorRecord(tool_name, input_preview)')
   const plan = handler.indexOf('const floorPlan = planFloorRequest({')
   const classify = handler.indexOf('classifyPermissionRequest(tool_name, input_preview)')
-  const settle = handler.indexOf("if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)")
+  const settle = handler.indexOf("if (floorPlan.action === 'consult') return settleFloorRequest(cardParams, floorPlan)")
   const owner = handler.indexOf("if (floorPlan.action === 'ask_elided') {")
   const auto = handler.indexOf('if (AUTO_APPROVE) {')
   assert.ok(record > 0 && plan > 0 && classify > 0 && settle > 0 && owner > 0 && auto > 0, 'all must be in the handler')
@@ -449,7 +449,7 @@ test('the floor is asked BEFORE the auto approve branch, from the hook record fi
   assert.match(handler, /floorRecord === null && \(AUTO_APPROVE \|\| isOwnSendingTool\(tool_name\)\)\s*\?\s*classifyPermissionRequest\(tool_name, input_preview\)\s*:\s*null/)
   assert.match(handler, /autoApprove: AUTO_APPROVE,/)
   const ownerExit = handler.slice(owner, auto)
-  assert.ok(ownerExit.includes('return settleElidedFloorRequest(params)'), 'a cut preview with no record asks the server')
+  assert.ok(ownerExit.includes('return settleElidedFloorRequest(cardParams)'), 'a cut preview with no record asks the server')
   assert.equal(ownerExit.includes("behavior: 'allow'"), false)
   // The stage 6 backend review: the cut command waits for the owner only when
   // the server says the switch holds it, and then only a tap allows it.
@@ -504,7 +504,7 @@ test('the interactive path a hold takes still refuses in a drain and with no cha
   assert.ok(noChat.includes("behavior: 'deny'"), 'the no chat exit refuses a held request')
   assert.ok(relay.includes('buildPermissionRequestBody({'), 'and otherwise the real card is posted')
   // The handler's own tail is this same function: one interactive path, not two.
-  assert.ok(handler.includes('return relayPermissionToOwner(params)\n})'))
+  assert.ok(handler.includes('return relayPermissionToOwner(cardParams)\n})'))
 })
 
 test('the floor call is bounded, authenticated, and keeps the status', () => {

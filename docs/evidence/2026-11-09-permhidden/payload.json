@@ -1,0 +1,14 @@
+{
+  "cli": "2.1.319 (Claude Code)",
+  "provenance": "Real CLI with local canned model response; hook denied execution. Envelope paths and session id omitted.",
+  "model_command": "printf '%s' 'alpha\u200bbeta\u2060gamma\u202edelta\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028omega'",
+  "hook": {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "printf '%s' 'alpha\u200bbeta\u2060gamma\u202edelta\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028\u2028omega'",
+      "description": "Synthetic hidden character probe"
+    },
+    "tool_use_id": "toolu_permhidden_probe"
+  }
+}

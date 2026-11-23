@@ -1,0 +1,1181 @@
+Initial full run
+Command: TMPDIR=<repo>/.permhidden-tmp RUN_TESTS_WORKERS=2 npm test
+Exit: 1
+[run-tests] 11415 passed, 0 failed, 62 skipped, 505 files, 1934.2 s
+[run-tests] the run left 214 new paths in the working tree:
+[run-tests] FAILED
+The 214 new paths were 213 TSX cache files and one Node compile-cache file. No test failed.
+
+Stopped setup attempt
+TMPDIR under node_modules changed the simulated clone topology in test/bgos-doctor.test.ts.
+Expected paired-topology:installer-is-a-clone, actual empty reason.
+Stopped the runner, exit 130. No code or test changes.
+
+Final full run
+Command: TMPDIR=<repo>/.permhidden-tmp TSX_DISABLE_CACHE=1 npm_config_cache=<repo>/node_modules/.cache/npm RUN_TESTS_WORKERS=2 npm test
+Exit: 1
+No new paths or unreadable-tree errors reported.
+Output: per-file results, skip reasons and totals.
+
+[run-tests] node:test family: 467 files, 2 workers
+# skipped 0
+[run-tests] PASS test/agent-browser-vault-process.test.ts (0.269s)
+# skipped 0
+[run-tests] PASS test/agent-checkup.test.ts (0.138s)
+# skipped 0
+[run-tests] PASS test/agent-credentials.test.ts (0.186s)
+# skipped 0
+[run-tests] PASS test/agent-email-files-admission.test.ts (0.503s)
+# skipped 0
+[run-tests] PASS test/agent-email-files.test.ts (0.369s)
+ok 36 - REAL ACL: a fresh host profile locks under the daemon allow list with PSModulePath absent # SKIP Windows only (the mocked cases above run everywhere)
+ok 37 - REAL ACL: Modify only, the user's own and private: accepted, and locked to the user exactly as with Full control # SKIP Windows only (the mocked cases above run everywhere)
+ok 38 - REAL ACL: Modify only, read-only for Users: accepted, and the read entry is gone afterwards # SKIP Windows only (the mocked cases above run everywhere)
+ok 39 - REAL ACL: Full control (unchanged): accepted and taken over, even with another account that can write # SKIP Windows only (the mocked cases above run everywhere)
+ok 40 - REAL ACL: a folder name with a non-ASCII letter and a curly quote reaches Windows intact (Modify only and Full control) # SKIP Windows only (the mocked cases above run everywhere)
+ok 41 - REAL ACL: Modify only and another account can write (Authenticated Users with Modify, as on E:): refused with the reason, folder untouched # SKIP Windows only (the mocked cases above run everywhere)
+ok 42 - REAL ACL: Modify only and another account can write (Authenticated Users inherit-only Modify): refused with the reason, folder untouched # SKIP Windows only (the mocked cases above run everywhere)
+ok 43 - REAL ACL: Modify only and another account can write (SYSTEM with Full control): refused with the reason, folder untouched # SKIP Windows only (the mocked cases above run everywhere)
+ok 44 - REAL ACL: Modify only and another account owns the folder: refused with the reason, folder untouched # SKIP Windows only (the mocked cases above run everywhere)
+ok 46 - REAL ACL: on a Modify-only drive the agent hears that another account can write, and the log names it # SKIP Windows only (the mocked cases above run everywhere)
+# skipped 10
+[run-tests] PASS test/agent-browser-vault.test.ts (1.666s)
+# skipped 0
+[run-tests] PASS test/agent-email-send.test.ts (3.606s)
+# skipped 0
+[run-tests] PASS test/agent-inventory.boot-clock.test.ts (0.129s)
+# skipped 0
+[run-tests] PASS test/agent-inventory.launcher.test.ts (0.280s)
+# skipped 0
+[run-tests] PASS test/agent-inventory.test.ts (0.439s)
+# skipped 0
+[run-tests] PASS test/agent-restart.test.ts (0.801s)
+# skipped 0
+[run-tests] PASS test/agent-service.home-scope.test.ts (0.262s)
+# skipped 0
+[run-tests] PASS test/agent-state.ancestor-probe.test.ts (0.109s)
+# skipped 0
+[run-tests] PASS test/agent-state.test.ts (0.124s)
+ok 3 - win32 only: Windows PowerShell 5.1 parses the generated agent task script cleanly (parse only, nothing in it runs) # SKIP
+# skipped 1
+[run-tests] PASS test/agent-task-win32.home-scope.test.ts (0.122s)
+# skipped 0
+[run-tests] PASS test/agent-task-win32.test.ts (0.099s)
+# skipped 0
+[run-tests] PASS test/agent-identity.test.ts (5.859s)
+# skipped 0
+[run-tests] PASS test/agent-verify.test.ts (0.093s)
+# skipped 0
+[run-tests] PASS test/agent-viewer-script.test.ts (0.079s)
+# skipped 0
+[run-tests] PASS test/agent-windows.test.ts (0.121s)
+# skipped 0
+[run-tests] PASS test/always-on-grace.test.ts (0.078s)
+# skipped 0
+[run-tests] PASS test/always-on-reconcile.test.ts (0.159s)
+# skipped 0
+[run-tests] PASS test/artifacts-tools.test.ts (0.162s)
+# skipped 0
+[run-tests] PASS test/aside-fork.test.ts (0.132s)
+# skipped 0
+[run-tests] PASS test/ask-multi-select-wiring.test.ts (0.428s)
+# skipped 0
+[run-tests] PASS test/ask-review-282.test.ts (0.905s)
+# skipped 0
+[run-tests] PASS test/ask-review-wiring.test.ts (0.095s)
+# skipped 0
+[run-tests] PASS test/ask-tracker.test.ts (2.272s)
+# skipped 0
+[run-tests] PASS test/attach-scope.e2e.test.ts (3.428s)
+# skipped 0
+[run-tests] PASS test/attach-scope.launcher.test.ts (0.270s)
+# skipped 0
+[run-tests] PASS test/attach-scope.test.ts (0.159s)
+# skipped 0
+[run-tests] PASS test/auth-login.test.ts (0.486s)
+# skipped 0
+[run-tests] PASS test/auth-recheck.test.ts (0.089s)
+# skipped 0
+[run-tests] PASS test/auth-rejection.test.ts (0.085s)
+# skipped 0
+[run-tests] PASS test/bgos-agent.commands.test.ts (13.882s)
+# skipped 0
+[run-tests] PASS test/agent-unbound.test.ts (26.858s)
+# skipped 0
+[run-tests] PASS test/bgos-agent.gate.test.ts (36.286s)
+# skipped 0
+[run-tests] PASS test/bgos-agent.install.test.ts (62.050s)
+# skipped 0
+[run-tests] PASS test/bgos-agent.lock.test.ts (5.591s)
+# skipped 0
+[run-tests] PASS test/bgos-agent.private-hook.test.ts (0.302s)
+# skipped 0
+[run-tests] PASS test/bgos-agent.runsh.test.ts (21.447s)
+# skipped 0
+[run-tests] PASS test/bgos-agent.static.test.ts (0.122s)
+# skipped 0
+[run-tests] PASS test/bgos-agent.update-reexec.test.ts (9.308s)
+# skipped 0
+[run-tests] PASS test/bgos-claim.test.ts (0.126s)
+# skipped 0
+[run-tests] PASS test/bgos-doctor.identity-resolver.test.ts (0.130s)
+# skipped 0
+[run-tests] PASS test/bgos-doctor.identity.test.ts (3.194s)
+# skipped 0
+[run-tests] PASS test/bgos-doctor.test.ts (0.153s)
+# skipped 0
+[run-tests] PASS test/bgos-install-method.test.ts (0.098s)
+# skipped 0
+[run-tests] PASS test/bgos-launch.test.ts (0.094s)
+# skipped 0
+[run-tests] PASS test/bgos-pair.test.ts (0.329s)
+# skipped 0
+[run-tests] PASS test/boards-download.test.ts (0.163s)
+# skipped 0
+[run-tests] PASS test/boards-tools.test.ts (0.131s)
+# skipped 0
+[run-tests] PASS test/boot-hello.test.ts (0.092s)
+# skipped 0
+[run-tests] PASS test/bootstrap-askuserquestion-deny.test.ts (0.462s)
+ok 10 - PowerShell 5.1 parses the script cleanly (win32 only) # SKIP powershell parser check runs on Windows
+# skipped 1
+[run-tests] PASS test/bootstrap-ps1.static.test.ts (0.078s)
+# skipped 0
+[run-tests] PASS test/bootstrap-sh.static.test.ts (0.093s)
+# skipped 0
+[run-tests] PASS test/bounded-fetch.test.ts (0.277s)
+# skipped 0
+[run-tests] PASS test/browser-bootstrap.test.ts (0.473s)
+ok 22 - the folder guard on the REAL file system makes a folder owner only even when it starts with explicit entries for others # SKIP Windows only
+# skipped 1
+[run-tests] PASS test/browser-downloads.test.ts (25.581s)
+# skipped 0
+[run-tests] PASS test/browser-env.test.ts (12.500s)
+# skipped 0
+[run-tests] PASS test/browser-fill-submit.test.ts (0.564s)
+# skipped 0
+[run-tests] PASS test/browser-gate.test.ts (111.152s)
+ok 9 - cross tree: each copy is byte-identical to the BGOS original # SKIP set HOAI_BROWSER_HOST_CORE_SOURCE to the BGOS agent-browser directory
+# skipped 1
+[run-tests] PASS test/browser-host-core.vendor.test.ts (0.085s)
+# skipped 0
+[run-tests] PASS test/browser-host-supervisor.test.ts (29.876s)
+# skipped 0
+[run-tests] PASS test/browser-install-lifetime.test.ts (0.116s)
+# skipped 0
+[run-tests] PASS test/browser-machine-gate.test.ts (12.332s)
+# skipped 0
+[run-tests] PASS test/browser-machine-sign-ins.test.ts (0.568s)
+# skipped 0
+[run-tests] PASS test/browser-page-cleanup.test.ts (0.215s)
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+[run-tests] PASS test/browser-profile-active-backup.test.ts (4.811s)
+# skipped 0
+[run-tests] PASS test/browser-profile-artifact-inventory.test.ts (0.079s)
+# skipped 0
+[run-tests] PASS test/browser-profile-artifacts.test.ts (0.094s)
+# skipped 0
+# skipped 0
+# skipped 0
+# skipped 0
+[run-tests] PASS test/browser-profile-backup-workers.test.ts (0.260s)
+# skipped 0
+[run-tests] PASS test/browser-profile-cdp-targets.test.ts (0.472s)
+# skipped 0
+[run-tests] PASS test/browser-profile-companion-backups.test.ts (0.235s)
+# skipped 0
+[run-tests] PASS test/browser-profile-companion-client.test.ts (0.163s)
+# skipped 0
+[run-tests] PASS test/browser-profile-companion-downloads.test.ts (0.258s)
+# skipped 0
+[run-tests] PASS test/browser-profile-companion-fields.test.ts (0.226s)
+# skipped 0
+[run-tests] PASS test/browser-profile-companion-files.test.ts (0.230s)
+# skipped 0
+[run-tests] PASS test/browser-profile-companion-host.test.ts (0.346s)
+# skipped 0
+[run-tests] PASS test/browser-profile-companion-permission.test.ts (0.569s)
+# skipped 0
+[run-tests] PASS test/browser-profile-companion-state.test.ts (0.202s)
+# skipped 0
+[run-tests] PASS test/browser-profile-companion-transfer.test.ts (0.142s)
+# skipped 0
+[run-tests] PASS test/browser-profile-companion.test.ts (0.453s)
+ok 5 - cross-tree verification reads the declared commit, not a mutable working copy # SKIP BGOS source checkout not present; local committed pin is always checked
+# skipped 1
+[run-tests] PASS test/browser-profile-core.vendor.test.ts (1.178s)
+# skipped 0
+[run-tests] PASS test/browser-profile-daemon-stop.test.ts (0.098s)
+# skipped 0
+[run-tests] PASS test/browser-profile-downloads-failure.test.ts (1.270s)
+# skipped 0
+[run-tests] PASS test/browser-profile-downloads-runtime.test.ts (0.376s)
+# skipped 0
+[run-tests] PASS test/browser-profile-downloads.test.ts (3.041s)
+# skipped 0
+[run-tests] PASS test/browser-profile-engine-selection.test.ts (0.374s)
+# skipped 0
+[run-tests] PASS test/browser-profile-field-input.test.ts (0.095s)
+# skipped 0
+[run-tests] PASS test/browser-profile-file-area.test.ts (0.078s)
+# skipped 0
+[run-tests] PASS test/browser-profile-files.test.ts (0.276s)
+# skipped 0
+[run-tests] PASS test/browser-profile-kdf.test.ts (0.092s)
+# skipped 0
+# skipped 0
+# skipped 0
+[run-tests] PASS test/browser-profile-live-capture.test.ts (0.238s)
+# skipped 0
+[run-tests] PASS test/browser-profile-live-read.test.ts (0.098s)
+# skipped 0
+[run-tests] PASS test/browser-profile-managed-instructions.test.ts (0.212s)
+# skipped 0
+[run-tests] PASS test/browser-profile-node-runtime.test.ts (1.345s)
+# skipped 0
+[run-tests] PASS test/browser-profile-pairing-client.test.ts (0.497s)
+# skipped 0
+[run-tests] PASS test/browser-profile-peer-pins.test.ts (0.258s)
+# skipped 0
+[run-tests] PASS test/browser-profile-peer-review.test.ts (0.148s)
+# skipped 0
+[run-tests] PASS test/browser-profile-permission-client.test.ts (0.223s)
+# skipped 0
+[run-tests] PASS test/browser-profile-portable-extras.test.ts (0.523s)
+# skipped 0
+[run-tests] PASS test/browser-profile-process-darwin.test.ts (0.131s)
+# skipped 0
+[run-tests] PASS test/browser-profile-resume-ledger.test.ts (0.094s)
+# skipped 0
+[run-tests] PASS test/browser-profile-resume-runtime.test.ts (0.135s)
+# skipped 0
+[run-tests] PASS test/browser-profile-return-client.test.ts (0.175s)
+# skipped 0
+[run-tests] PASS test/browser-profile-return-handover.test.ts (0.179s)
+# skipped 0
+[run-tests] PASS test/browser-profile-rtc-activity.test.ts (0.159s)
+# skipped 0
+[run-tests] PASS test/browser-profile-runtime-bootstrap.test.ts (0.396s)
+# skipped 0
+[run-tests] PASS test/browser-profile-runtime-security.test.ts (0.357s)
+# skipped 0
+[run-tests] PASS test/browser-profile-runtime.test.ts (1.359s)
+# skipped 0
+[run-tests] PASS test/browser-profile-sdk-pin.test.ts (0.151s)
+ok 19 - actual shared endpoint crypto interoperates with the OS-provider adapter # SKIP Set HOAI_PROFILE_SYNC_CRYPTO_SOURCE to the shared committed or review source until vendoring lands.
+ok 46 - real macOS Keychain: a throwaway keychain by path stores, reads, refuses while locked and never joins the search list # SKIP Set HOAI_KEYCHAIN_REAL_TEST=1 on a Mac to run against a throwaway keychain.
+# skipped 2
+[run-tests] PASS test/browser-profile-sync-key-store.test.ts (0.355s)
+# skipped 0
+[run-tests] PASS test/browser-runtime-folder.test.ts (13.591s)
+# skipped 0
+[run-tests] PASS test/browser-secret-redactor.test.ts (0.238s)
+# skipped 0
+[run-tests] PASS test/browser-sign-in-copy.test.ts (0.279s)
+# skipped 0
+[run-tests] PASS test/bundled-instructions.test.ts (0.148s)
+# skipped 0
+[run-tests] PASS test/call-owner-private.test.ts (0.585s)
+# skipped 0
+[run-tests] PASS test/call-owner.test.ts (0.084s)
+# skipped 0
+[run-tests] PASS test/capabilities-fetch-path.test.ts (0.144s)
+# skipped 0
+[run-tests] PASS test/capabilities.test.ts (0.154s)
+# skipped 0
+[run-tests] PASS test/bgos-agent.home-scope.test.ts (410.788s)
+# skipped 0
+[run-tests] PASS test/catch-up-paging.test.ts (0.129s)
+# skipped 0
+[run-tests] PASS test/changes-rpc.test.ts (0.098s)
+# skipped 0
+[run-tests] PASS test/changes-wiring.test.ts (0.077s)
+# skipped 0
+[run-tests] PASS test/channel-ack.test.ts (0.087s)
+# skipped 0
+[run-tests] PASS test/channel-liveness.test.ts (0.083s)
+# skipped 0
+[run-tests] PASS test/channel-presence.test.ts (0.308s)
+# skipped 0
+[run-tests] PASS test/channel-transport.test.ts (0.158s)
+# skipped 0
+[run-tests] PASS test/check-browser-shim-source.test.ts (0.553s)
+# skipped 0
+[run-tests] PASS test/chromium-fixtures-exit.test.ts (0.724s)
+# skipped 0
+[run-tests] PASS test/chromium-test-harness.test.ts (0.217s)
+# skipped 0
+[run-tests] PASS test/claude-binary.test.ts (2.461s)
+ok 8 - cross tree: this copy is byte-identical to the BGOS copy # SKIP set BGOS_CLAUDE_CAPABILITY_TOKENS_SOURCE to BGOS backend/src/integrations/claude-capability-tokens.ts
+# skipped 1
+[run-tests] PASS test/claude-capability-tokens.pin.test.ts (0.151s)
+# skipped 0
+[run-tests] PASS test/claude-login.test.ts (0.103s)
+# skipped 0
+[run-tests] PASS test/claude-preseed.test.ts (0.163s)
+# skipped 0
+[run-tests] PASS test/clone-hooks.boot.test.ts (0.108s)
+# skipped 0
+[run-tests] PASS test/clone-hooks.test.ts (0.172s)
+# skipped 0
+[run-tests] PASS test/compact-capability.test.ts (0.080s)
+# skipped 0
+[run-tests] PASS test/compact-confirm.test.ts (0.082s)
+# skipped 0
+[run-tests] PASS test/compact-inject.test.ts (0.091s)
+# skipped 0
+[run-tests] PASS test/connection-texts.test.ts (0.080s)
+# skipped 0
+[run-tests] PASS test/cursor-store.test.ts (0.090s)
+# skipped 0
+[run-tests] PASS test/daemon-command-sender.test.ts (0.101s)
+# skipped 0
+[run-tests] PASS test/daemon-wrapper.test.ts (0.100s)
+# skipped 0
+[run-tests] PASS test/deaf-probe-group-silence.test.ts (0.737s)
+# skipped 0
+[run-tests] PASS test/declared-capabilities.test.ts (0.165s)
+# skipped 0
+[run-tests] PASS test/delivery-proof.test.ts (0.158s)
+# skipped 0
+[run-tests] PASS test/denied-tools-reach.test.ts (0.084s)
+# skipped 0
+[run-tests] PASS test/doctor-rpc.e2e.test.ts (1.276s)
+# skipped 0
+[run-tests] PASS test/doctor-rpc.test.ts (0.091s)
+# skipped 0
+[run-tests] PASS test/doctor-wiring.test.ts (0.124s)
+# skipped 0
+[run-tests] PASS test/duplicate-copy.e2e.test.ts (22.359s)
+# skipped 0
+[run-tests] PASS test/duplicate-copy.test.ts (0.236s)
+# skipped 0
+[run-tests] PASS test/email-files-channel.test.ts (0.161s)
+# skipped 0
+[run-tests] PASS test/email-files.test.ts (0.366s)
+# skipped 0
+[run-tests] PASS test/email-outbound-files.test.ts (48.664s)
+# skipped 0
+[run-tests] PASS test/entry-guard.symlink.test.ts (0.348s)
+# skipped 0
+[run-tests] PASS test/error-body.test.ts (0.087s)
+# skipped 0
+[run-tests] PASS test/export-pack.test.ts (0.122s)
+# skipped 0
+[run-tests] PASS test/external-email-label.test.ts (2.171s)
+# skipped 0
+[run-tests] PASS test/first-poll-gate.test.ts (0.095s)
+# skipped 0
+[run-tests] PASS test/first-read-cursor-zero.e2e.test.ts (29.744s)
+# skipped 0
+[run-tests] PASS test/floor-check.test.ts (0.586s)
+# skipped 0
+[run-tests] PASS test/floor-evidence.test.ts (0.361s)
+# skipped 0
+[run-tests] PASS test/floor-state.test.ts (0.101s)
+# skipped 0
+[run-tests] PASS test/forwarded-dedupe.test.ts (0.081s)
+# skipped 0
+[run-tests] FAIL test/catch-up-after-deploy.e2e.test.ts (179.597s)
+ok 1 - powershell.exe: no launcher pid, an old PASS then a newer UNPROVEN from another helper: only the newest run is judged, FAIL # SKIP the proof script is PowerShell
+ok 2 - powershell.exe: no launcher pid, ONE pid that ran twice (Windows reuses pids): an old PASS and a newer UNPROVEN are two runs, FAIL # SKIP the proof script is PowerShell
+ok 3 - powershell.exe: no launcher pid, the newest run passed with its daemon boot and beacon: PASS # SKIP the proof script is PowerShell
+ok 4 - powershell.exe: the launcher pid known (supervisor.json): its own helpers are judged as before, another launcher's never # SKIP the proof script is PowerShell
+ok 5 - powershell.exe: the launcher pid known, an older PASS then a newer UNPROVEN from that same launcher: only its newest run is judged, FAIL # SKIP the proof script is PowerShell
+# skipped 5
+[run-tests] PASS test/gate-proof.script.test.ts (0.083s)
+ok 38 - real Git on Windows: an override spelled another way never points Git at another repository # SKIP
+# skipped 1
+[run-tests] PASS test/git-changes.test.ts (2.396s)
+# skipped 0
+[run-tests] PASS test/goal-cap.test.ts (0.078s)
+# skipped 0
+[run-tests] PASS test/goal-cap.transcript.test.ts (0.087s)
+# skipped 0
+[run-tests] PASS test/goal-marks.test.ts (0.694s)
+# skipped 0
+[run-tests] PASS test/goal-status.test.ts (0.090s)
+# skipped 0
+[run-tests] PASS test/goal-tail.test.ts (0.082s)
+# skipped 0
+[run-tests] PASS test/goal-writes.test.ts (0.105s)
+# skipped 0
+[run-tests] PASS test/hard-floor-fixture.test.ts (0.124s)
+# skipped 0
+[run-tests] PASS test/hard-floor-lane.test.ts (0.088s)
+# skipped 0
+[run-tests] PASS test/hard-floor.test.ts (0.180s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-host.card-wording.test.ts (0.358s)
+# skipped 0
+[run-tests] PASS test/gate-block.test.ts (83.724s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-host.forget-sites.test.ts (0.383s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-host.trust-persist.test.ts (0.308s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-launch.test.ts (0.118s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-mcp.cancellation.test.ts (1.827s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-mcp.managed-context.test.ts (1.558s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-mcp.profile-runtime.test.ts (0.802s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-mcp.recipient-host.test.ts (0.563s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-mcp.refusals.test.ts (7.349s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-mcp.relay.test.ts (6.567s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-mcp.test.ts (0.172s)
+ok 7 - a supplied BGOS source blob verifies cross-tree parity # SKIP no source blob supplied; recorded source hash checked offline, live comparison needs trusted credentials
+# skipped 1
+[run-tests] PASS test/hoai-browser-mcp.vendor.test.ts (0.081s)
+# skipped 0
+[run-tests] PASS test/hoai-core.child-env.test.ts (0.219s)
+# skipped 0
+[run-tests] PASS test/hoai-core.gate-attach.test.ts (0.869s)
+# skipped 0
+[run-tests] PASS test/hoai-core.identity.test.ts (0.184s)
+# skipped 0
+[run-tests] PASS test/hoai-core.keepalive.test.ts (1.308s)
+# skipped 0
+[run-tests] PASS test/hoai-core.keychain-login.test.ts (0.136s)
+ok 1 - real processes, agent 867: a wedged launcher whose claude is a zombie and that ignores TERM is ended with KILL, and the agent launches # SKIP
+ok 2 - real processes, control: a wedged launcher whose claude is ALIVE stays the owner: exit 3, never signalled # SKIP
+ok 3 - real processes, control: the same wedged idle holder running in ANOTHER folder (a reused pid) is never signalled # SKIP
+ok 4 - real processes, watchdog: a wedged launcher whose claude has exited releases its own claim and ends itself # SKIP
+ok 5 - real processes, watchdog control: a wedged launcher whose claude is alive is left running with its claim # SKIP
+ok 6 - real processes, Windows watchdog: a wedged launcher whose claude has exited releases its own claim and ends itself # SKIP
+ok 7 - real processes, Windows watchdog control: a wedged launcher whose claude is alive is left running with its claim # SKIP
+# skipped 7
+[run-tests] PASS test/hoai-core.launcher-zombie.real.test.ts (0.090s)
+# skipped 0
+[run-tests] PASS test/hoai-core.launcher-zombie.test.ts (0.600s)
+# skipped 0
+[run-tests] PASS test/hoai-core.stop.test.ts (0.980s)
+# skipped 0
+[run-tests] PASS test/hoai-core.supervised.test.ts (0.606s)
+# skipped 0
+[run-tests] PASS test/hoai-core.test.ts (5.802s)
+# skipped 0
+[run-tests] PASS test/hoai-core.win-relaunch.test.ts (1.120s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-host.downloads.test.ts (90.565s)
+# skipped 0
+[run-tests] PASS test/hoai-floor-hook.test.ts (1.970s)
+# skipped 0
+[run-tests] PASS test/hoai-hook.test.ts (0.121s)
+# skipped 0
+[run-tests] PASS test/hoai-keepalive-marker.symlink.test.ts (0.171s)
+# skipped 0
+[run-tests] PASS test/hoai-wrapper-install.test.ts (0.092s)
+# skipped 0
+[run-tests] PASS test/home-binding.test.ts (0.094s)
+# skipped 0
+[run-tests] PASS test/home-refused-server.test.ts (0.173s)
+# skipped 0
+[run-tests] PASS test/hook-card-clock.test.ts (0.095s)
+# skipped 0
+[run-tests] PASS test/hook-card-pending.test.ts (0.091s)
+# skipped 0
+[run-tests] PASS test/hook-clock-wiring.test.ts (0.081s)
+# skipped 0
+[run-tests] PASS test/hook-events.redaction.test.ts (0.098s)
+# skipped 0
+[run-tests] PASS test/hook-events.test.ts (0.106s)
+# skipped 0
+[run-tests] PASS test/hook-intake.test.ts (0.100s)
+# skipped 0
+[run-tests] PASS test/hook-late-card-wiring.test.ts (0.090s)
+# skipped 0
+[run-tests] PASS test/hoai-supervise.test.ts (3.163s)
+# skipped 0
+[run-tests] PASS test/hook-restart.test.ts (0.442s)
+# skipped 0
+[run-tests] PASS test/hook-restart.wiring.test.ts (0.102s)
+# skipped 0
+[run-tests] PASS test/hook-subagent-rows.test.ts (0.094s)
+# skipped 0
+[run-tests] PASS test/hooks-manifest.test.ts (0.087s)
+# skipped 0
+[run-tests] PASS test/hook-restart.integration.test.ts (2.729s)
+# skipped 0
+[run-tests] PASS test/identity-race.test.ts (0.122s)
+# skipped 0
+[run-tests] PASS test/idle-update.host.test.ts (0.128s)
+# skipped 0
+[run-tests] PASS test/idle-update.controller.test.ts (0.354s)
+# skipped 0
+[run-tests] PASS test/idle-update.integration.test.ts (0.199s)
+# skipped 0
+[run-tests] PASS test/idle-update.test.ts (0.135s)
+# skipped 0
+[run-tests] PASS test/idle-update.wiring.test.ts (0.107s)
+# skipped 0
+[run-tests] PASS test/inbound-channel.test.ts (0.092s)
+# skipped 0
+[run-tests] PASS test/inbound-files-meta.test.ts (0.103s)
+# skipped 0
+[run-tests] PASS test/inbound-reply-context.test.ts (0.094s)
+# skipped 0
+[run-tests] PASS test/keepalive-plan.test.ts (0.110s)
+# skipped 0
+[run-tests] PASS test/known-good-store.test.ts (0.091s)
+# skipped 0
+[run-tests] PASS test/kill-chrome-never-signals-everyone.test.ts (0.222s)
+# skipped 0
+[run-tests] PASS test/lane-claude-ready.test.ts (0.095s)
+# skipped 0
+[run-tests] PASS test/lane-cli-probe.test.ts (0.126s)
+# skipped 0
+[run-tests] PASS test/lane-daemon.test.ts (0.098s)
+# skipped 0
+[run-tests] PASS test/lane-admission.test.ts (2.133s)
+# skipped 0
+[run-tests] PASS test/lane-first-turn.test.ts (7.520s)
+# skipped 0
+[run-tests] PASS test/lane-fixture-cleanup.test.ts (0.231s)
+# skipped 0
+[run-tests] PASS test/lane-launch-options.test.ts (0.082s)
+# skipped 0
+[run-tests] PASS test/lane-launch-safety.test.ts (4.741s)
+# skipped 0
+[run-tests] PASS test/lane-launch.test.ts (0.110s)
+# skipped 0
+[run-tests] PASS test/lane-login-command.test.ts (13.871s)
+# skipped 0
+[run-tests] PASS test/lane-login.test.ts (0.102s)
+# skipped 0
+[run-tests] PASS test/lane-memory-rpc.test.ts (0.102s)
+# skipped 0
+[run-tests] PASS test/lane-owner-controls.test.ts (0.305s)
+# skipped 0
+[run-tests] PASS test/lane-owner.test.ts (0.220s)
+# skipped 0
+[run-tests] PASS test/lane-policy-watch.test.ts (0.090s)
+# skipped 0
+[run-tests] PASS test/lane-policy.test.ts (0.107s)
+# skipped 0
+[run-tests] PASS test/lane-process.test.ts (1.388s)
+# skipped 0
+[run-tests] PASS test/lane-registry.test.ts (0.089s)
+# skipped 0
+[run-tests] PASS test/lane-shell-refusal.test.ts (0.158s)
+# skipped 0
+[run-tests] PASS test/lane-slash.test.ts (0.103s)
+# skipped 0
+[run-tests] PASS test/lane-stamp.test.ts (0.091s)
+# skipped 0
+[run-tests] PASS test/lane-dedupe.test.ts (88.663s)
+# skipped 0
+[run-tests] PASS test/lane-supervisor-controls.test.ts (1.407s)
+# skipped 0
+[run-tests] PASS test/lane-supervisor.test.ts (0.221s)
+# skipped 0
+[run-tests] PASS test/limit-notice.test.ts (0.094s)
+# skipped 0
+[run-tests] PASS test/limit-screen.test.ts (0.109s)
+# skipped 0
+[run-tests] PASS test/line-endings.test.ts (1.052s)
+# skipped 0
+[run-tests] PASS test/list-chats-private.test.ts (0.522s)
+# skipped 0
+[run-tests] PASS test/liveness-recency.test.ts (0.092s)
+# skipped 0
+[run-tests] PASS test/log-path.test.ts (0.092s)
+# skipped 0
+[run-tests] PASS test/login-starter-binding.pin.test.ts (0.150s)
+# skipped 0
+[run-tests] PASS test/machine-id.test.ts (0.102s)
+# skipped 0
+[run-tests] PASS test/managed-launch-private.test.ts (0.538s)
+# skipped 0
+[run-tests] PASS test/lane-subprocess-env.test.ts (66.375s)
+# skipped 0
+[run-tests] PASS test/marker-takeover.test.ts (0.104s)
+# skipped 0
+[run-tests] PASS test/marker-takeover.wiring.test.ts (0.078s)
+# skipped 0
+[run-tests] PASS test/marker-takeover.integration.test.ts (4.584s)
+# skipped 0
+[run-tests] PASS test/marketplace-attach.test.ts (0.096s)
+# skipped 0
+[run-tests] PASS test/marketplace-update.test.ts (0.115s)
+# skipped 0
+[run-tests] PASS test/meeting-card.test.ts (0.104s)
+# skipped 0
+[run-tests] PASS test/memory-rpc.test.ts (0.131s)
+# skipped 0
+[run-tests] PASS test/memory-wiring.test.ts (0.095s)
+# skipped 0
+[run-tests] PASS test/memory.test.ts (0.130s)
+# skipped 0
+[run-tests] PASS test/message-edits.test.ts (7.062s)
+# skipped 0
+[run-tests] PASS test/message-text.test.ts (0.085s)
+# skipped 0
+[run-tests] PASS test/messages-caller-header.test.ts (0.080s)
+# skipped 0
+[run-tests] PASS test/mission-chat-scope.test.ts (0.086s)
+# skipped 0
+[run-tests] PASS test/mission-events.test.ts (0.095s)
+# skipped 0
+[run-tests] PASS test/mission-goal-checks-tools.test.ts (0.084s)
+# skipped 0
+[run-tests] PASS test/marketplace-attach.e2e.test.ts (8.398s)
+# skipped 0
+[run-tests] PASS test/mission-private.test.ts (1.111s)
+# skipped 0
+[run-tests] PASS test/mission-turn-refresh.test.ts (1.549s)
+# skipped 0
+[run-tests] PASS test/mission-turn-snapshots.test.ts (0.409s)
+# skipped 0
+[run-tests] PASS test/mission-turn-wiring.test.ts (0.464s)
+# skipped 0
+[run-tests] PASS test/mission-turn.test.ts (0.101s)
+# skipped 0
+[run-tests] PASS test/mission-working-hooks.test.ts (0.410s)
+# skipped 0
+[run-tests] PASS test/mission-working-lock.test.ts (0.851s)
+# skipped 0
+[run-tests] PASS test/mission-turn-hook.test.ts (4.708s)
+# skipped 0
+[run-tests] PASS test/mission-working-ownership.test.ts (0.162s)
+# skipped 0
+[run-tests] PASS test/mission-ws-wiring.test.ts (0.104s)
+# skipped 0
+[run-tests] PASS test/missions.test.ts (0.102s)
+# skipped 0
+[run-tests] PASS test/mission-working-wiring.test.ts (0.636s)
+# skipped 0
+[run-tests] PASS test/model-control-store.test.ts (0.327s)
+# skipped 0
+[run-tests] PASS test/model-effort-catalog.test.ts (0.098s)
+# skipped 0
+[run-tests] PASS test/model-effort-control.test.ts (0.121s)
+# skipped 0
+[run-tests] PASS test/model-effort-literals.test.ts (0.088s)
+# skipped 0
+[run-tests] PASS test/model-effort-pane-live.test.ts (0.081s)
+# skipped 0
+[run-tests] PASS test/model-effort-pane.test.ts (0.093s)
+# skipped 0
+[run-tests] PASS test/model-effort-card-hold.test.ts (0.600s)
+# skipped 0
+[run-tests] PASS test/model-effort-picker-contract.test.ts (0.146s)
+# skipped 0
+[run-tests] PASS test/model-effort-rpc.test.ts (0.618s)
+# skipped 0
+[run-tests] PASS test/model-effort-wiring.test.ts (0.220s)
+# skipped 0
+[run-tests] PASS test/net-order.test.ts (0.144s)
+# skipped 0
+[run-tests] PASS test/own-card-answer.test.ts (0.642s)
+# skipped 0
+[run-tests] PASS test/model-effort-tmux-rig.test.ts (12.417s)
+# skipped 0
+[run-tests] PASS test/owner-marker-lanes.test.ts (0.137s)
+# skipped 0
+[run-tests] PASS test/pack-zip.test.ts (0.084s)
+# skipped 0
+[run-tests] PASS test/pair-required-server.test.ts (0.165s)
+# skipped 0
+[run-tests] PASS test/pairing-lock-channel.test.ts (0.089s)
+# skipped 0
+[run-tests] PASS test/pairing-lock-route.test.ts (0.096s)
+# skipped 0
+[run-tests] PASS test/pairing-lock-standdown.test.ts (0.101s)
+# skipped 0
+[run-tests] PASS test/pairing-lock.test.ts (0.087s)
+# skipped 0
+[run-tests] PASS test/peer-403-loop.test.ts (1.193s)
+# skipped 0
+[run-tests] PASS test/peer-closed-reply.test.ts (1.864s)
+# skipped 0
+[run-tests] PASS test/peer-refusal-counter.test.ts (0.086s)
+# skipped 0
+[run-tests] PASS test/peer-refusal.test.ts (0.084s)
+# skipped 0
+[run-tests] PASS test/pending-empty-system.test.ts (0.088s)
+# skipped 0
+[run-tests] PASS test/pending-restart.test.ts (0.164s)
+# skipped 0
+[run-tests] PASS test/permission-card-email-send.test.ts (0.479s)
+# skipped 0
+[run-tests] PASS test/permission-card-owner-chat.test.ts (0.507s)
+# skipped 0
+[run-tests] PASS test/permission-hidden-input.test.ts (0.568s)
+# skipped 0
+[run-tests] PASS test/permission-relay.test.ts (0.472s)
+# skipped 0
+[run-tests] PASS test/plan-card.test.ts (0.090s)
+# skipped 0
+[run-tests] PASS test/plan-tap-authority.test.ts (0.493s)
+# skipped 0
+[run-tests] PASS test/plan-verifier.test.ts (0.081s)
+# skipped 0
+[run-tests] PASS test/plan-wiring.test.ts (0.105s)
+# skipped 0
+[run-tests] PASS test/plugin-cli.test.ts (4.430s)
+# skipped 0
+[run-tests] PASS test/poll-core.test.ts (0.092s)
+# skipped 0
+[run-tests] PASS test/posix-bash.test.ts (0.086s)
+# skipped 0
+[run-tests] PASS test/posted-card-answer.test.ts (0.711s)
+# skipped 0
+[run-tests] PASS test/private-tools-wiring.test.ts (0.466s)
+# skipped 0
+[run-tests] PASS test/private-turn-254-lows.test.ts (1.816s)
+# skipped 0
+[run-tests] PASS test/private-turn-consult-replay.test.ts (0.119s)
+# skipped 0
+[run-tests] PASS test/private-turn-cross-agent.test.ts (2.822s)
+# skipped 0
+[run-tests] PASS test/private-turn-duplicate-boundary.test.ts (1.262s)
+# skipped 0
+[run-tests] PASS test/private-turn-email-batch.test.ts (0.116s)
+# skipped 0
+[run-tests] PASS test/private-turn-hook-budget.test.ts (13.043s)
+# skipped 0
+[run-tests] PASS test/private-turn-late-line.test.ts (0.852s)
+ok 3 - claudeProjectCwd keeps an 8.3 short name and the drive letter as spelled, as the CLI realpath does (Windows) # SKIP an 8.3 name and a drive letter exist on Windows only
+# skipped 1
+[run-tests] PASS test/private-turn-linked-folder.test.ts (0.578s)
+# skipped 0
+[run-tests] PASS test/private-turn-owner-authority.test.ts (1.682s)
+# skipped 0
+[run-tests] PASS test/private-turn-owner-tap.test.ts (2.229s)
+# skipped 0
+[run-tests] PASS test/private-turn-shared-authority.test.ts (1.025s)
+# skipped 0
+[run-tests] PASS test/private-turn-shared-spool.test.ts (0.166s)
+# skipped 0
+[run-tests] PASS test/private-turn-stranger-inside.test.ts (2.119s)
+# skipped 0
+[run-tests] PASS test/private-turn-two-admitted.test.ts (0.186s)
+# skipped 0
+[run-tests] PASS test/private-turn.test.ts (0.922s)
+# skipped 0
+[run-tests] PASS test/process-lifecycle.test.ts (0.086s)
+# skipped 0
+[run-tests] PASS test/process-tree.test.ts (0.083s)
+# skipped 0
+[run-tests] PASS test/processes.test.ts (0.149s)
+# skipped 0
+[run-tests] PASS test/published-release.test.ts (2.700s)
+# skipped 0
+[run-tests] PASS test/reachable-chats.test.ts (0.126s)
+# skipped 0
+[run-tests] PASS test/reconnect-spread.test.ts (0.119s)
+# skipped 0
+[run-tests] PASS test/remote-credentials.test.ts (0.142s)
+# skipped 0
+[run-tests] PASS test/remote-input.test.ts (0.210s)
+# skipped 0
+[run-tests] PASS test/remote-private-profiles.test.ts (0.497s)
+# skipped 0
+[run-tests] PASS test/remote-session-close.test.ts (0.212s)
+# skipped 0
+[run-tests] PASS test/remote-view.test.ts (0.268s)
+# skipped 0
+[run-tests] PASS test/reply-card-nudge.test.ts (0.478s)
+# skipped 0
+[run-tests] PASS test/reply-card-shape.test.ts (0.642s)
+# skipped 0
+[run-tests] PASS test/reply-decisions.test.ts (0.083s)
+# skipped 0
+[run-tests] PASS test/reply-overdue-owner-inbound.test.ts (0.423s)
+# skipped 0
+[run-tests] PASS test/reply-overdue.test.ts (0.077s)
+# skipped 0
+[run-tests] PASS test/restart-deny-routing.test.ts (0.106s)
+# skipped 0
+[run-tests] PASS test/restart-handoff.test.ts (0.118s)
+# skipped 0
+[run-tests] PASS test/restart-recovery.test.ts (0.082s)
+# skipped 0
+[run-tests] PASS test/resting.test.ts (0.114s)
+# skipped 0
+[run-tests] PASS test/room-agent-followup.test.ts (1.435s)
+# skipped 0
+[run-tests] PASS test/run-tests-chromium-serial.test.ts (0.132s)
+# skipped 0
+[run-tests] PASS test/run-tests-litter-guard.test.ts (0.078s)
+# skipped 0
+[run-tests] PASS test/run-tests-tmpdir.test.ts (0.108s)
+# skipped 0
+[run-tests] PASS test/schedule.test.ts (0.096s)
+# skipped 0
+[run-tests] PASS test/scratch-dirs.test.ts (0.566s)
+# skipped 0
+[run-tests] PASS test/scratch-folder-convention.test.ts (0.102s)
+# skipped 0
+[run-tests] PASS test/secret-scan-fixture.test.ts (0.081s)
+# skipped 0
+[run-tests] PASS test/secret-scan.test.ts (0.353s)
+# skipped 0
+[run-tests] PASS test/self-update.cadence.test.ts (0.113s)
+# skipped 0
+[run-tests] PASS test/self-update.idle-rollback.test.ts (0.097s)
+# skipped 0
+[run-tests] PASS test/sender-guardrail.test.ts (0.118s)
+# skipped 0
+[run-tests] PASS test/sender-may-login-gaps.test.ts (0.082s)
+# skipped 0
+[run-tests] PASS test/sender-may-login-wake-card.test.ts (0.117s)
+# skipped 0
+[run-tests] PASS test/service-supervision.test.ts (0.342s)
+# skipped 0
+[run-tests] PASS test/session-binding.test.ts (0.113s)
+# skipped 0
+[run-tests] PASS test/session-controls-contract.pin.test.ts (0.427s)
+# skipped 0
+[run-tests] PASS test/session-library.test.ts (0.102s)
+# skipped 0
+[run-tests] PASS test/session-mode.test.ts (0.085s)
+# skipped 0
+[run-tests] PASS test/session-pin.test.ts (0.106s)
+# skipped 0
+[run-tests] PASS test/session-status-contract.pin.test.ts (0.391s)
+# skipped 0
+[run-tests] PASS test/session-status-wiring.test.ts (0.077s)
+# skipped 0
+[run-tests] PASS test/session-status.test.ts (0.093s)
+# skipped 0
+[run-tests] PASS test/skill-share-content-rules.test.ts (0.095s)
+# skipped 0
+[run-tests] PASS test/skills-inventory.test.ts (0.532s)
+# skipped 0
+[run-tests] PASS test/skills-rpc.test.ts (0.093s)
+ok 12 - Windows: a file its ACL denies reading refuses the export rather than leave it out silently (skips where an elevated runner reads through the deny) # SKIP
+ok 13 - Windows: a subfolder its ACL denies listing refuses the export rather than leave its files out (skips where an elevated runner lists through the deny) # SKIP
+# skipped 2
+[run-tests] PASS test/skills-share.test.ts (0.224s)
+# skipped 0
+[run-tests] PASS test/skills-wiring.test.ts (0.077s)
+# skipped 0
+[run-tests] PASS test/slash-catalog.test.ts (0.090s)
+# skipped 0
+[run-tests] PASS test/slash-inbound-routing.test.ts (0.085s)
+# skipped 0
+[run-tests] PASS test/slash-status.test.ts (0.083s)
+# skipped 0
+[run-tests] PASS test/socket-liveness.test.ts (0.260s)
+# skipped 0
+[run-tests] PASS test/stand-down-report.test.ts (7.319s)
+# skipped 0
+[run-tests] PASS test/stand-down-sites.test.ts (8.377s)
+# skipped 0
+[run-tests] PASS test/startup-reaches-poll.test.ts (0.298s)
+# skipped 0
+[run-tests] PASS test/stdin-shutdown-runtime.test.ts (10.074s)
+# skipped 0
+[run-tests] PASS test/steer.test.ts (0.107s)
+# skipped 0
+[run-tests] PASS test/steps-body.test.ts (0.088s)
+# skipped 0
+[run-tests] PASS test/stop-pause-wiring.test.ts (0.079s)
+# skipped 0
+[run-tests] PASS test/stop-pause.test.ts (0.123s)
+# skipped 0
+[run-tests] PASS test/stream-apply.test.ts (0.125s)
+# skipped 0
+[run-tests] PASS test/stream-client.test.ts (0.092s)
+# skipped 0
+[run-tests] PASS test/stream-cursor-store.test.ts (0.085s)
+# skipped 0
+[run-tests] PASS test/stream-json-child.test.ts (0.160s)
+# skipped 0
+[run-tests] PASS test/stream-wiring.test.ts (0.084s)
+# skipped 0
+[run-tests] PASS test/thread-lane-args.test.ts (0.089s)
+ok 7 - real CLI: active parent goal stays in the parent, trusted guards fire in the fork and its resume, third-block control terminates # SKIP
+# skipped 1
+[run-tests] PASS test/thread-lane-goal.test.ts (0.109s)
+ok 1 - the real thread starts with filtered credentials and its sandbox reads only permitted files # SKIP
+# skipped 1
+[run-tests] PASS test/thread-lane-sandbox.test.ts (0.087s)
+# skipped 0
+[run-tests] PASS test/thread-lanes-wiring.test.ts (0.418s)
+# skipped 0
+[run-tests] PASS test/thread-lanes.git.test.ts (1.017s)
+# skipped 0
+[run-tests] PASS test/thread-lanes.test.ts (0.215s)
+# skipped 0
+[run-tests] PASS test/own-card-fast-tap.e2e.test.ts (95.403s)
+# skipped 0
+[run-tests] PASS test/tool-outcome.test.ts (0.098s)
+# skipped 0
+[run-tests] PASS test/threads-cli.test.ts (0.764s)
+# skipped 0
+[run-tests] PASS test/turn-chat.test.ts (0.087s)
+# skipped 0
+[run-tests] PASS test/unresponsive-heartbeat.test.ts (0.087s)
+# skipped 0
+[run-tests] PASS test/update-diagnostics.test.ts (0.105s)
+# skipped 0
+[run-tests] PASS test/turn-aware-tools.test.ts (0.573s)
+# skipped 0
+[run-tests] PASS test/update-planner.test.ts (0.145s)
+# skipped 0
+[run-tests] PASS test/update-rpc.own-launcher.test.ts (0.102s)
+# skipped 0
+[run-tests] PASS test/update-stream.test.ts (0.130s)
+# skipped 0
+[run-tests] PASS test/usage-report.test.ts (0.108s)
+# skipped 0
+[run-tests] PASS test/vault-fill.test.ts (0.233s)
+ok 11 - REAL Windows host ACL: create and reopen a protected key with bounded asynchronous PowerShell # SKIP
+# skipped 1
+[run-tests] PASS test/vault-host-async.test.ts (0.322s)
+# skipped 0
+[run-tests] PASS test/vault-host-cli.test.ts (0.198s)
+# skipped 0
+[run-tests] PASS test/vault-host-proof.test.ts (0.091s)
+# skipped 0
+[run-tests] PASS test/vault-host-resolver.test.ts (0.087s)
+# skipped 0
+[run-tests] PASS test/vault-host-security.test.ts (0.097s)
+# skipped 0
+[run-tests] PASS test/verdict-sender.test.ts (0.077s)
+# skipped 0
+[run-tests] PASS test/version-bump.test.ts (0.261s)
+# skipped 0
+[run-tests] PASS test/voice-consult-private-turn.proof.test.ts (0.529s)
+# skipped 0
+[run-tests] PASS test/voice-consult-private-turn.test.ts (0.692s)
+# skipped 0
+[run-tests] PASS test/update-executor.test.ts (3.095s)
+# skipped 0
+[run-tests] PASS test/voice-rpc-threads.test.ts (0.138s)
+# skipped 0
+[run-tests] PASS test/voice-rpc-model-effort.test.ts (0.638s)
+# skipped 0
+[run-tests] PASS test/voice-rpc.test.ts (0.492s)
+# skipped 0
+[run-tests] PASS test/watcher-bundle.test.ts (0.165s)
+# skipped 0
+[run-tests] PASS test/watcher-checkup.test.ts (0.533s)
+# skipped 0
+[run-tests] PASS test/watcher-bundle-repair.test.ts (0.849s)
+# skipped 0
+[run-tests] PASS test/watcher-health.test.ts (0.185s)
+# skipped 0
+[run-tests] PASS test/watcher-install.test.ts (0.144s)
+# skipped 0
+[run-tests] PASS test/watcher-keepalive.test.ts (0.389s)
+# skipped 0
+[run-tests] PASS test/watcher-core.test.ts (1.313s)
+# skipped 0
+[run-tests] PASS test/watcher-real-os.guard.test.ts (0.192s)
+# skipped 0
+[run-tests] PASS test/watcher-self-refresh.test.ts (0.254s)
+ok 35 - win32 only: Windows PowerShell 5.1 parses every generated task script cleanly (parse only, nothing in it runs) # SKIP
+# skipped 1
+[run-tests] PASS test/watcher-service.home-scope.test.ts (0.151s)
+# skipped 0
+[run-tests] PASS test/watcher-service.namespace.test.ts (0.090s)
+# skipped 0
+[run-tests] PASS test/watcher-service.test.ts (0.102s)
+ok 1 - the Windows daemon started by the launcher keeps its committed memory and handles flat # SKIP Windows only
+# skipped 1
+[run-tests] PASS test/win-commit-growth.soak.test.ts (0.195s)
+ok 1 - attached then accepted: the helper presses Enter once the gate is on screen, logs start, attached and accepted, and exits 0 # SKIP the helper drives the Windows console API
+ok 2 - the 888 condition: another process holds the log open for reading the whole time, and every line still lands (start, attached, accepted, exit 0) # SKIP the helper drives the Windows console API
+ok 3 - a log nothing can write (held exclusively): the helper still presses Enter, says why on stderr, and exits 6, not 0 # SKIP the helper drives the Windows console API
+# skipped 3
+[run-tests] PASS test/win32-gate-helper.console.test.ts (0.097s)
+ok 1 - read: the visible screen and its sha256; the text passes the strict limit screen rules # SKIP the helper drives the Windows console API
+ok 2 - press with the approved hash: exactly ONE Enter (one CR byte) reaches the console # SKIP the helper drives the Windows console API
+ok 3 - press with any other hash (the screen changed since it was approved): nothing is sent, exit 7 # SKIP the helper drives the Windows console API
+ok 4 - a bad argument (a pid with letters, an unknown mode, a hash that is not one) sends nothing and fails # SKIP the helper drives the Windows console API
+ok 5 - a console that is gone: read fails with exit 2, nothing to press # SKIP the helper drives the Windows console API
+# skipped 5
+[run-tests] PASS test/win32-limit-screen.console.test.ts (0.098s)
+# skipped 0
+[run-tests] PASS test/watcher-limit.test.ts (1.651s)
+ok 1 - the npm shim shape for real: hoai s child is cmd.exe, and the fake claude is a different process under it # SKIP Windows processes and the Windows console
+ok 2 - control: kill() of the shim child (main before this fix) ends cmd.exe and leaves the fake claude running # SKIP Windows processes and the Windows console
+ok 3 - control: the detached process is in the shim s parent pid tree, the tree taskkill /T ends (listed, never killed) # SKIP Windows processes and the Windows console
+ok 4 - endWin32ShimTree ends the fake claude under the shim (its MCP server with it), and the detached process lives on # SKIP Windows processes and the Windows console
+ok 5 - control (alt screen): with nothing cleared, the next helper presses Enter on the killed claudes gate # SKIP Windows processes and the Windows console
+ok 6 - after clearWin32Console (alt screen), the next helper finds no gate and presses nothing # SKIP Windows processes and the Windows console
+ok 7 - control (main screen): with nothing cleared, the next helper presses Enter on the killed claudes gate # SKIP Windows processes and the Windows console
+ok 8 - after clearWin32Console (main screen), the next helper finds no gate and presses nothing # SKIP Windows processes and the Windows console
+# skipped 8
+[run-tests] PASS test/win32-relaunch.console.test.ts (0.102s)
+# skipped 0
+[run-tests] PASS test/win32-script-text.test.ts (0.091s)
+# skipped 0
+[run-tests] PASS test/withdraw-ask-wiring.test.ts (0.085s)
+# skipped 0
+[run-tests] PASS test/ws-inbound-meta.test.ts (0.092s)
+[run-tests] runner regression tests: 1 files, 1 workers
+# skipped 0
+[run-tests] PASS test/run-tests-timeout.test.ts (75.706s)
+[run-tests] real Chromium files, one at a time: 21 files, 1 workers
+# skipped 0
+[run-tests] PASS test/agent-browser-vault.chromium.test.ts (6.854s)
+# skipped 0
+[run-tests] PASS test/browser-answer-routes.chromium.test.ts (90.350s)
+# skipped 0
+[run-tests] PASS test/browser-approval-binding.chromium.test.ts (100.895s)
+# skipped 0
+[run-tests] PASS test/browser-machine-gate.chromium.test.ts (34.537s)
+# skipped 0
+[run-tests] PASS test/browser-machine-private.chromium.test.ts (9.940s)
+# skipped 0
+[run-tests] PASS test/browser-page-console-private.chromium.test.ts (6.502s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-host.downloads.chromium.test.ts (33.561s)
+# skipped 0
+[run-tests] PASS test/hoai-browser-host.test.ts (77.846s)
+# skipped 0
+[run-tests] PASS test/page-handoff.chromium.test.ts (276.599s)
+# skipped 0
+[run-tests] PASS test/page-read-scope.chromium.test.ts (10.375s)
+# skipped 0
+[run-tests] PASS test/remote-browser-controls.chromium.test.ts (12.643s)
+# skipped 0
+[run-tests] PASS test/remote-credentials.chromium.test.ts (1.882s)
+ok 1 - B real Chromium receives owner input, refuses credential changes and iframe focus, and revokes on navigation # SKIP
+ok 2 - handover real Chromium expires after ten click-idle seconds and accepts the next agent action once # SKIP
+ok 3 - phone real Chromium takes a tap and whole Arabic text, refuses a password field, and the agent stays paused about ten seconds # SKIP
+# skipped 3
+[run-tests] PASS test/remote-input.chromium.test.ts (0.215s)
+ok 1 - owner close stops real Chromium and preserves encrypted cookies and saved login for explicit unlock # SKIP
+# skipped 1
+[run-tests] PASS test/remote-session-close.chromium.test.ts (0.221s)
+ok 1 - remote view A streams changing pixels from a real agent Chromium through the pool seam # SKIP
+# skipped 1
+[run-tests] PASS test/remote-view.chromium.test.ts (0.246s)
+# skipped 0
+[run-tests] PASS test/round14.chromium.test.ts (22.120s)
+# skipped 0
+[run-tests] PASS test/round15.chromium.test.ts (35.506s)
+# skipped 0
+[run-tests] PASS test/round16.chromium.test.ts (44.205s)
+# skipped 0
+[run-tests] PASS test/round17.chromium.test.ts (55.582s)
+# skipped 0
+[run-tests] PASS test/round18-remote.chromium.test.ts (2.885s)
+# skipped 0
+[run-tests] PASS test/round18.chromium.test.ts (87.228s)
+[run-tests] real daemon files, one at a time: 1 files, 1 workers
+# skipped 0
+[run-tests] PASS test/canary-delivery.daemon.test.ts (67.780s)
+[run-tests] bun:test family: 15 files, 2 workers
+[run-tests] PASS test/button-click-observability.test.ts (0.026s)
+[run-tests] PASS test/acting-user.test.ts (0.031s)
+[run-tests] PASS test/health-log.test.ts (0.013s)
+(skip) an 8.3 short name and the drive letter stay as spelled (Windows)
+[run-tests] PASS test/claude-project-cwd-bun.test.ts (0.018s)
+[run-tests] PASS test/peer-timeout-bound.test.ts (0.017s)
+[run-tests] PASS test/reconcile-missing-binary.test.ts (0.017s)
+[run-tests] PASS test/renderables.test.ts (0.014s)
+[run-tests] PASS test/scheduled-restart.test.ts (0.020s)
+[run-tests] PASS test/scratch-dirs.bun.test.ts (0.063s)
+[run-tests] PASS test/self-update.test.ts (0.073s)
+[run-tests] PASS test/stand-down-bun.test.ts (2.087s)
+[run-tests] PASS test/update-readiness.test.ts (0.245s)
+[run-tests] PASS test/update-rpc.test.ts (0.029s)
+[run-tests] PASS test/version-heartbeat.test.ts (0.048s)
+[run-tests] PASS test/self-update.published-release.test.ts (6.790s)
+[run-tests] 11414 passed, 1 failed, 62 skipped, 505 files, 1959.3 s
+  test/catch-up-after-deploy.e2e.test.ts: the read a live message waits for fails: the message goes through, and the rows under it still arrive, each once
+  test/catch-up-after-deploy.e2e.test.ts: hole 1: the reconnect skip
+[run-tests] FAILED
+
+Failure detail: test/catch-up-after-deploy.e2e.test.ts:638 expected transport ws; actual poll.
+
+Isolated rerun
+Command: TMPDIR=<repo>/.permhidden-tmp TSX_DISABLE_CACHE=1 RUN_TESTS_WORKERS=2 node --import tsx --test --test-concurrency=2 test/catch-up-after-deploy.e2e.test.ts
+Exit: 0; 32 passed, 0 failed. See green.log for all test names.

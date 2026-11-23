@@ -37,6 +37,11 @@
  * long, and the relay must hold what the hook matched, not what survived the
  * cut. A record that cannot be written does not stop the ask.
  *
+ * For attached Bash calls it also retains the raw command before the CLI
+ * formats its permission preview (lib/permission-input.mjs). The relay uses
+ * a confirmed copy for the card's command panel. A failed copy changes no
+ * hook decision.
+ *
  * Rules this file exists to hold:
  *
  * 1. IT ONLY EVER ASKS. It never prints `deny` and never exits 2. A deny is a
@@ -53,8 +58,9 @@
  *    stdin cannot hold a tool call.
  * 4. IT OPENS NO SOCKET AND READS NO CREDENTIALS, like the forwarder. It does
  *    not know the owner's switch and does not try to: the relay asks the
- *    server. It knows the list, and it reads and writes two small files under
- *    the plugin state folder (the attached marker, its own floor record).
+ *    server. It knows the list, and it reads and writes small files under the
+ *    plugin state folder: the attached marker, floor records and short lived
+ *    raw command copies.
  * 5. IT READS STDIN AS BYTES and decodes UTF-8 itself (the forwarder's rule 2:
  *    a Windows console code page once crashed a text mode read).
  *
@@ -66,6 +72,7 @@
 
 import { realpathSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { writePermissionInput } from '../lib/permission-input.mjs'
 
 /** The whole hook, stdin to stdout, must finish inside this or give up. */
 export const FLOOR_HOOK_BUDGET_MS = 1500
@@ -88,8 +95,8 @@ export function loadFloorState() {
 }
 
 /**
- * The two host side steps, bound to one state root and environment: is a
- * HOAI daemon attached to this session, and leave the relay the record.
+ * The host side steps, bound to one state root and environment: is a
+ * HOAI daemon attached, and leave the relay its floor record and card input.
  * Each fails on its own terms: an unreadable marker is not attached (the
  * hook stays silent, as before 0.53.0); an unwritable record still asks.
  */
@@ -98,6 +105,7 @@ export function floorDeps(state, { env = process.env, root } = {}) {
   return {
     attachedKey: (payload) =>
       state.findAttachedKey({ root: stateRoot, folders: state.sessionFolders(payload, env) }),
+    recordInput: (key, payload) => writePermissionInput({ root: stateRoot, key, payload }),
     recordAsk: (key, payload, match) =>
       state.writeFloorRecord({
         root: stateRoot,
@@ -135,7 +143,8 @@ export function floorAskOutput(words) {
  * @param {string} text the raw stdin
  * @param {{ classifyToolCall: (name: unknown, input: unknown) => { words: string } | null }} core
  * @param {{ attachedKey: (payload: any) => string | null,
- *   recordAsk: (key: string, payload: any, match: any) => unknown }} [deps]
+ *   recordAsk: (key: string, payload: any, match: any) => unknown,
+ *   recordInput?: (key: string, payload: any) => unknown }} [deps]
  */
 export function decideFloorHook(text, core, deps) {
   try {
@@ -145,10 +154,19 @@ export function decideFloorHook(text, core, deps) {
     if (!isRecord(payload)) return ''
     const event = payload.hook_event_name
     if (event !== undefined && event !== 'PreToolUse') return ''
+    // Already synchronous in both installs. Save input before the CLI can
+    // notify the relay, including calls outside the floor's short list.
+    let attachedKey
+    if (deps && payload.tool_name === 'Bash') {
+      attachedKey = deps.attachedKey(payload)
+      if (attachedKey) {
+        try { deps.recordInput?.(attachedKey, payload) } catch {}
+      }
+    }
     const match = core.classifyToolCall(payload.tool_name, payload.tool_input)
     if (!match || typeof match.words !== 'string' || !match.words) return ''
     if (deps) {
-      const key = deps.attachedKey(payload)
+      const key = attachedKey ?? deps.attachedKey(payload)
       if (!key) return ''
       try {
         deps.recordAsk(key, payload, match)
