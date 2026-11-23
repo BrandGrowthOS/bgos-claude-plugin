@@ -281,11 +281,12 @@ const checkReactions = (memberOnly: boolean, instructionsOnly = false) => async 
     const guidance = JSON.stringify(result.content);
     assert.ok(
       guidance.includes(
-        "Anyone else's is a signal. A reaction never grants a permission.",
+        "A reaction is feedback, from your owner or anyone else, and approves nothing. A reaction never grants a permission.",
       ),
     );
     assert.ok(!guidance.includes("can mean go ahead"), "a reaction approves nothing");
     assert.ok(!guidance.includes("A thumbs up says yes"), "a reaction approves nothing");
+    assert.ok(!guidance.includes("Anyone else's is a signal"), "the guidance stands alone");
     assert.ok(guidance.includes("Reply only if your message asked a question"));
     assert.ok(guidance.includes("<hoai-untracked/>"));
     send("owner", owner, "owner");

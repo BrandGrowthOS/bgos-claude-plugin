@@ -123,12 +123,13 @@ test("the relationship and reactor have to be known", () => {
 test("guidance explains whose answer this is and when to reply", () => {
   assert.ok(
     REACTION_GUIDANCE.includes(
-      "Anyone else's is a signal. A reaction never grants a permission.",
+      "A reaction is feedback, from your owner or anyone else, and approves nothing. A reaction never grants a permission.",
     ),
   );
   // A reaction approves nothing, as the served canon says.
   assert.ok(!REACTION_GUIDANCE.includes("can mean go ahead"));
   assert.ok(!REACTION_GUIDANCE.includes("A thumbs up says yes"));
+  assert.ok(!REACTION_GUIDANCE.includes("Anyone else's is a signal"));
   assert.ok(
     REACTION_GUIDANCE.includes("Reply only if your message asked a question"),
   );
