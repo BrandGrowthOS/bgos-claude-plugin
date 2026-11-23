@@ -52,6 +52,7 @@ import {
 } from '../lib/skills-inventory.ts'
 import { fakeIdentFs, type FolderNumbers } from './helpers/fake-ident-fs.ts'
 import { fileSymlinkRefused, linkFolder } from './helpers/links.ts'
+import './helpers/warm-volumes.ts'
 
 const LEAK = 'LEAKED-FILE-CONTENT-must-never-be-read'
 const AWS = 'AKIAIOSFODNN7EXAMPLQ'
@@ -682,13 +683,13 @@ test('identOf keeps every digit of a file number past 2^53, and takes a missing 
 })
 
 /** Removes the agent skill "big" with a fake file system that gives the folder before the move and the entry after it these numbers. */
-function removeWithFolderNumbers(before: FolderNumbers, after: FolderNumbers) {
+function removeWithFolderNumbers(before: FolderNumbers, after: FolderNumbers, fileSystem?: string) {
   const f = fixture()
   const target = join(f.agent, '.claude', 'skills', 'big')
   skill(target, 'name: big\ndescription: a skill whose folder has a large file number')
   const trashDir = join(f.home, 'state', 'skills-trash')
   const moved = join(trashDir, '001700000000000-big')
-  const fs = fakeIdentFs(new Map([[target, before], [moved, after]]))
+  const fs = fakeIdentFs(new Map([[target, before], [moved, after]]), fileSystem)
   const { answer } = remove(f, { name: 'big', scope: 'agent', path: target }, f.agent, { trashDir, fs })
   return { answer, target, moved }
 }
@@ -708,6 +709,28 @@ test('remove still puts back an entry that is not the one it meant to move, even
   assert.equal(answer.ok ? '' : answer.code, 'scope_refused')
   assert.ok(existsSync(join(target, 'SKILL.md')), 'it was put back')
   assert.ok(!existsSync(moved))
+})
+
+test('on a Dev Drive (ReFS, file numbers unknown) remove still puts back an entry that is not the one it meant to move', () => {
+  // Born at another time, or on another volume: what a rename keeps differs, so it is another entry.
+  for (const after of [{ dev: 7n, ino: 172n, birthtimeNs: 2n }, { dev: 8n, ino: 171n, birthtimeNs: 1n }, { dev: 7n, ino: 171n }]) {
+    const { answer, target, moved } = removeWithFolderNumbers({ dev: 7n, ino: 171n, birthtimeNs: 1n }, after, 'ReFS')
+    assert.equal(answer.ok, false, JSON.stringify(answer))
+    assert.equal(answer.ok ? '' : answer.code, 'scope_refused')
+    assert.ok(existsSync(join(target, 'SKILL.md')), 'it was put back')
+    assert.ok(!existsSync(moved))
+  }
+  // The control: the same wrong entry on NTFS is caught by its file number.
+  const ntfs = removeWithFolderNumbers({ dev: 7n, ino: 171n, birthtimeNs: 1n }, { dev: 7n, ino: 172n, birthtimeNs: 2n }, 'NTFS')
+  assert.equal(ntfs.answer.ok, false)
+  assert.ok(existsSync(join(ntfs.target, 'SKILL.md')))
+})
+
+test('on a Dev Drive remove moves the skill when the moved entry keeps its device number and birth time', () => {
+  const { answer, target, moved } = removeWithFolderNumbers({ dev: 7n, ino: 171n, birthtimeNs: 1n }, { dev: 7n, ino: 171n, birthtimeNs: 1n }, 'ReFS')
+  assert.equal(answer.ok, true, JSON.stringify(answer))
+  assert.ok(!existsSync(target))
+  assert.ok(existsSync(join(moved, 'SKILL.md')))
 })
 
 test('remove goes on when the drive gives no file number, as it did before: an unknown number is not a mismatch', () => {

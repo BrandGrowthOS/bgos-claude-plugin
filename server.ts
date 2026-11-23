@@ -97,6 +97,7 @@ import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './li
 import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
+import { warmVolumes } from './lib/file-numbers.mjs'
 import { exportSkill, installBundle } from './lib/skills-share.js'
 import { TEACH_WRITE_FIRST, applyOrigins, closingTeachWindows, createCardDeliveries, createTeachWindows, isHumanClick, logOriginsTo, noteSkillToolUse, noteTeachTap, originIdentOf, stampOrigin, teachTapOpens } from './lib/skill-origins.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
@@ -16990,6 +16991,10 @@ const skillsTrashDir = (): string =>
     'skills-trash',
   )
 const SKILL_ORIGINS_FILE = pathJoin(pathDirname(skillsTrashDir()), 'skill-origins.json')
+// On Windows a file number counts as unknown until its volume's file system is known (ReFS, a Dev Drive, shows only
+// part of each id), and the skills checks never wait for PowerShell. Ask about the folders they read now, without
+// blocking, so the first list, remove or origin mark finds the answer (lib/file-numbers.mjs warmVolumes).
+void warmVolumes([SKILLS_AGENT_DIR, CLAUDE_CONFIG_DIR, pathJoin(homedir(), '.claude'), pathDirname(SKILL_ORIGINS_FILE)])
 const skillsRpc = new SkillsRpcHandler({
   inventory: {
     list: () =>
