@@ -329,4 +329,6 @@ test('install --always-on asks whether this computer keeps its agents running be
   assert.ok(ask < sh.indexOf('date +%s > "$statedir/installed-at"'), 'before anything is written')
   assert.ok(ask < sh.indexOf('select_claude\n'), 'and before the slower preflight')
   assert.match(sh, /kept-switch --assistant "\$ASSISTANT_ID" --os "\$OS" \| head -n 1\)" = "switch_off" \]; then\n\s+die "refused: Keep agents running is off for this computer, [^"\n]*"\n/)
+  // The cached answer can be up to 5 minutes old, so a switch just turned on can still read off (review round 5, M4).
+  assert.match(sh, /die "refused: Keep agents running is off for this computer, [^"\n]*try again in a minute[^"\n]*"\n/)
 })

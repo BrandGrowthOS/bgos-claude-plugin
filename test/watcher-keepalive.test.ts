@@ -4382,3 +4382,90 @@ test('switched off stays off (round 3 m8): an agent not kept that its owner\'s o
   const said = linesFor(logs, '913').filter((l) => /not kept \(switch_off\).*owner-agent.*left alone/.test(l))
   assert.equal(said.length, 1, logs.join('\n'))
 })
+
+// Review round 5, B2: the backend lists only agents whose pairing names this computer (keep-alive.model.ts
+// isProvenOnMachine). An agent connected with an API key has no pairing, so it is on no list, ever, and being
+// left out says nothing about it. The two-read rule stays for every agent the list could name.
+const KEY_LABEL = `ai.bgos.agent.912.home-${HID}`
+/** The README's install with --key: no credentials file; the inventory finds it through the loaded job that runs its folder. */
+const keyAgent = (seen: boolean) => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical' }], { scoped: true })
+  fs.files.delete(`${HOME}/.bgos-agent/credentials-912.json`)
+  fs.writeFile(PLIST('912'), `<plist><key>Label</key><string>${KEY_LABEL}</string></plist>`)
+  fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, installedAt(60 * MIN))
+  if (seen) fs.writeFile(`${HOME}/.bgos-agent/912/kept-seen`, installedAt(60 * MIN))
+  return fs
+}
+const keyJobs = () => {
+  const base = execSyncFor()
+  return (file: string, args: string[]) => {
+    if (file === 'launchctl' && args[0] === 'list') return { code: 0, stdout: `PID\tStatus\tLabel\n1\t0\t${KEY_LABEL}` }
+    if (file === 'plutil') return { code: 0, stdout: JSON.stringify({ Label: KEY_LABEL, ProgramArguments: ['/bin/bash', RUN_SH('912')], WorkingDirectory: AVA }) }
+    return base(file, args)
+  }
+}
+
+test('r5 A3: an agent connected with a key, seen kept: two good lists that cannot name it remove nothing', async () => {
+  const fs = keyAgent(true)
+  const clock = fakeClock()
+  const runs = new Map()
+  await sweepWith(fs, clock, ONLY_7, runs, { execSync: keyJobs() })
+  clock.advance(MIN)
+  const logs = await sweepWith(fs, clock, ONLY_7, runs, { execSync: keyJobs() })
+  assert.equal(fs.files.has(PLIST('912')), true, logs.join('\n'))
+})
+
+test('r5 A4: the README install with a key, never seen kept, an hour old: two good lists remove nothing', async () => {
+  const fs = keyAgent(false)
+  const clock = fakeClock()
+  const runs = new Map()
+  await sweepWith(fs, clock, ONLY_7, runs, { execSync: keyJobs() })
+  clock.advance(MIN)
+  const logs = await sweepWith(fs, clock, ONLY_7, runs, { execSync: keyJobs() })
+  assert.equal(fs.files.has(PLIST('912')), true, logs.join('\n'))
+})
+
+test('r5 B2 pin: the computer switch OFF is still the owner\'s own switch for a key-connected agent: it goes on one read', async () => {
+  const fs = keyAgent(true)
+  const logs = await sweepWith(fs, fakeClock(), SWITCH_OFF([]), new Map(), { execSync: keyJobs() })
+  assert.equal(fs.files.has(PLIST('912')), false, logs.join('\n'))
+  assert.ok(logs.some((l) => /keep-alive 912: supervisor removed \(switch_off\)/.test(l)), logs.join('\n'))
+})
+
+const LISTS_912 = consent({ enabled: true, enabledAt: 'e', assistantIds: [7, 912], switchState: 'on' }).fetchKeepAlive
+const slowLine = (l: string) => /more than 2 minutes apart/.test(l)
+
+test('r5 M2: list reads more than two minutes apart confirm nothing, and the log says so once per run of slow reads', async () => {
+  const fs = onceKept()
+  const clock = fakeClock()
+  const runs = new Map()
+  const lines: string[] = []
+  lines.push(...(await sweepWith(fs, clock, ONLY_7, runs)))
+  assert.equal(lines.filter(slowLine).length, 0, 'a first read has nothing to be slow against')
+  for (let i = 0; i < 2; i++) {
+    clock.advance(125_000)
+    lines.push(...(await sweepWith(fs, clock, ONLY_7, runs)))
+  }
+  assert.equal(fs.files.has(PLIST('912')), true, lines.join('\n'))
+  assert.equal(lines.filter(slowLine).length, 1, lines.join('\n'))
+  // A read on time ends the run; the next slow read is a new one, and is said.
+  clock.advance(MIN)
+  await sweepWith(fs, clock, LISTS_912, runs)
+  clock.advance(125_000)
+  const again = await sweepWith(fs, clock, ONLY_7, runs)
+  assert.equal(again.filter(slowLine).length, 1, again.join('\n'))
+})
+
+test('r5 M2: slow reads are not said when nothing waits on them: every agent listed, or only a key-connected one left out', async () => {
+  for (const [name, fs, fetchKeepAlive, extra] of [
+    ['listed', onceKept(), LISTS_912, {}],
+    ['key connected', keyAgent(true), ONLY_7, { execSync: keyJobs() }],
+  ] as const) {
+    const clock = fakeClock()
+    const runs = new Map()
+    await sweepWith(fs, clock, fetchKeepAlive, runs, extra)
+    clock.advance(125_000)
+    const logs = await sweepWith(fs, clock, fetchKeepAlive, runs, extra)
+    assert.equal(logs.filter(slowLine).length, 0, `${name}: ${logs.join('\n')}`)
+  }
+})

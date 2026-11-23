@@ -511,3 +511,25 @@ test('m7: hoai-agent install --always-on asks first (bin/hoai-agent-service.mjs 
   fs.rm(watcherFile!)
   assert.deepEqual(await ask(), [0, 'no_watcher'])
 })
+
+test('r5 B2: an agent with no pairing is not judged by the list: left out is no answer, and the daemon follows Always on', () => {
+  const on = { source: 'live', enabled: true, switchState: 'on', assistantIds: ['7'], listedRecently: ['7'] }
+  assert.equal(keepAliveStanding(on, '912'), 'not_listed', 'an agent the list could name, confirmed left out')
+  assert.equal(keepAliveStanding(on, '912', { paired: false }), 'no_pairing')
+  assert.equal(keepAliveStanding({ ...on, listedRecently: undefined }, '912', { paired: false }), 'no_pairing', 'one read or two, the list cannot speak for it')
+  assert.equal(keepAliveStanding({ ...on, assistantIds: ['912'] }, '912', { paired: false }), 'kept', 'a list that does name it still counts')
+  assert.equal(keepAliveStanding({ ...on, enabled: false, switchState: 'off' }, '912', { paired: false }), 'switch_off', "the computer's switch is still the owner's")
+  assert.equal(keepAliveStanding({ ...on, enabled: false, switchState: 'never_set' }, '912', { paired: false }), 'never_set')
+  assert.equal(keepAliveStanding({ source: 'refused', enabled: false }, '912', { paired: false }), 'unknown')
+
+  const stamp = String(Math.floor(T_R5 / 1000) - 3600)
+  const base = { standing: 'no_pairing', installedAt: stamp, keptSeen: stamp, now: T_R5 }
+  assert.equal(decideKeptSupervisor({ ...base, installed: true }).action, 'none', 'the sweep cannot read Always on, so it moves nothing')
+  assert.equal(decideKeptSupervisor({ ...base, alwaysOn: true, installed: true }).action, 'leave')
+  assert.equal(decideKeptSupervisor({ ...base, alwaysOn: true, installed: false, keptSeen: null }).action, 'install')
+  const off = decideKeptSupervisor({ ...base, alwaysOn: false, installed: true })
+  assert.equal(off.action, 'remove')
+  assert.equal(off.reason, 'always_on_off:was_kept')
+})
+
+const T_R5 = 1_800_000_000_000

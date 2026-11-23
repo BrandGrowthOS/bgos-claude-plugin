@@ -20407,7 +20407,8 @@ async function reconcileAlwaysOn(): Promise<void> {
     // off removes the supervisor at once, an install once seen kept goes at once, an install never
     // seen kept keeps 15 minutes from its install (desktop one-click records Always on only after the
     // agent connected). No answer (a stale, missing or refused cache) moves nothing. A never set
-    // switch, and a computer with no watcher installed, keep today's meaning: Always on.
+    // switch, a computer with no watcher installed, and an agent with no pairing (the backend's list
+    // can never name it) keep today's meaning: Always on.
     const home = homedir()
     const stateDir = joinPath(home, '.bgos-agent', String(ASSISTANT_ID))
     const installedAt = readTextOrNull(joinPath(stateDir, INSTALLED_AT_FILE_NAME))
@@ -20415,7 +20416,7 @@ async function reconcileAlwaysOn(): Promise<void> {
     const watcherInstalled = watcherServiceInstalled({ platform: process.platform, home, env: process.env, exists: (path: string) => existsSync(path) })
     const kept = decideKeptSupervisor({
       alwaysOn: a.alwaysOn,
-      standing: keepAliveStandingFromCache(readTextOrNull(keepAliveCacheFile(home)), ASSISTANT_ID, now, { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled }),
+      standing: keepAliveStandingFromCache(readTextOrNull(keepAliveCacheFile(home)), ASSISTANT_ID, now, { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled, paired: AUTH.mode === 'pairing' }),
       installed,
       installedAt,
       keptSeen: readTextOrNull(joinPath(stateDir, KEPT_SEEN_FILE_NAME)),

@@ -401,6 +401,13 @@ test('switched off stays off: an agent that is not kept running is never handed 
     assert.equal((await run(w)).outcome, 'restarted', name)
     assert.notEqual(w.restarts[0].row.supervisor, 'none', `${name}: the task`)
   }
+  // Review round 5, B2: an agent with no pairing (no credentials file) can never be on the list, so being left out says nothing.
+  const key = world({ task: true })
+  const listed = key.deps.listAgents
+  key.deps.listAgents = (...args: any[]) => listed(...args).map((r: any) => ({ ...r, discoveredVia: 'supervised-folder' }))
+  key.put(CACHE, cache(true, [7], 'on', { listedRecently: ['7'] }))
+  assert.equal((await run(key)).outcome, 'restarted', key.logs.join('\n'))
+  assert.notEqual(key.restarts[0].row.supervisor, 'none', 'a key-connected agent keeps the way back through its task')
 })
 
 test('claude replaced between the listing and the kill (another creation time) or the daemon gone: nothing is killed', async () => {

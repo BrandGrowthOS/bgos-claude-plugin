@@ -427,7 +427,7 @@ cmd_install() {
     # once. Asked before anything is written. No answer (no watcher, a stale or refused
     # read, no runtime) is not off: the install goes on as before.
     if [ "$(agent_service_js kept-switch --assistant "$ASSISTANT_ID" --os "$OS" | head -n 1)" = "switch_off" ]; then
-      die "refused: Keep agents running is off for this computer, so agent $ASSISTANT_ID is not kept running and no supervisor was installed; turn it on in HOAI (Settings, Computers), then run this again."
+      die "refused: Keep agents running is off for this computer, so agent $ASSISTANT_ID is not kept running and no supervisor was installed; turn it on in HOAI (Settings, Computers), then try again in a minute."
     fi
     # WHICH claude gets baked. `command -v claude` under the watcher's service PATH
     # returned a stale /usr/local/bin/claude 2.1.22 that does not know the launch flag

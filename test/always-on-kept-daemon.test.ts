@@ -69,6 +69,8 @@ type Scene = {
   watcher?: boolean
   /** The watcher's cached keep-alive answer, written `agoMs` ago; none when absent. `unmarked`: as a watcher from before the format mark wrote it. */
   cache?: { answer: Record<string, unknown>; agoMs: number; unmarked?: boolean; listedRecently?: string[] }
+  /** How this daemon is connected (server.ts AUTH.mode): a pairing by default, or an API key. */
+  auth?: 'pairing' | 'apikey'
 }
 
 const ON = { enabled: true, assistantIds: ['912'], switchState: 'on' }
@@ -114,6 +116,7 @@ async function reconcile(scene: Scene) {
     alwaysOnReleaseFailure: null,
     process: { platform, env: {}, getuid: () => 501 },
     ASSISTANT_ID: ID,
+    AUTH: { mode: scene.auth ?? 'pairing' },
     BGOS_AGENT_BIN: BIN,
     ALWAYS_ON_WORKDIR: `${home}/hoai-agents/agent-912`,
     homedir: () => home,
@@ -276,4 +279,32 @@ test('m2: a watcher installed but not yet swept (no cache) is no answer: with Al
   assert.equal(none.installs, 1, 'no watcher: Always on alone, as before')
   const noneOff = await reconcile({ watcher: false, cache: { answer: OFF, agoMs: MIN } })
   assert.equal(noneOff.installs, 1, 'a cache an uninstalled watcher left is no switch')
+})
+
+// Review round 5, B2: an agent with no pairing can never be on the backend's list, so the daemon follows its own Always on read.
+const OTHERS_ONLY = { enabled: true, assistantIds: [7], switchState: 'on' }
+
+test('r5 A1: Always on ON, connected with a key, seen kept: its supervisor stays', async () => {
+  const out = await reconcile({ auth: 'apikey', alwaysOn: true, installed: true, seen: true, cache: { answer: OTHERS_ONLY, agoMs: MIN, listedRecently: ['7'] } })
+  assert.equal(out.installed, true, out.logs.join('\n'))
+})
+
+test('r5 A2: Always on ON, connected with a key, no supervisor yet: the daemon installs one', async () => {
+  const out = await reconcile({ auth: 'apikey', alwaysOn: true, installed: false, cache: { answer: OTHERS_ONLY, agoMs: MIN, listedRecently: ['7'] } })
+  assert.equal(out.installs, 1, out.logs.join('\n'))
+})
+
+test('r5 control: connected with a key, Always on OFF with the same answer still removes on one read', async () => {
+  const out = await reconcile({ auth: 'apikey', alwaysOn: false, installed: true, seen: true, cache: { answer: OTHERS_ONLY, agoMs: MIN, listedRecently: ['7'] } })
+  assert.equal(out.installed, false, out.logs.join('\n'))
+})
+
+test('r5 pin: connected with a key, the computer switch OFF still removes with Always on ON', async () => {
+  const out = await reconcile({ auth: 'apikey', alwaysOn: true, installed: true, seen: true, cache: { answer: OFF, agoMs: MIN } })
+  assert.equal(out.installed, false, out.logs.join('\n'))
+})
+
+test('r5 pin: a paired agent confirmed left out still goes, the two-read rule is unchanged for agents the list could name', async () => {
+  const out = await reconcile({ auth: 'pairing', alwaysOn: true, installed: true, seen: true, cache: { answer: OTHERS_ONLY, agoMs: MIN, listedRecently: ['7'] } })
+  assert.equal(out.installed, false, out.logs.join('\n'))
 })
