@@ -2533,6 +2533,45 @@ test('fix 4 (kc-server 871, 10:42:33 failed then 10:42:59 supervised): the sweep
   assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['912', 'failed', 'agent_deaf_after_restart']])
 })
 
+// Review follow-up 5: agent 912 is dead and failed. Its last agent-state.json, two days old, names claude
+// 5300. After a reboot ANOTHER agent's claude holds pid 5300, started after that state was written. The
+// sweep counted any claude on the state's pid as 912's and cleared failed to supervised. The pid is 912's
+// only while it is still the same process (started no later than the state) or a claude on 912's own
+// pinned session; another claude on the pid keeps the agent failed.
+const ITEM5_PIN = '8c1f0000-0000-4000-8000-000000000912'
+function staleStateOnReusedPid(claudeStart: string, claudeCommand: string) {
+  const fs = machine([
+    {
+      id: '912',
+      cwd: AVA,
+      service: 'canonical',
+      state: { pid: 4999, claudePid: 5300, sessionId: ITEM5_PIN, updatedAt: new Date(T0 - 2 * 24 * 60 * MIN).toISOString(), lastActivityAt: new Date(T0 - 2 * 24 * 60 * MIN).toISOString(), runningVersion: '0.62.1' },
+    },
+  ], { installedVersion: '0.62.1', lastUpdated: '2026-10-01T00:00:00.000Z' })
+  seedFailed(fs, '912', 'agent_deaf_after_restart')
+  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(5300, 1, claudeCommand, claudeStart)].join('\n')
+  // The other claude works in its own folder.
+  const rec = recorder({ ps, lsof: `p5300\nfcwd\nn${HOME}/hoai-agents/other\n` })
+  return { fs, rec }
+}
+
+test('item 5: a stale state\'s claude pid that ANOTHER claude now holds (started later) never clears a failed agent', async () => {
+  const { fs, rec } = staleStateOnReusedPid('Tue Oct  6 18:00:00 2026', `claude --resume ${OTHER_PIN}`)
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { pidAlive: (pid: number) => pid === 5300 }).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['912', 'failed', 'agent_deaf_after_restart']])
+})
+
+test('item 5 controls: the same process (started before the state) or a claude on the agent\'s own pin still proves it up', async () => {
+  // Started before the state was written: the claude the state named, still running.
+  const same = staleStateOnReusedPid('Sat Oct  3 08:00:00 2026', `claude --resume ${OTHER_PIN}`)
+  const kept = await runKeepAliveSweep(ctxFor(same.fs, same.rec, fakeClock(), { pidAlive: (pid: number) => pid === 5300 }).ctx as any)
+  assert.deepEqual(kept.agents.map((a: any) => [a.id, a.state]), [['912', 'supervised']])
+  // Started later, but on 912's own pinned session: its own claude.
+  const pinned = staleStateOnReusedPid('Tue Oct  6 18:00:00 2026', `claude --resume ${ITEM5_PIN}`)
+  const own = await runKeepAliveSweep(ctxFor(pinned.fs, pinned.rec, fakeClock(), { pidAlive: (pid: number) => pid === 5300 }).ctx as any)
+  assert.deepEqual(own.agents.map((a: any) => [a.id, a.state]), [['912', 'supervised']])
+})
+
 test('fix 4: a launch that is itself failing is failed with no earlier record, and a live daemon ends the hold', async () => {
   const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: null }], { installedVersion: '0.62.0' })
   const statusPath = `${HOME}/.bgos-agent/912/launch-status`

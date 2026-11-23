@@ -919,6 +919,78 @@ test('C6 stale plugin: the update runs FILE steps only (no executor restart), th
   assertDtoShape(backend.progress('chk-1'))
 })
 
+// Review follow-up 2: the keep-alive tier's SIGTERM. Agent 912 runs under its own keep-alive script (3000),
+// which declared claude 5912; listAgents confirmed it when the check up began. The update step runs before
+// the restart and may take minutes, and the keep-alive may relaunch its claude meanwhile. Right before the
+// signal the check up confirms it again, pid AND start time; one that changed is never signalled.
+const KA_MARKER = `${HOME}/.bgos-agent/912/keepalive.json`
+const KA_SCRIPT_START = 'Tue Aug 25 07:00:00 2026'
+function keepaliveCheckup(change: 'none' | 'relaunched' | 'same_pid_new_start' | 'start_unreadable') {
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: agentState({ runningVersion: '0.38.3', lastActivityAt: new Date(T0 - 40 * MIN).toISOString() }),
+    [KA_MARKER]: JSON.stringify({ kind: 'keepalive', pid: 3000, claudePid: 5912, capabilities: ['relaunch'] }),
+  })
+  fs.rm(`${STATE_DIR}/supervisor.json`)
+  writeTranscript(fs, [ownerMessage(T0 - 41 * MIN), assistantTurn(T0 - 40 * MIN)], T0 - 40 * MIN)
+  let claude = 5912
+  let claudeStart: string | null = 'Tue Aug 25 08:00:00 2026'
+  // ps as the keep-alive proof and the start reads ask it: the claude's name, the table, one pid's start.
+  const execSync = (file: string, args: string[]) => {
+    if (file === 'ps' && args[0] === '-o' && args[1] === 'comm=') return Number(args[3]) === claude ? { code: 0, stdout: 'claude\n' } : { code: 1, stdout: '' }
+    if (file === 'ps' && args[0] === '-A') return { code: 0, stdout: `3000 1 501 05:00:00\n${claude} 3000 501 04:00:00\n` }
+    if (file === 'env' && args.join(' ').startsWith('LC_ALL=C ps -o lstart= -p ')) {
+      const pid = Number(args.at(-1))
+      if (pid === 3000) return { code: 0, stdout: `${KA_SCRIPT_START}\n` }
+      if (pid === claude && claudeStart) return { code: 0, stdout: `${claudeStart}\n` }
+      return { code: 1, stdout: '' }
+    }
+    return { code: 1, stdout: '' }
+  }
+  // The update step is where the time goes: the keep-alive changes while it runs.
+  const base = updateModules()
+  const modules = {
+    ...base,
+    executePlan: async (...args: any[]) => {
+      if (change === 'relaunched') {
+        claude = 6161
+        fs.writeFile(KA_MARKER, JSON.stringify({ kind: 'keepalive', pid: 3000, claudePid: 6161, capabilities: ['relaunch'] }))
+      }
+      if (change === 'same_pid_new_start') claudeStart = 'Tue Aug 25 11:58:00 2026'
+      if (change === 'start_unreadable') claudeStart = null
+      return (base.executePlan as any)(...args)
+    },
+  }
+  const ps = [psLine(1, 0, '/sbin/init'), psLine(3000, 1, `/bin/bash ${HOME}/bin/keepalive-912.sh`, KA_SCRIPT_START), psLine(5912, 3000, `claude --resume ${SID}`), psLine(4912, 5912, `node ${ROOT}/server.ts`)].join('\n')
+  const backend = fakeBackend(checkupJob())
+  const clock = fakeClock()
+  daemonAnswersProbe(fs, clock)
+  const run = rig(fs, backend, clock, ps, { alive: [3000, 5912, 6161, 4912], modules, execSync })
+  return { fs, backend, run }
+}
+
+test('follow-up 2: a keep-alive unchanged since the check up began gets its SIGTERM after the update (control)', async () => {
+  const { backend, run } = keepaliveCheckup('none')
+  await runWatcher(run.deps as any)
+  const terminal = terminalOf(backend)
+  assert.deepEqual(terminal.actions.map((a: any) => [a.cause, a.did, a.outcome]).slice(0, 1), [['stale_plugin', 'update', 'fixed']])
+  assert.deepEqual(run.kills, [[5912, 'SIGTERM']], 'the claude it confirmed, through its keep-alive')
+})
+
+for (const change of ['relaunched', 'same_pid_new_start', 'start_unreadable'] as const) {
+  test(`follow-up 2: a keep-alive that changed during the update (${change}) is never signalled, and the log says why`, async () => {
+    const { backend, run } = keepaliveCheckup(change)
+    await runWatcher(run.deps as any)
+    const terminal = terminalOf(backend)
+    assert.deepEqual(run.kills, [], 'no SIGTERM to a claude the check up did not confirm')
+    const restart = terminal.actions.find((a: any) => a.did === 'restart_agent')
+    assert.equal(restart?.outcome, 'not_fixed', JSON.stringify(terminal.actions))
+    assert.match(restart.detail, /keep-alive changed/)
+    const why = { relaunched: /its claude is pid 6161 now, was 5912/, same_pid_new_start: /claude pid 5912 is another process now/, start_unreadable: /start of its claude \(pid 5912\) could not be read/ }[change]
+    assert.ok(run.logs.some((l) => /keep-alive changed since the check up began/.test(l) && why.test(l)), run.logs.filter((l) => /checkup 912/.test(l)).join('\n'))
+    assert.equal(terminal.steps.find((s: any) => s.kind === 'restart_agent')?.state, 'failed')
+  })
+}
+
 test('C6 with updates latched: the update is not_fixed by name and the restart it needed is skipped, nothing touched', async () => {
   const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ runningVersion: '0.38.3', lastActivityAt: new Date(T0 - 40 * MIN).toISOString() }) })
   writeTranscript(fs, [ownerMessage(T0 - 41 * MIN), assistantTurn(T0 - 40 * MIN)], T0 - 40 * MIN)
@@ -1336,6 +1408,51 @@ test("M1: a daemon pid a later process of another agent holds proves nothing: th
   assert.equal(run.kills.some(([pid]) => pid === 5300 || pid === 4912), false, JSON.stringify(run.kills))
 })
 
+// Review follow-up 1, the Windows ancestor walk. A's daemon (4912, its fresh state names it) outlived its
+// launcher and its claude. Windows never reparents: 4912 still names its dead launcher's pid 6000 as its
+// parent, and Windows has handed 6000 to agent B's claude, started after A's daemon. The walk up from the
+// daemon stops at a parent that started after its child: nothing is proven as A's claude, and the
+// owner's Restart signals nothing. Stubbed PowerShell listings (no Windows machine runs this).
+const winListing = (rows: Array<[number, number, number | null, string]>) =>
+  JSON.stringify(rows.map(([ProcessId, ParentProcessId, CreationDate, CommandLine]) => ({ ProcessId, ParentProcessId, CreationDate, CommandLine })))
+const winExecOf = (listing: string) => async (file: string) =>
+  file === 'powershell.exe' ? { code: 0, stdout: listing, stderr: '', error: null, timedOut: false } : { code: 1, stdout: '', stderr: '', error: null, timedOut: false }
+function deadLauncherFs() {
+  const fs = agentFs({ [`${PLUGIN_STATE}/agent-state.json`]: agentState({ claudePid: null }) })
+  writeTranscript(fs, [assistantTurn(T0 - 20 * MIN), ownerMessage(T0 - 15 * MIN)], T0 - 15 * MIN)
+  return fs
+}
+const DEAD_LAUNCHER_ROWS: Array<[number, number, number | null, string]> = [
+  [4100, 1, T0 - 120 * MIN, 'C:\\Windows\\System32\\cmd.exe'],
+  [6000, 4100, T0 - MIN, `"C:\\Users\\person\\.local\\bin\\claude.exe" --resume ${B_SID}`],
+  [4912, 6000, T0 - 30 * MIN, 'bun C:\\x\\server.ts'],
+]
+
+test('Windows walk (follow-up 1): a daemon whose dead launcher\'s pid another agent\'s later claude holds proves no claude of A', async () => {
+  const fs = deadLauncherFs()
+  const live = new Set([6000, 4912])
+  const pidAlive = (pid: number) => live.has(pid)
+  const row = listAgents({ home: HOME, env: { USER }, platform: 'linux', fs: fs as any, pidAlive, execSync: () => ({ code: 1, stdout: '' }), now: T0, uid: 501 }).find((a: any) => a.assistantId === '912')
+  assert.ok(row, '912 is listed')
+  const exec = winExecOf(winListing(DEAD_LAUNCHER_ROWS))
+  const seen = await observeAgentForCheckup({ row, install: { configDir: CONFIG } as any, home: HOME, env: { USER }, platform: 'win32', fs, exec, now: T0, pidAlive, uid: null })
+  assert.deepEqual(seen.claudes, [], "agent B's claude on the reused pid is never proven as A's")
+  assert.equal(seen.observation.claudeAlive, null, 'the live daemon still rules no session out')
+  // Control: the same daemon under its real claude (started before it) is proven.
+  const real = DEAD_LAUNCHER_ROWS.map(([pid, ppid, at, cmd]): [number, number, number | null, string] => (pid === 6000 ? [pid, ppid, T0 - 40 * MIN, cmd] : [pid, ppid, at, cmd]))
+  const ours = await observeAgentForCheckup({ row, install: { configDir: CONFIG } as any, home: HOME, env: { USER }, platform: 'win32', fs, exec: winExecOf(winListing(real)), now: T0, pidAlive, uid: null })
+  assert.deepEqual(ours.claudes.map((c: any) => c.pid), [6000])
+})
+
+test("Windows walk (follow-up 1): the owner's Restart never signals the claude on the dead launcher's reused pid", async () => {
+  const fs = deadLauncherFs()
+  const backend = fakeBackend(ownerRestartJob())
+  const run = rig(fs, backend, fakeClock(), '', { alive: [6000, 4912], platform: 'win32', uid: null, exec: winExecOf(winListing(DEAD_LAUNCHER_ROWS)) })
+  await runWatcher(run.deps as any)
+  assert.match(JSON.stringify(backend.progress('rst-1')), /claude none/, "nothing proven as 912's claude")
+  assert.equal(run.kills.some(([pid]) => pid === 6000), false, JSON.stringify(run.kills))
+})
+
 // M3: a start time that cannot be read proves nothing. A's stale state names claude 5300; the claude
 // holding 5300 has a start this watcher cannot read. The start rule refuses it (fails closed) instead of
 // skipping the check: nothing proven, claudeAlive null, no signal.
@@ -1385,6 +1502,59 @@ test('the live daemon route proves the claude above a daemon that started before
   const seen = await observeOnly(fs, ps, [5912, 4912])
   assert.deepEqual(seen.claudes.map((c: any) => c.pid), [5912])
   assert.equal(seen.observation.claudeAlive, true)
+})
+
+// Review follow-up 4, the stale twin rule. Agent 912 runs TWO sessions on its one pin: the twin (claude
+// 6912, daemon 6913) held the pairing lock first and published agent-state.json, then lost the lock to the
+// holder (claude 5912, daemon 4912), whose heartbeat is fresh. The twin's record is the stale copy: its
+// activity is old (10 minutes), and so is its updatedAt. The check up keeps the LOCK HOLDER's daemon and
+// none of the stale copy's turn fields; both claudes on the pin are this agent's and are proven.
+const TWIN_STARTED = 'Mon Aug 24 08:00:00 2026'
+function twinFs(holderState: boolean) {
+  const twinRecord = agentState({
+    pid: 6913,
+    claudePid: 6912,
+    runningVersion: '0.38.1',
+    pendingMessages: 3,
+    ownerWaitingSince: new Date(T0 - 10 * MIN).toISOString(),
+    lastActivityAt: new Date(T0 - 10 * MIN).toISOString(),
+    updatedAt: new Date(T0 - 10 * MIN).toISOString(),
+  })
+  const holderRecord = agentState({ pid: 4912, claudePid: 5912, runningVersion: '0.38.4', lastActivityAt: new Date(T0 - MIN).toISOString(), updatedAt: new Date(T0 - 2_000).toISOString() })
+  const fs = agentFs({
+    [`${PLUGIN_STATE}/agent-state.json`]: holderState ? holderRecord : twinRecord,
+    [`${HOME}/.bgos-agent/credentials-912.json.lock`]: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 2_000 }),
+  })
+  writeTranscript(fs, [ownerMessage(T0 - 12 * MIN), assistantTurn(T0 - MIN)], T0 - MIN)
+  return fs
+}
+const TWIN_PS = [
+  psLine(1, 0, '/sbin/init'),
+  psLine(6912, 1, `claude --resume ${SID}`, TWIN_STARTED),
+  psLine(6913, 6912, `node ${ROOT}/server.ts`, TWIN_STARTED),
+  psLine(5912, 1, `claude --resume ${SID}`),
+  psLine(4912, 5912, `node ${ROOT}/server.ts`),
+].join('\n')
+
+test('follow-up 4, stale twin: the twin that lost the lock left the older record; the check up keeps the lock holder\'s daemon and drops the stale copy\'s turn fields', async () => {
+  const seen = await observeOnly(twinFs(false), TWIN_PS, [6912, 6913, 5912, 4912])
+  assert.equal(seen.daemonPid, 4912, "the lock holder's daemon, never the twin's 6913 from the stale copy")
+  assert.equal(seen.observation.stateFresh, false, 'the twin\'s record is 10 minutes old: stale')
+  assert.deepEqual(seen.claudes.map((c: any) => c.pid).sort(), [5912, 6912], 'both sessions on the pin are this agent\'s claudes')
+  assert.equal(seen.observation.claudeAlive, true)
+  assert.equal(seen.observation.claudeStartedAtMs, Math.max(...seen.claudes.map((c: any) => c.startedAtMs)), "the newest start: the holder's claude")
+  assert.equal(seen.observation.runningVersion, null, "the stale copy's version is not kept")
+  assert.equal(seen.observation.messagesDeliveredAtMs, T0 - 12 * MIN, "the transcript's owner message, not the stale copy's owner wait")
+})
+
+test("follow-up 4, stale twin: once the holder publishes, its record is the one kept, and the twin's old activity is not", async () => {
+  const seen = await observeOnly(twinFs(true), TWIN_PS, [6912, 6913, 5912, 4912])
+  assert.equal(seen.daemonPid, 4912)
+  assert.equal(seen.observation.stateFresh, true)
+  assert.equal(seen.observation.agentState?.claudePid, 5912, "the holder's claude")
+  assert.equal(seen.observation.runningVersion, '0.38.4', "the holder's version, never the twin's 0.38.1")
+  assert.equal(seen.observation.activityMs[0], T0 - MIN, "the holder's activity, a minute ago")
+  assert.deepEqual(seen.claudes.map((c: any) => c.pid).sort(), [5912, 6912])
 })
 
 // -- item 5: the owner's Restart, which the Helper always carries out ---------------------------------

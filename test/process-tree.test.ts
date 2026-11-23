@@ -341,3 +341,51 @@ test('findAgentClaudePids (board row 69337efa): a claude of the agent by its pin
   assert.deepEqual(look(unreadable, { known: [{ pid: 5914, atMs: T }] }), { pids: [], unsure: true, startUnknown: true }, 'the claude of record, start unreadable')
   assert.deepEqual(look(hung, { known: [{ pid: 4912, atMs: null }] }), { pids: [], unsure: true, startUnknown: true }, 'a record with no time')
 })
+
+// Review follow-up 1 of the lone repair: Windows never reparents. A child keeps its dead parent's pid as
+// its ParentProcessId, and Windows hands that number out again, so the walk up from the agent's daemon
+// can step onto a stranger. A parent that started after its child is not its parent: the walk stops
+// there. A link whose start cannot be read cannot be told from one, so the check up's walk stops there
+// too and says why (startUnknown). Stubbed Windows listings: no Windows machine runs this.
+test('Windows ancestor walk: a dead parent whose pid a later process holds ends the walk; an unreadable start ends the check up walk', () => {
+  const T = Date.parse('2026-10-11T07:54:15.000Z')
+  const OTHER_PIN = '8c1f0000-0000-4000-8000-000000000077'
+  const win = (rows: Array<[number, number, number | null, string]>) =>
+    parseWin32ProcessJson(JSON.stringify(rows.map(([ProcessId, ParentProcessId, CreationDate, CommandLine]) => ({ ProcessId, ParentProcessId, CreationDate, CommandLine }))))!
+  const shell: [number, number, number | null, string] = [4100, 1, T - 900_000, 'C:\\Windows\\System32\\cmd.exe']
+  // The agent's daemon (4912) outlived its launcher (6000) and its claude; it still names 6000 as its parent.
+  const daemon: [number, number, number | null, string] = [4912, 6000, T - 100_000, 'bun C:\\x\\server.ts']
+  const known = [{ pid: 4912, atMs: T - 50_000 }]
+  const look = (rows: Array<[number, number, number | null, string]>) => findAgentClaudePids({ processes: win([shell, ...rows, daemon]), known })
+
+  // 6000 now belongs to ANOTHER agent's claude, started after the daemon: never this agent's claude.
+  const reusedByClaude: Array<[number, number, number | null, string]> = [[6000, 4100, T - 20_000, `"C:\\Users\\person\\.local\\bin\\claude.exe" --resume ${OTHER_PIN}`]]
+  assert.equal(nearestClaudeAncestor(win([shell, ...reusedByClaude, daemon]), 4912), null, 'a claude that started after the daemon is not above it')
+  assert.deepEqual(look(reusedByClaude), { pids: [], unsure: true, startUnknown: false }, 'nothing proven; the live daemon still rules no session out')
+
+  // 6000 now belongs to some later process that runs under another claude: the walk must not climb through it.
+  const reusedUnderClaude: Array<[number, number, number | null, string]> = [
+    [5914, 4100, T - 700_000, `"C:\\Users\\person\\.local\\bin\\claude.exe" --resume ${OTHER_PIN}`],
+    [6000, 5914, T - 20_000, 'node C:\\other\\tool.js'],
+  ]
+  assert.equal(nearestClaudeAncestor(win([shell, ...reusedUnderClaude, daemon]), 4912), null, 'never the claude above a stranger that took the dead parent\'s pid')
+  assert.deepEqual(look(reusedUnderClaude), { pids: [], unsure: true, startUnknown: false })
+
+  // Control: the real chain (claude, launcher, daemon, each started before its child) is still walked.
+  const real: Array<[number, number, number | null, string]> = [
+    [5914, 4100, T - 120_000, 'claude.exe --dangerously-skip-permissions'],
+    [6000, 5914, T - 110_000, 'node C:\\x\\bin\\bgos-launch.mjs C:\\x\\server.ts'],
+  ]
+  assert.equal(nearestClaudeAncestor(win([shell, ...real, daemon]), 4912), 5914)
+  assert.deepEqual(look(real), { pids: [5914], unsure: false, startUnknown: false })
+  // A parent started in the same millisecond as its child is still its parent.
+  const sameMs: Array<[number, number, number | null, string]> = [[5914, 4100, T - 120_000, 'claude.exe'], [6000, 5914, T - 100_000, 'node C:\\x\\bin\\bgos-launch.mjs']]
+  assert.deepEqual(look(sameMs), { pids: [5914], unsure: false, startUnknown: false })
+
+  // A link whose start cannot be read (a null CreationDate) may be a stranger on a reused pid: the check
+  // up's walk stops there, proves nothing and says why, like an unreadable start of the record itself.
+  const blindLink = real.map(([pid, ppid, at, cmd]): [number, number, number | null, string] => [pid, ppid, pid === 6000 ? null : at, cmd])
+  assert.deepEqual(look(blindLink), { pids: [], unsure: true, startUnknown: true }, 'the launcher between them has no readable start')
+  const blindClaude = real.map(([pid, ppid, at, cmd]): [number, number, number | null, string] => [pid, ppid, pid === 5914 ? null : at, cmd])
+  assert.deepEqual(look(blindClaude), { pids: [], unsure: true, startUnknown: true }, 'the claude itself has no readable start')
+})

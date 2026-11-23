@@ -43,6 +43,8 @@ import {
   unboundRunStageCommands,
 } from '../lib/agent-unbound.mjs'
 import { agentTaskSpec, installAgentTask } from '../lib/agent-task-win32.mjs'
+import { readLauncher } from '../bin/hoai-agent-unbound.mjs'
+import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { nodeExec, nodeFs } from '../lib/watcher-bundle.mjs'
 import { watcherHomeId } from '../lib/watcher-service.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
@@ -306,7 +308,8 @@ test('Windows: a deleted agent\'s logon task is unregistered, its launcher tree 
     fs: w.fs,
     exec: w.exec,
     now: () => now,
-    readLauncher: () => ({ pid: 5912, supervisor: 'service' }),
+    // Its start rides along: taskkill runs only once it is read again unchanged (follow-up 3 below).
+    readLauncher: () => ({ pid: 5912, supervisor: 'service', startedAtMs: Date.parse('2026-11-20T08:00:00.000Z') }),
     pidAlive: (pid: number) => w.alive.has(pid),
     sleep: async () => {},
     log: () => {},
@@ -344,7 +347,7 @@ test('Windows: a replayed cleanup does nothing new (no command, no second archiv
     fs: w.fs,
     exec: w.exec,
     now: () => now,
-    readLauncher: () => (w.alive.has(5912) ? { pid: 5912, supervisor: 'service' } : null),
+    readLauncher: () => (w.alive.has(5912) ? { pid: 5912, supervisor: 'service', startedAtMs: Date.parse('2026-11-20T08:00:00.000Z') } : null),
     pidAlive: (pid: number) => w.alive.has(pid),
     sleep: async () => {},
     log: () => {},
@@ -440,6 +443,103 @@ test('Windows: a folder still held open (EBUSY) is retried until it moves, never
   assert.equal(busy, 0)
   assert.ok(sleeps.length >= 2)
   assert.equal(w.fs.files.get(`${WHOME}\\.bgos-agent\\.removed\\912-${dayOf(now)}\\session-id`), 'pin-912')
+})
+
+// Review follow-up 3: taskkill /T /F ends a launcher's WHOLE tree, and the launcher was proved this agent's
+// before the task's removal, which may take up to 6 minutes (an uninstall and a read back of up to 3 minutes
+// each). Windows hands a pid out again within seconds. The launcher is read again right before taskkill, pid
+// AND start time; one that differs, or whose start cannot be read, is refused. Stubbed: no Windows machine.
+const LAUNCHER_STARTED = Date.parse('2026-11-20T08:00:00.000Z')
+async function unbindWithLauncherNow(later: { pid: number; supervisor: string; startedAtMs: number | null } | null) {
+  const w = await windowsRig()
+  const now = Date.now()
+  const notes: string[] = []
+  let reads = 0
+  const report = await cleanUpUnboundAgent({
+    platform: 'win32',
+    home: WHOME,
+    assistantId: '912',
+    fs: w.fs,
+    exec: w.exec,
+    now: () => now,
+    // The first read is the one made before the task is removed; every later read is "just now".
+    readLauncher: () => (reads++ === 0 ? { pid: 5912, supervisor: 'service', startedAtMs: LAUNCHER_STARTED } : later),
+    pidAlive: (pid: number) => w.alive.has(pid),
+    sleep: async () => {},
+    log: (line: string) => notes.push(line),
+  })
+  return { w, report, notes, reads: () => reads }
+}
+
+test('Windows unbind (follow-up 3): the launcher is read again right before taskkill; the same pid and start is ended (control)', async () => {
+  const { w, report, reads } = await unbindWithLauncherNow({ pid: 5912, supervisor: 'service', startedAtMs: LAUNCHER_STARTED })
+  assert.equal(report.ok, true, JSON.stringify(report))
+  assert.deepEqual(w.killed, ['taskkill.exe /PID 5912 /T /F'])
+  assert.ok(reads() >= 2, 'read again after the task was removed')
+})
+
+for (const [name, later, why] of [
+  ['its pid now names another start (a reused pid)', { pid: 5912, supervisor: 'service', startedAtMs: LAUNCHER_STARTED + 240_000 }, /started at .* now, not /],
+  ['another launcher holds it now', { pid: 6912, supervisor: 'service', startedAtMs: LAUNCHER_STARTED + 240_000 }, /is pid 6912 now/],
+  ['its start can no longer be read', { pid: 5912, supervisor: 'service', startedAtMs: null }, /could not be read/],
+] as const) {
+  test(`Windows unbind (follow-up 3): taskkill is refused when ${name}`, async () => {
+    const { w, report, notes } = await unbindWithLauncherNow(later)
+    assert.deepEqual(w.killed, [], 'no tree is ended on a launcher not proved ours just now')
+    assert.equal(w.alive.has(5912), true)
+    assert.equal(report.ok, false, 'the cleanup could not do everything')
+    assert.ok(notes.some((l) => /taskkill refused/.test(l) && why.test(l)), notes.join('\n'))
+  })
+}
+
+test('Windows unbind (follow-up 3): a launcher gone by then is not ended (nothing to end), and nothing else is', async () => {
+  const { w, notes } = await unbindWithLauncherNow(null)
+  assert.deepEqual(w.killed, [])
+  assert.ok(notes.some((l) => /no longer a live launcher of this agent/.test(l)), notes.join('\n'))
+})
+
+test("Windows unbind (follow-up 3): the helper's launcher read carries the launcher's CreationDate; one it cannot read is null", () => {
+  const stamp = '2026-11-20T08:00:01.000Z'
+  const fs = memoryFs({
+    [wcreds('912')]: JSON.stringify({ assistantId: 912, pairingId: 7 }),
+    [`${wstate('912')}\\supervisor.json`]: supervisorFileBody(5912, stamp),
+  })
+  const hoai = `"${WNODE}" ${WROOT}\\bin\\hoai-core.mjs --keep-alive`
+  const asked: string[] = []
+  const execSync = (startReadable: boolean) => (file: string, args: string[]) => {
+    const script = args.join(' ')
+    if (file === 'powershell.exe' && script.includes('ProcessId=5912')) {
+      asked.push(script)
+      return { code: 0, stdout: JSON.stringify({ ProcessId: 5912, CommandLine: hoai, StartedAtMs: startReadable ? LAUNCHER_STARTED : null }) }
+    }
+    return { code: 1, stdout: '' }
+  }
+  const got = readLauncher(WHOME, '912', { platform: 'win32', fs, pidAlive: (pid: number) => pid === 5912, execSync: execSync(true) })
+  assert.equal(got?.pid, 5912)
+  assert.equal(got?.startedAtMs, LAUNCHER_STARTED, 'its CreationDate, as epoch ms')
+  assert.ok(asked.length >= 1 && asked.every((s) => s.includes('Get-CimInstance Win32_Process')), 'one query of that pid')
+  const blind = readLauncher(WHOME, '912', { platform: 'win32', fs, pidAlive: (pid: number) => pid === 5912, execSync: execSync(false) })
+  assert.equal(blind?.pid, 5912, 'still the live launcher')
+  assert.equal(blind?.startedAtMs, null, 'a start it cannot read is null: the cleanup then refuses taskkill')
+  assert.equal(readLauncher(WHOME, '912', { platform: 'win32', fs, pidAlive: () => false, execSync: execSync(true) }), null, 'no live launcher')
+})
+
+test('Windows unbind (follow-up 3): a first read with no start time never runs taskkill', async () => {
+  const w = await windowsRig()
+  const report = await cleanUpUnboundAgent({
+    platform: 'win32',
+    home: WHOME,
+    assistantId: '912',
+    fs: w.fs,
+    exec: w.exec,
+    now: () => Date.now(),
+    readLauncher: () => ({ pid: 5912, supervisor: 'service' }),
+    pidAlive: (pid: number) => w.alive.has(pid),
+    sleep: async () => {},
+    log: () => {},
+  })
+  assert.deepEqual(w.killed, [], 'an older reader that carries no start proves nothing just now')
+  assert.equal(report.ok, false)
 })
 
 // -- macOS and Linux: the real bin/bgos-agent uninstall, faked launchctl and systemctl -------------
