@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import {
   LIMIT_ENTER_MIN_INTERVAL_MS,
   UNSAFE_DIALOG_REASONS,
+  createReadLog,
   decideLimitFree,
   limitNoticeText,
   parseLimitNotice,
@@ -376,4 +377,19 @@ test('purity: the module imports nothing and touches no file, process, clock or 
   const source = readFileSync(fileURLToPath(new URL('../lib/limit-screen.mjs', import.meta.url)), 'utf8')
   assert.deepEqual([...source.matchAll(/^\s*import\s/gm)], [])
   assert.doesNotMatch(source, /child_process|node:fs|fetch\(|process\.|Date\.now\(|setTimeout|require\(/)
+})
+
+test('M2 (r4): the read log answers the last read started BEFORE a time, the newest answer of it, at most ten minutes back', () => {
+  const log = createReadLog()
+  const L = Date.UTC(2026, 10, 19, 12)
+  log.note('k', L - 60_000, 'seat-a')
+  log.note('k', L, 'seat-b') // started at the limit itself: a read since it, never one from before
+  assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: 'seat-a' })
+  log.note('k', L - 60_000, null) // a later answer of the same read (signed out) is the one that counts
+  assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: null })
+  assert.deepEqual(log.before('k', L + 9 * 60_000), { readAt: L, account: 'seat-b' })
+  assert.equal(log.before('k', L + 10 * 60_000 + 1), null, 'over ten minutes old: no proof')
+  assert.equal(log.before('other', L), null)
+  log.note('k', Number.NaN, 'seat-c')
+  assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: null }, 'a read with no time is never logged')
 })

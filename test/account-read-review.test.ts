@@ -149,6 +149,7 @@ test('R2-A5 one agent switching never restarts or re-points another agent on the
   f.rows[0].accountId = s1
   f.rows[1].accountId = s1
   f.clock.at = T0 + 61_000
+  await f.watcher.snapshot() // the heartbeat before the limit
   await f.job({ action: 'assign', mode: 'limit', accountId: s2, assistantId: 41 })
   f.rows[0].limit = limitAt(f.clock.at + 1000)
   f.clock.at += 61_000
@@ -306,6 +307,7 @@ test('R2-m3 a tick at a limit does not wait for each saved login in turn', async
   ids.forEach((id, i) => f.folders.set(id, on(seatToken(`m-${i}`))))
   f.rows[0].accountId = ids[0]
   f.clock.at = T0 + 61_000
+  await f.watcher.snapshot() // the heartbeat before the limit
   await f.job({ action: 'assign', mode: 'auto', assistantId: 41 })
   f.rows[0].limit = limitAt(f.clock.at + 1000)
   f.clock.at += 61_000
@@ -362,6 +364,25 @@ test('R3 a tree kill that never answers still ends the read', async () => {
   const outcome = await Promise.race([run.then((r: any) => r.timedOut), new Promise((r) => setTimeout(() => r('still pending'), 1500))])
   assert.equal(outcome, true)
   assert.deepEqual(child.kills, ['SIGTERM', 'SIGKILL'])
+})
+
+test('R4 spawnCollect hands the tree kill the real alive check: true while the child runs, false once it has exited', async () => {
+  const child = fakeChild(4242)
+  let state!: { alive: () => boolean }
+  let finish!: () => void
+  const run = spawnCollect('x', [], {
+    timeoutMs: 20, closeGraceMs: 10, killGraceMs: 10, spawnImpl: () => child,
+    killTree: (_pid: number, given: { alive: () => boolean }) => {
+      state = given
+      return new Promise<void>((done) => (finish = done))
+    },
+  })
+  await new Promise((r) => setTimeout(r, 40))
+  assert.equal(state.alive(), true, 'the child is still running')
+  child.emit('exit', 1, null)
+  assert.equal(state.alive(), false, 'the pid may be another process now')
+  finish()
+  await run
 })
 
 test('R3 a child that exits while its tree is being ended gets no signal after its exit', async () => {

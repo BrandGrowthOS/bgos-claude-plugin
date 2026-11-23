@@ -400,7 +400,15 @@ async function limitSwitchRig(t: any, probe: (env: any) => Promise<any>, opts: R
       apiErrorParams: { rate_limit_info: { resetsAt: Math.floor((at + 3 * 3600000) / 1000) } },
       message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: "You've hit your Opus limit · resets 6pm (Asia/Dubai)" }] } }),
   ].join('\n') + '\n')
-  return { job, watcher, a, b, calls, transcript, cwd, pin, profileA, profileB, iso, at, clock }
+  /** The heartbeat before the limit (a minute before its line): every login, and an agent's own, read. */
+  const beforeLimit = async () => {
+    const back = clock.skew
+    clock.skew = -120_000
+    await watcher.snapshot()
+    await watcher.tick()
+    clock.skew = back
+  }
+  return { job, watcher, a, b, calls, transcript, cwd, pin, profileA, profileB, iso, at, clock, beforeLimit }
 }
 
 /** A folder's answer in the CLI's real key set: the seat (email) of one Team organization it is signed
@@ -414,9 +422,10 @@ const OTHER_ORG = '9e8d7c6b-5a49-4382-a716-151413121110'
 
 test('M1, end to end on fakes: two seats of one Team organization (different emails) are two accounts, so Switch at limit moves', async (t) => {
   const folders: Record<string, string | null> = {}
-  const { job, watcher, a, b, clock } = await limitSwitchRig(t, async (env) => seatsByFolder(folders)(env))
+  const { job, watcher, a, b, clock, beforeLimit } = await limitSwitchRig(t, async (env) => seatsByFolder(folders)(env))
   folders[a] = 'ana@seats.example.test'
   folders[b] = 'ben@seats.example.test'
+  await beforeLimit()
   clock.skew += 61_000 // the setup's reads stand for a minute: both are read again with this mapping
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
   await watcher.tick()
@@ -433,10 +442,11 @@ test('M1, end to end on fakes: the same organization and the same email is one a
 
 test('M1, end to end on fakes: a status with no email names no account (even in another organization): nothing moves, the rule waits', async (t) => {
   const target = { id: '\0none' }
-  const { job, watcher, a, b, calls, clock } = await limitSwitchRig(t, async (env) => {
+  const { job, watcher, a, b, calls, clock, beforeLimit } = await limitSwitchRig(t, async (env) => {
     const isTarget = String(env.CLAUDE_CONFIG_DIR ?? '').endsWith(target.id)
     return { read: true, signedIn: true, account: accountTokenFrom(isTarget ? seatStatus(null, OTHER_ORG) : seatStatus('ana@seats.example.test')) }
   })
+  await beforeLimit()
   target.id = b
   clock.skew += 61_000 // the setup's read of b stands for a minute: b is read again, now with no email
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
@@ -470,18 +480,20 @@ test("m1: an agent on its own login is read from the folder its limit is read fr
   const elsewhere = join(tmpdir(), 'not-this-agents-folder')
   const folders: Record<string, string | null> = { own: 'own@seats.example.test', 'not-this-agents-folder': 'elsewhere@seats.example.test' }
   const clock = { skew: 0 }
-  const { job, watcher, b, calls } = await limitSwitchRig(t, async (env) => seatsByFolder(folders)(env), { ownLogin: true, env: { CLAUDE_CONFIG_DIR: elsewhere }, clock })
+  const { job, watcher, b, calls, beforeLimit } = await limitSwitchRig(t, async (env) => seatsByFolder(folders)(env), { ownLogin: true, env: { CLAUDE_CONFIG_DIR: elsewhere }, clock })
   // The target saved login is signed in to the very seat the agent hit its limit on.
   folders[b] = 'own@seats.example.test'
-  clock.skew += 61_000 // the setup's read of b stands for a minute: b is read again with this mapping
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
+  await beforeLimit()
+  clock.skew += 61_000 // the setup's read of b stands for a minute: b is read again with this mapping
   await watcher.tick()
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: null, status: 'waiting_for_room', rule: { mode: 'limit', accountId: b } }])
   assert.deepEqual(calls, { eligible: 0, limitEligible: 0 })
 })
 
 test('the real watcher reads the agent limit line from its transcript and switches at the limit with the conversation', async (t) => {
-  const { job, watcher, a, b, calls, transcript, cwd, pin, profileB, iso, at } = await limitSwitchRig(t, async (env) => ({ read: true, signedIn: true, account: folderAccount(env) }))
+  const { job, watcher, a, b, calls, transcript, cwd, pin, profileB, iso, at, beforeLimit } = await limitSwitchRig(t, async (env) => ({ read: true, signedIn: true, account: folderAccount(env) }))
+  await beforeLimit()
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
   const snap = await watcher.snapshot()
   assert.deepEqual(snap.agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
@@ -493,7 +505,8 @@ test('the real watcher reads the agent limit line from its transcript and switch
 
 test('end to end on fakes, rule A: a saved login on the SAME Claude account is never switched to at the limit', async (t) => {
   const same = seatToken('same')
-  const { job, watcher, a, b, calls } = await limitSwitchRig(t, async () => ({ read: true, signedIn: true, account: same }))
+  const { job, watcher, a, b, calls, beforeLimit } = await limitSwitchRig(t, async () => ({ read: true, signedIn: true, account: same }))
+  await beforeLimit()
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
   await watcher.tick()
   const snap = await watcher.snapshot()
@@ -502,8 +515,10 @@ test('end to end on fakes, rule A: a saved login on the SAME Claude account is n
 })
 
 test('end to end on fakes, rule C: a status read that times out at the limit switches nothing and keeps the rule', async (t) => {
-  let timedOut = true
-  const { job, watcher, a, b, calls, clock } = await limitSwitchRig(t, async (env) => (timedOut ? { read: false } : { read: true, signedIn: true, account: folderAccount(env) }))
+  let timedOut = false
+  const { job, watcher, a, b, calls, clock, beforeLimit } = await limitSwitchRig(t, async (env) => (timedOut ? { read: false } : { read: true, signedIn: true, account: folderAccount(env) }))
+  await beforeLimit()
+  timedOut = true
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
   await watcher.tick()
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: a, status: 'waiting_for_room', rule: { mode: 'limit', accountId: b } }])
@@ -517,9 +532,10 @@ test('end to end on fakes, rule C: a status read that times out at the limit swi
 test('end to end on fakes, rule C: only the target login times out (the limited one reads fine): the rule waits, never needs_sign_in', async (t) => {
   let timedOut = true
   let target = ''
-  const { job, watcher, a, b, calls, clock } = await limitSwitchRig(t, async (env) =>
+  const { job, watcher, a, b, calls, clock, beforeLimit } = await limitSwitchRig(t, async (env) =>
     timedOut && target && String(env.CLAUDE_CONFIG_DIR ?? '').includes(target) ? { read: false } : { read: true, signedIn: true, account: folderAccount(env) },
   )
+  await beforeLimit()
   target = b
   clock.skew += 61_000 // the setup's good read of b stands for a minute: the next read of b times out
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
@@ -593,13 +609,26 @@ test('M4, end to end through the real reader (fake CLI): a target whose version 
     if (args.includes('--version')) return V
     return { stdout: seatStatus(`${dir.split(/[\\/]/).pop() || 'own'}@seats.example.test`) }
   }
-  const { job, watcher, a, b, calls, clock } = await limitSwitchRig(t, async () => assert.fail('ports.probe is not used here'), { exec })
+  const { job, watcher, a, b, calls, clock, beforeLimit } = await limitSwitchRig(t, async () => assert.fail('ports.probe is not used here'), { exec })
+  await beforeLimit()
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
   await watcher.tick()
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: a, status: 'waiting_for_room', rule: { mode: 'limit', accountId: b } }])
   assert.deepEqual(calls, { eligible: 0, limitEligible: 0 })
   hung = false
   clock.skew += 61_000
+  await watcher.tick()
+  assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
+})
+
+test('B1 (r4): an agent on its own login is read again at its limit, never handed the read from just before it', async (t) => {
+  const folders: Record<string, string | null> = { own: 'own@seats.example.test' }
+  const clock = { skew: -61_000 } // a second before the limit line (a minute before the rig's now)
+  const { job, watcher, b } = await limitSwitchRig(t, async (env) => seatsByFolder(folders)(env), { ownLogin: true, clock })
+  // Pressed just before the limit: the press reads the own login, and the reader holds that read a minute.
+  await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
+  clock.skew = -30_000 // 30 s after the limit: the read from before it still stands in the reader
+  await watcher.tick()
   await watcher.tick()
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
 })

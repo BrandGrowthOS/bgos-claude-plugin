@@ -275,6 +275,9 @@ function baseDeps(fs: MemoryFs, backend: ReturnType<typeof fakeBackend>, clock: 
       // listAgents' sync probes answer nothing: no real systemctl, and no real ps or PowerShell
       // asking what pid 4242 runs on THIS host (a live non-hoai 4242 flipped launcherLive).
       execSync: () => ({ code: 1, stdout: '' }),
+      // No real CLI status read: the limit watch keeps a read of every agent's login (keepFresh), and
+      // the default reader would start the real claude. This one has no read and keeps none.
+      readClaudeAccount: () => ({ ok: false, why: 'no_reader' }),
       hasTmux: true,
       hasScript: true,
       echo: (line: string) => logs.push(line),

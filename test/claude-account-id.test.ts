@@ -149,6 +149,41 @@ test('m4 (cap-clock-back): a read from a clock that moved back is not trusted: o
   assert.equal(f.calls.length, 2)
 })
 
+test('M2 (r4): the reader names the last answered read from before a time: never a failed one, never one over ten minutes old', async () => {
+  let at = 1_000_000
+  let answer: any = OK
+  const reader: any = createStatusReader({ now: () => at, read: async () => answer })
+  await reader.read(one)
+  const first = at
+  at += 61_000
+  answer = { read: false }
+  await reader.read(one)
+  assert.equal(reader.before(one, at + 1).readAt, first, 'a failed read says nothing, so the one before it stands')
+  assert.equal(reader.before(one, first), null, 'only a read from BEFORE the time')
+  assert.equal(reader.before(one, first + 10 * 60_000).readAt, first)
+  assert.equal(reader.before(one, first + 10 * 60_000 + 1), null, 'too old to say who was signed in')
+  assert.equal(reader.before({ ...one, key: '/other' }, at), null)
+})
+
+test('M2 (r4): keeping a read of a folder starts at most one every five minutes and never waits', async () => {
+  let at = 1_000_000
+  let runs = 0
+  const reader: any = createStatusReader({ now: () => at, read: async () => (runs++, OK) })
+  assert.equal(reader.keepFresh(one), undefined)
+  assert.equal(runs, 1)
+  await new Promise((r) => setImmediate(r))
+  at += 5 * 60_000 - 1
+  reader.keepFresh(one)
+  assert.equal(runs, 1)
+  at += 1
+  reader.keepFresh(one)
+  assert.equal(runs, 2)
+  await new Promise((r) => setImmediate(r))
+  at -= 60_000 // the clock went back
+  reader.keepFresh(one)
+  assert.equal(runs, 3, 'a read from the future proves nothing')
+})
+
 test('M2: never two reads of one folder at once, even one that outlives its minute; a read that throws is a failed read', async () => {
   let release!: (v: any) => void
   const f = fakeReads([() => new Promise((r) => (release = r)), () => { throw new Error('boom') }])
