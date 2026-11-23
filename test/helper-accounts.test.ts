@@ -39,7 +39,8 @@ function fixture(t: any) {
   let returns = true
   const clockRef = { at: now }
   // The agent's own login (no saved one): the account a status read of its launch folder names.
-  const own = { read: true, account: accountToken('own') as string | null }
+  const own: { read: boolean; account: string | null; readAt?: number } = { read: true, account: accountToken('own') }
+  const measured: Array<{ id: string; after?: number }> = []
   const atLimit: boolean[] = []
   const holds = { count: 0 }
   const deps = {
@@ -48,8 +49,11 @@ function fixture(t: any) {
     now: () => clockRef.at,
     inventory: async () => [row],
     // A reading is taken now unless a test says when (readAt).
-    measure: async (account: any) => ({ readAt: clockRef.at, ...(readings.get(account.id) ?? { signedIn: false, usage: null }) }),
-    ownAccount: async () => ({ ...own }),
+    measure: async (account: any, _model?: unknown, opts?: { after?: number }) => {
+      measured.push({ id: account.id, after: opts?.after })
+      return { readAt: clockRef.at, ...(readings.get(account.id) ?? { signedIn: false, usage: null }) }
+    },
+    ownAccount: async () => ({ readAt: clockRef.at, ...own }),
     restart: async (r: any, choice: string | null, opts: any = {}) => {
       if (holds.count > 0) {
         holds.count--
@@ -92,6 +96,7 @@ function fixture(t: any) {
     sign,
     readings,
     own,
+    measured,
     restarts,
     setNow: (ms: number) => (clockRef.at = ms),
     atLimit,
@@ -338,6 +343,242 @@ test('m7 (r5): at a limit Auto counts a login only on a read taken since the lim
   f.readings.set(s2, { signedIn: true, usage: usage(1, 1, 1), account: accountToken('two'), readAt: now + 61_000 })
   await f.watcher.tick()
   assert.deepEqual(f.restarts.map((r: any) => r.choice), [s2])
+})
+
+test('B1: the account at the limit is only ever read since it began: a saved login, then the own login', async (t) => {
+  const f = fixture(t)
+  const s1 = await f.add('S1'),
+    s2 = await f.add('S2')
+  f.sign(s1, 1, 1, 1, accountToken('one'))
+  f.sign(s2, 1, 1, 1, accountToken('two'))
+  await f.assign('limit', s2, 41)
+  f.row.accountId = s1
+  f.row.limit = limitAt(now - 1000)
+  f.readings.set(s1, { ...f.readings.get(s1), readAt: now - 2000 })
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts, [], 'a read of the limited login from before the limit names nothing')
+  f.readings.set(s1, { ...f.readings.get(s1), readAt: now })
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [s2])
+
+  const g = fixture(t)
+  const other = await g.add('Other')
+  g.sign(other, 1, 1, 1, accountToken('other'))
+  await g.assign('limit', other, 41)
+  g.row.accountId = null
+  g.row.limit = limitAt(now - 1000)
+  g.own.readAt = now - 2000
+  await g.watcher.tick()
+  assert.deepEqual(g.restarts, [], 'nor does an older read of its own login')
+  delete g.own.readAt
+  await g.watcher.tick()
+  assert.deepEqual(g.restarts.map((r: any) => r.choice), [other])
+})
+
+test('m4 (r5-target-old-read): Switch at limit waits when the target was last read before the limit', async (t) => {
+  const f = fixture(t)
+  const s1 = await f.add('S1'),
+    s2 = await f.add('S2')
+  f.sign(s1, 1, 1, 1, accountToken('one'))
+  f.sign(s2, 1, 1, 1, accountToken('two'))
+  await f.assign('limit', s2, 41)
+  f.row.accountId = s1
+  f.row.limit = limitAt(now - 1000)
+  f.readings.set(s2, { ...f.readings.get(s2), readAt: now - 2000 })
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts, [])
+  assert.deepEqual((await agentOf(f)).rule, { mode: 'limit', accountId: s2 })
+  f.readings.set(s2, { ...f.readings.get(s2), readAt: now })
+  await f.watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [s2])
+})
+
+test('M-2: a Switch press asks for a read started since the press, and keeps asking from that press while it waits', async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B')
+  f.sign(a, 1, 1, 1)
+  f.sign(b, 1, 1, 1)
+  f.row.accountId = a
+  f.row.ready = false
+  f.setNow(now + 5000)
+  f.measured.length = 0
+  await f.assign('now', b, 41)
+  assert.deepEqual(f.measured.filter((m) => m.id === b).map((m) => m.after), [now + 5000])
+  f.setNow(now + 9000)
+  f.measured.length = 0
+  await f.watcher.tick()
+  assert.deepEqual(f.measured.filter((m) => m.id === b).map((m) => m.after), [now + 5000], 'the press time, not a new read every look')
+})
+
+test('M-2: a failed read, or one from before the press, switches nothing and never says needs sign in', async (t) => {
+  for (const reading of [{ readFailed: true, signedIn: false, usage: null }, { signedIn: true, usage: usage(1, 1, 1), account: accountToken('b'), readAt: now - 1 }]) {
+    const f = fixture(t)
+    const a = await f.add('A'),
+      b = await f.add('B')
+    f.sign(a, 1, 1, 1)
+    f.row.accountId = a
+    f.readings.set(b, reading)
+    await f.assign('now', b, 41)
+    assert.deepEqual(f.restarts, [])
+    const agent = await agentOf(f)
+    assert.deepEqual([agent.status, agent.accountId, agent.rule], ['failed', a, undefined])
+    assert.equal((await f.watcher.snapshot()).status, 'failed')
+  }
+})
+
+/** Status reads of the named logins that stay out until a test lets them land (each is taken when asked). */
+function heldReads(f: any, ids: string[]) {
+  const out: Array<() => void> = []
+  const state = { holding: true }
+  const inner = f.deps.measure
+  f.deps.measure = (account: any, model: any, opts: any) => {
+    const answer = inner(account, model, opts)
+    return state.holding && ids.includes(account.id) ? new Promise((done) => out.push(() => done(answer))) : answer
+  }
+  return {
+    // The tick's reads run one at a time, so the next held one starts as each lands.
+    land: async () => {
+      for (let turn = 0; turn < 8; turn++) {
+        for (const go of out.splice(0)) go()
+        await new Promise((r) => setImmediate(r))
+      }
+    },
+    open: () => {
+      state.holding = false
+    },
+  }
+}
+const returnsAtOnce = (work: Promise<unknown>) => Promise.race([work.then(() => true), new Promise((r) => setTimeout(() => r(false), 500))])
+
+test('A: the tick never waits for a status read: it returns, keeps the rule, and the next look acts on the read that landed', { timeout: 15_000 }, async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B')
+  f.sign(a, 1, 1, 1)
+  f.sign(b, 1, 1, 1)
+  await f.assign('limit', b, 41)
+  f.row.accountId = a
+  f.row.limit = limitAt(now - 1000)
+  const held = heldReads(f, [a, b])
+  const watcher = createHelperAccounts(f.deps)
+  assert.equal(await returnsAtOnce(watcher.tick()), true, 'the loop is not held up')
+  assert.deepEqual(f.restarts, [])
+  assert.deepEqual((await f.watcher.snapshot()).agents.find((x: any) => x.assistantId === 41).rule, { mode: 'limit', accountId: b })
+  await held.land()
+  held.open()
+  await watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [b])
+})
+
+test('A: reads as slow as the one minute heartbeat still land a switch: the last finished read counts while a new one runs', { timeout: 15_000 }, async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B')
+  f.sign(a, 1, 1, 1)
+  f.sign(b, 1, 1, 1)
+  await f.assign('limit', b, 41)
+  f.row.accountId = a
+  f.row.limit = limitAt(now - 1000)
+  const held = heldReads(f, [a, b])
+  const watcher = createHelperAccounts(f.deps)
+  await watcher.tick() // starts both reads: the limited login's and the target's
+  assert.deepEqual(f.restarts, [])
+  await held.land()
+  f.setNow(now + 60_000) // the next heartbeat: both reads are a minute old and new ones are out
+  assert.equal(await returnsAtOnce(watcher.tick()), true)
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [b], 'one heartbeat later')
+})
+
+test('A: a finished read older than two minutes never stands in while a new one runs', { timeout: 15_000 }, async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B')
+  f.sign(a, 1, 1, 1)
+  f.sign(b, 1, 1, 1)
+  await f.assign('limit', b, 41)
+  f.row.accountId = a
+  f.row.limit = limitAt(now - 1000)
+  const held = heldReads(f, [a])
+  const watcher = createHelperAccounts(f.deps)
+  await watcher.tick()
+  await held.land()
+  f.setNow(now + 121_000)
+  await watcher.tick()
+  assert.deepEqual(f.restarts, [], 'the only finished read of the limited login is too old')
+})
+
+test('A: Auto never picks from a partial view: while one candidate read is out it waits, then takes the most room', { timeout: 15_000 }, async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B'),
+    c = await f.add('C')
+  for (const id of [a, b, c]) f.sign(id, 10, 10, 10)
+  f.week(a, 5)
+  f.week(b, 36)
+  f.week(c, 14)
+  f.row.accountId = a
+  await f.assign('auto', undefined, 41)
+  assert.deepEqual(f.restarts, [], 'already on the most room')
+  f.row.limit = limitAt(now - 1000)
+  const held = heldReads(f, [c])
+  const watcher = createHelperAccounts(f.deps)
+  assert.equal(await returnsAtOnce(watcher.tick()), true)
+  assert.deepEqual(f.restarts, [], 'B is ready, but C has more room and is not read yet')
+  await held.land()
+  held.open()
+  await watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [c])
+})
+
+test('A: a Switch press waiting for its turn, whose read is still out, keeps waiting and is never reported failed', { timeout: 15_000 }, async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B')
+  f.sign(a, 1, 1, 1)
+  f.sign(b, 1, 1, 1)
+  f.row.accountId = a
+  f.row.ready = false
+  await f.assign('now', b, 41)
+  assert.equal((await f.watcher.snapshot()).status, 'waiting_for_turn')
+  f.row.ready = true
+  f.setNow(now + 61_000)
+  const held = heldReads(f, [b])
+  const watcher = createHelperAccounts(f.deps)
+  assert.equal(await returnsAtOnce(watcher.tick()), true)
+  assert.deepEqual(f.restarts, [])
+  assert.equal((await f.watcher.snapshot()).status, 'waiting_for_turn')
+  await held.land()
+  held.open()
+  await watcher.tick()
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [b])
+})
+
+test('A: the tick\'s status reads run beside the loop one at a time, however many logins it asks about', async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B'),
+    c = await f.add('C')
+  for (const id of [a, b, c]) f.sign(id, 10, 10, 10)
+  f.row.accountId = a
+  await f.assign('auto', undefined, 41)
+  f.row.limit = limitAt(now - 1000)
+  const inner = f.deps.measure
+  let running = 0,
+    most = 0,
+    reads = 0
+  f.deps.measure = async (account: any, model: any, opts: any) => {
+    reads++
+    most = Math.max(most, ++running)
+    await new Promise((r) => setTimeout(r, 5))
+    running--
+    return inner(account, model, opts)
+  }
+  const watcher = createHelperAccounts(f.deps)
+  await watcher.tick()
+  await new Promise((r) => setTimeout(r, 60))
+  assert.ok(reads >= 3, 'every login was read')
+  assert.equal(most, 1)
 })
 
 test('rule A: a first read later than 15 minutes after the limit cannot say which account hit it: nothing switches', async (t) => {

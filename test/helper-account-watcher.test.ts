@@ -561,7 +561,7 @@ test('M4: the real status reader on a fake CLI: a failed or timed out read is no
   ]
   for (const [name, version, status, want] of cases) {
     const { exec } = fakeCli(version, status)
-    assert.deepEqual(await signedIn({ PATH: '/usr/bin' }, '/home/kc', exec), want, name)
+    assert.deepEqual(await signedIn({ PATH: '/usr/bin' }, '/home/user', exec), want, name)
   }
 })
 
@@ -574,9 +574,9 @@ test('M4: the real status reader on a fake CLI: what the CLI does say', async ()
   ]
   for (const [name, version, status, want] of cases) {
     const { exec, calls } = fakeCli(version, status)
-    assert.deepEqual(await signedIn({ PATH: '/usr/bin' }, '/home/kc', exec), want, name)
+    assert.deepEqual(await signedIn({ PATH: '/usr/bin' }, '/home/user', exec), want, name)
     for (const c of calls) {
-      assert.equal(c.opts.cwd, '/home/kc', 'from home, never inside a saved login')
+      assert.equal(c.opts.cwd, '/home/user', 'from home, never inside a saved login')
       assert.equal(c.opts.timeout, 5_000)
     }
   }

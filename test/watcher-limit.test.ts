@@ -21,6 +21,7 @@ import { agentServiceNamesFor, buildLaunchRecipe, listAgents } from '../lib/agen
 import { LIMIT_NOTICE_FILE_NAME, LIMIT_WATCH_FILE_NAME, limitFreeObservation, runLimitPass } from '../lib/watcher-limit.mjs'
 import { limitNoticeText, parseLimitNotice } from '../lib/limit-screen.mjs'
 import { FIXTURE_ORG, seatToken } from './helpers/claude-auth-status.ts'
+import { createStatusReader, peekAccount, statusInput } from '../lib/claude-account-id.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
@@ -248,9 +249,9 @@ function ctxFor(r: Rig, fs: MemoryFs, clock: ReturnType<typeof fakeClock>, exec:
     accountReads,
     ctx: {
       // The fake status reader: the account signed in now, by the fake clock. Never the CLI.
-      readAccount: (input: any): { ok: true; token: string } | { ok: false; why: string } => {
+      readAccount: (input: any): { ok: true; token: string; readAt: number } | { ok: false; why: string } => {
         accountReads.push(input)
-        return { ok: true, token: tokenOf(accountAt(fs, clock.now())) }
+        return { ok: true, token: tokenOf(accountAt(fs, clock.now())), readAt: clock.now() }
       },
       home: r.home,
       env: { USER: 'kc' },
@@ -1443,4 +1444,52 @@ test('house style: no em or en dashes in the new modules, the helper or this tes
     const source = readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
     assert.doesNotMatch(source, new RegExp('[\\u2013\\u2014]'), path)
   }
+})
+
+test('R2-L1 a read from before the limit is never the account AT the limit, and never presses', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  // The folder is on seat A until 10 s before the limit, then on seat B, the seat that hits the limit.
+  owner(fs, LIMIT_AT - 10_000, 'B')
+  const reader = createStatusReader({ now: clock.now, read: async () => ({ read: true, signedIn: true, account: tokenOf(accountAt(fs, clock.now())) }) })
+  ;(ctx as any).readAccount = peekAccount(reader)
+  // The heartbeat's snapshot read this folder 20 s before the limit: seat A.
+  clock.set(LIMIT_AT - 20_000)
+  await reader.read(statusInput({ env: ctx.env, home: ctx.home, configDir: null, platform: ctx.platform }))
+  clock.set(LIMIT_AT + 20_000)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.equal(limitWatch(fs, r)?.limitAccount ?? null, null, 'a read from before the limit records nothing')
+  clock.set(LIMIT_AT + 61_000)
+  await runLimitPass(ctx)
+  await new Promise((done) => setImmediate(done))
+  clock.set(LIMIT_AT + 62_000)
+  const out: any = await runLimitPass(ctx)
+  assert.deepEqual(enters(tmux.calls), [], 'the account never changed since the limit: no key')
+})
+
+test('B1: a read with no time on it, or from before the limit, is never the account now either: no key', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.equal(limitWatch(fs, r).limitAccount.token, tokenOf('A'))
+  owner(fs, LIMIT_AT + MIN, 'B')
+  for (const readAt of [undefined, LIMIT_AT - 1]) {
+    ;(ctx as any).readAccount = () => ({ ok: true, token: tokenOf('B'), ...(readAt === undefined ? {} : { readAt }) })
+    await runLimitPass(ctx)
+    assert.deepEqual(enters(tmux.calls), [], String(readAt))
+  }
+})
+
+test('n3: the watch record that holds the account token is written for this user only (0600)', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  const modes: Array<number | undefined> = []
+  const write = fs.writeFile.bind(fs)
+  fs.writeFile = (path: string, text: string, opts?: { mode?: number }) => {
+    if (path.includes(LIMIT_WATCH_FILE_NAME)) modes.push(opts?.mode)
+    return write(path, text, opts)
+  }
+  await runLimitPass(ctx)
+  assert.ok(modes.length > 0)
+  assert.ok(modes.every((m) => m === 0o600), String(modes))
 })

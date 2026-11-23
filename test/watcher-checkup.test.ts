@@ -228,7 +228,7 @@ function rig(fs: MemoryFs, backend: ReturnType<typeof fakeBackend>, clock: Retur
     keepAliveSweep: async () => ({ enabled: false, agents: [] }),
     windowsPass: async () => ({ memory: {}, report: { mode: 'none', reason: 'unsupported' } }),
     // A fake `claude auth status --json`: the owner's account B is signed in now. The CLI never runs.
-    readClaudeAccount: () => ({ ok: true, token: ACCOUNT_B }),
+    readClaudeAccount: () => ({ ok: true, token: ACCOUNT_B, readAt: clock.now() }),
     ...overrides,
   }
   delete (deps as any).alive
