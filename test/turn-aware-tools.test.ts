@@ -170,7 +170,7 @@ function admit(name: string, tracker: unknown, lockHeld = true) {
   let strictCalls = 0
   const result = execute(admissionSource + '\nreturn privateCall;', {
     req: { params: { name } }, lockHeld, privateTurns: tracker, PRIVATE_MARKER_PATHS: [],
-    PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: OWNER, log: () => {},
+    PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', RUN_END_TURN_REFUSAL: (privateTurn as any).RUN_END_TURN_REFUSAL, USER_ID: OWNER, log: () => {},
     requirePrivateTurn: (...args: any[]) => { strictCalls++; return (privateTurn as any).requirePrivateTurn(...args) },
     turnAwarePrivateTurn, requireBoardsTurn, scheduleGrantRuns: createScheduleGrantRuns(),
     recordPeerRefusal: () => ({ line: '' }), pathDirname: () => '/s', CURSOR_FILE_PATH: '/s/c', ASSISTANT_ID: 900,

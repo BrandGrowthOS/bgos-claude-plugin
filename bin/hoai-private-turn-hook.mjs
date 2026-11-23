@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findOwnAttachedKey, floorKey, floorStateRoot, pidIsAlive, sessionFolders } from '../lib/floor-state.mjs'
-import { GROUP_LANE_ENV, PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateTurnRecord, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
+import { GROUP_LANE_ENV, PRIVATE_TOOL_MATCHER, RUN_END_TURN_REFUSAL, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateTurnRecord, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 
 const envText = (env, name) => (env && typeof env[name] === 'string' ? env[name].trim() : '')
 
@@ -248,16 +248,18 @@ export function privateToolRefusal(payload, env = process.env) {
   // attach a file on the next sender's say). A text draft never sends and carries no file, so it passes as before.
   if (/(?:^|_)email_draft$/.test(String(payload?.tool_name ?? '')) && !draftCarriesFiles(payload?.tool_input)) return null
   if (String(payload?.agent_id ?? '').trim() === '') return null
+  // end_run's refusal never asks for a person: a routine's run has nobody watching (the same words as the daemon's).
+  const words = (text) => /(?:^|_)end_run$/.test(String(payload?.tool_name ?? '')) ? RUN_END_TURN_REFUSAL : text
   const target = managedMarker(payload, env)
   // A helper in a session whose own daemon is not attached: the turn that started it cannot be checked.
-  if (!target.path) return target.why ? 'HOAI refused this private tool: no HOAI daemon of this agent is attached to the session, so the turn that started this helper agent cannot be checked.' : null
+  if (!target.path) return target.why ? words('HOAI refused this private tool: no HOAI daemon of this agent is attached to the session, so the turn that started this helper agent cannot be checked.') : null
   const path = target.path
   const agentId = helperId(payload)
   const marker = readPrivateJson(path, 2048)
   const known = readPrivateJson(privateAgentsPath(path), 16384)
   if (agentId && marker?.live === true && typeof marker.turnId === 'string' && marker.turnId &&
       known && typeof known === 'object' && Object.hasOwn(known, agentId) && known[agentId] === marker.turnId) return null
-  return 'HOAI refused this private tool: this helper agent was started in an earlier turn (or its start was not recorded), so it cannot act for the person who sent the current message. Finish without it, or ask the sender to send the request again.'
+  return words('HOAI refused this private tool: this helper agent was started in an earlier turn (or its start was not recorded), so it cannot act for the person who sent the current message. Finish without it, or ask the sender to send the request again.')
 }
 
 /**

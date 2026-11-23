@@ -220,7 +220,7 @@ import { ensureAutoHost } from './lib/vault-host-auto.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, PRIVATE_UNTRACKED_TAG, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
-import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
+import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine, RUN_END_TURN_REFUSAL } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_OUTBOUND_FILES_PATH,
   AGENT_EMAIL_SEND_APPROVALS_PATH,
@@ -7094,7 +7094,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       try {
         if (lockHeld) log(`private turn: refused ${req.params.name}: ${privateTurns.explain({ markerPaths: PRIVATE_MARKER_PATHS })}`)
       } catch { /* A diagnostic line never changes the refusal. */ }
-      const text = !PRIVATE_HOOK.registered && lockHeld ? PRIVATE_HOOK_MISSING_REFUSAL : String((err as Error).message)
+      // end_run has its own words for every refusal: no person is watching a routine's run, so nothing here may be
+      // relayed into a chat set to show nothing. The call is refused all the same.
+      const text = req.params.name === 'end_run'
+        ? RUN_END_TURN_REFUSAL
+        : !PRIVATE_HOOK.registered && lockHeld ? PRIVATE_HOOK_MISSING_REFUSAL : String((err as Error).message)
       return Promise.resolve({ content: [{ type: 'text' as const, text }], isError: true })
     }
   } else if (['call_owner', 'list_chats', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'set_goal_working', 'set_goal_waiting', 'complete_mission'].includes(req.params.name)) {

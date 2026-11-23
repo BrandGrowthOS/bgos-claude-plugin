@@ -41,6 +41,7 @@ import { OWN_MCP_TOOLS } from '../lib/hook-events.ts'
 import {
   PRIVATE_TOOL_MATCHER,
   PRIVATE_TURN_REFUSAL,
+  RUN_END_TURN_REFUSAL,
   createPrivateTurnTracker,
   privateActor,
   privateFireKey,
@@ -374,6 +375,7 @@ async function callThroughGate(
       PRIVATE_MARKER_PATHS: f.markerPaths,
       PRIVATE_HOOK: { registered: hookRegistered },
       PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing',
+      RUN_END_TURN_REFUSAL,
       USER_ID: OWNER,
       requirePrivateTurn,
       turnAwarePrivateTurn,
@@ -400,17 +402,18 @@ test('a turn an email, a webhook or another agent opened calls end_run: refused 
     f.start(turn)
     const ended = await callThroughGate(f, 'end_run', END_ARGS)
     assert.equal(ended.result.isError, true, `${kind}: refused`)
-    assert.equal(ended.result.content[0].text, PRIVATE_TURN_REFUSAL, `${kind}: the private turn sentence`)
+    assert.equal(ended.result.content[0].text, RUN_END_TURN_REFUSAL, `${kind}: told to reply normally`)
     assert.deepEqual(ended.posts, [], `${kind}: no request, so the run stays open`)
-    // The same sentence schedule gets in the same turn: one gate, one answer.
+    // One gate: schedule is refused in the same turn, in its own words for a person.
     const scheduled = await callThroughGate(f, 'schedule', { kind: 'wake', topic: 'x', when: { everyHours: 2 } })
-    assert.equal(scheduled.result.content[0].text, ended.result.content[0].text, `${kind}: as schedule is refused`)
+    assert.equal(scheduled.result.isError, true, `${kind}: schedule is refused too`)
+    assert.equal(scheduled.result.content[0].text, PRIVATE_TURN_REFUSAL, `${kind}: schedule keeps its sentence`)
   }
 })
 
 test('with no active connection, or no private turn hook, end_run is refused as schedule is, and nothing is sent', async (t) => {
   // A daemon without the active connection refuses even the owner's wake; with no hook registered, a turn that could
-  // not be verified gets the hook sentence. Both exactly as schedule.
+  // not be verified is refused too. Both refused as schedule is; only end_run's words differ.
   const wake = turnFixture(t)
   wake.start(wakeTurn())
   const unverified = turnFixture(t)
@@ -422,8 +425,9 @@ test('with no active connection, or no private turn hook, end_run is refused as 
     const ended = await callThroughGate(f, 'end_run', END_ARGS, shape)
     const scheduled = await callThroughGate(f, 'schedule', { kind: 'wake', topic: 'x', when: { everyHours: 2 } }, shape)
     assert.equal(ended.result.isError, true, JSON.stringify(shape))
-    assert.match(ended.result.content[0].text, text, JSON.stringify(shape))
-    assert.equal(ended.result.content[0].text, scheduled.result.content[0].text, JSON.stringify(shape))
+    assert.equal(ended.result.content[0].text, RUN_END_TURN_REFUSAL, JSON.stringify(shape))
+    assert.equal(scheduled.result.isError, true, JSON.stringify(shape))
+    assert.match(scheduled.result.content[0].text, text, JSON.stringify(shape))
     assert.deepEqual(ended.posts, [], JSON.stringify(shape))
   }
 })
@@ -435,8 +439,21 @@ test('an email injected into the owner\'s own turn closes it to end_run too, and
   f.deliver(PUBLIC_TURNS.email)
   const ended = await callThroughGate(f, 'end_run', { task_id: 41, fire_id: FIRE, outcome: 'no_change' })
   assert.equal(ended.result.isError, true)
-  assert.equal(ended.result.content[0].text, PRIVATE_TURN_REFUSAL)
+  assert.equal(ended.result.content[0].text, RUN_END_TURN_REFUSAL)
   assert.deepEqual(ended.posts, [])
+})
+
+test('a card landing in a quiet wake: end_run is still refused, and its words send the agent to a normal reply, never to a person', async (t) => {
+  const f = turnFixture(t)
+  f.start(wakeTurn())
+  f.deliver(PUBLIC_TURNS.email)
+  const ended = await callThroughGate(f, 'end_run', { task_id: 41, fire_id: FIRE, outcome: 'no_change' })
+  assert.equal(ended.result.isError, true)
+  assert.deepEqual(ended.posts, [], 'the gate holds: no request, the run stays open')
+  const words = ended.result.content[0].text
+  assert.match(words, /Reply normally instead\.$/)
+  assert.match(words, /do not repeat it/)
+  assert.doesNotMatch(words, /send a new message|try again|HOAI chat|restart|ask the|owner|sender/i)
 })
 
 test('the owner\'s routine wake is a private turn: end_run on the wake\'s own turn ends its run, as the owner', async (t) => {
@@ -553,11 +570,14 @@ test('a helper started in an earlier turn cannot end a run in the owner\'s next 
   assert.equal(hook({ hook_event_name: 'SubagentStart', agent_id: 'agent-a', agent_type: 'general-purpose' }).status, 0)
   // The owner's turn begins while the helper still runs: end_run is refused under both install prefixes, as schedule is.
   start('user_owner', 'anything new?')
-  for (const tool of ['mcp__bgos__end_run', 'mcp__plugin_hoai_bgos__end_run', 'mcp__bgos__schedule']) {
+  for (const tool of ['mcp__bgos__end_run', 'mcp__plugin_hoai_bgos__end_run']) {
     const refused = call(tool, 'agent-a')
     assert.equal(refused.status, 2, `${tool} from a helper of an earlier turn must be refused`)
-    assert.match(refused.stderr, /earlier turn|started/)
+    assert.equal(refused.stderr.trim(), RUN_END_TURN_REFUSAL, `${tool}: told to reply normally, never to ask a person`)
   }
+  const scheduled = call('mcp__bgos__schedule', 'agent-a')
+  assert.equal(scheduled.status, 2, 'schedule from a helper of an earlier turn must be refused')
+  assert.match(scheduled.stderr, /earlier turn|started/)
   // The main agent is left to the daemon's own gate.
   assert.equal(call('mcp__bgos__end_run').status, 0)
 })
