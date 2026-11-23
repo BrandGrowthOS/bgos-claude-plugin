@@ -25,8 +25,9 @@ import { appendFileSync, mkdirSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { agentDir, defaultPidAlive, joinDir, listAgents, parseSupervisorFile, supervisorPath, validAssistantId } from '../lib/agent-inventory.mjs'
+import { agentDir, defaultPidAlive, joinDir, listAgents, parseSupervisorFile, readLauncherProcesses, supervisorPath, validAssistantId } from '../lib/agent-inventory.mjs'
 import { REMOVED_DIR_NAME, cleanUpUnboundAgent, unboundRunStageCommands } from '../lib/agent-unbound.mjs'
+import { defaultExecSync } from '../lib/service-supervision.mjs'
 import { nodeExec, nodeFs } from '../lib/watcher-bundle.mjs'
 
 const HERE = fileURLToPath(import.meta.url)
@@ -67,12 +68,27 @@ function launch({ assistant, home }) {
   return 1
 }
 
-/** The live hoai launcher of this agent (its supervisor.json pid, proven the writer), or null. */
-function readLauncher(home, assistant) {
-  const row = listAgents({ home, includeIds: [assistant] }).find((a) => a.assistantId === assistant)
+/**
+ * The live hoai launcher of this agent (its supervisor.json pid, proven the writer), with its start time
+ * (Windows: its CreationDate, the query listAgents proves the writer with), or null. The cleanup reads it
+ * twice on Windows and runs taskkill only when both reads name the same pid and start
+ * (lib/agent-unbound.mjs sameLauncher); a start that cannot be read is null, and refuses.
+ * `deps` are for the tests: listAgents' own probes, and the exec for the start.
+ * @param {string} home
+ * @param {string} assistant
+ * @param {{ platform?: string, fs?: any, pidAlive?: (pid: number) => boolean,
+ *   execSync?: (file: string, args: string[]) => { code: number, stdout: string } }} [deps]
+ */
+export function readLauncher(home, assistant, deps = {}) {
+  const platform = deps.platform ?? process.platform
+  const execSync = deps.execSync ?? defaultExecSync
+  const probes = { ...(deps.platform ? { platform } : {}), ...(deps.fs ? { fs: deps.fs } : {}), ...(deps.pidAlive ? { pidAlive: deps.pidAlive } : {}), ...(deps.execSync ? { execSync } : {}) }
+  const row = listAgents({ home, includeIds: [assistant], ...probes }).find((a) => a.assistantId === assistant)
   if (!row?.launcherLive) return null
-  const record = parseSupervisorFile(nodeFs().readFile(supervisorPath(home, assistant)))
-  return record ? { pid: record.pid, supervisor: row.supervisor } : null
+  const record = parseSupervisorFile((deps.fs ?? nodeFs()).readFile(supervisorPath(home, assistant)))
+  if (!record) return null
+  const startedAtMs = readLauncherProcesses({ platform, pids: [record.pid], execSync }).get(record.pid)?.startedAtMs ?? null
+  return { pid: record.pid, supervisor: row.supervisor, startedAtMs }
 }
 
 async function run({ assistant, home }) {
