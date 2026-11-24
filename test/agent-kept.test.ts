@@ -691,3 +691,19 @@ test('r7 N3 (mutants X14, X15): a pairing file that cannot be looked for counts 
   assert.equal(hasPairingFile({ home: HOME, assistantId: 'not-an-id', exists: none }), true, 'no path to look at')
   assert.equal(hasPairingFile({ home: HOME, assistantId: '912', exists: () => { throw new Error('EACCES') } }), true, 'the check threw')
 })
+
+test('r8 nit: Linux, a run.sh that cannot be replaced and a daemon-reload that fails: the removal says the unit starts the real run.sh again at every exit until a reload, never just once more', async () => {
+  const fs = memoryFs({ [UNIT_FILE]: '[Service]\nRestart=always\n', [RUN_SH]: '#!/usr/bin/env bash\nexec hoai-core\n' })
+  const failing = {
+    ...fs,
+    writeFile: (p: string, text: string, opts?: { mode?: number }) => {
+      if (p.endsWith('.not-kept.tmp')) throw new Error('EACCES: permission denied')
+      fs.writeFile(p, text, opts)
+    },
+  }
+  const exec = recordingExec({ 'systemctl --user daemon-reload': 1 }).exec
+  const out = await releasePosixSupervisor({ platform: 'linux', service: LINUX_SERVICE, assistantId: '912', home: HOME, exec, fs: failing, env: {}, sleep: async () => {} } as any)
+  assert.equal((out as { partial?: boolean }).partial, true, out.message)
+  assert.match(out.message, /daemon-reload failed \([^)]*\), so the unit starts the real run\.sh again at every exit until a systemctl --user daemon-reload/)
+  assert.doesNotMatch(out.message, /once more/)
+})
