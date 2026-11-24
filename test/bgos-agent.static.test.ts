@@ -332,3 +332,12 @@ test('install --always-on asks whether this computer keeps its agents running be
   // The cached answer can be up to 5 minutes old, so a switch just turned on can still read off (review round 5, M4).
   assert.match(sh, /die "refused: Keep agents running is off for this computer, [^"\n]*try again in a minute[^"\n]*"\n/)
 })
+
+test('r7 M1: an install clears a removal\'s not-kept marker once its service is in place, so the sweep no longer reads the agent as removed', () => {
+  const start = sh.indexOf('cmd_install() {')
+  const service = sh.indexOf('Linux)  install_systemd "$ASSISTANT_ID"', start)
+  const clear = sh.indexOf('rm -f "$statedir/not-kept"', start)
+  assert.ok(start > 0 && service > start, 'cmd_install installs the service')
+  assert.ok(clear > service, 'cleared after the service is installed, never before: an install that fails keeps the sign')
+  assert.ok(clear < sh.indexOf('\ncmd_', service), 'inside cmd_install')
+})

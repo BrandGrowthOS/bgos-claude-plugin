@@ -20441,9 +20441,14 @@ async function reconcileAlwaysOn(): Promise<void> {
       const out = service
         ? await releasePosixSupervisor({ platform: process.platform, service, assistantId: String(ASSISTANT_ID), home, exec: alwaysOnReleaseExec, fs: alwaysOnReleaseFs, env: process.env })
         : { ok: false, message: 'no canonical service file for this agent in this HOME' }
+      // A Linux unit removed but its run.sh not replaced (review round 7 M1) is no success, and no failure either.
+      const partial = 'partial' in out && out.partial === true
       if (out.ok) {
         alwaysOnReleaseFailure = null
         log(`always-on: not kept running (${kept.reason}), supervisor removed: ${out.message}`)
+      } else if (partial) {
+        if (alwaysOnReleaseFailure !== out.message) log(`always-on: not kept running (${kept.reason}), supervisor removed in part: ${out.message} (logged once)`)
+        alwaysOnReleaseFailure = out.message
       } else if (alwaysOnReleaseFailure !== out.message) {
         alwaysOnReleaseFailure = out.message
         log(`always-on: not kept running (${kept.reason}), supervisor NOT removed: ${out.message}; trying again next cycle (logged once)`)

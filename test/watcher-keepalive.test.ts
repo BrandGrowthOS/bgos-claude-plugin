@@ -46,7 +46,7 @@ import { agentTaskSpec } from '../lib/agent-task-win32.mjs'
 import { RESTART_EXEC_TIMEOUT_MS } from '../lib/agent-restart.mjs'
 import { CHANNEL_DEAF_CONFIRM_MS, CHANNEL_DEAF_EPISODE_CLEAR_MS, buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
-import { KEPT_CACHE_FRESH_MS, KEPT_CHECK_CAPABILITY, keepAliveStandingFromCache } from '../lib/agent-kept.mjs'
+import { KEPT_CACHE_FRESH_MS, KEPT_CHECK_CAPABILITY, keepAliveStandingFromCache, releasePosixSupervisor } from '../lib/agent-kept.mjs'
 import { fakeAgentTasks, type FakeAgentTaskOptions, type FakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 
 const HOME = '/Users/kc'
@@ -4589,4 +4589,63 @@ test('r6 F6: only HOAI\'s own unit or plist is installed again; an agent a keepa
   const report = await runKeepAliveSweep(ctx as any)
   assert.equal(installsOf(rec), 0, logs.join('\n'))
   assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['7', 'supervised', 'keepalive']])
+})
+
+// -- review round 7 ------------------------------------------------------------------------------------------
+
+const R7_REAL = '#!/usr/bin/env bash\nexec hoai-core\n'
+const R7_MARKER = `${HOME}/.bgos-agent/912/not-kept`
+/** A kept Linux agent, installed an hour ago, seen kept, its unit and a real run.sh in place. */
+const r7Linux = (cwd: string | null = AVA) => {
+  const fs = machine([{ id: '912', cwd, service: 'canonical' }], { platform: 'linux', scoped: true })
+  fs.writeFile(RUN_SH('912'), R7_REAL)
+  fs.writeFile(`${HOME}/.bgos-agent/912/installed-at`, installedAt(60 * MIN))
+  fs.writeFile(`${HOME}/.bgos-agent/912/kept-seen`, installedAt(60 * MIN))
+  return fs
+}
+/** The same files, but the not-kept run.sh cannot be written beside run.sh. */
+const r7FailingTmp = (fs: MemoryFs): MemoryFs => ({
+  ...fs,
+  writeFile: (p: string, text: string, opts?: { mode?: number }) => {
+    if (p.endsWith('.not-kept.tmp')) throw new Error('EACCES: permission denied')
+    fs.writeFile(p, text, opts)
+  },
+})
+const R7_LINUX_SERVICE = { kind: 'systemd', handle: `bgos-agent-912-home-${HID}`, file: UNIT_FILE('912') }
+
+test('r7 M1 (r7rev P1): Linux, the daemon removes but cannot write the not-kept run.sh: not success, the marker is left, and one failed read after it does not put the supervisor back; a live list naming it does', async () => {
+  const fs = r7Linux()
+  fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'], switchState: 'on', showAgentWindows: false }, T0 - 50_000))
+  const res = await releasePosixSupervisor({ platform: 'linux', service: R7_LINUX_SERVICE, assistantId: '912', home: HOME, exec: async () => ({ code: 0, stdout: '', stderr: '' }), fs: r7FailingTmp(fs), env: {} } as any)
+  assert.equal(res.ok, false, res.message)
+  assert.equal(fs.files.has(UNIT_FILE('912')), false, 'the unit is gone')
+  assert.equal(fs.files.has(R7_MARKER), true, 'and the marker says so')
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { platform: 'linux', fetchKeepAlive: DOWN_503() })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.equal(report.source, 'cache')
+  assert.equal(installsOf(rec), 0, logs.join(' | '))
+  const live = recorder({ ps: IDLE_PS })
+  await runKeepAliveSweep(ctxFor(fs, live, fakeClock(), { platform: 'linux', fetchKeepAlive: ON_912 }).ctx as any)
+  assert.equal(installsOf(live), 1, 'a live list naming it puts it back')
+})
+
+test('r7 M1: the sweep\'s own removal that cannot write the not-kept run.sh is said as removed in part, never as removed', async () => {
+  const fs = r7Linux()
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx, logs } = ctxFor(r7FailingTmp(fs), rec, fakeClock(), { platform: 'linux', fetchKeepAlive: SWITCH_OFF([912]) })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(fs.files.has(UNIT_FILE('912')), false)
+  assert.equal(fs.files.has(R7_MARKER), true)
+  assert.ok(logs.some((l) => /keep-alive 912: not kept \(switch_off\), supervisor removed in part: .*could not be replaced/.test(l)), logs.join('\n'))
+  assert.equal(logs.some((l) => /supervisor removed \(switch_off\)/.test(l)), false, logs.join('\n'))
+})
+
+test('r7 M1: the marker alone never asks for a second install: a Linux unit still there with a real run.sh is left as it is on a live list', async () => {
+  const fs = r7Linux()
+  fs.writeFile(R7_MARKER, 'not_kept\n')
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { platform: 'linux', fetchKeepAlive: LISTS_912 })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(installsOf(rec), 0, logs.join(' | '))
 })

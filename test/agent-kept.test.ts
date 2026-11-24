@@ -36,6 +36,7 @@ import {
   releaseAgentTask,
   releasePosixSupervisor,
   seenKept,
+  supervisorRemovedNotKept,
   watcherServiceFiles,
   watcherServiceInstalled,
 } from '../lib/agent-kept.mjs'
@@ -533,3 +534,53 @@ test('r5 B2: an agent with no pairing is not judged by the list: left out is no 
 })
 
 const T_R5 = 1_800_000_000_000
+
+// -- review round 7 --------------------------------------------------------------------------------------
+
+const SD_912 = `${HOME}/.bgos-agent/912`
+const MARKER_912 = `${SD_912}/${NOT_KEPT_FILE_NAME}`
+const LINUX_SERVICE = { kind: 'systemd', handle: UNIT, file: UNIT_FILE }
+
+test('r7 M1: Linux, a removal whose not-kept run.sh cannot be written is not success; the unit still goes, so systemd does not start it again, and the not-kept marker is left as the sign', async () => {
+  const fs = memoryFs({ [UNIT_FILE]: '[Service]\nRestart=always\n', [RUN_SH]: '#!/usr/bin/env bash\nexec hoai-core\n' })
+  const failing = {
+    ...fs,
+    writeFile: (p: string, text: string, opts?: { mode?: number }) => {
+      if (p.endsWith('.not-kept.tmp')) throw new Error('EACCES: permission denied')
+      fs.writeFile(p, text, opts)
+    },
+  }
+  const out = await releasePosixSupervisor({ platform: 'linux', service: LINUX_SERVICE, assistantId: '912', home: HOME, exec: recordingExec().exec, fs: failing, env: {} } as any)
+  assert.equal(out.ok, false, out.message)
+  assert.equal((out as { partial?: boolean }).partial, true)
+  assert.equal(fs.files.has(UNIT_FILE), false, 'the unit file is gone')
+  assert.match(fs.files.get(RUN_SH) ?? '', /hoai-core/, 'run.sh is still the real one')
+  assert.equal(fs.files.has(MARKER_912), true, 'the sign the sweep reads')
+  assert.match(out.message, /could not be replaced \(EACCES/)
+  assert.match(out.message, /no cached list puts it back/)
+  assert.equal(supervisorRemovedNotKept({ platform: 'linux', stateDir: SD_912, exists: fs.exists, readFile: fs.readFile }), true)
+})
+
+test('r7 M1: when the marker cannot be written either, the removal says plainly that a cached list can put it back', async () => {
+  const fs = memoryFs({ [UNIT_FILE]: '[Service]\n', [RUN_SH]: '#!/usr/bin/env bash\nexec hoai-core\n' })
+  const failing = {
+    ...fs,
+    writeFile: (p: string, text: string, opts?: { mode?: number }) => {
+      if (p.startsWith(`${SD_912}/`)) throw new Error('EACCES: permission denied')
+      fs.writeFile(p, text, opts)
+    },
+  }
+  const out = await releasePosixSupervisor({ platform: 'linux', service: LINUX_SERVICE, assistantId: '912', home: HOME, exec: recordingExec().exec, fs: failing, env: {} } as any)
+  assert.equal(out.ok, false)
+  assert.equal(fs.files.has(MARKER_912), false)
+  assert.match(out.message, /could not be written either/)
+  assert.match(out.message, /a cached list can put it back until a live one is read/)
+})
+
+test('r7 M1: on Mac and Linux the not-kept marker alone reads as removed; with neither the marker nor the not-kept run.sh, nothing does', () => {
+  const files = new Map<string, string>([[RUN_SH, '#!/usr/bin/env bash\nexec hoai-core\n']])
+  const io = { stateDir: SD_912, exists: (p: string) => files.has(p), readFile: (p: string) => files.get(p) ?? null }
+  for (const platform of ['linux', 'darwin']) assert.equal(supervisorRemovedNotKept({ platform, ...io }), false, platform)
+  files.set(MARKER_912, 'not_kept\n')
+  for (const platform of ['linux', 'darwin']) assert.equal(supervisorRemovedNotKept({ platform, ...io }), true, platform)
+})

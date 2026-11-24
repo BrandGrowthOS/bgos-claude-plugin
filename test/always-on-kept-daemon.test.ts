@@ -73,6 +73,8 @@ type Scene = {
   auth?: 'pairing' | 'apikey'
   /** The assistant answer carries no alwaysOn at all (an older or transitional backend). */
   noAlwaysOn?: boolean
+  /** The not-kept run.sh cannot be written beside run.sh (review round 7 M1). */
+  runShWriteFails?: boolean
 }
 
 const ON = { enabled: true, assistantIds: ['912'], switchState: 'on' }
@@ -148,7 +150,10 @@ async function reconcile(scene: Scene) {
     },
     alwaysOnReleaseFs: {
       exists: (p: string) => files.has(p),
-      writeFile: (p: string, text: string) => void files.set(p, text),
+      writeFile: (p: string, text: string) => {
+        if (scene.runShWriteFails && p.endsWith('.not-kept.tmp')) throw new Error('EACCES: permission denied')
+        files.set(p, text)
+      },
       rename: (from: string, to: string) => {
         files.set(to, files.get(from) ?? '')
         files.delete(from)
@@ -322,4 +327,12 @@ test('r6 V8: an assistant answer without alwaysOn moves nothing: a cached switch
   // The same answers with alwaysOn act, so the cases above are the guard's.
   assert.equal((await reconcile({ alwaysOn: true, installed: true, seen: true, cache: { answer: OFF, agoMs: MIN } })).installed, false)
   assert.equal((await reconcile({ alwaysOn: true, installed: false, cache: { answer: ON, agoMs: MIN } })).installs, 1)
+})
+
+test('r7 M1: Linux, a removal whose not-kept run.sh cannot be written is said as removed in part, with the marker left; never as removed', async () => {
+  const out = await reconcile({ platform: 'linux', installed: true, seen: true, alwaysOn: false, cache: { answer: ON, agoMs: MIN }, runShWriteFails: true })
+  assert.equal(out.installed, false, 'the unit is gone')
+  assert.equal(out.files.has(`/home/user/.bgos-agent/${ID}/${kept.NOT_KEPT_FILE_NAME}`), true, 'the sign the sweep reads')
+  assert.ok(out.logs.some((l) => /always-on: not kept running \([^)]*\), supervisor removed in part: .*could not be replaced/.test(l)), out.logs.join('\n'))
+  assert.equal(out.logs.some((l) => /supervisor removed:|supervisor NOT removed/.test(l)), false, out.logs.join('\n'))
 })

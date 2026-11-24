@@ -646,6 +646,9 @@ cmd_install() {
   esac
   [ -n "$RUN_SH_PREV" ] && rm -f "$RUN_SH_PREV"
   RUN_SH_PREV=""
+  # Kept again: a removal's not-kept marker (lib/agent-kept.mjs, left when its run.sh could not be
+  # replaced) would read as "removed" to the watcher's sweep. Cleared only once the service is in place.
+  rm -f "$statedir/not-kept"
   # Round 2 L6: a tmux server from before 0.69.5 orphaned on the OLD socket (its job gone,
   # killed past run.sh's trap) with a pane in this agent's folder would hold the
   # new job's singleton wait for good; the new run.sh clears only its own
