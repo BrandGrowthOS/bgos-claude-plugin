@@ -11,6 +11,7 @@ import * as inbound from '../lib/inbound-channel.ts'
 import { BUTTON_PROMPT_FAST_WINDOW_MS, selectClickTransitions } from '../lib/poll-core.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { createPostedButtons, createPrivateTurnTracker, privateTapCard } from '../lib/private-turn.mjs'
+import { isHumanClick } from '../lib/skill-origins.ts'
 import * as card from '../lib/card-answer.ts'
 
 // Execute the daemon's real functions without starting its background services.
@@ -66,7 +67,7 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown> = async () 
     // channelNotify sends through the same double (0.86.20, test/helpers/channel-notify.ts).
     get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (note: (typeof notes)[number]) => { notes.push(note) } },
-    privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }), privateTapCard,
+    privateTurns: createPrivateTurnTracker({ ownerUserId: OWNER }), privateTapCardNoting: privateTapCard, isHumanClick,
     settlePlan: (chatId: string) => { settlements.push(chatId); openPlansByChat.delete(chatId) },
     loginMethodCard: null, loginController: { button: () => 'ignored' },
     streamAuthority: null, askTracker: { askIdOf: () => null, trackedMessageIds: () => new Set() },

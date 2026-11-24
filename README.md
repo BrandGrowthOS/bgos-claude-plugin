@@ -743,6 +743,7 @@ All share the same plugin installation at `~/bgos-claude-plugin/`.
 |------|-------------|
 | `reply` | Send a message with optional file attachments and interactive buttons |
 | `edit_message` | Edit a previously sent message |
+| `react` | Add or remove your emoji reaction to a message. Requires this agent to be paired. One emoji per message; a new emoji replaces the old one. Use it to acknowledge or agree, not instead of a reply. |
 | `rename_chat` | Set a descriptive title on a chat |
 | `ask_user_input` | One card of 1 to 4 multiple-choice questions; returns pending, every answer arrives as one `ask_answered` event |
 | `withdraw_ask` | Retire a question card you no longer need |
@@ -987,6 +988,17 @@ when resuming work. A new prompt also clears old selections if Stop was missed.
 Helper tool activity counts for the parent session. A helper ending does not
 clear other workers' goals; the parent session's Stop clears all its selections.
 A single tool running silently for 15 minutes reaches the same idle threshold.
+
+Work that outlives the turn, such as workers the agent started in the
+background, takes a held mark: `set_goal_working` with `held: true` (120
+minutes) or `held_minutes` (1 to 240). `Stop`, `SessionEnd`, a new prompt and
+the 15 minute idle rule leave a held mark on. The daemon sweep refreshes it
+every 10 minutes, and it ends when its hold runs out, when the agent sends
+`working: false`, or when the goal is ticked or cancelled or its mission
+closes. Calling again restarts the hold; a call without a hold makes the mark
+an ordinary one again. A daemon with no hook intake has no sweep, so there it
+sends an ordinary mark and says it cannot hold it. Stand-down still clears
+held marks.
 
 The existing asynchronous forwarder writes only the hook spool, and the daemon
 uses the original acting-user scope for HTTP. No credentials are added to hook

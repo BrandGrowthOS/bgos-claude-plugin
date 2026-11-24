@@ -12,6 +12,8 @@
  */
 
 import { cardAnswerClickOf, cardAnswerText } from './lib/card-answer.ts'
+import { groupReactionKey, groupReactionText, reactionCard, REACTION_GUIDANCE, HEARD_REACTIONS_CAPABILITY } from './lib/heard-reaction.ts'
+import { REACT_TOOL, handleReactTool } from './lib/react-tool.ts'
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { execFile, spawn as spawnProcess } from 'node:child_process'
@@ -96,6 +98,7 @@ import { MemoryRpcHandler, memoryRpcFailure } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { exportSkill, installBundle } from './lib/skills-share.js'
+import { TEACH_WRITE_FIRST, applyOrigins, closingTeachWindows, createCardDeliveries, createTeachWindows, isHumanClick, logOriginsTo, noteSkillToolUse, noteTeachTap, originIdentOf, stampOrigin, teachTapOpens } from './lib/skill-origins.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
@@ -189,7 +192,8 @@ import {
 } from './lib/compact-inject.js'
 import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
 import { holdChannelCardsWhileBusy, ModelEffortControl } from './lib/model-effort-control.js'
-import { ModelEffortPickerHandler, pickerChatAllowed, rpcLogOp, rpcLogTag } from './lib/model-effort-rpc.js'
+import { ModelEffortPickerHandler, pickerChatAllowed, rpcLogOp, rpcLogTag, type SessionSettingsBody } from './lib/model-effort-rpc.js'
+import { SessionSettingsLiveReporter } from './lib/model-effort-live-report.js'
 import { parseHelpCatalog } from './lib/model-effort-catalog.js'
 import { processAncestry } from './lib/model-effort-pane.js'
 import { modelControlDir, readObservation, readOptIn, refreshBridgeCopy } from './lib/model-control-store.mjs'
@@ -213,9 +217,10 @@ import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.j
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
 import { queueAccessChange, queueAccessReconcile } from './lib/person-access.mjs'
+import { ensureAutoHost } from './lib/vault-host-auto.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
-import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
+import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, PRIVATE_UNTRACKED_TAG, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_OUTBOUND_FILES_PATH,
@@ -493,6 +498,7 @@ import {
   identityToldWhileRunning,
   shouldSendIdentityNotice,
   buildLivenessProbeNotification,
+  probeSaysAfterRestart,
   shouldSendLivenessProbe,
   probeRequestPath,
   LIVENESS_PROBE_POLL_MS,
@@ -752,7 +758,7 @@ import {
   userBusExecSync,
 } from './lib/always-on-reconcile.js'
 import { serviceNotesFrom, serviceRefusalFrom } from './lib/agent-service.mjs'
-import { installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
+import { heldBadCheckoutVersion, installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
 import {
   AGENT_STATE_FILE_NAME,
   AGENT_STATE_MAX_INTERVAL_MS,
@@ -1233,7 +1239,7 @@ import { killProcessGroup, processRunsIn, processStamp } from './lib/lane-proces
 import { laneShellSandboxAvailable } from './lib/lane-policy.mjs'
 import { findOnPath } from './lib/lane-cli-probe.mjs'
 import { spawnStreamJson } from './lib/stream-json-child.ts'
-import { join as pathJoin, dirname as pathDirname, resolve as pathResolve } from 'node:path'
+import { join as pathJoin, dirname as pathDirname, resolve as pathResolve, basename as pathBasename } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 // Agent activity from the session's own hooks (stage 4). The mapper is pure
 // (lib/hook-events.ts), the intake is a spool file per session
@@ -3017,16 +3023,42 @@ function modelEffortDeclared(): boolean {
 // The picker's answers. Owner only and main chat only from the daemon's own
 // records (pickerChatAllowed), on top of BGOS's gate; voiceRpc below routes
 // the two ops here.
+/** The owner's own main chat, by the daemon's own records: the one rule for the picker and the pill. */
+const modelEffortChatAllowed = (chatId: string): boolean =>
+  pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => chatOwnership.isOwners(c), isOthers: (c) => chatOwnership.isOthers(c) })
+
+/** The session settings report (the pill), the one route for it. */
+const reportSessionSettings = (chatId: string, body: SessionSettingsBody): Promise<unknown> =>
+  bgosPatch(
+    `integrations/assistants/${encodeURIComponent(String(ASSISTANT_ID ?? ''))}/chats/${encodeURIComponent(chatId)}/session-settings`,
+    body as unknown as Record<string, unknown>,
+  )
+
+// The pill follows the session (asked for on 2026-11-15):
+// the report above used to go out from the picker's apply only, so a model
+// changed in the agent's own terminal, or by a restart, never reached the
+// app. The bridge's observation is looked at on a timer and reported when it
+// changed, through the picker's own gates (lib/model-effort-live-report.ts).
+const MODEL_EFFORT_LIVE_REPORT_MS = 15_000
+const modelEffortLiveReporter = new SessionSettingsLiveReporter({
+  optedIn: () => readOptIn(MODEL_CONTROL_DIR, String(ASSISTANT_ID ?? '')),
+  sessionId: () => provenSessionId(),
+  readObservation: (sessionId) => readObservation(MODEL_CONTROL_DIR, sessionId),
+  chats: () => mainChatIds.filter(modelEffortChatAllowed),
+  reportSettings: reportSessionSettings,
+  now: Date.now,
+  log,
+}, { staleMs: MODEL_EFFORT_STALE_MS, timeoutMs: HTTP_TIMEOUT_MS + 5_000 })
+
 const modelEffortPicker = new ModelEffortPickerHandler({
   assistantId: () => String(ASSISTANT_ID ?? ''),
-  chatAllowed: (chatId) =>
-    pickerChatAllowed({ chatId, mainChatIds, isOwners: (c) => chatOwnership.isOwners(c), isOthers: (c) => chatOwnership.isOthers(c) }),
+  chatAllowed: modelEffortChatAllowed,
   control: modelEffortControl,
   reportSettings: (chatId, body) =>
-    bgosPatch(
-      `integrations/assistants/${encodeURIComponent(String(ASSISTANT_ID ?? ''))}/chats/${encodeURIComponent(chatId)}/session-settings`,
-      body as unknown as Record<string, unknown>,
-    ),
+    reportSessionSettings(chatId, body).then((answer) => {
+      modelEffortLiveReporter.noteReported(chatId, body)
+      return answer
+    }),
   sendNote: (chatId, text) =>
     bgosPost('send-message', {
       chatId: Number(chatId),
@@ -3727,7 +3759,11 @@ const mcp = new Server(
       '   during tool activity at most once per 10 minutes. Stop clears the',
       '   selection: select again on resuming. After 15 minutes without tool',
       '   activity, marks clear until tools resume. Without hooks, refresh',
-      '   within 30 minutes. Send working: false when you hand a goal off. A',
+      '   within 30 minutes. Send working: false when you hand a goal off.',
+      '   When workers you started keep running in the background after your',
+      '   turn, pass held: true (held_minutes up to 240, 120 by default) for',
+      '   each goal a worker serves: Stop and idle time leave a held mark on',
+      '   until its hold runs out; send working: false when that worker ends. A',
       '   tick ends the mark, and a mark is not progress: it never ticks a',
       '   goal. When a goal waits on your owner or another agent, say so with',
       '   `set_goal_waiting` (goal_id, on "owner" or "agent", who, why), and',
@@ -5467,6 +5503,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['message_id', 'text'],
       },
     },
+    REACT_TOOL,
     {
       name: 'rename_chat',
       description: 'Rename a BGOS chat to give it a descriptive title.',
@@ -6407,7 +6444,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'without tool activity, hooks clear the marks and restore them on ' +
         'resumed activity. If hooks are unavailable, call this again with ' +
         'working: true within 30 minutes for every goal you are still working ' +
-        'on, or the mark lapses. A tick ends the ' +
+        'on, or the mark lapses. When the work runs in the background after ' +
+        'your turn ends (workers you started), pass held: true: Stop, ' +
+        'SessionEnd, a new prompt and idle time do not clear a held mark, and ' +
+        'this daemon refreshes it until its hold runs out, 120 minutes by ' +
+        'default or held_minutes (1 to 240); call again to restart the hold. ' +
+        'Mark each goal a running worker serves, and send working: false when ' +
+        'that worker finishes. A call without held makes the mark an ordinary ' +
+        'one again. A tick ends the ' +
         'mark by itself, a ticked goal is refused, and a paused or closed ' +
         'mission takes no new mark. A mark is not progress: it never ticks a ' +
         'goal, so still call tick_mini_goal when a check is true. One request ' +
@@ -6430,6 +6474,20 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'true: select these goals for hook-driven refresh while tools run. ' +
               'Without hooks, refresh within 30 minutes. false: deselect and clear.',
+          },
+          held: {
+            type: 'boolean',
+            description:
+              'Optional, with working: true. true keeps the mark for background ' +
+              'work after your turn ends: Stop, SessionEnd, a new prompt and idle ' +
+              'time leave it on until the hold runs out (120 minutes unless ' +
+              'held_minutes is given), you send working: false, or the goal is ticked.',
+          },
+          held_minutes: {
+            type: 'number',
+            description:
+              'Optional hold time in whole minutes, 1 to 240; implies held: true. ' +
+              'Calling again restarts the hold.',
           },
           mission_id: {
             type: 'number',
@@ -7024,6 +7082,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       pairingToken: AUTH.mode === 'pairing' ? AUTH.pairingToken : '',
       stateDir: vaultHostDir(stateDir),
       log,
+      autoHost: () => runVaultAutoHost('tool'),
     })
   }
 
@@ -7053,7 +7112,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   switch (req.params.name) {
     case 'bgos_capabilities': {
       const caps = await loadServedCapabilities()
-      return { content: [{ type: 'text', text: caps.text }] }
+      return { content: [{ type: 'text', text: `${caps.text}\n${REACTION_GUIDANCE}` }] }
     }
 
     case 'reply': {
@@ -7604,6 +7663,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           isError: true,
         }
       }
+    }
+
+    case 'react': {
+      return handleReactTool(rawArgs, { authMode: AUTH.mode, assistantId: ASSISTANT_ID, post: bgosPost })
     }
 
     case 'edit_message': {
@@ -9070,6 +9133,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
       const built = buildMissionGoalWorkingInput({
         goal_ids: rawArgs.goal_ids,
         working: rawArgs.working,
+        held: rawArgs.held,
+        held_minutes: rawArgs.held_minutes,
       })
       if (!built.ok) {
         return {
@@ -9092,6 +9157,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           }
         }
         const { goalIds, working } = built.body
+        // Only a daemon running the hook intake runs the sweep that keeps a
+        // held mark fresh. Without it a hold would be a promise nobody keeps,
+        // so the mark is sent as an ordinary one and the agent is told why.
+        const holdMinutes = hookIntake ? built.body.holdMinutes ?? 0 : 0
+        const holdRefused = !!built.body.holdMinutes && !holdMinutes
         for (const goalId of goalIds) {
           const builtPath = buildMissionGoalWorkingPath(ASSISTANT_ID, missionId, goalId)
           if (!builtPath.ok) {
@@ -9118,6 +9188,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           try {
             const result = (await missionWorking.mark({
               sessionId: workingContext.sessionId, context: workingContext, missionId, goalId, working,
+              ...(holdMinutes ? { holdMs: holdMinutes * 60_000 } : {}),
               headers: privateCall!.headers,
             })) as {
               mission?: MissionSnapshot
@@ -9137,14 +9208,23 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
           ids.length === 1 ? `goal ${ids[0]}` : `goals ${ids.join(', ')}`
         log(
           `set_goal_working: mission #${missionId} working=${working}` +
+            (holdMinutes ? ` held=${holdMinutes}m` : '') +
             (marked.length > 0 ? ` ${named(marked)}` : '') +
             (failed.length > 0 ? `, refused ${named(failed.map((f) => f.goalId))}` : ''),
         )
         const lines: string[] = []
         if (marked.length > 0) {
           lines.push(
-            working
+            working && holdMinutes
+              ? `Held working: ${named(marked)}, for ${holdMinutes} minutes. ` +
+                  `Stop, a new prompt and idle time leave ${marked.length === 1 ? 'it' : 'them'} on, and this daemon ` +
+                  'refreshes the mark until the hold runs out. Call again to restart the hold, and send ' +
+                  'working: false when the worker for a goal finishes.'
+              : working
               ? `Marked working: ${named(marked)}. ` +
+                  (holdRefused
+                    ? 'This daemon cannot hold the mark after your turn: it has no hook intake running. '
+                    : '') +
                   (workingContext.sessionId
                     ? 'Hook activity refreshes selected goals; Stop clears the selection, so select again when you resume. Without hooks, '
                     : 'There is no bound hook session for this mark; ') +
@@ -9753,6 +9833,49 @@ const whenArmed =
     }
     handle(payload)
   }
+
+// The agent vault with no setup (lib/vault-host-auto.mjs, HOAI CORE-CONTRACTS
+// 18.8). Only the daemon that holds the pairing lock makes or offers this
+// machine's vault keys: when it arms, on the server's vault_host_setup frame
+// and on a vault tool's first use. One run at a time; the result is codes only.
+// A server that does not take offers answers `off`, remembered for ten minutes
+// so a vault tool call does not ask again each time.
+let vaultAutoHostRun: Promise<{ status: string; code?: string; retry?: true }> | null = null
+let vaultAutoHostOffUntil = 0
+// Found on a real Windows PC (2026-11-12): PowerShell can be too slow to answer while the computer is busy, and
+// the setup then ends "unavailable, retry". Nobody should have to do anything: try again, a few times, further apart.
+const VAULT_AUTO_HOST_RETRIES = 5
+const VAULT_AUTO_HOST_RETRY_MS = 30_000
+let vaultAutoHostRetries = 0
+function runVaultAutoHost(reason: string): Promise<{ status: string; code?: string; retry?: true }> {
+  if (AUTH.mode !== 'pairing' || !channelArmed) return Promise.resolve({ status: 'unavailable' })
+  if (vaultAutoHostRun) return vaultAutoHostRun
+  if (reason !== 'frame' && Date.now() < vaultAutoHostOffUntil) return Promise.resolve({ status: 'off' })
+  const stateDir = agentStateDir(homedir(), ASSISTANT_ID)
+  if (!stateDir) return Promise.resolve({ status: 'unavailable' })
+  const run = ensureAutoHost({
+    stateDir: vaultHostDir(stateDir),
+    assistantId: ASSISTANT_ID,
+    ownerId: USER_ID,
+    apiBase: API_BASE,
+    pairingToken: AUTH.pairingToken,
+    log,
+  })
+    .catch(() => ({ status: 'unavailable' }))
+    .then((result: { status: string; code?: string; retry?: true }) => {
+      vaultAutoHostRun = null
+      vaultAutoHostOffUntil = result.status === 'off' ? Date.now() + 10 * 60_000 : 0
+      if (result.status !== 'off' && result.status !== 'disabled') log(`vault: host setup (${reason}) is ${result.status}`)
+      if (result.status === 'unavailable' && result.retry === true && vaultAutoHostRetries < VAULT_AUTO_HOST_RETRIES) {
+        const wait = VAULT_AUTO_HOST_RETRY_MS * 2 ** vaultAutoHostRetries++
+        const timer = setTimeout(() => { void runVaultAutoHost('retry') }, wait)
+        timer.unref?.()
+      } else if (result.retry !== true) vaultAutoHostRetries = 0
+      return result
+    })
+  vaultAutoHostRun = run
+  return run
+}
 
 // The holder's home step has run (lib/agent-credentials.ts
 // homeStepWhileHolding): a pinned start confirms its folder once; nothing
@@ -10935,7 +11058,7 @@ async function announceMissedPlanAnswers(): Promise<void> {
         channelNotify(() => ({
             // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. A late announce
             // opens no private turn (4bf28148: only the stream's, in its window).
-            content: privateTapCard({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+            content: privateTapCardNoting({ tracker: privateTurns, lane: 'boot', ownerUserId: USER_ID, chatId: String(chatId), messageId: row.id, tapperUserId: readTapperUserId(payload), humanPrincipal: isHumanClick(mm), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: callbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
             meta: buildButtonClickedMeta({
               chatId,
               messageId: row.id,
@@ -11038,9 +11161,59 @@ const HOOK_CARD_COALESCE_MS = 600
  */
 const HOOK_STEPS_HEARTBEAT_MS = 60_000
 
+const teachWindows = createTeachWindows()
+logOriginsTo(log)
 /** The chat a hook event belongs to: the last thing delivered to this session,
- *  whoever sent it. Fed at the three inbound sites and the two meeting sites. */
-const turnChat = createTurnChatTracker()
+ *  whoever sent it. Fed at the three inbound sites, the two meeting sites and the six tap sites. Every delivery it
+ *  notes, but the owner's own tap, closes that chat's teach window (lib/skill-origins.ts closingTeachWindows). */
+const turnChat = closingTeachWindows(createTurnChatTracker(), teachWindows, ASSISTANT_ID)
+/** Every channel card as it reaches the session closes the teach windows, but the owner's own tap card
+ *  (lib/skill-origins.ts createCardDeliveries; the card record step below and privateTapCardNoting). */
+const teachCards = createCardDeliveries(teachWindows)
+
+// A teach window opens only on the owner's own tap as a person: each site reads its click row with isHumanClick (an
+// ask answer has none, so null). Any tap that is not the owner's own closes its chat's window, and every tap is noted
+// as its chat's delivery, so the turn it starts is filed under that chat (lib/skill-origins.ts noteTeachTap).
+function privateTapCardNoting(input: Parameters<typeof privateTapCard>[0] & { humanPrincipal: unknown }) {
+  let idle = false
+  let opens = false
+  try {
+    idle = teachSessionIdle()
+    opens = idle && teachTapOpens({ tapperUserId: input.tapperUserId, ownerUserId: input.ownerUserId, callbackData: input.callbackData, customText: input.customText, humanPrincipal: input.humanPrincipal, posted: input.posted })
+  } catch {
+    log('skills: origin unavailable')
+  }
+  // The Approve that opens a window tells the agent the one write that can mark the skill taught.
+  const card = privateTapCard(opens ? { ...input, content: `${input.content}\n${TEACH_WRITE_FIRST}` } : input)
+  try {
+    const own = noteTeachTap({ windows: teachWindows, assistantId: ASSISTANT_ID, deliveries: turnChat }, {
+      chatId: input.chatId,
+      messageId: input.messageId,
+      tapperUserId: input.tapperUserId,
+      ownerUserId: input.ownerUserId,
+      callbackData: input.callbackData,
+      customText: input.customText,
+      humanPrincipal: input.humanPrincipal,
+      posted: input.posted,
+      idle,
+      card,
+      now: Date.now(),
+    })
+    if (own) teachCards.ownTap(card)
+  } catch {
+    log('skills: origin unavailable')
+  }
+  return card
+}
+
+/** No turn could overlap a teach window opened now (lib/skill-origins.ts createCardDeliveries idle): no hook turn and
+ *  no helper agent is live, nothing is being typed into the pane, and every card sent has had its turn begin and end. */
+function teachSessionIdle(): boolean {
+  return teachCards.idle({
+    turnLive: hookTurnLive || hookTurn.carried.size > 0,
+    injecting: goalInjectionsInFlight > 0 || compactInFlight || modelEffortControl.busy,
+  })
+}
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
 // The owner is named so that no turn acts as the owner once someone else reached it (board row f81a527c), and the
 // markers tie each person who reached the session to the CLI turn running then, whatever the forwarder lines' order.
@@ -11133,6 +11306,8 @@ mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
   if (group?.swallow) return Promise.resolve()
   if (notification?.method === 'notifications/claude/channel') {
     const params = notification.params as { content?: unknown; meta?: unknown } | undefined
+    // At delivery, after every hold: any card but the owner's own tap card closes the teach windows.
+    teachCards.delivered(params?.content)
     if (params) params.content = privateTurns.tagRawCard(params.content ?? '')
     privateTurns.rawCard(String(params?.content ?? ''), params?.meta)
   }
@@ -11818,6 +11993,31 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   const event = parseHookEvent(payload)
   if (event === null) return
   const receivedAt = line?.receivedAt ?? Date.now()
+  // A skill write is judged by when its line was received, never by when it drains: a SKILL.md written before the
+  // owner's Approve never reads taught. Only a Write of a SKILL.md can mark; any other write into the agent skills
+  // folder uses the window, and a tool the daemon cannot judge (a shell, any other MCP tool) closes every window at its
+  // first hook line (lib/skill-origins.ts noteSkillToolUse).
+  try {
+    // A teach window lives only in the turn its tap card starts: that prompt starts it, any other prompt or a Stop
+    // closes it (lib/skill-origins.ts createTeachWindows beginTurn).
+    if (event.name === 'UserPromptSubmit') teachCards.prompt(payload.prompt, receivedAt)
+    if (event.name === 'Stop') teachCards.stopped(receivedAt)
+    if (event.name === 'PreToolUse' || event.name === 'PostToolUse' || event.name === 'PostToolUseFailure') {
+      noteSkillToolUse({
+        event: event.name,
+        toolName: payload.tool_name,
+        toolInput: payload.tool_input,
+        agentDir: SKILLS_AGENT_DIR,
+        file: SKILL_ORIGINS_FILE,
+        windows: teachWindows,
+        chatId: String(turnChat.current(Date.now())?.chatId ?? ''),
+        assistantId: ASSISTANT_ID,
+        writtenAt: receivedAt,
+      })
+    }
+  } catch {
+    log('skills: origin unavailable')
+  }
   // When the CLI got to this event, for privateTurns.end(): the forwarder's own process start, which claude spawns
   // with the Stop hook at the Stop, before the next prompt's hook can run. Its receivedAt comes after the forwarder's
   // cold start and stdin read, which can be after the next prompt's marker (the re-review of c09e214e).
@@ -12463,7 +12663,7 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
   const postedButton = postedButtons.posted(mm.id, callbackData, buttonText, mm.text)
   log(`button_clicked ANNOUNCED via POLL for message ${mm.id} in chat ${chatId} (answeredAt=${mm.answeredAt})`)
   void trackMessageOperation(() => channelNotify(() => ({
-      content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+      content: privateTapCardNoting({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), humanPrincipal: isHumanClick(mm), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
       meta: buildButtonClickedMeta({ chatId, messageId: mm.id, callbackData: planAnswer.callbackData ?? agentCallbackData, buttonText, customText, tapperUserId: readTapperUserId(payload), assistantId: ASSISTANT_ID, ts: mm.answeredAt, card: cardAnswer }),
     }), { quiet: readTapperUserId(payload) === USER_ID ? { carried: true } : null })).catch((err) => log(`Failed to deliver button_clicked to Claude: ${err}`))
 }
@@ -13064,7 +13264,7 @@ async function pollChat(chatId: string): Promise<void> {
       void trackMessageOperation(() => channelNotify(() => ({
           // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The poll opens no
           // private turn, however fresh the tap (4bf28148: only the stream's, in its window).
-          content: privateTapCard({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
+          content: privateTapCardNoting({ tracker: privateTurns, lane: 'poll', ownerUserId: USER_ID, chatId: String(chatId), messageId: mm.id, tapperUserId: readTapperUserId(payload), humanPrincipal: isHumanClick(mm), answeredAt: mm.answeredAt, receivedAt: Date.now(), callbackData: agentCallbackData, customText: customText, posted: postedButton, content: contentLines.join('\n') }),
           // `user_id` is the tapper the server stamped on the answer, or
           // absent. It was this daemon's own USER_ID, so every tap read as
           // the owner's whoever made it.
@@ -13162,6 +13362,9 @@ async function pollChat(chatId: string): Promise<void> {
         senderType: pollSenderType,
         agentOrigin: pollAgentOrigin,
       })
+      // A person wrote it: the sign-in code gate and the owner only slash
+      // commands (routeSlashCommand's speaker) read this one value.
+      const pollFromHuman = !isPollAgent && pollSenderType !== 'system'
 
       // The owner's sign-in code, when one is awaited (lib/auth-login.ts).
       // Here, before the permission parse, the meeting card and every log
@@ -13171,7 +13374,7 @@ async function pollChat(chatId: string): Promise<void> {
         messageId: msg.message.id,
         payload: msg.message,
         text,
-        fromHuman: !isPollAgent && pollSenderType !== 'system',
+        fromHuman: pollFromHuman,
         via: 'poll',
       })) continue
 
@@ -13217,7 +13420,7 @@ async function pollChat(chatId: string): Promise<void> {
             messageId: msg.message.id,
             payload: latestPrepared.raw,
             text: latestPrepared.text,
-            fromHuman: !isPollAgent && pollSenderType !== 'system',
+            fromHuman: pollFromHuman,
             via: 'poll',
           })) continue
         }
@@ -13340,6 +13543,8 @@ async function pollChat(chatId: string): Promise<void> {
         sourceContent: originalContent,
         registry: registeredSlashCommands,
         legacyAliases: registeredSlashCommandAliases,
+        // Owner only commands (/permissions, /hooks, ...) edit nothing for anyone else.
+        speaker: { ownerUserId: USER_ID, fromHuman: pollFromHuman },
       })
 
       // Remote /compact is handled by the daemon and never forwarded to the
@@ -13852,7 +14057,7 @@ function announceCompleteAsks(via: string): void {
           // The backend stamps no tapper on an ask answer, and typed words
           // ride in it, so it is never shown to be the owner's own words: it
           // opens no private turn and is noted like any other untracked card.
-          content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+          content: privateTapCardNoting({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, humanPrincipal: isHumanClick(null), answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
           meta: event.meta,
         })),
     )
@@ -14074,7 +14279,7 @@ function askWithdrawnContent(
   return {
     // Typed answers ride in it, as in an ask_answered event: never shown
     // to be the owner's own words, and it opens no private turn.
-    content: privateTapCard({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
+    content: privateTapCardNoting({ tracker: privateTurns, lane: 'ask', ownerUserId: USER_ID, chatId: ask.chatId, messageId: ask.questions[0]?.messageId, tapperUserId: null, humanPrincipal: isHumanClick(null), answeredAt: null, receivedAt: Date.now(), callbackData: '', customText: null, posted: false, content: event.content }),
     meta: event.meta,
   }
 }
@@ -14154,6 +14359,8 @@ function noteMissionPendingSelfWrite(missionId: number): void {
 function rememberMissionSelfWrite(mission: unknown): void {
   missionSelfWrites.noteWritten(mission)
   noteMissionTurnSnapshot(mission)
+  // The agent's own tick ends a held working mark (lib/mission-working.ts).
+  missionWorking.noteMission(mission)
 }
 
 // -- The mission turn check (mission turn checks) ----
@@ -14529,6 +14736,8 @@ async function runGoalInjection(steps: InjectionStep[], label: string): Promise<
   // Counted so a /steer does not press Escape between the typed text and its
   // Enter (lib/steer.ts SteerGate).
   goalInjectionsInFlight++
+  // Typed words a teach Approve did not cover: no write after them reads taught (lib/skill-origins.ts).
+  teachWindows.closeAll()
   try {
     // A model or effort change holds the composer until it is confirmed.
     if (modelEffortControl.busy) await modelEffortControl.whenIdle()
@@ -15045,6 +15254,8 @@ function handleMissionEvent(frame: string, payload: unknown): void {
 
     const chatId = missionChatId(event.mission)
     noteMissionTurnSnapshot(event.mission, event.chatId)
+    // Any tick, the owner's or the server's check, ends a held working mark.
+    missionWorking.noteMission(event.mission)
     // Asked ONCE: the ledger's pending stamp is consumed by the question, so
     // a second ask would answer no and narrate the daemon's own write back to
     // its model.
@@ -15593,7 +15804,7 @@ function routeGroupDelivery(
   if (updateDrainMode) return true
   const taken = groupLanes.deliver(readGroupDelivery(records, { chatId, ...input }))
   const id = Number(input.messageId)
-  if (taken && Number.isSafeInteger(id) && !String(input.key).startsWith('tap:')) rememberForwarded(id)
+  if (taken && Number.isSafeInteger(id) && !String(input.key).startsWith('tap:') && !input.key.startsWith('reaction:')) rememberForwarded(id)
   if (taken) log(`groups: ${transport} delivery ${String(input.key)} handed to the lane of group ${chatId}`)
   return true
 }
@@ -16017,11 +16228,16 @@ function updateReadinessSnapshot(): UpdateReadiness {
 // A version the idle update latched bad on this computer (it failed an agent
 // here, which went back) reads as NO pending restart here, so the heartbeat, a click and the
 // watcher never push an agent onto it again. `latched: false` is the same
-// answer without the latch, what is staged on disk now (daemonStagedVersion).
+// answer without the latch, what is staged on disk now (daemonStagedVersion):
+// for a clone whose checkout is held bad that is the checkout's build.
 function daemonPendingRestartVersion(
   state?: ReturnType<typeof loadAutoUpdateState>,
   { latched = true }: { latched?: boolean } = {},
 ): string | null {
+  if (!latched) {
+    const held = daemonHeldBadCheckoutVersion()
+    if (held) return held
+  }
   return resolvePendingRestartVersion({
     installMethod: INSTALL_METHOD,
     runningVersion: RUNNING_VERSION,
@@ -16041,6 +16257,19 @@ function daemonPendingRestartVersion(
 // (version_held_bad, reported) rather than as nothing staged.
 function daemonStagedVersion(): string | null {
   return daemonPendingRestartVersion() ?? daemonPendingRestartVersion(undefined, { latched: false })
+}
+
+// A clone's checkout held bad (board row 10f8bc52): the latched answer is null
+// for it whatever the self updater staged, and the unlatched one would name that
+// good staged target, which a restart does not boot. What is staged on disk is
+// the checkout's build, so the controller reads that and holds on version_held_bad.
+function daemonHeldBadCheckoutVersion(): string | null {
+  return heldBadCheckoutVersion({
+    installMethod: INSTALL_METHOD,
+    runningVersion: RUNNING_VERSION,
+    readCheckoutVersion: () => readOwnVersion(RUNNING_ROOT),
+    heldBad: idleUpdateHeldBad,
+  })
 }
 
 function idleUpdateHeldBad(version: string): boolean {
@@ -16761,16 +16990,20 @@ const skillsTrashDir = (): string =>
     }),
     'skills-trash',
   )
+const SKILL_ORIGINS_FILE = pathJoin(pathDirname(skillsTrashDir()), 'skill-origins.json')
 const skillsRpc = new SkillsRpcHandler({
   inventory: {
     list: () =>
-      listSkills({
-        agentDir: SKILLS_AGENT_DIR,
-        configDir: CLAUDE_CONFIG_DIR,
-        home: homedir(),
-        managedDir: SKILLS_MANAGED_DIR,
-        log,
-      }),
+      applyOrigins(
+        listSkills({
+          agentDir: SKILLS_AGENT_DIR,
+          configDir: CLAUDE_CONFIG_DIR,
+          home: homedir(),
+          managedDir: SKILLS_MANAGED_DIR,
+          log,
+        }),
+        SKILL_ORIGINS_FILE,
+      ),
     remove: (payload) =>
       removeAgentSkill({
         agentDir: SKILLS_AGENT_DIR,
@@ -16802,6 +17035,14 @@ const skillsRpc = new SkillsRpcHandler({
         now: () => Date.now(),
         payload,
         progress,
+        onInstalled: (dest) => {
+          const ident = originIdentOf(dest)
+          if (ident !== null) stampOrigin(SKILL_ORIGINS_FILE, pathBasename(dest), {
+            origin: 'shared',
+            ident,
+            offerId: typeof payload.offerId === 'string' ? payload.offerId : undefined,
+          })
+        },
         log,
       }),
   },
@@ -17179,13 +17420,16 @@ async function forwardStreamInbound(
     return
   }
   view = prepared ?? view
+  // A person wrote it (the strict reading, an unknown kind is not one): the
+  // edited sign-in code gate and the owner only slash commands read it.
+  const streamFromHuman = !isSystem && !view.agentOrigin && view.senderKind === 'user'
   if (view.text !== textBeforePreparation) {
     if (consumedAsLoginCode({
       chatId,
       messageId: view.messageId,
       payload: view.raw,
       text: view.text,
-      fromHuman: !isSystem && !view.agentOrigin && view.senderKind === 'user',
+      fromHuman: streamFromHuman,
       via: 'stream',
     })) return
   }
@@ -17243,6 +17487,8 @@ async function forwardStreamInbound(
       sourceContent: originalContent,
       registry: registeredSlashCommands,
       legacyAliases: registeredSlashCommandAliases,
+      // Owner only commands (/permissions, /hooks, ...) edit nothing for anyone else.
+      speaker: { ownerUserId: USER_ID, fromHuman: streamFromHuman },
     })
     if (slashRoute.kind === 'compact') {
       // A replayed /compact targets a session state that no longer exists;
@@ -17643,7 +17889,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
         // 70f1898b: a tap by anyone but the owner is someone else's words in the turn it reaches. The owner's own tap,
         // as the backend stamped it, within PRIVATE_TAP_WINDOW_MS of its answeredAt, opens a private turn as the owner
         // (4bf28148), and the fire ledger makes a second announce of it a replay.
-        content: privateTapCard({ tracker: privateTurns, lane: 'stream', ownerUserId: USER_ID, chatId: String(chatId), messageId: view.messageId, tapperUserId: answer.tapperUserId, answeredAt: update.payload.answeredAt ?? update.payload.answered_at, receivedAt: receivedAtMs, callbackData: agentCallbackData, customText: answer.customText, posted: postedButton, content: contentLines.join('\n') }),
+        content: privateTapCardNoting({ tracker: privateTurns, lane: 'stream', ownerUserId: USER_ID, chatId: String(chatId), messageId: view.messageId, tapperUserId: answer.tapperUserId, humanPrincipal: isHumanClick(view.raw), answeredAt: update.payload.answeredAt ?? update.payload.answered_at, receivedAt: receivedAtMs, callbackData: agentCallbackData, customText: answer.customText, posted: postedButton, content: contentLines.join('\n') }),
         meta: buildStreamClickMeta({
           chatId,
           messageId: view.messageId,
@@ -18297,7 +18543,7 @@ function connectWebsocket(): void {
     // Person lanes (P5): this socket declares lane memory in its OWN
     // handshake, which is what the server routes a stopped lane's memory
     // frame by (pairing only; nothing else in the handshake changes).
-    ...wsAuthOptions(AUTH, laneSupport().ok ? [LANE_MEMORY_RPC_TOKEN] : []),
+    ...wsAuthOptions(AUTH, [HEARD_REACTIONS_CAPABILITY, ...(laneSupport().ok ? [LANE_MEMORY_RPC_TOKEN] : [])]),
   })
   watchSocketLiveness(realtimeSocket.io, log)
 
@@ -18380,6 +18626,14 @@ function connectWebsocket(): void {
   // normalizeVoiceRpc (malformed frames drop; well-formed frames ALWAYS get
   // a result or descriptive error — the G2 silent-drop lesson). Duplicate
   // re-emits are deduped by rpcId inside the handler.
+  // The agent vault with no setup: the owner's app asked this machine to offer
+  // its vault key, or accepted it. Ids and a status only; nothing from the
+  // frame goes into a key or a request, and it is never shown to the model.
+  realtimeSocket.on('vault_host_setup', whenArmed('vault_host_setup', (frame: any) => {
+    if (Number(frame?.assistantId) !== Number(ASSISTANT_ID)) return
+    void runVaultAutoHost('frame')
+  }))
+
   realtimeSocket.on('voice_rpc', whenArmed('voice_rpc', (payload: any) => {
     if (updateDrainMode) return
     try {
@@ -18684,6 +18938,22 @@ function connectWebsocket(): void {
       .catch((err) => log(`message_edited delivery failed: ${err}`))
   }))
 
+  realtimeSocket.on('inbound_reaction', whenArmed('inbound_reaction', (frame: any) => {
+    if (updateDrainMode) return
+    const card = reactionCard(frame, ASSISTANT_ID)
+    if (!card) return
+    if (routeGroupDelivery([frame], {
+      key: groupReactionKey(String(frame.reactionId), card), messageId: frame.messageId, text: groupReactionText(card),
+    }, 'socket reaction')) return
+    if (!ownerLaneVerdict(frame).deliver) return
+    void trackMessageOperation(() => channelNotify(() => {
+      const marker = card.meta.user_id === USER_ID ? '' : ' ' + PRIVATE_UNTRACKED_TAG
+      // Keep the transport's provenance tags on the same line as this short answer.
+      const content = privateTurns.tagRawCard(card.content + marker).replace(/\n/g, ' ')
+      return { content, meta: card.meta }
+    })).catch((err) => log(`reaction delivery failed: ${String(err)}`))
+  }))
+
   realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {
     if (updateDrainMode) return
     // Group threads: a group's message goes to its own lane first.
@@ -18922,6 +19192,9 @@ function connectWebsocket(): void {
       const wsTurnState = wsTurnStateRaw == null
         ? undefined
         : String(wsTurnStateRaw)
+      // A person wrote it: the sign-in code gate and the owner only slash
+      // commands (routeSlashCommand's speaker) read this one value.
+      const wsFromHuman = !wsAgentOrigin && !wsRoomAgent && wsSenderType !== 'agent' && wsSenderType !== 'system'
       // The owner's sign-in code (see the poll site), before the sender is
       // noted, the turn is recorded or anything is logged or forwarded.
       if (consumedAsLoginCode({
@@ -18929,7 +19202,7 @@ function connectWebsocket(): void {
         messageId,
         payload,
         text,
-        fromHuman: !wsAgentOrigin && !wsRoomAgent && wsSenderType !== 'agent' && wsSenderType !== 'system',
+        fromHuman: wsFromHuman,
         via: 'ws',
       })) return
       const wsSenderUserId = wsRoomAgent ? roomAgentUserId(wsRoomAgent) : senderUserIdOf(payload)
@@ -19025,6 +19298,8 @@ function connectWebsocket(): void {
         sourceContent: originalContent,
         registry: registeredSlashCommands,
         legacyAliases: registeredSlashCommandAliases,
+        // Owner only commands (/permissions, /hooks, ...) edit nothing for anyone else.
+        speaker: { ownerUserId: USER_ID, fromHuman: wsFromHuman },
       })
       // Remote /compact is daemon handled and never forwarded to the model.
       // This check precedes the empty content guard, matching the poll path.
@@ -20199,6 +20474,7 @@ async function main(): Promise<void> {
   } else {
   selfUpdater = await initializeSelfUpdater({
     heldBad: idleUpdateHeldBad,
+    readCheckoutVersion: () => readOwnVersion(RUNNING_ROOT),
     rootDir: import.meta.dir,
     stateFilePath: resolveAutoUpdateStatePath(cursorStore.filePath),
     env: process.env,
@@ -20947,6 +21223,7 @@ async function main(): Promise<void> {
       startHookIntakeIfHolder()
       handleUnboundBeforeArm()
       reconcilePendingThreads('re-armed')
+      void runVaultAutoHost('armed')
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -21241,13 +21518,22 @@ async function main(): Promise<void> {
         ) {
           return
         }
+        // Read before the unlink: the request says whether a restart happened
+        // (the question before an update writes purpose 'before_update').
+        let request: string | null = null
+        try {
+          request = readFileSync(PROBE_REQUEST_PATH, 'utf8')
+        } catch {
+          request = null
+        }
+        const saysAfterRestart = probeSaysAfterRestart(request)
         try {
           unlinkSync(PROBE_REQUEST_PATH)
         } catch {
           // Already gone or unremovable: the rate limit still bounds us.
         }
         lastLivenessProbeAt = Date.now()
-        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0], afterRestart: true })
+        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0], afterRestart: saysAfterRestart })
         log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
         void trackMessageOperation(() =>
           channelNotify(() => ({ content: probe.content, meta: probe.meta })),
@@ -21572,6 +21858,9 @@ async function main(): Promise<void> {
     // so the owner's chat never shows a silently dead agent. Cheap (reads only
     // appended bytes) and deduped per rest episode inside reportResting.
     setInterval(reportResting, 30_000).unref()
+    // The pill follows the session: one look now, then on a timer.
+    void modelEffortLiveReporter.tick()
+    setInterval(() => void modelEffortLiveReporter.tick(), MODEL_EFFORT_LIVE_REPORT_MS).unref()
     // Same cadence, same transcripts: the shared Claude login state.
     setInterval(sweepClaudeLogin, 30_000).unref()
     // The goal lane's belt: a Stop that never reached this process, or a
@@ -21814,6 +22103,8 @@ async function main(): Promise<void> {
     handleUnboundBeforeArm()
     // The first connect after a boot came before this arm: run what waits.
     reconcilePendingThreads('armed')
+    // Zero setup: this machine offers its vault key by itself (no terminal).
+    void runVaultAutoHost('armed')
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself

@@ -297,6 +297,29 @@ export function shouldSendLivenessProbe(input: {
 }
 
 /**
+ * Whether a probe request is the watcher's check after it RESTARTED this
+ * agent. The watcher also asks before an update (lib/agent-verify.mjs
+ * proveLiveBefore), when nothing was restarted, and says so with
+ * `purpose: 'before_update'`; only that word drops the restart wording.
+ * Anything else, an older watcher's request included, keeps the card the
+ * daemon always sent (review of #396).
+ */
+export function probeSaysAfterRestart(raw: string | null | undefined): boolean {
+  if (typeof raw !== 'string' || raw === '') return true
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return !(
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      (parsed as { purpose?: unknown }).purpose === 'before_update'
+    )
+  } catch {
+    return true
+  }
+}
+
+/**
  * The silent probe notification. It names the tool, forbids any user-facing
  * message, and tells the session to resume what it was doing; the meta
  * event_type lets a CLAUDE.md or a future filter recognise it.

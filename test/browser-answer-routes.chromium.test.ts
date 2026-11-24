@@ -20,6 +20,12 @@ const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const textOf = (reply: any) => (reply?.content || []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n')
 const hasImage = (reply: any) => (reply?.content || []).some((part: any) => part.type === 'image')
 const refOf = (tree: string, name: string) => new RegExp(`${name}[^\\n]*?\\[ref=((?:f\\d+)?e\\d+)\\]`).exec(tree)?.[1]
+// A wait for what a test checks, with a deadline that fails in plain words instead of the test running out of time.
+const within = <T>(work: Promise<T>, ms: number, what: string): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(what)), ms) })
+  return Promise.race([work, late]).finally(() => clearTimeout(timer))
+}
 
 async function rig(t: any, html?: any, { answer = 'deny', write = 'allow', navigate = 'allow', path = '/', gates: gated = true }: any = {}) {
   const site = await serveSite(typeof html === 'string' ? ((p: string) => (p === '/' ? html : undefined)) : html)
@@ -74,26 +80,187 @@ test('P1-5 the host\'s own refusals reach the agent, with the gate id and the do
   assert.match(textOf(await r.call('hoai_browser_wait_gate', { gate_id: 'gate_nope' })), /No permission request/)
 })
 
-test('P1-6 one failed read fails one call, and slow frames, churn, busy pages and big fields lock nothing', { skip, timeout: 180_000 }, async (t) => {
+// P1-6 was one case that proved five things on one browser, one after the other, and on a Windows runner it took 174.6 s
+// of its 180 s (main, run 44091603735). Nearly all of it was the first part, frames that come and go: before each read
+// the privacy owner waited until the person input watcher had no work in flight, and a page that added an iframe every
+// 10 ms kept adding work, so on a slow machine a read waited until it happened to find a gap. Measured on Linux with the
+// browser on one core: one read waited 58.6 s. The product fix (lib/browser-host-core/answer-privacy.js, from BGOS
+// d9d49f02b9 and e7f147df0d) waits only for the work begun before the read. Each claim is now its own test with its own
+// browser, so one slow part cannot use up another's time, and every wait a claim depends on fails in plain words.
+
+// The longest a whole read may take by its own bounds (the read, the tree, the read after it) and a margin, so a read
+// that is only slow is not called stuck.
+const READ_COMES_BACK_MS = 30_000
+
+test('P1-6 a slow frame leaves the page readable', { skip, timeout: 60_000 }, async (t) => {
   const r = await rig(t, undefined, { path: '/plain' })
   r.page.goto(`${r.origin}/slow`, { waitUntil: 'commit' }).catch(() => {})
   await pause(400)
-  const slow = textOf(await r.call('browser_snapshot'))
+  const slow = textOf(await within(r.call('browser_snapshot'), READ_COMES_BACK_MS, `a read did not come back within ${READ_COMES_BACK_MS / 1000} s on a page whose frame never loads`))
   assert.match(slow, /Article with a slow embed/, slow)
-  await r.page.setContent('<h1>Ads</h1><div id=s></div><script>setInterval(()=>{const f=document.createElement("iframe");f.srcdoc="<p>ad</p>";s.appendChild(f);setTimeout(()=>f.remove(),15);},10)</script>')
-  for (let index = 0; index < 10; index += 1) assert.match(textOf(await r.call('browser_snapshot')), /heading "Ads"/)
-  await r.page.setContent('<h1>Hydrating</h1>')
+})
+
+test('P1-6 frames that come and go lock nothing: every read on the page reads it, and so does the read after', { skip, timeout: 90_000 }, async (t) => {
+  // Before the rig, so the churn stops before the browser closes on any failure.
+  let churning = true, gone = 0, broke: any = null
+  t.after(() => { churning = false })
+  const r = await rig(t, '<h1>Ads</h1><div id=s></div>')
+  // Ad frames come and go through every read: each one is added once the last is reported gone, so the page never makes
+  // them faster than this machine can report them gone. A page timer every 10 ms measured the machine, not the reads.
+  // Frames that never stop are the next test's, on a chain.
+  const churn = (async () => {
+    while (churning) {
+      const detached = new Promise(resolve => r.page.once('framedetached', resolve))
+      await r.page.evaluate(() => { const f = document.createElement('iframe'); f.srcdoc = '<p>ad</p>'; document.querySelector('#s')!.appendChild(f); setTimeout(() => f.remove(), 15) })
+      await within(detached, 10_000, 'an ad frame the page removed was never reported gone')
+      gone += 1
+    }
+  })()
+  churn.catch((error) => { broke = error })
+  // At least 10 reads and at least 10 frames gone, whichever comes last, so neither count races the other.
+  for (let reads = 0; reads < 10 || gone < 10; reads += 1) {
+    if (broke) throw broke
+    const tree = textOf(await within(r.call('browser_snapshot'), READ_COMES_BACK_MS, `read ${reads + 1} did not come back within ${READ_COMES_BACK_MS / 1000} s while frames came and went`))
+    assert.match(tree, /heading "Ads"/, tree)
+  }
+  churning = false
+  await churn
+  if (broke) throw broke
+  await r.page.setContent('<h1>After the ads</h1>')
+  assert.match(textOf(await r.call('browser_snapshot')), /heading "After the ads"/, 'the read after the frames stopped')
+})
+
+// Frames on a chain: the watcher's answer about each new frame is held until the next frame's is held too, so its work
+// is never finished, however fast or slow the machine is. A slow machine reached this state by itself on a page that
+// made a frame every 10 ms (the old P1-6 case, near its limit on Windows). Here it is the same every run. A test can
+// also pin the answers held right now: the chain keeps going but leaves those for the test to release.
+// Ported from BGOS frontend/electron-app/agent-browser/__tests__/browser-answer-routes.chromium.test.js (e7f147df0d).
+function framesThatNeverStop(page: any, client: any) {
+  const connection = client._connection, rawSend = connection._rawSend, onMessage = client._onMessage
+  const asked = new Map<number, number>(), held = new Map<number, { order: number, release: () => void }>(), pinned = new Set<number>(), waiters = new Set<() => void>()
+  let order = 0, stopped = false
+  const wake = () => { for (const waiter of [...waiters]) waiter() }
+  const until = (done: () => boolean) => new Promise<void>(resolve => {
+    const check = () => { if (stopped || done()) { waiters.delete(check); resolve() } }
+    waiters.add(check)
+    check()
+  })
+  connection._rawSend = function (sessionId: string, method: string, params: any) {
+    const id = rawSend.call(this, sessionId, method, params)
+    if (sessionId === client._sessionId && method === 'Page.createIsolatedWorld' && params?.worldName?.startsWith('hoaiPersonWorld')) asked.set(id, ++order)
+    return id
+  }
+  client._onMessage = function (message: any) {
+    if (!asked.has(message.id)) return onMessage.call(this, message)
+    const askedAs = asked.get(message.id)!
+    asked.delete(message.id)
+    held.set(message.id, { order: askedAs, release: () => { held.delete(message.id); onMessage.call(this, message) } })
+    wake()
+  }
+  const newest = () => Math.max(0, ...[...held.values()].map(answer => answer.order))
+  const addFrame = () => page.evaluate(() => { document.querySelector('#s')!.firstChild?.remove(); document.querySelector('#s')!.appendChild(document.createElement('iframe')) })
+  let begun!: () => void
+  const started = new Promise<void>(resolve => { begun = resolve })
+  const running = (async () => {
+    await addFrame()
+    await until(() => held.size > 0)
+    begun()
+    while (!stopped) {
+      const earlier = [...held.keys()].filter(id => !pinned.has(id)), mark = order
+      await addFrame()
+      await until(() => newest() > mark)
+      // A pin can land while this turn waits, so it is checked at the release, not when `earlier` was listed.
+      for (const id of earlier) if (!pinned.has(id)) held.get(id)?.release()
+    }
+  })()
+  running.catch(() => {})
+  return {
+    // The first frame's answer is held: from here on the watcher always has a frame it is still waiting on.
+    started: Promise.race([started, running]),
+    // The answers held now stay held until releasePinned. Returns the order they were asked up to.
+    pin: () => { for (const id of held.keys()) pinned.add(id); return { order, count: pinned.size } },
+    releasePinned: () => { for (const id of [...pinned]) held.get(id)?.release(); pinned.clear() },
+    // An answer to a frame asked for after that order is held.
+    heldAfter: (mark: number) => until(() => newest() > mark),
+    // Is an answer still held for a frame asked for after that order?
+    holdsAfter: (mark: number) => [...held.values()].some(answer => answer.order > mark),
+    stop: async () => {
+      stopped = true
+      wake()
+      await running.catch(() => {})
+      connection._rawSend = rawSend
+      client._onMessage = onMessage
+      pinned.clear()
+      for (const answer of [...held.values()]) answer.release()
+    },
+  }
+}
+
+// A read that waits for frames that came after it started never comes back, so this is the plain words for that.
+const CHAIN_READ_COMES_BACK_MS = 60_000
+const CHAIN_STARTS_MS = 10_000
+
+test('P1-6 a read waits only for the frames it started with, so a page that keeps making frames cannot hold it', { skip, timeout: 120_000 }, async (t) => {
+  const r = await rig(t, '<h1>Steady</h1><div id=s></div>')
+  assert.match(textOf(await r.call('browser_snapshot')), /heading "Steady"/)
+  const client = (await r.page._connection.toImpl(r.page.mainFrame()).utilityContext()).delegate._client
+  const frames = framesThatNeverStop(r.page, client)
+  t.after(() => frames.stop())
+  await within(frames.started, CHAIN_STARTS_MS, `no new frame's watcher answer was seen within ${CHAIN_STARTS_MS / 1000} s, so this test could not keep frames coming`)
+  // Every wait the read makes on the watcher, and whether it has ended.
+  // ChromiumEngine drives the shared PlaywrightEngine, which owns the privacy reads.
+  const privacy = r.engine._engine._privacy, watch = privacy.watchPersonInput, waits: { ended: boolean }[] = []
+  let firstWait!: () => void
+  const waited = new Promise<void>(resolve => { firstWait = resolve })
+  privacy.watchPersonInput = function (...args: any[]) {
+    const out = watch.apply(this, args), row = { ended: false }
+    waits.push(row)
+    Promise.resolve(out).then(() => { row.ended = true }, () => { row.ended = true })
+    firstWait()
+    return out
+  }
+  t.after(() => { privacy.watchPersonInput = watch })
+
+  // One side: the frame work begun before the read holds it. Two newer frames arrive and the read still waits.
+  const before = frames.pin()
+  assert.ok(before.count > 0, 'a frame\'s watcher answer was held when the read began')
+  const reading = r.call('browser_snapshot')
+  await within(waited, CHAIN_STARTS_MS, `the read did not ask the watcher within ${CHAIN_STARTS_MS / 1000} s`)
+  await within(frames.heldAfter(before.order + 1), CHAIN_STARTS_MS, `newer frames stopped arriving within ${CHAIN_STARTS_MS / 1000} s`)
+  assert.equal(waits.some(row => row.ended), false, 'the read still waits for the frame work begun before it, with newer frames held after it')
+
+  // The other side: once that work is done the read comes back, while the newer frames' work is still unfinished.
+  frames.releasePinned()
+  const reply: any = await within(reading, CHAIN_READ_COMES_BACK_MS, `a read did not come back within ${CHAIN_READ_COMES_BACK_MS / 1000} s while new frames kept arriving: it is waiting for frames that came after it started`)
+  const newerUnfinished = frames.holdsAfter(before.order)
+  await frames.stop()
+  assert.ok(newerUnfinished, 'the read came back before the work for frames made after it began had finished')
+  assert.notEqual(reply.isError, true, textOf(reply))
+  assert.match(textOf(reply), /heading "Steady"/)
+  assert.match(textOf(await r.call('browser_snapshot')), /heading "Steady"/, 'and the next read is an ordinary read')
+})
+
+test('P1-6 a busy page locks nothing: the read during it ends, and the call after it reads', { skip, timeout: 60_000 }, async (t) => {
+  const r = await rig(t, '<h1>Hydrating</h1>')
   await r.page.evaluate(() => { setTimeout(() => { const end = Date.now() + 2600; while (Date.now() < end); }, 50) })
   await pause(100)
-  await r.call('browser_snapshot')
+  await within(r.call('browser_snapshot'), READ_COMES_BACK_MS, `a read during a busy page did not come back within ${READ_COMES_BACK_MS / 1000} s`)
   await pause(2800)
   await r.page.setContent('<h1>Recovered page</h1>')
-  assert.match(textOf(await r.call('browser_snapshot')), /Recovered page/)
+  const after = textOf(await within(r.call('browser_snapshot'), READ_COMES_BACK_MS, `the call after a busy page did not come back within ${READ_COMES_BACK_MS / 1000} s: the busy page locked the browser`))
+  assert.match(after, /Recovered page/, after)
+})
+
+test('P1-6 big fields lock nothing: four pages with a 270 KB hidden field each read in turn', { skip, timeout: 60_000 }, async (t) => {
+  const r = await rig(t, '<h1>Start</h1>')
   for (let index = 0; index < 4; index += 1) {
     await r.page.setContent(`<form><input type=hidden name=__VIEWSTATE value="${Buffer.from(String(index).repeat(200 * 1024)).toString('base64')}"><h1>Page ${index}</h1></form>`)
-    assert.match(textOf(await r.call('browser_snapshot')), new RegExp(`Page ${index}`))
+    assert.match(textOf(await within(r.call('browser_snapshot'), READ_COMES_BACK_MS, `page ${index} with a big field did not come back within ${READ_COMES_BACK_MS / 1000} s`)), new RegExp(`Page ${index}`))
   }
-  await r.page.setContent('<div><meter value=3 max=5></meter>x</div><h1>Meter</h1>')
+})
+
+test('P1-6 one failed read fails one call in plain words, and the next call works', { skip, timeout: 60_000 }, async (t) => {
+  const r = await rig(t, '<div><meter value=3 max=5></meter>x</div><h1>Meter</h1>')
   assert.match(textOf(await r.call('browser_snapshot')), /heading "Meter"/)
   const toImpl = r.page._connection.toImpl
   const frame = toImpl(r.page.mainFrame()), utilityContext = frame.utilityContext
@@ -102,7 +269,8 @@ test('P1-6 one failed read fails one call, and slow frames, churn, busy pages an
   frame.utilityContext = utilityContext
   assert.match(failed, /could not be read/i)
   assert.doesNotMatch(failed, /MADEUPPAGEDETAIL|Meter/)
-  assert.match(textOf(await r.call('browser_snapshot')), /heading "Meter"/)
+  const next = textOf(await within(r.call('browser_snapshot'), READ_COMES_BACK_MS, `the call after a failed read did not come back within ${READ_COMES_BACK_MS / 1000} s`))
+  assert.match(next, /heading "Meter"/, next)
 })
 
 test('P1-6 a dialog in a background tab stops nothing, and a click during a dialog says so and recovers', { skip, timeout: 90_000 }, async (t) => {

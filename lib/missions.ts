@@ -862,6 +862,17 @@ export function buildMissionCancelGoalPath(
 export const MISSION_GOAL_WORKING_REFRESH_MINUTES = 30
 
 /**
+ * A held mark (KC 2026-11-17 msg 241497): the agent says the goal is being
+ * worked on by background work that outlives its turn, such as workers it
+ * started. The daemon keeps a held mark through Stop, SessionEnd, a new
+ * prompt and idle time, refreshing it before the server's 30 minute lapse,
+ * until the hold runs out, the agent clears it, or the goal is ticked.
+ * held: true holds for the default; held_minutes picks the time, up to the max.
+ */
+export const MISSION_GOAL_WORKING_HOLD_DEFAULT_MINUTES = 120
+export const MISSION_GOAL_WORKING_HOLD_MAX_MINUTES = 240
+
+/**
  * The mission writes that take NO pending self-write stamp (server.ts). A
  * mark only ever emits mission_updated, which is never narrated and never
  * spends a pending stamp (lib/mission-events.ts MISSION_SELF_WRITE_FRAMES), so
@@ -901,6 +912,8 @@ export interface MissionGoalWorkingInput {
   /** Distinct goal ids in the order the agent gave them: one request each. */
   goalIds: number[]
   working: boolean
+  /** Present only on a held mark: how long the daemon keeps it, in minutes. */
+  holdMinutes?: number
 }
 
 /**
@@ -914,8 +927,10 @@ export interface MissionGoalWorkingInput {
 export function buildMissionGoalWorkingInput(input: {
   goal_ids?: unknown
   working?: unknown
+  held?: unknown
+  held_minutes?: unknown
 }): MissionBuildResult<MissionGoalWorkingInput> {
-  const { goal_ids, working } = input
+  const { goal_ids, working, held, held_minutes } = input
   const countRefusal = (): { ok: false; error: string } => ({
     ok: false,
     error:
@@ -951,7 +966,35 @@ export function buildMissionGoalWorkingInput(input: {
         `clears the mark (got ${JSON.stringify(working)}).`,
     }
   }
-  return { ok: true, body: { goalIds, working } }
+  // The hold is judged with the rest, so a bad one marks nothing at all.
+  if (held !== undefined && typeof held !== 'boolean') {
+    return {
+      ok: false,
+      error:
+        `held must be true or false: true keeps the mark for background work after your turn ends ` +
+        `(got ${JSON.stringify(held)}). Nothing was marked.`,
+    }
+  }
+  if (
+    held_minutes !== undefined &&
+    (typeof held_minutes !== 'number' || !Number.isInteger(held_minutes) ||
+      held_minutes < 1 || held_minutes > MISSION_GOAL_WORKING_HOLD_MAX_MINUTES)
+  ) {
+    return {
+      ok: false,
+      error:
+        `held_minutes must be a whole number of minutes from 1 to ${MISSION_GOAL_WORKING_HOLD_MAX_MINUTES} ` +
+        `(got ${JSON.stringify(held_minutes)}). Nothing was marked.`,
+    }
+  }
+  if (held === false && held_minutes !== undefined) {
+    return { ok: false, error: 'held: false takes no held_minutes. Nothing was marked.' }
+  }
+  // A clear always clears: a hold sent with working: false has nothing to keep.
+  const holding = working && (held === true || held_minutes !== undefined)
+  if (!holding) return { ok: true, body: { goalIds, working } }
+  const holdMinutes = (held_minutes as number | undefined) ?? MISSION_GOAL_WORKING_HOLD_DEFAULT_MINUTES
+  return { ok: true, body: { goalIds, working, holdMinutes } }
 }
 
 export interface MissionGoalWaitingBody {

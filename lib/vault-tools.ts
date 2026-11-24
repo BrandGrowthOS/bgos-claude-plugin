@@ -4,6 +4,7 @@ import {
   buildFillIntent,
   hostPinStatus,
   loadOrCreateHostKey,
+  readHostRecord,
   signFillIntent,
   vaultCall,
   verifyFillIntent,
@@ -16,6 +17,13 @@ import {
 
 const HOST_SETUP =
   'Ask the owner to run `hoai vault-host` in a terminal on this agent machine. It registers this host, shows its fingerprint there (never in chat) for the owner to compare and pin in HOAI, and records the pin. Do not ask for or relay the fingerprint yourself.'
+
+// Zero setup (HOAI design 2026-11-12): where the server takes host offers this
+// machine sets itself up, so nobody is sent to a terminal.
+const HOST_PENDING =
+  'This computer has offered its vault key and HOAI finishes the setup by itself, in the background, the next time the owner has the app open with this agent\'s vault on. That needs HOAI 5.28.3 or later on the owner\'s side: an older app cannot finish it. Nothing has to be typed or approved anywhere. Tell the owner the vault is still being set up and that, if it stays that way, they should update HOAI; try once more later, do not retry in a loop and do not ask the owner to run any command.'
+const HOST_CHANGE =
+  'This computer has a new vault key (the agent was reinstalled or moved), so the owner sees "this computer changed" in HOAI. Until the owner taps Use the new computer there, the vault stays blocked here. Tell the owner that, once; do not retry in a loop and do not ask for or relay any key or code.'
 
 export const VAULT_GUIDANCE =
   'Never ask for, accept or repeat a password or other vault value in chat or tool input. To sign in with a saved login, call vault_items, then vault_fill_prepare with the login id and the HOAI browser sessionId, tabId and exact HTTPS origin, and pass its ticket, sessionId, tabId, origin and request unchanged to hoai_vault_fill on the HOAI desktop browser. It fills under the owner credential hold and returns a receipt only. If no saved login fits, call vault_request_login so the owner adds it in the secure form.'
@@ -90,6 +98,12 @@ export interface VaultToolDeps {
   fetch?: typeof globalThis.fetch
   /** Log sink. Gets codes and item ids only, never a value, key, ticket or fingerprint. */
   log?: (line: string) => void
+  /**
+   * Zero setup (lib/vault-host-auto.mjs ensureAutoHost, bound by the daemon):
+   * makes this machine's keys if it has none and offers the public halves.
+   * Absent, the tools behave exactly as before.
+   */
+  autoHost?: () => Promise<{ status: string; code?: string }>
 }
 
 type Row = Record<string, unknown>
@@ -100,6 +114,10 @@ const MESSAGES: Record<string, string> = {
   VAULT_OWNER_ONLY: 'Only the owner can use this agent vault. This turn was not admitted for the owner.',
   VAULT_HOST_NOT_PINNED: `This agent machine is not yet pinned by the owner, so no fill was requested. ${HOST_SETUP}`,
   VAULT_HOST_SETUP_REQUIRED: `This agent machine has no vault host identity yet. ${HOST_SETUP}`,
+  VAULT_HOST_SETUP_PENDING: HOST_PENDING,
+  VAULT_HOST_CHANGE_PENDING: HOST_CHANGE,
+  VAULT_HOST_SETUP_RETRY: 'HOAI could not be reached to finish setting up the vault on this computer. Nothing has to be typed or approved anywhere. Try once more later; do not retry in a loop and do not ask the owner to run any command.',
+  VAULT_HOST_STORAGE: 'This computer could not keep its vault key file private to the agent\'s own account, so the vault is not set up here. HOAI shows the owner why. Do not retry in a loop.',
   VAULT_HOST_KEY_EXPOSED: 'The vault host key file is readable by other users, so it is not used. Ask the owner to remove it and run `hoai vault-host` in a terminal on this agent machine.',
   VAULT_HOST_KEY_INVALID: 'The vault host key file is damaged or belongs to another agent. Ask the owner to remove it and run `hoai vault-host` in a terminal on this agent machine.',
   VAULT_SIGNING_KEY_INVALID: `The stored agent signing key is not usable. ${HOST_SETUP}`,
@@ -158,6 +176,23 @@ export async function handleVaultTool(name: string, args: unknown, deps: VaultTo
     const assistantId = Number(deps.assistantId)
     if (!Number.isSafeInteger(assistantId) || assistantId <= 0) throw new ToolRefusal('VAULT_NOT_PAIRED')
     // First use creates the host key; a key other users can read is refused here.
+    // Zero setup: a machine that is not pinned yet first sets itself up (its
+    // own keys, offered to the server). Where the server does not take offers
+    // the answer is `off` and everything below is as it always was.
+    // The server is asked BEFORE any key exists here, and while that path is
+    // open nobody is sent to a terminal: a machine that cannot check in is
+    // told to try later.
+    if (deps.autoHost) {
+      const known = await readHostRecord(deps.stateDir, undefined, deps.security).catch(() => null)
+      if (!known || hostPinStatus(known) !== 'pinned') {
+        const auto = await deps.autoHost().catch(() => ({ status: 'unavailable' }))
+        if (auto.status === 'problem') throw new ToolRefusal('VAULT_HOST_STORAGE')
+        if (auto.status === 'offered') throw new ToolRefusal('VAULT_HOST_SETUP_PENDING')
+        if (auto.status === 'change_offered') throw new ToolRefusal('VAULT_HOST_CHANGE_PENDING')
+        if (auto.status !== 'installed' && auto.status !== 'off' && auto.status !== 'disabled') throw new ToolRefusal('VAULT_HOST_SETUP_RETRY')
+      }
+    }
+    // Installed, or a server without zero setup: the first use that always was.
     const host = await loadOrCreateHostKey(deps.stateDir, assistantId, undefined, deps.security)
     const call = (method: 'GET' | 'POST', sub: string, extra: { query?: Row; body?: Row } = {}) => {
       if (!host.signingSecret) throw new ToolRefusal('VAULT_HOST_SETUP_REQUIRED')

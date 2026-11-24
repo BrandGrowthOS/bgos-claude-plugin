@@ -138,7 +138,7 @@ test('lane-server.ts: lane_policy_changed reads lanes/me, every heartbeat answer
 })
 
 test('lane-server.ts: the lane socket declares lane_memory_rpc in its own handshake, beside the session alone', () => {
-  assert.match(SERVER, /cb\(\{ laneSession: session\?\.sessionToken \?\? '', capabilities: \[LANE_MEMORY_RPC_TOKEN\] \}\)/)
+  assert.match(SERVER, /cb\(\{ laneSession: session\?\.sessionToken \?\? '', capabilities: \[LANE_MEMORY_RPC_TOKEN, HEARD_REACTIONS_CAPABILITY\] \}\)/)
   assert.doesNotMatch(SERVER, /pairingToken|X-BGOS-Pairing|apiKey:/)
 })
 

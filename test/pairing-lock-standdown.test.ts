@@ -44,12 +44,15 @@ const PAIRING_FRAMES = [
   // lost access for the browser host.
   'vault_person_access_changed',
   'voice_rpc',
+  // Zero setup: only the lock holder makes or offers this machine's vault keys.
+  'vault_host_setup',
   'export_pack',
   'export_pack_manifest',
   'voice_task_dispatch',
   'update_rpc',
   'watcher_install_rpc',
   'inbound_message',
+  'inbound_reaction',
   'message_edited',
   'message_deleted',
   'chat_deleted',
