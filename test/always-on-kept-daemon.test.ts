@@ -21,7 +21,7 @@ import { posix } from 'node:path'
 import ts from 'typescript'
 
 import * as kept from '../lib/agent-kept.mjs'
-import { canonicalService } from '../lib/agent-inventory.mjs'
+import { canonicalService, credentialsPath } from '../lib/agent-inventory.mjs'
 import { buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
 import { decideAlwaysOnReconcile, describeOtherSupervisor } from '../lib/always-on-reconcile.ts'
 import { serviceRefusalFrom } from '../lib/agent-service.mjs'
@@ -77,6 +77,8 @@ type Scene = {
   runShWriteFails?: boolean
   /** A removal took the supervisor: no service file, the not-kept run.sh in its place (review round 7 M5). */
   removed?: boolean
+  /** This agent's own pairing file (credentials-<id>.json) is here (default yes); without it the daemon is paired through a shared credentials.json (review round 8 K1). */
+  pairingFile?: boolean
 }
 
 const ON = { enabled: true, assistantIds: ['912'], switchState: 'on' }
@@ -102,6 +104,7 @@ async function reconcile(scene: Scene) {
     files.set(`${sd}/${kept.INSTALLED_AT_FILE_NAME}`, stampAgo(60 * MIN))
     files.set(`${sd}/${kept.KEPT_SEEN_FILE_NAME}`, stampAgo(60 * MIN))
   }
+  if (scene.pairingFile !== false) files.set(credentialsPath(home, ID)!, '{}')
   if (scene.watcher !== false) files.set(kept.watcherServiceFiles({ platform, home, env: {} })[0]!, 'x')
   if (scene.cache) {
     const empty = scene.cache.listedRecently ? { listedRecently: scene.cache.listedRecently } : {}
@@ -361,4 +364,13 @@ test('r7 M5 (r7rev FUZZ run 427): a supervisor a removal took is not put back by
   assert.equal((await reconcile({ alwaysOn: true, cache: { answer: ON, agoMs: MIN } })).installs, 1)
   assert.equal((await reconcile({ removed: true, alwaysOn: true, auth: 'apikey', cache: { answer: OTHERS_ONLY, agoMs: MIN, listedRecently: ['7'] } })).installs, 1)
   assert.equal((await reconcile({ removed: true, alwaysOn: true, watcher: false })).installs, 1)
+})
+
+test('r8 K1: an agent paired through a shared credentials.json, with no pairing file of its own, is put back by its daemon: the sweep cannot list it, so no live list ever will', async () => {
+  // r7 M5's case (removed, Always on back on, a cached list naming it), but this HOME has no credentials-912.json.
+  const out = await reconcile({ removed: true, alwaysOn: true, pairingFile: false, cache: { answer: ON, agoMs: MIN } })
+  assert.equal(out.installs, 1, out.logs.join('\n'))
+  assert.equal(out.logs.some((l) => /not installing it here/.test(l)), false, out.logs.join('\n'))
+  // Control: with its own pairing file it still waits for the watcher's live list (r7 M5).
+  assert.equal((await reconcile({ removed: true, alwaysOn: true, cache: { answer: ON, agoMs: MIN } })).installs, 0)
 })

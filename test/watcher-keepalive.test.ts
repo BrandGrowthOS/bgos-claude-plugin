@@ -46,7 +46,7 @@ import { agentTaskSpec } from '../lib/agent-task-win32.mjs'
 import { RESTART_EXEC_TIMEOUT_MS } from '../lib/agent-restart.mjs'
 import { CHANNEL_DEAF_CONFIRM_MS, CHANNEL_DEAF_EPISODE_CLEAR_MS, buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
-import { KEPT_CACHE_FRESH_MS, KEPT_CHECK_CAPABILITY, decideKeptSupervisor, keepAliveStandingFromCache, releasePosixSupervisor, supervisorRemovedNotKept } from '../lib/agent-kept.mjs'
+import { KEPT_CACHE_FRESH_MS, KEPT_CHECK_CAPABILITY, decideKeptSupervisor, hasPairingFile, keepAliveStandingFromCache, releasePosixSupervisor, supervisorRemovedNotKept } from '../lib/agent-kept.mjs'
 import { fakeAgentTasks, type FakeAgentTaskOptions, type FakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 
 const HOME = '/Users/kc'
@@ -4761,7 +4761,8 @@ test(`r7 M5 (r7rev FUZZ): ${R7_FUZZ_RUNS} random runs of owner actions, failed a
     const daemon = async () => {
       if (!daemonUp) return
       const standing = keepAliveStandingFromCache(fs.readFile(keepAliveCachePath(HOME)), '912', clock.now(), { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled: true, paired: true })
-      const removedNotKept = supervisorRemovedNotKept({ platform: 'darwin', stateDir: `${HOME}/.bgos-agent/912`, exists: (p: string) => fs.exists(p), readFile: (p: string) => fs.readFile(p) })
+      // As server.ts reconcileAlwaysOn: held only for an agent with its own pairing file (review round 8 K1).
+      const removedNotKept = hasPairingFile({ home: HOME, assistantId: '912', exists: (p: string) => fs.exists(p) }) && supervisorRemovedNotKept({ platform: 'darwin', stateDir: `${HOME}/.bgos-agent/912`, exists: (p: string) => fs.exists(p), readFile: (p: string) => fs.readFile(p) })
       const d = decideKeptSupervisor({ alwaysOn: owner.ao, standing, installed: fs.files.has(PLIST('912')), installedAt: fs.readFile(IAT), keptSeen: fs.readFile(KS), now: clock.now(), removedNotKept })
       if (d.markSeen) fs.writeFile(KS, String(fs.readFile(IAT)))
       if (d.action === 'remove') {

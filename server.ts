@@ -144,6 +144,7 @@ import {
   KEPT_SEEN_FILE_NAME,
   WAITS_FOR_LIVE_LIST,
   decideKeptSupervisor,
+  hasPairingFile,
   keepAliveCacheFile,
   keepAliveStandingFromCache,
   markInstallSeenKept,
@@ -20429,8 +20430,12 @@ async function reconcileAlwaysOn(): Promise<void> {
       installedAt,
       keptSeen: readTextOrNull(joinPath(stateDir, KEPT_SEEN_FILE_NAME)),
       now,
-      // A supervisor a removal took is put back by the watcher's live list, never by this cached one (review round 7 M5).
-      removedNotKept: supervisorRemovedNotKept({ platform: process.platform, stateDir, exists: (path: string) => existsSync(path), readFile: readTextOrNull }),
+      // A supervisor a removal took is put back by the watcher's live list, never by this cached one (review round 7 M5),
+      // for an agent with its own pairing file only: one paired through a shared credentials.json is on no sweep's list
+      // of agents, so no live list puts it back and this daemon does (review round 8 K1).
+      removedNotKept:
+        hasPairingFile({ home, assistantId: ASSISTANT_ID, exists: (path: string) => existsSync(path) }) &&
+        supervisorRemovedNotKept({ platform: process.platform, stateDir, exists: (path: string) => existsSync(path), readFile: readTextOrNull }),
     })
     if (kept.markSeen) {
       try {
