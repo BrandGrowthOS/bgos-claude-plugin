@@ -4649,3 +4649,35 @@ test('r7 M1: the marker alone never asks for a second install: a Linux unit stil
   await runKeepAliveSweep(ctx as any)
   assert.equal(installsOf(rec), 0, logs.join(' | '))
 })
+
+test('r7 M2 (r7rev P6): a half removed kept agent whose folder is not known is not installed again (never bgos-agent install --dir null); its row says no_known_folder', async () => {
+  const fs = r7Linux(null)
+  fs.writeFile(RUN_SH('912'), NOT_KEPT_RUN)
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { platform: 'linux', fetchKeepAlive: LISTS_912 })
+  const report = await runKeepAliveSweep(ctx as any)
+  const dirs = rec.calls.filter((c) => c.file === 'bash' && c.args.includes('install')).map((c) => c.args[c.args.indexOf('--dir') + 1])
+  assert.deepEqual(dirs, [], `install --dir ${JSON.stringify(dirs)}; ${logs.join(' | ')}`)
+  const row = report.agents.find((a: any) => a.id === '912')
+  assert.deepEqual([row?.state, row?.reason], ['needs_first_launch', 'no_known_folder'], JSON.stringify(report.agents))
+})
+
+test('r7 M2 (r7rev P6 controls): with its folder known the same agent is installed again into that folder; with a real run.sh and no folder it is left as it is', async () => {
+  const known = r7Linux()
+  known.writeFile(RUN_SH('912'), NOT_KEPT_RUN)
+  const rec = recorder({ ps: IDLE_PS })
+  await runKeepAliveSweep(ctxFor(known, rec, fakeClock(), { platform: 'linux', fetchKeepAlive: LISTS_912 }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash' && c.args.includes('install')).map((c) => c.args[c.args.indexOf('--dir') + 1]), [AVA])
+  const left = recorder({ ps: IDLE_PS })
+  await runKeepAliveSweep(ctxFor(r7Linux(null), left, fakeClock(), { platform: 'linux', fetchKeepAlive: LISTS_912 }).ctx as any)
+  assert.equal(installsOf(left), 0)
+})
+
+test('r7 M2: installProductSupervisor never runs bgos-agent install without a folder: null, undefined, empty or blank is a named failure and runs nothing', async () => {
+  for (const cwd of [null, undefined, '', '  ']) {
+    const rec = recorder({})
+    const out = await installProductSupervisor({ platform: 'linux', assistantId: '912', cwd, pluginRoot: ROOT, home: HOME, env: { PATH: '/usr/bin' }, fs: memoryFs(), exec: rec.exec, nodePath: '/usr/bin/node' } as any)
+    assert.deepEqual(out, { ok: false, message: 'no_known_folder' }, String(cwd))
+    assert.deepEqual(rec.calls, [], String(cwd))
+  }
+})
