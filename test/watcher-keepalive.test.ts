@@ -4794,3 +4794,60 @@ test(`r7 M5 (r7rev FUZZ): ${R7_FUZZ_RUNS} random runs of owner actions, failed a
   // The sequence test must exercise both acts, or a green run proves nothing.
   assert.ok(installsSeen > 50 && removalsSeen > 50, `installs ${installsSeen}, removals ${removalsSeen}`)
 })
+
+const R7_HELD_LINE = /keep-alive 912: its supervisor was removed because it was not kept; a cached list does not put it back/
+/** A kept Mac agent the daemon has just removed: the not-kept run.sh, the plist gone. */
+const r7RemovedNow = (fs: MemoryFs) => {
+  fs.writeFile(RUN_SH('912'), NOT_KEPT_RUN)
+  fs.rm(PLIST('912'))
+}
+
+test('r7 N1 (r7rev P3, mutant X11): a removal made while the reads already fail is said once, on the first sweep that holds it, and not on the next', async () => {
+  const fs = onceKept()
+  fs.writeFile(RUN_SH('912'), R7_REAL)
+  const clock = fakeClock()
+  const runs = new Map()
+  await sweepWith(fs, clock, LISTS_912, runs)
+  clock.advance(MIN)
+  await sweepWith(fs, clock, DOWN_503(), runs)
+  r7RemovedNow(fs)
+  clock.advance(MIN)
+  const first = await sweepWith(fs, clock, DOWN_503(), runs)
+  assert.equal(first.filter((l) => R7_HELD_LINE.test(l)).length, 1, first.join(' | '))
+  clock.advance(MIN)
+  const next = await sweepWith(fs, clock, DOWN_503(), runs)
+  assert.equal(next.some((l) => R7_HELD_LINE.test(l)), false, next.join(' | '))
+})
+
+test('r7 N2 (r7rev P4, mutant X12): the row of a held agent does not say supervised: it says an install that waits for a live list, and a live list naming it installs it', async () => {
+  const fs = onceKept()
+  fs.writeFile(RUN_SH('912'), R7_REAL)
+  const clock = fakeClock()
+  const runs = new Map()
+  await sweepWith(fs, clock, LISTS_912, runs)
+  r7RemovedNow(fs)
+  clock.advance(MIN)
+  const rec = recorder({ ps: IDLE_PS })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { fetchKeepAlive: DOWN_503(), listReads: runs }).ctx as any)
+  assert.equal(installsOf(rec), 0)
+  const row = report.agents.find((a: any) => a.id === '912')
+  assert.deepEqual([row?.state, row?.reason], ['installing', 'waits_for_live_list'], JSON.stringify(report.agents))
+  clock.advance(MIN)
+  const live = recorder({ ps: IDLE_PS })
+  await runKeepAliveSweep(ctxFor(fs, live, clock, { fetchKeepAlive: LISTS_912, listReads: runs }).ctx as any)
+  assert.equal(installsOf(live), 1)
+})
+
+test('r7 N3 (mutant X3): a removed agent whose supervisor is still in place is not held on a cached list: its row stays supervised', async () => {
+  // Linux: the unit still there, its run.sh the real one, and a removal's marker beside it (review round 7 M1).
+  const fs = r7Linux()
+  fs.writeFile(R7_MARKER, 'not_kept\n')
+  fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'], switchState: 'on', showAgentWindows: false }, T0 - 50_000))
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx, logs } = ctxFor(fs, rec, fakeClock(), { platform: 'linux', fetchKeepAlive: DOWN_503() })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.equal(report.source, 'cache')
+  const row = report.agents.find((a: any) => a.id === '912')
+  assert.deepEqual([row?.state, row?.reason], ['supervised', 'canonical'], JSON.stringify(report.agents))
+  assert.equal(logs.some((l) => R7_HELD_LINE.test(l)), false, logs.join(' | '))
+})

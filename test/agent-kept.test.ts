@@ -25,6 +25,7 @@ import {
   NOT_KEPT_RUN_SH_MARK,
   NOT_KEPT_STUCK_FILE_NAME,
   decideKeptSupervisor,
+  hasPairingFile,
   installGraceRemainingMs,
   keepAliveStanding,
   keepAliveCacheFile,
@@ -681,4 +682,12 @@ test('r7 M5: kept only by the list, a supervisor a removal took waits for a live
   for (const standing of ['no_pairing', 'never_set', 'no_watcher']) assert.equal(decideKeptSupervisor({ ...base, standing }).action, 'install', standing)
   assert.equal(decideKeptSupervisor({ ...base, standing: 'kept', removedNotKept: false }).action, 'install', 'never removed')
   assert.equal(decideKeptSupervisor({ ...base, standing: 'kept', installed: true }).action, 'leave', 'installed: nothing to hold')
+})
+
+test('r7 N3 (mutants X14, X15): a pairing file that cannot be looked for counts as a pairing: no path for the id, or a check that throws', () => {
+  const none = () => false
+  assert.equal(hasPairingFile({ home: HOME, assistantId: '912', exists: none }), false, 'looked for and not there: no pairing (control)')
+  assert.equal(hasPairingFile({ home: HOME, assistantId: '912', exists: (p: string) => p === CREDS_912 }), true, 'there (control)')
+  assert.equal(hasPairingFile({ home: HOME, assistantId: 'not-an-id', exists: none }), true, 'no path to look at')
+  assert.equal(hasPairingFile({ home: HOME, assistantId: '912', exists: () => { throw new Error('EACCES') } }), true, 'the check threw')
 })
