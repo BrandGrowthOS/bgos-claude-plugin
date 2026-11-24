@@ -62,8 +62,22 @@ function itemRows() {
 
 interface Call { method: string; url: string; headers: Record<string, string>; body: string }
 
-/** A fake backend that applies the server contract's checks to every call. */
-function fakeBackend(identityPublic: string, opts: { failWith?: number; failBody?: string } = {}) {
+// The server's own words when a login may not fill the tab's website: the same
+// text on a server before BGOS #6057 (exact origin only) and after it (same
+// registrable domain), in NestJS's 400 shape.
+const SITE_REFUSAL = 'The login must match this browser website.'
+const GOOGLE_LOGIN = randomUUID()
+const OTHER_OWNER_LOGIN = randomUUID()
+
+/** The registrable domain of a fixture host: its last two labels (enough for these fixtures, not a public suffix list). */
+const fixtureSite = (origin: string) => new URL(origin).hostname.split('.').slice(-2).join('.')
+
+/**
+ * A fake backend that applies the server contract's checks to every call.
+ * `site` is the server's rule for which tab a login may fill: `exact` is every
+ * server before BGOS #6057, `same_site` a server with it.
+ */
+function fakeBackend(identityPublic: string, opts: { failWith?: number; failBody?: string; items?: Record<string, unknown>[]; site?: 'exact' | 'same_site'; fillRefusal?: { status: number; body: unknown } } = {}) {
   const calls: Call[] = []
   const fetch = async (url: string | URL, init: RequestInit = {}) => {
     const u = new URL(String(url))
@@ -76,7 +90,8 @@ function fakeBackend(identityPublic: string, opts: { failWith?: number; failBody
     if (reason) return reply(403, { message: `refused ${reason} ${SECRET}` })
     if (opts.failWith) return reply(opts.failWith, opts.failBody ?? { message: SECRET })
     const prefix = `/api/v1/vault/agent/${ASSISTANT}`
-    if (method === 'GET' && u.pathname === `${prefix}/items`) return reply(200, { items: itemRows() })
+    const items = [...itemRows(), ...(opts.items ?? [])]
+    if (method === 'GET' && u.pathname === `${prefix}/items`) return reply(200, { items })
     if (method === 'POST' && u.pathname === `${prefix}/host-key`) {
       const parsed = JSON.parse(body)
       if (Object.keys(parsed).sort().join() !== 'publicKey,signature') return reply(400, {})
@@ -92,6 +107,11 @@ function fakeBackend(identityPublic: string, opts: { failWith?: number; failBody
       } catch {
         return reply(400, { message: 'Invalid signed vault fill request.' })
       }
+      if (opts.fillRefusal) return reply(opts.fillRefusal.status, opts.fillRefusal.body)
+      const item = items.find((row) => row.id === fill[1])
+      const website = String(item?.website ?? '')
+      const fits = (opts.site ?? 'exact') === 'exact' ? website === parsed.origin : !!website && fixtureSite(website) === fixtureSite(parsed.origin)
+      if (!item || item.kind !== 'login' || !fits) return reply(400, { message: SITE_REFUSAL, error: 'Bad Request', statusCode: 400 })
       const i = parsed.intent
       if (i.itemId !== fill[1] || i.ownerId !== OWNER || i.assistantId !== ASSISTANT || i.revision !== 7 || i.vaultId !== VAULT_ID ||
         i.sessionId !== parsed.sessionId || i.tabId !== parsed.tabId || i.origin !== parsed.origin) return reply(400, {})
@@ -381,15 +401,20 @@ test('vault_fill_prepare: refuses before any fill call when the owner has not pi
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('vault_fill_prepare: refuses a non-login item, a mismatched website and malformed input', async () => {
-  const { dir, backend } = await pinnedHost()
+test('vault_fill_prepare: refuses a non-login item, an unknown item, another owner\'s login and malformed input, before any fill call', async () => {
+  const { dir, key } = await pinnedHost()
+  const backend = fakeBackend(key.identityPublic, {
+    items: [{ id: OTHER_OWNER_LOGIN, ownerId: 'user_someone_else', vaultId: VAULT_ID, vaultAssistantId: ASSISTANT, revision: 7, name: 'Not yours', kind: 'login', labels: [], website: 'https://login.example.test', username: 'x@example.test', envName: null, reference: null }],
+  })
   const logs: string[] = []
   try {
     const d = deps(dir, backend.fetch, logs)
     let out = parse(await handleVaultTool('vault_fill_prepare', { itemId: API_KEY_ITEM, sessionId: 's', tabId: 't', origin: 'https://login.example.test' }, d))
     assert.equal(out.error, 'VAULT_UNAVAILABLE')
-    out = parse(await handleVaultTool('vault_fill_prepare', { itemId: LOGIN, sessionId: 's', tabId: 't', origin: 'https://other.example.test' }, d))
-    assert.equal(out.error, 'VAULT_ORIGIN_MISMATCH')
+    out = parse(await handleVaultTool('vault_fill_prepare', { itemId: randomUUID(), sessionId: 's', tabId: 't', origin: 'https://login.example.test' }, d))
+    assert.equal(out.error, 'VAULT_UNAVAILABLE', 'no such item')
+    out = parse(await handleVaultTool('vault_fill_prepare', { itemId: OTHER_OWNER_LOGIN, sessionId: 's', tabId: 't', origin: 'https://login.example.test' }, d))
+    assert.equal(out.error, 'VAULT_UNAVAILABLE', 'a login of another owner')
     for (const bad of [
       { itemId: 'not-a-uuid', sessionId: 's', tabId: 't', origin: 'https://login.example.test' },
       { itemId: LOGIN, sessionId: 's', tabId: 't', origin: 'http://login.example.test' },
@@ -402,6 +427,98 @@ test('vault_fill_prepare: refuses a non-login item, a mismatched website and mal
       assertClean(r.content[0].text, [SECRET], 'input refusal')
     }
     assert.equal(backend.calls.filter(c => c.url.includes('/fill')).length, 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── 5b. Which site a login may fill is the server's decision (BGOS #6057) ──
+
+const googleLogin = { id: GOOGLE_LOGIN, ownerId: OWNER, vaultId: VAULT_ID, vaultAssistantId: ASSISTANT, revision: 7, name: 'Google', kind: 'login', labels: [], website: 'https://google.com', username: 'owner@example.test', envName: null, reference: `hoai-vault://${ASSISTANT}/${GOOGLE_LOGIN}` }
+const googleArgs = { itemId: GOOGLE_LOGIN, sessionId: 'session-1', tabId: 'tab-1', origin: 'https://accounts.google.com' }
+const fillCalls = (calls: Call[]) => calls.filter(c => c.url.includes('/fill'))
+
+test('vault_fill_prepare: a google.com login on accounts.google.com is asked of the server, which issues the ticket for the tab', async () => {
+  const { dir, key } = await pinnedHost()
+  const backend = fakeBackend(key.identityPublic, { items: [googleLogin], site: 'same_site' })
+  const logs: string[] = []
+  try {
+    const result = await handleVaultTool('vault_fill_prepare', googleArgs, deps(dir, backend.fetch, logs))
+    assert.ok(!('isError' in result), result.content[0].text)
+    const out = parse(result)
+    assert.equal(out.ticket, 'T'.repeat(43))
+    // The tab's origin is signed and sent: the server and the desktop compare it with the saved website.
+    assert.equal(out.origin, 'https://accounts.google.com')
+    assert.equal(out.request.intent.origin, 'https://accounts.google.com')
+    assert.doesNotThrow(() => checkFillIntent(out.request.intent, out.request.signature, key.identityPublic))
+    const calls = fillCalls(backend.calls)
+    assert.equal(calls.length, 1, 'the server was asked')
+    assert.equal(JSON.parse(calls[0].body).origin, 'https://accounts.google.com')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('vault_fill_prepare: an older server that refuses another host is asked, and its refusal text reaches the agent unchanged', async () => {
+  const { dir, key } = await pinnedHost()
+  const backend = fakeBackend(key.identityPublic, { items: [googleLogin] })
+  const logs: string[] = []
+  try {
+    const d = deps(dir, backend.fetch, logs)
+    let out = parse(await handleVaultTool('vault_fill_prepare', googleArgs, d))
+    assert.equal(out.error, 'VAULT_REQUEST_REFUSED')
+    assert.equal(out.message, SITE_REFUSAL)
+    out = parse(await handleVaultTool('vault_fill_prepare', { itemId: LOGIN, sessionId: 's', tabId: 't', origin: 'https://other.example.test' }, d))
+    assert.equal(out.error, 'VAULT_REQUEST_REFUSED')
+    assert.equal(out.message, SITE_REFUSAL)
+    assert.equal(fillCalls(backend.calls).length, 2, 'each refusal is the server\'s, not a local one')
+    // The log keeps codes and statuses only.
+    assert.ok(!logs.join('\n').includes(SITE_REFUSAL), 'the server text is not logged')
+    assert.ok(logs.some(l => l.includes('VAULT_REQUEST_REFUSED (HTTP 400)')))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('vault_fill_prepare: a server with the same site rule still refuses another site, and says why in its own words', async () => {
+  const { dir, key } = await pinnedHost()
+  const backend = fakeBackend(key.identityPublic, { items: [googleLogin], site: 'same_site' })
+  try {
+    const out = parse(await handleVaultTool('vault_fill_prepare', { ...googleArgs, origin: 'https://accounts.google.evil.test' }, deps(dir, backend.fetch, [])))
+    assert.equal(out.error, 'VAULT_REQUEST_REFUSED')
+    assert.equal(out.message, SITE_REFUSAL)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('vault_fill_prepare: an expired or stale request the server refuses keeps its code and the server\'s text', async () => {
+  const { dir, key } = await pinnedHost()
+  try {
+    for (const [status, message] of [[400, 'Vault fill request does not match current state.'], [409, 'Request another fill.'], [422, 'Invalid signed vault fill request.']] as const) {
+      const backend = fakeBackend(key.identityPublic, { fillRefusal: { status, body: { message, statusCode: status } } })
+      const out = parse(await handleVaultTool('vault_fill_prepare', { itemId: LOGIN, sessionId: 's', tabId: 't', origin: 'https://login.example.test' }, deps(dir, backend.fetch, [])))
+      assert.equal(out.error, 'VAULT_REQUEST_REFUSED', String(status))
+      assert.equal(out.message, message, String(status))
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('vault_fill_prepare: a server refusal that is not plain text, is too long or echoes a credential gets the fixed text instead', async () => {
+  const { dir, key } = await pinnedHost()
+  try {
+    const record = (await readHostRecord(dir))!
+    const bodies: unknown[] = [
+      { message: `refused ${PAIRING}` },
+      { message: `refused ${record.signingSecret}` },
+      { message: `refused ${record.hostSeed}` },
+      { message: `compare ${hostFingerprint(record.identityPublic, record.publicKey)}` },
+      { message: ['one', 'two'] },
+      { message: 'x'.repeat(2000) },
+      { message: '' },
+      'not json',
+      {},
+    ]
+    for (const body of bodies) {
+      const backend = fakeBackend(key.identityPublic, { fillRefusal: { status: 400, body } })
+      const result = await handleVaultTool('vault_fill_prepare', { itemId: LOGIN, sessionId: 's', tabId: 't', origin: 'https://login.example.test' }, deps(dir, backend.fetch, []))
+      const out = parse(result)
+      assert.equal(out.error, 'VAULT_REQUEST_REFUSED')
+      assert.match(out.message, /^The vault refused this request\./, JSON.stringify(body).slice(0, 40))
+      assertClean(result.content[0].text, forbidden(record), 'refusal')
+    }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
