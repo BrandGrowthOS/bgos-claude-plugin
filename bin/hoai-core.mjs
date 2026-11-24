@@ -135,7 +135,7 @@ import {
   writePrivateText,
 } from '../lib/agent-identity.mjs'
 import { PROBE_TIMEOUT_MS, classifyFlagProbe } from '../lib/claude-binary.mjs'
-import { KEPT_CHECK_CAPABILITY, hasPairingFile, launchSupervisorGone } from '../lib/agent-kept.mjs'
+import { KEPT_CHECK_CAPABILITY, START_ONCE_WORDS, hasPairingFile, launchSupervisorGone } from '../lib/agent-kept.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -2998,7 +2998,7 @@ export async function superviseClaude(args, opts = {}) {
     // cannot bring it back; its own daemon can, once it runs (lib/agent-kept.mjs hasPairingFile, review round 6 F1).
     const again = hasPairingFile({ home, assistantId: id, exists })
       ? 'Turn it back on to have it kept running.'
-      : 'Turn it back on, then start it once and it will be kept again (it has no pairing file here, so the switch alone cannot bring it back).'
+      : START_ONCE_WORDS
     print(
       `[hoai] agent ${id} is not kept running (Keep agents running is off for this computer, or Always on is off ` +
         `for this agent), and its supervisor was removed: not starting it. ${again}`,

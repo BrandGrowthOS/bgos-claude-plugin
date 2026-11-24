@@ -649,3 +649,27 @@ test('r7 M3: the real adapter takes the lock as bin/bgos-agent does: mkdir of on
     rmTree(dir, { recursive: true, force: true })
   }
 })
+
+const CREDS_912 = `${HOME}/.bgos-agent/credentials-912.json`
+
+test('r7 M4: an agent with no pairing file gets a not-kept run.sh that writes the start-once words to agent.log, the place hoai-agent status and logs show; a paired one keeps the switch words', async () => {
+  const unpaired = memoryFs({ [PLIST]: '<plist/>' })
+  await releasePosixSupervisor({ platform: 'darwin', service: MAC_SERVICE, assistantId: '912', home: HOME, exec: recordingExec().exec, fs: unpaired, env: {}, sleep: async () => {} } as any)
+  const told = unpaired.files.get(RUN_SH) ?? ''
+  assert.match(told, /\[ -e "\$stuck" \] \|\| echo "[^"\n]*not kept running: not starting it[^"\n]*Turn it back on, then start it once and it will be kept again \(it has no pairing file here, so the switch alone cannot bring it back\)\." >> "\$sd\/agent\.log"/)
+  assert.doesNotMatch(told, /Turning it back on installs the real supervisor again/, 'which is not true for it')
+  assert.match(told, /# It has no pairing file here, so turning it back on does not install it again: start it once and it is kept again\./)
+  const paired = memoryFs({ [PLIST]: '<plist/>', [CREDS_912]: '{}' })
+  await releasePosixSupervisor({ platform: 'darwin', service: MAC_SERVICE, assistantId: '912', home: HOME, exec: recordingExec().exec, fs: paired, env: {}, sleep: async () => {} } as any)
+  const switchWords = paired.files.get(RUN_SH) ?? ''
+  assert.doesNotMatch(switchWords, /start it once/)
+  assert.match(switchWords, /# Turning it back on installs the real supervisor again/)
+})
+
+test('r7 M4: the start-once words sit inside the double quotes of the echo, so they hold nothing bash would read there ($, a backtick, a quote or a backslash)', () => {
+  const sh = notKeptRunSh({ platform: 'linux', assistantId: '912', label: UNIT, stateDir: SD_912, paired: false })
+  const line = sh.split('\n').find((l) => l.includes('echo') && l.includes('start it once')) ?? ''
+  const words = line.slice(line.indexOf('Turn it back on'), line.indexOf('" >> "$sd/agent.log"'))
+  assert.match(words, /^Turn it back on, then start it once and it will be kept again/)
+  assert.doesNotMatch(words, /[$`"\\]/)
+})

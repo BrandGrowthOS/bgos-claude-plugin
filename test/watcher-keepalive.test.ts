@@ -4691,3 +4691,16 @@ test('r7 M3: the sweep\'s removal waits on its own clock for an install that hol
   assert.equal(fs.files.has(PLIST('912')), false, logs.join('\n'))
   assert.ok(logs.some((l) => /keep-alive 912: an install of agent 912 still held .* after 30s, so it was removed anyway/.test(l)), logs.join('\n'))
 })
+
+test('r7 M4 (r6 F1 path): a key agent the switch OFF removed is told how it is kept again where a person can read it: its not-kept run.sh writes it to agent.log, and the watcher log says it with the removal', async () => {
+  const fs = keyAgent(true)
+  const logs = await sweepWith(fs, fakeClock(), SWITCH_OFF([]), new Map(), { execSync: keyJobs() })
+  const runSh = fs.files.get(RUN_SH('912')) ?? ''
+  assert.match(runSh, /echo "[^"\n]*not starting it[^"\n]*start it once and it will be kept again[^"\n]*" >> "\$sd\/agent\.log"/, runSh)
+  assert.ok(logs.some((l) => /^keep-alive 912: Turn it back on, then start it once and it will be kept again/.test(l)), logs.join('\n'))
+  const paired = onceKept()
+  paired.writeFile(RUN_SH('912'), R7_REAL)
+  const pairedLogs = await sweepWith(paired, fakeClock(), SWITCH_OFF([912]))
+  assert.equal(pairedLogs.some((l) => /start it once/.test(l)), false, 'a paired agent is brought back by the switch')
+  assert.doesNotMatch(paired.files.get(RUN_SH('912')) ?? '', /start it once/)
+})
