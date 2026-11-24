@@ -275,6 +275,9 @@ function baseDeps(fs: MemoryFs, backend: ReturnType<typeof fakeBackend>, clock: 
       // listAgents' sync probes answer nothing: no real systemctl, and no real ps or PowerShell
       // asking what pid 4242 runs on THIS host (a live non-hoai 4242 flipped launcherLive).
       execSync: () => ({ code: 1, stdout: '' }),
+      // No real CLI status read: the limit watch keeps a read of every agent's login (keepFresh), and
+      // the default reader would start the real claude. This one has no read and keeps none.
+      readClaudeAccount: () => ({ ok: false, why: 'no_reader' }),
       hasTmux: true,
       hasScript: true,
       echo: (line: string) => logs.push(line),
@@ -426,6 +429,7 @@ test('runWatcher: an idle cycle posts the heartbeat (exact shape) then long-poll
         status: 'ok',
         bootsLastHour: 0,
         keepAlive: { enabled: false, agents: [] },
+        helperAccounts: {accounts:[], defaultAccountId:null, agents:[], modes:['now', 'limit', 'auto']},
         // board row 0c659c85: the bundle against the installed plugin (this fixture's root holds no
         // package.json, so no installed version; its fingerprint is the manifest's, so not stale).
         bundle: { bundleVersion: '0.38.3', installedVersion: null, stale: false },
@@ -1796,6 +1800,7 @@ test('runWatcher: the heartbeat carries the recorded boots and the last fatal (d
     bootsLastHour: 1,
     lastFatal: { at: new Date(T0 - 6 * 60_000).toISOString(), message: 'Cannot find module ~/x.mjs' },
     keepAlive: { enabled: false, agents: [] },
+    helperAccounts: {accounts:[], defaultAccountId:null, agents:[], modes:['now', 'limit', 'auto']},
     bundle: { bundleVersion: '0.38.3', installedVersion: null, stale: false },
     windows: { mode: 'none', reason: 'no_screen' },
   })

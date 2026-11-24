@@ -17,12 +17,15 @@ import assert from 'node:assert/strict'
 import {
   LIMIT_ENTER_MIN_INTERVAL_MS,
   UNSAFE_DIALOG_REASONS,
+  accountAtLimitFrom,
+  createReadLog,
   decideLimitFree,
   limitNoticeText,
   parseLimitNotice,
   readLimitScreen,
   usageBackFrom,
 } from '../lib/limit-screen.mjs'
+import { seatToken } from './helpers/claude-auth-status.ts'
 
 const T0 = Date.parse('2026-11-01T16:39:03.000Z')
 const MIN = 60_000
@@ -159,33 +162,49 @@ function pick(seen: { ok: boolean; reason: string }) {
 
 // -- usageBackFrom: usage is back only on proof, never a guess -------------------------------------------
 
+// The proof a login gives is the ACCOUNT (lib/claude-account-id.mjs tokens), never a file's mtime.
+// Two seats of one Team organization, in the CLI's real key set (orgId and email).
+const ACCT_A = seatToken('a')
+const ACCT_B = seatToken('b')
+
 test('usage is back once the reset time from the transcript has passed (with a minute of grace)', () => {
   const limit = { atMs: T0, resetsAtMs: RESETS_AT }
-  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 30_000, limit, credentialsMtimeMs: null }), { back: false, how: null })
-  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 61_000, limit, credentialsMtimeMs: null }), { back: true, how: 'reset_passed' })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 30_000, limit, accountAtLimit: null, accountNow: null }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 61_000, limit, accountAtLimit: null, accountNow: null }), { back: true, how: 'reset_passed' })
 })
 
-test('usage is back when the Claude credential file changed AFTER the limit (a different login), by mtime only', () => {
+test('usage is back on a login only when the signed in ACCOUNT differs from the one at the limit', () => {
   const limit = { atMs: T0, resetsAtMs: RESETS_AT }
-  // Ares, 2026-11-01: the limit at 16:39:03, the credential file rewritten at 16:53:14.
-  const swap = Date.parse('2026-11-01T16:53:14.966Z')
-  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, credentialsMtimeMs: swap }), { back: true, how: 'login_changed' })
-  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, credentialsMtimeMs: T0 - MIN }), { back: false, how: null })
-  assert.deepEqual(usageBackFrom({ now: swap + MIN, limit, credentialsMtimeMs: T0 }), { back: false, how: null })
+  const now = T0 + 20 * MIN
+  assert.deepEqual(usageBackFrom({ now, limit, accountAtLimit: ACCT_A, accountNow: ACCT_B }), { back: true, how: 'login_changed' })
+  // The same account again, or a token refresh that rewrote the credential file: no proof.
+  assert.deepEqual(usageBackFrom({ now, limit, accountAtLimit: ACCT_A, accountNow: ACCT_A }), { back: false, how: null })
 })
 
-test('no reset time and no credential file (macOS keeps the login in the Keychain): still limited', () => {
-  assert.deepEqual(usageBackFrom({ now: T0 + 30 * 24 * HOUR, limit: { atMs: T0, resetsAtMs: null }, credentialsMtimeMs: null }), { back: false, how: null })
+test('a failed or timed out status read (no account now, or none seen at the limit) is no proof: wait for the reset', () => {
+  const limit = { atMs: T0, resetsAtMs: RESETS_AT }
+  assert.deepEqual(usageBackFrom({ now: T0 + 20 * MIN, limit, accountAtLimit: ACCT_A, accountNow: null }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: T0 + 20 * MIN, limit, accountAtLimit: null, accountNow: ACCT_B }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 2 * MIN, limit, accountAtLimit: ACCT_A, accountNow: null }), { back: true, how: 'reset_passed' })
+})
+
+test('no reset time and no account read: still limited, on every platform', () => {
+  assert.deepEqual(usageBackFrom({ now: T0 + 30 * 24 * HOUR, limit: { atMs: T0, resetsAtMs: null }, accountAtLimit: null, accountNow: null }), { back: false, how: null })
 })
 
 // Ares's ruling (option A, 2026-11-02): once a press on the login proof was followed by the limit
 // again, only the reset time counts for that agent until the reset passes.
-test('a spent login proof is not proof: the credential file moving again does not count, the reset time still does', () => {
+test('a spent login proof is not proof: another account does not count, the reset time still does', () => {
   const limit = { atMs: T0, resetsAtMs: RESETS_AT }
   const moved = T0 + 2 * HOUR
-  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, credentialsMtimeMs: moved, loginProofSpent: true }), { back: false, how: null })
-  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, credentialsMtimeMs: moved, loginProofSpent: false }), { back: true, how: 'login_changed' })
-  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 2 * MIN, limit, credentialsMtimeMs: moved, loginProofSpent: true }), { back: true, how: 'reset_passed' })
+  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, accountAtLimit: ACCT_A, accountNow: ACCT_B, loginProofSpent: true }), { back: false, how: null })
+  assert.deepEqual(usageBackFrom({ now: moved + MIN, limit, accountAtLimit: ACCT_A, accountNow: ACCT_B, loginProofSpent: false }), { back: true, how: 'login_changed' })
+  assert.deepEqual(usageBackFrom({ now: RESETS_AT + 2 * MIN, limit, accountAtLimit: ACCT_A, accountNow: ACCT_B, loginProofSpent: true }), { back: true, how: 'reset_passed' })
+})
+
+test('usageBackFrom takes no file time: an mtime alone is never proof', () => {
+  const limit = { atMs: T0, resetsAtMs: RESETS_AT }
+  assert.deepEqual(usageBackFrom({ now: T0 + 20 * MIN, limit, credentialsMtimeMs: T0 + 10 * MIN } as any), { back: false, how: null })
 })
 
 // -- decideLimitFree: the gates, in order ----------------------------------------------------------------
@@ -359,4 +378,63 @@ test('purity: the module imports nothing and touches no file, process, clock or 
   const source = readFileSync(fileURLToPath(new URL('../lib/limit-screen.mjs', import.meta.url)), 'utf8')
   assert.deepEqual([...source.matchAll(/^\s*import\s/gm)], [])
   assert.doesNotMatch(source, /child_process|node:fs|fetch\(|process\.|Date\.now\(|setTimeout|require\(/)
+})
+
+test('M2 (r4): the read log answers the last read started BEFORE a time, the newest answer of it, at most ten minutes back', () => {
+  const log = createReadLog()
+  const L = Date.UTC(2026, 10, 19, 12)
+  log.note('k', L - 60_000, 'seat-a')
+  log.note('k', L, 'seat-b') // started at the limit itself: a read since it, never one from before
+  assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: 'seat-a' })
+  log.note('k', L - 60_000, null) // a later answer of the same read (signed out) is the one that counts
+  assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: null })
+  assert.deepEqual(log.before('k', L + 9 * 60_000), { readAt: L, account: 'seat-b' })
+  assert.equal(log.before('k', L + 10 * 60_000 + 1), null, 'over ten minutes old: no proof')
+  assert.equal(log.before('other', L), null)
+  log.note('k', Number.NaN, 'seat-c')
+  assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: null }, 'a read with no time is never logged')
+})
+
+test('R5 (m-C): a read counts as from before a limit only if it ANSWERED before it, not only began before it', () => {
+  const log = createReadLog()
+  const L = Date.UTC(2026, 10, 24, 12)
+  log.note('k', L - 120_000, 'seat-a', L - 118_000)
+  log.note('k', L - 1000, 'seat-b', L + 2000) // began a second before the limit, answered after the owner changed login
+  assert.deepEqual(log.before('k', L), { readAt: L - 120_000, account: 'seat-a' })
+  assert.deepEqual(log.before('k', L + 3000), { readAt: L - 1000, account: 'seat-b' }, 'it answered before this later time')
+  log.note('k', L - 60_000, 'seat-c') // no landing time: as before, its start dates it
+  assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: 'seat-c' })
+})
+
+test('R5 (m-C): one read noted twice (by the reader and by the switcher, on the one shared log) keeps its FIRST landing', () => {
+  const log = createReadLog()
+  const L = Date.UTC(2026, 10, 24, 12)
+  log.note('k', L - 60_000, 'seat-a', L - 50_000)
+  log.note('k', L - 60_000, 'seat-a', L + 30_000) // the same read, handed on after the limit
+  assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: 'seat-a' }, 'it answered before the limit')
+})
+
+test('R5 (M-A): the read log answers the FIRST read started since a limit, within five minutes of it', () => {
+  const log = createReadLog()
+  const L = Date.UTC(2026, 10, 24, 12)
+  log.note('k', L - 1000, 'seat-a', L - 500)
+  assert.equal(log.after('k', L), null, 'none started since the limit')
+  log.note('k', L + 5 * 60_000 + 1, 'seat-a')
+  assert.equal(log.after('k', L), null, 'one started past the window says nothing about the limit')
+  log.note('k', L + 80_000, 'seat-b')
+  log.note('k', L + 20_000, null) // signed out: an answer too
+  log.note('k', L + 140_000, 'seat-c')
+  assert.deepEqual(log.after('k', L), { readAt: L + 20_000, account: null })
+  assert.deepEqual(log.after('k', L + 21_000), { readAt: L + 80_000, account: 'seat-b' })
+  assert.equal(log.after('other', L), null)
+})
+
+test('R5: the account at a limit needs both reads to name the same account; a signed out or missing one is unknown', () => {
+  const at = (account: string | null) => ({ readAt: 1, account })
+  assert.equal(accountAtLimitFrom(at('seat-a'), at('seat-a')), 'seat-a')
+  assert.equal(accountAtLimitFrom(at('seat-a'), at('seat-b')), null)
+  assert.equal(accountAtLimitFrom(null, at('seat-a')), null, 'no read from before the limit')
+  assert.equal(accountAtLimitFrom(at('seat-a'), null), null)
+  assert.equal(accountAtLimitFrom(at(null), at(null)), null, 'signed out (or no email) on both: still unknown')
+  assert.equal(accountAtLimitFrom(at('seat-a'), at(null)), null, 'the first read since it found the login signed out')
 })

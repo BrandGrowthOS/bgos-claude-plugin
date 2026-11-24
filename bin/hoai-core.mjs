@@ -63,6 +63,8 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
+import { applyHelperAccount, isManagedProfile, profileEnvOf } from '../lib/helper-account-launch.mjs'
+import { probeClaudeSignedIn } from '../lib/claude-subscription-status.mjs'
 import { randomUUID } from 'node:crypto'
 import {
   closeSync,
@@ -103,6 +105,7 @@ import {
   writeLaunchRecipe,
 } from '../lib/agent-inventory.mjs'
 import { readChildProcesses, startLauncherWatchdog } from '../lib/launcher-liveness.mjs'
+import { WIN32_PROCESS_ROWS_SCRIPT, parseWin32ProcessRows, win32ShimTargets } from '../lib/process-tree.mjs'
 export { decideWatchdogAction, startLauncherWatchdog } from '../lib/launcher-liveness.mjs'
 import {
   HOAI_MARKETPLACE as HOAI_MARKETPLACE_NAME,
@@ -1820,48 +1823,7 @@ export function claudeSignedInSince({ configDir, since, mtimeMs }) {
   return written != null && written > since
 }
 
-/** A non interactive status probe of this launch's credential store. No credential file or Keychain
- *  item is opened here, and neither CLI output nor account details escape this boolean probe.
- *  A failed command, unknown format or non subscription login cannot lift a held login failure.
- *  Keep CLAUDE_CONFIG_DIR exactly as launched: setting it only for the probe could select another
- *  account file or Keychain store, even when the supplied directory is the default one.
- *  Only stable CLI releases >= 2.1.317 may run auth status: older releases can abandon an OAuth
- *  refresh before saving its replacement and invalidate the shared login. Recheck on every probe
- *  so an update or downgrade takes effect without restarting the supervisor.
- *  @param {{ env?: Record<string, string | undefined>, run?: typeof spawnSync,
- *    onUnsupportedVersion?: () => void }} input */
-export function probeClaudeSignedIn({ env = process.env, run = spawnSync, onUnsupportedVersion = () => {} }) {
-  try {
-    const options = {
-      env: { ...env },
-      encoding: 'utf8', timeout: 5000, maxBuffer: 16 * 1024,
-      stdio: ['ignore', 'pipe', 'ignore'], shell: false, windowsHide: true,
-    }
-    let version
-    try {
-      version = run('claude', ['--version'], options)
-    } catch {
-      // Missing CLI and failed version reads leave the hold in place, with update guidance.
-    }
-    const match = !version?.error && version?.status === 0
-      ? /^(\d+)\.(\d+)\.(\d+)(?: \(Claude Code\))?$/.exec(String(version.stdout ?? '').trim())
-      : null
-    const parts = match ? match.slice(1).map(Number) : []
-    const [major, minor, patch] = parts
-    const safe = parts.length === 3 && parts.every(Number.isSafeInteger) &&
-      (major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 317))))
-    if (!safe) {
-      onUnsupportedVersion()
-      return false
-    }
-    const result = run('claude', ['auth', 'status', '--json'], options)
-    if (result?.error || result?.status !== 0) return false
-    const status = JSON.parse(String(result.stdout ?? ''))
-    return status?.loggedIn === true && status?.authMethod === 'claude.ai'
-  } catch {
-    return false
-  }
-}
+export { probeClaudeSignedIn } from '../lib/claude-subscription-status.mjs'
 
 /** At most one macOS status command per three minutes, only while a login failure is held.
  *  Never cache success: a later failure needs a new proof. Other platforms keep the stat-only path.
@@ -2234,22 +2196,7 @@ export function clearWin32Console(stream) {
   }
 }
 
-/** Every Windows process as `<pid> <parent pid> <start ms or -> <name>` lines: Win32_Process through
- *  the System32 powershell, never a command line. */
-const WIN32_PROCESS_ROWS_SCRIPT =
-  "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2} {3}' -f $_.ProcessId, $_.ParentProcessId, " +
-  "$(if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { '-' }), $_.Name }"
-
-/** WIN32_PROCESS_ROWS_SCRIPT's lines as `{ pid, ppid, startedAtMs, name }` (a name may hold spaces;
- *  an unknown start is null). Lines of any other shape are skipped. */
-export function parseWin32ProcessRows(stdout) {
-  const out = []
-  for (const line of String(stdout ?? '').split(/\r?\n/)) {
-    const m = line.trim().match(/^(\d+) (\d+) (\d+|-) (.+)$/)
-    if (m) out.push({ pid: Number(m[1]), ppid: Number(m[2]), startedAtMs: m[3] === '-' ? null : Number(m[3]), name: m[4] })
-  }
-  return out
-}
+export { parseWin32ProcessRows, win32ShimTargets }
 
 /** Every process on this Windows computer (pid, parent pid, start, name), or null when it could not be
  *  listed. Fails closed: with no SystemRoot there is no System32 powershell to name, and a bare
@@ -2270,41 +2217,6 @@ export function listWin32Processes({ spawnSyncImpl = spawnSync, env = process.en
   } catch {
     return null
   }
-}
-
-/** What ending a claude started through a shim takes, besides the shim (`rootPid`) itself: the
- *  processes the shim started, and theirs through any further cmd.exe layer (a .cmd that runs another
- *  with cmd /c); never deeper. Claude's own children (its MCP servers) are in claude's kill-on-close
- *  job and end with it, as under a native claude.exe; what the daemon started DETACHED to outlive
- *  claude (its browser host, which closes Chrome cleanly once the daemon is gone; a person lane's
- *  supervisor) must live on, and `taskkill /T` would end it: a detached process still names its parent.
- *  A process that started before its named parent is no child (a pid Windows reused), and neither is
- *  one whose start is unknown.
- *  @param {{ pid: number, ppid: number, startedAtMs: number | null, name: string }[]} processes
- *  @param {number} rootPid
- *  @returns {number[]} */
-export function win32ShimTargets(processes, rootPid) {
-  const root = processes.find((p) => p.pid === rootPid)
-  // Only a shim hides claude: a native claude.exe's children are its MCP servers and tools, in its own
-  // kill-on-close job, ended with it as on main.
-  if (!root || !/^cmd\.exe$/i.test(root.name)) return []
-  const targets = []
-  const seen = new Set([rootPid])
-  let layer = [root]
-  while (layer.length > 0) {
-    const next = []
-    for (const parent of layer) {
-      for (const p of processes) {
-        if (p.ppid !== parent.pid || seen.has(p.pid)) continue
-        if (p.startedAtMs == null || parent.startedAtMs == null || p.startedAtMs < parent.startedAtMs) continue
-        seen.add(p.pid)
-        targets.push(p.pid)
-        if (/^cmd\.exe$/i.test(p.name)) next.push(p)
-      }
-    }
-    layer = next
-  }
-  return targets
 }
 
 /** End a claude hoai started through a shim: the processes the shim started (win32ShimTargets), then
@@ -2812,13 +2724,14 @@ export async function superviseClaude(args, opts = {}) {
   // with no channel heartbeat: the CLI's own records, in the store it signs in through.
   const loginStore = { configDir: claudeConfigDir({ env, home }), listDir, mtimeMs: fileMtimeMs, readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES) }
   const claudeLoginFailure = opts.claudeLoginFailure ?? (() => fleetClaudeLoginFailure({ ...loginStore, now: now() }))
-  const signedInSince = createClaudeSignInCheck({
+  const createLoginCheck = () => createClaudeSignInCheck({
     platform, configDir: loginStore.configDir, env, now, run: opts.spawnSyncImpl, probe: opts.probeClaudeSignedIn,
     onUnsupportedVersion: () => print(
       '[hoai] Automatic login status checks require Claude Code 2.1.317 or newer. Update Claude Code to 2.1.317 or newer ' +
       'to enable them. The login failure stays held until a safe status check succeeds or an agent answers after the failure.',
     ),
   })
+  let signedInSince = createLoginCheck()
   // Has the login come back since a failure: a sign-in after it, or an agent's answer after it.
   const claudeLoginBackSince =
     opts.claudeLoginBackSince ??
@@ -3392,6 +3305,37 @@ export async function superviseClaude(args, opts = {}) {
       }),
     })
   }
+  // Every launch authority ultimately hands the child to this supervisor.
+  // Read the owner's selection at a new start and after a marker handoff,
+  // when the preceding child has exited and its transcript is complete.
+  let helperSelected = false
+  // The login and provider settings this supervisor was launched with. A saved login
+  // replaces them only while it is assigned; every other start gets them back.
+  const launchEnv = profileEnvOf(env)
+  let helperApplied = false
+  const readSelection = (sessionId, previousConfigDir) => {
+    if (env.HOAI_HELPER_ACCOUNTS === 'false') return
+    const registry = joinDir(joinDir(agentDir(home), 'helper-accounts'), 'registry.json')
+    if (!helperApplied && !exists(registry) && !isManagedProfile(home, env.CLAUDE_CONFIG_DIR)) return
+    const before = env.CLAUDE_CONFIG_DIR
+    helperSelected = applyHelperAccount({
+      home, cwd, env, assistantId: id, sessionId, sessionTranscriptPath, previousConfigDir, scriptDir, launchEnv,
+    })
+    helperApplied = true
+    if (env.CLAUDE_CONFIG_DIR !== before) {
+      loginStore.configDir = claudeConfigDir({ env, home })
+      signedInSince = createLoginCheck()
+      loginFailure = null
+      preseedClaudeTrust({ configDir: loginStore.configDir, cwd, env, home })
+    }
+  }
+  let previousDir
+  try {
+    const prior = JSON.parse(readFile(joinDir(stateDir, 'launch.json')) || 'null')
+    if (prior?.cwd === cwd && String(prior.assistantId) === id) previousDir = prior.claudeConfigDir ?? null
+  } catch { /* No previous validated identity for this folder. */ }
+  const incomingPin = String(readFile(joinDir(stateDir, SESSION_ID_FILE_NAME)) ?? '').trim()
+  readSelection(freshSession || !isSessionIdLike(incomingPin) ? null : incomingPin, previousDir)
   recordRecipe(args)
 
   // GAP 1: pin a per-agent session id and resume THIS agent's OWN session on
@@ -3712,6 +3656,7 @@ export async function superviseClaude(args, opts = {}) {
         // session, so it is the one relaunched, and its window starts again (board row 978da5db).
         // A pin the daemon rewrote meanwhile names the live session and wins, as everywhere.
         const carried = windowPin && pinnedId === pinBefore ? windowPin : null
+        readSelection(carried || pinnedId, env.CLAUDE_CONFIG_DIR || null)
         const sessionArgs = carried
           ? sessionArgsFor(carried, exists(sessionTranscriptPath(home, cwd, carried, env.CLAUDE_CONFIG_DIR)))
           : sessionArgsFor(pinnedId, sessionExistsNow())
@@ -3746,7 +3691,7 @@ export async function superviseClaude(args, opts = {}) {
             isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
             exitCode: code,
             elapsedMs,
-            freshTried,
+            freshTried: freshTried || helperSelected === 'switching',
             healthyMs,
           })
       // A launch that carried the identity flag and died at once may have
@@ -3879,6 +3824,7 @@ export async function superviseClaude(args, opts = {}) {
       // The channel is re-resolved, and the session args are the identity-safe
       // pair: --resume <pin> when its transcript exists, else --session-id <pin>.
       rereadPin()
+      readSelection(pinnedId, env.CLAUDE_CONFIG_DIR || null)
       await refreshIdentityFile()
       if (stopSignal?.aborted) return code
       const keepArgs = relaunchClaudeArgs({

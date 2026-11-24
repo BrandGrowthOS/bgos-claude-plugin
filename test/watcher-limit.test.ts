@@ -4,7 +4,8 @@
  *
  * Everything is a fake: an in memory HOME with agent 912 (paired, a live hoai launcher), its pinned
  * session's transcript in the CLI's own envelopes, a fake clock, and a fake tmux (or a fake Windows
- * helper) whose screen is a literal. No real session is read or pressed. Every tmux and PowerShell
+ * helper) whose screen is a literal, and a fake status reader that says which Claude account is signed
+ * in (the CLI is never run). No real session is read or pressed. Every tmux and PowerShell
  * call is recorded, and every test checks that none of them could type text.
  *
  * Run: npx tsx --test test/watcher-limit.test.ts
@@ -19,6 +20,8 @@ import assert from 'node:assert/strict'
 import { agentServiceNamesFor, buildLaunchRecipe, listAgents } from '../lib/agent-inventory.mjs'
 import { LIMIT_NOTICE_FILE_NAME, LIMIT_WATCH_FILE_NAME, limitFreeObservation, runLimitPass } from '../lib/watcher-limit.mjs'
 import { limitNoticeText, parseLimitNotice } from '../lib/limit-screen.mjs'
+import { FIXTURE_ORG, seatToken } from './helpers/claude-auth-status.ts'
+import { createStatusReader, peekAccount, statusInput } from '../lib/claude-account-id.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
@@ -143,6 +146,46 @@ function appendTranscript(fs: MemoryFs, r: Rig, line: string) {
   fs.writeFile(r.transcript, `${fs.readFile(r.transcript) ?? ''}${line}\n`)
 }
 
+// -- the signed in account: a fake `claude auth status --json` --------------------------------------------
+
+/** The token the reader gives for a named fake account (A, B, ...), as lib/claude-account-id.mjs makes it. */
+// Each name is another seat of one Team organization, in the CLI's real key set (orgId and email).
+const tokenOf = (name: string) => seatToken(name)
+/** Which fake account is signed in, by time: the owner switches by adding a row. Starts on A. */
+const accountsOf = new WeakMap<MemoryFs, Array<[number, string]>>()
+function accountAt(fs: MemoryFs, atMs: number) {
+  const rows = accountsOf.get(fs) ?? [[Number.NEGATIVE_INFINITY, 'A']]
+  return rows.filter(([from]) => from <= atMs).at(-1)![1]
+}
+const NEXT: Record<string, string> = { A: 'B', B: 'C', C: 'D', D: 'E', E: 'F', F: 'G', G: 'H', H: 'I' }
+
+/**
+ * The owner signs ANOTHER Claude account in at `atMs`. A sweep looks at every limit soon after it, so
+ * the account at the newest limit before the switch is the one recorded then (what observeSettled
+ * writes on its first look); the tests that drive that first look themselves do not use this.
+ */
+function switchAccount(fs: MemoryFs, r: Rig, atMs: number) {
+  const limits = (fs.readFile(r.transcript) ?? '')
+    .split('\n')
+    .filter((l) => l.includes('"rate_limit"'))
+    .map((l) => Date.parse(JSON.parse(l).timestamp))
+    .filter((ms) => ms <= atMs)
+  const limitAtMs = limits.at(-1)
+  if (limitAtMs !== undefined) {
+    const path = join(r, 'watcher', LIMIT_WATCH_FILE_NAME)
+    const file = JSON.parse(fs.readFile(path) ?? '{"schemaVersion":1,"agents":{}}')
+    const record = file.agents['912'] ?? {}
+    const limitAt = new Date(limitAtMs).toISOString()
+    if (record.limitAccount?.limitAt !== limitAt) {
+      file.agents['912'] = { ...record, limitAccount: { limitAt, token: tokenOf(accountAt(fs, limitAtMs)) } }
+      fs.writeFile(path, `${JSON.stringify(file, null, 2)}\n`)
+    }
+  }
+  const rows = accountsOf.get(fs) ?? [[Number.NEGATIVE_INFINITY, 'A']]
+  rows.push([atMs, NEXT[rows.at(-1)![1]]!])
+  accountsOf.set(fs, rows)
+}
+
 // -- the fakes ----------------------------------------------------------------------------------------
 
 function fakeClock(start: number) {
@@ -201,8 +244,19 @@ const enters = (calls: ExecCall[]) => calls.filter((c) => c.args.includes('send-
 
 function ctxFor(r: Rig, fs: MemoryFs, clock: ReturnType<typeof fakeClock>, exec: any, over: Record<string, unknown> = {}) {
   const logs: string[] = []
+  const accountReads: any[] = []
   return {
+    accountReads,
     ctx: {
+      // The fake status reader: the account signed in now, by the fake clock. Never the CLI.
+      readAccount: Object.assign(
+        (input: any): { ok: true; token: string; readAt: number } | { ok: false; why: string } => {
+          accountReads.push(input)
+          return { ok: true, token: tokenOf(accountAt(fs, clock.now())), readAt: clock.now() }
+        },
+        // The watcher's last read from before a time: a minute before it, on the account signed in then.
+        { before: (_input: any, atMs: number) => ({ readAt: atMs - MIN, account: tokenOf(accountAt(fs, atMs - MIN)) }) },
+      ) as any,
       home: r.home,
       env: { USER: 'kc' },
       platform: r.platform,
@@ -250,7 +304,7 @@ test('usage back (the login changed after the limit): exactly ONE Enter, verifie
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [assistantTurn(LIMIT_AT - 5 * MIN), limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   let recordAtEnter: any = 'unset'
   const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()), () => {
@@ -292,7 +346,7 @@ test('screen unclear (the pointer sits on "Add funds"): no key; the owner is tol
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const flipped = ['Add funds to continue with usage credits', 'Upgrade your plan', 'Stop and wait for limit to reset']
   const tmux = fakeTmux(socketOf(r), () => picker(0, flipped))
@@ -313,7 +367,7 @@ test('a second Enter inside the hour is refused; the next one is allowed only on
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   // The Enter "does not take": the picker stays (a measured CLI quirk would look like this).
   const tmux = fakeTmux(socketOf(r), () => picker())
@@ -344,14 +398,23 @@ function usageBackRig() {
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   return { r, fs, clock: fakeClock(SWAP_AT + MIN) }
+}
+/** Usage back on the reset time (no login change): the proof that needs no watch record. */
+const RESET_BACK = RESETS_AT + 2 * MIN
+function resetBackRig() {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  writeTranscript(fs, r, [limitRecord()])
+  return { r, fs, clock: fakeClock(RESET_BACK) }
 }
 
 test('the record of the Enter is written whole: a temp file, then a rename, never in place', async () => {
   const { r, fs, clock } = usageBackRig()
   const watchPath = watchPathOf(r)
-  fs.writeFile(watchPath, `${JSON.stringify({ schemaVersion: 1, agents: { 913: { lastEnterAt: '2026-10-30T09:00:00.000Z' } } })}\n`)
+  const seeded = JSON.parse(fs.readFile(watchPath)!)
+  fs.writeFile(watchPath, `${JSON.stringify({ ...seeded, agents: { ...seeded.agents, 913: { lastEnterAt: '2026-10-30T09:00:00.000Z' } } })}\n`)
   const inPlace: string[] = []
   const landed: string[] = []
   const writeFile = fs.writeFile
@@ -382,7 +445,9 @@ test('a corrupt record (torn, empty, or the wrong shape): no Enter for an hour, 
     ['watch file of the wrong shape', 'watch', '{"agents":[]}'],
     ['torn agent copy', 'copy', '{"schemaVersion":1,"lastEnt'],
   ] as const) {
-    const { r, fs, clock } = usageBackRig()
+    // A lost watch record also loses the account seen at the limit, so the watch cases stand on the reset time.
+    const { r, fs, clock } = path === 'watch' ? resetBackRig() : usageBackRig()
+    const base = clock.now()
     const target = path === 'watch' ? watchPathOf(r) : enterCopyOf(r)
     fs.writeFile(target, body)
     const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
@@ -392,10 +457,10 @@ test('a corrupt record (torn, empty, or the wrong shape): no Enter for an hour, 
     assert.equal(enters(tmux.calls).length, 0, label)
     assert.equal(fs.readFile(`${target}.lost`), body, `${label}: the unreadable copy is kept for a person`)
     assert.ok(logs.some((l) => /record .*could not be read/.test(l)), `${label}: logged`)
-    clock.set(SWAP_AT + MIN + 59 * MIN)
+    clock.set(base + 59 * MIN)
     assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'waiting', `${label}: still inside the hour`)
     assert.equal(enters(tmux.calls).length, 0, label)
-    clock.set(SWAP_AT + MIN + HOUR)
+    clock.set(base + HOUR)
     await runLimitPass(ctx)
     assert.equal(enters(tmux.calls).length, 1, `${label}: an hour after the loss was seen, one Enter`)
     assertOnlySafeTmux(tmux.calls)
@@ -404,17 +469,19 @@ test('a corrupt record (torn, empty, or the wrong shape): no Enter for an hour, 
 
 test('the watcher record deleted after an Enter: the agent copy still holds the hour (and the other way round)', async () => {
   for (const gone of ['watch', 'copy'] as const) {
-    const { r, fs, clock } = usageBackRig()
+    // The watch record carries the account seen at the limit; the watch case stands on the reset time.
+    const { r, fs, clock } = gone === 'watch' ? resetBackRig() : usageBackRig()
+    const base = clock.now()
     // The Enter "does not take": the picker stays up, so every pass would press again if it could.
     const tmux = fakeTmux(socketOf(r), () => picker())
     const { ctx } = ctxFor(r, fs, clock, tmux.exec)
     assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'not_taken')
     assert.equal(enters(tmux.calls).length, 1)
     fs.rm(gone === 'watch' ? watchPathOf(r) : enterCopyOf(r))
-    clock.set(SWAP_AT + MIN + 10 * MIN)
+    clock.set(base + 10 * MIN)
     assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'waiting', `${gone} gone: the other record holds the hour`)
     assert.equal(enters(tmux.calls).length, 1, `${gone} gone: still one Enter`)
-    clock.set(SWAP_AT + MIN + HOUR)
+    clock.set(base + HOUR)
     await runLimitPass(ctx)
     assert.equal(enters(tmux.calls).length, 2, `${gone} gone: the hour is spent, one more`)
     assertOnlySafeTmux(tmux.calls)
@@ -422,8 +489,8 @@ test('the watcher record deleted after an Enter: the agent copy still holds the 
 })
 
 test('a record that is there but cannot be read (the real fs reads it as null) holds the key and is left as it is', async () => {
-  const { r, fs, clock } = usageBackRig()
-  fs.writeFile(watchPathOf(r), `${JSON.stringify({ schemaVersion: 1, agents: { 912: { lastEnterAt: new Date(SWAP_AT).toISOString() } } })}\n`)
+  const { r, fs, clock } = resetBackRig()
+  fs.writeFile(watchPathOf(r), `${JSON.stringify({ schemaVersion: 1, agents: { 912: { lastEnterAt: new Date(RESETS_AT).toISOString() } } })}\n`)
   const readFile = fs.readFile
   let locked = true
   fs.readFile = (p: string) => (locked && p === watchPathOf(r) ? null : readFile(p))
@@ -432,7 +499,22 @@ test('a record that is there but cannot be read (the real fs reads it as null) h
   assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'waiting', 'an unreadable record is not "never pressed"')
   assert.equal(enters(tmux.calls).length, 0)
   locked = false
-  assert.equal(JSON.parse(fs.readFile(watchPathOf(r))!).agents['912'].lastEnterAt, new Date(SWAP_AT).toISOString(), 'the other entries are not overwritten with one agent')
+  assert.equal(JSON.parse(fs.readFile(watchPathOf(r))!).agents['912'].lastEnterAt, new Date(RESETS_AT).toISOString(), 'the other entries are not overwritten with one agent')
+})
+
+test('a lost watch record also forgets the account seen at the limit: another account is then no proof, only the reset time is', async () => {
+  const { r, fs, clock } = usageBackRig()
+  fs.writeFile(watchPathOf(r), '{"schemaVersion":1,"agents":{"912":{"limitAcc')
+  const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  for (const later of [0, 2 * HOUR]) {
+    clock.set(SWAP_AT + MIN + later)
+    assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', `+${later / MIN} min`)
+  }
+  assert.equal(limitWatch(fs, r)?.limitAccount, undefined, 'over 5 minutes after the limit: no read says which account hit it')
+  assert.deepEqual(tmux.calls, [])
+  clock.set(RESET_BACK)
+  assert.equal(((await runLimitPass(ctx)).agents[0] as any).how, 'reset_passed')
 })
 
 test('setting a bad record aside never loses the hold: if the fresh write fails, the bad file stays and still holds the key', async () => {
@@ -536,7 +618,7 @@ test('the screen changed between the read and the press: no key is sent', async 
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   // The second read (the one right before the key) shows another screen: someone pressed already.
   const tmux = fakeTmux(socketOf(r), (s) => (s.captures >= 2 ? IDLE : picker()))
@@ -547,11 +629,11 @@ test('the screen changed between the read and the press: no key is sent', async 
   assert.equal(out.agents[0].outcome, 'not_pressed')
 })
 
-test('still limited after the Enter (the login changed but to the same capped account): the owner is told Claude still refuses', async () => {
+test('still limited after the Enter (another account, but one that is capped too): the owner is told Claude still refuses', async () => {
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
   clock.onSleep((nowMs) => {
@@ -593,9 +675,9 @@ test('option A: a miss on the login proof, then no press until the reset time, t
   assert.doesNotMatch(words, /send|another Claude account|sign it in/i, 'the owner is never asked to resend or to sign in again')
   fs.rm(`${r.stateDir}/${LIMIT_NOTICE_FILE_NAME}`) // the daemon took it
 
-  // The login keeps refreshing before the reset: none of it is proof any more, for this agent.
+  // Even another account signed in before the reset is no proof any more, for this agent.
   for (const later of [2 * HOUR, 26 * HOUR, 3 * 24 * HOUR]) {
-    fs.touch(r.credentials, SWAP_AT + later - MIN)
+    switchAccount(fs, r, SWAP_AT + later - MIN)
     clock.set(SWAP_AT + later)
     const out = await runLimitPass(ctx)
     assert.equal(out.agents[0].outcome, 'limited', `+${later / HOUR} h: the login proof is spent`)
@@ -633,7 +715,7 @@ test('option A lasts only until the reset passes: a later limit with a later res
   pickerUp = true
   const again = RESETS_AT + 2 * HOUR
   appendTranscript(fs, r, limitRecord(again, again + 7 * 24 * HOUR))
-  fs.touch(r.credentials, again + 5 * MIN)
+  switchAccount(fs, r, again + 5 * MIN)
   clock.set(again + 10 * MIN)
   const out: any = await runLimitPass(ctx)
   // The fake answers nothing to this press (the picker stays): what counts is that the login change was proof again.
@@ -653,7 +735,7 @@ test('option A counts from the refusal, not the press: a real turn just before t
   })
   const { ctx } = ctxFor(r, fs, clock, tmux.exec)
   assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'still_limited')
-  fs.touch(r.credentials, SWAP_AT + 2 * HOUR - MIN)
+  switchAccount(fs, r, SWAP_AT + 2 * HOUR - MIN)
   clock.set(SWAP_AT + 2 * HOUR)
   assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', 'the login proof is still spent')
   assert.equal(enters(tmux.calls).length, 1)
@@ -679,7 +761,7 @@ test('option A also when the refusal comes after the verify (the press closed th
   appendTranscript(fs, r, limitRecord(refusedAt))
   pickerUp = true
   for (const later of [80 * MIN, 3 * HOUR, 26 * HOUR]) {
-    fs.touch(r.credentials, SWAP_AT + later - MIN) // the login keeps refreshing
+    switchAccount(fs, r, SWAP_AT + later - MIN) // even another account: the proof is spent
     clock.set(SWAP_AT + later)
     assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', `+${later / MIN} min: the press on the login proof met the limit again`)
   }
@@ -716,7 +798,7 @@ test('option A late miss is bounded: a refusal days after a press that closed th
   const refusedAt = SWAP_AT + 2 * 24 * HOUR
   appendTranscript(fs, r, limitRecord(refusedAt, RESETS_AT + 3 * 24 * HOUR))
   reopen()
-  fs.touch(r.credentials, refusedAt + 30 * MIN) // the owner switched the account again
+  switchAccount(fs, r, refusedAt + 30 * MIN) // the owner switched the account again
   clock.set(refusedAt + 40 * MIN)
   const out: any = await runLimitPass(ctx)
   assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['login_changed', 2], 'not blamed on the press two days ago')
@@ -731,7 +813,7 @@ test('option A late miss on a weekly limit: a refusal hours after the press, wit
   appendTranscript(fs, r, limitRecord(refusedAt, RESETS_AT))
   reopen()
   for (const later of [30 * MIN, 3 * HOUR, 30 * HOUR]) {
-    fs.touch(r.credentials, refusedAt + later - 10 * MIN) // the login keeps refreshing
+    switchAccount(fs, r, refusedAt + later - 10 * MIN) // even another account: the proof is spent
     clock.set(refusedAt + later)
     assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', `+${later / MIN} min: the login proof is spent`)
   }
@@ -748,7 +830,7 @@ test('option A late miss ends at the pressed limit\'s own reset: a new session l
   const fs = agentFs(r)
   const sessionReset = LIMIT_AT + 2 * HOUR // a session limit: it resets two hours after the hit
   writeTranscript(fs, r, [limitRecord(LIMIT_AT, sessionReset)])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   let pickerUp = true
   const tmux = fakeTmux(socketOf(r), () => (pickerUp ? picker() : IDLE), () => {
@@ -760,7 +842,7 @@ test('option A late miss ends at the pressed limit\'s own reset: a new session l
   const refusedAt = sessionReset + HOUR
   appendTranscript(fs, r, limitRecord(refusedAt, refusedAt + 5 * HOUR))
   pickerUp = true
-  fs.touch(r.credentials, refusedAt + 20 * MIN) // the owner switched the account
+  switchAccount(fs, r, refusedAt + 20 * MIN) // the owner switched the account
   clock.set(refusedAt + 30 * MIN)
   const out: any = await runLimitPass(ctx)
   assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['login_changed', 2], 'not blamed on the press before the reset')
@@ -841,7 +923,7 @@ test('option A ends with the episode: after a real turn (the owner fixed it), th
   const back = SWAP_AT + 3 * HOUR
   appendTranscript(fs, r, assistantTurn(back))
   appendTranscript(fs, r, limitRecord(back + HOUR))
-  fs.touch(r.credentials, back + HOUR + 5 * MIN)
+  switchAccount(fs, r, back + HOUR + 5 * MIN)
   clock.set(back + HOUR + 10 * MIN)
   assert.deepEqual(
     [(await runLimitPass(ctx)).agents[0].outcome, enters(tmux.calls).length],
@@ -855,7 +937,7 @@ test('closed but no turn yet (nothing was waiting): the picker is gone, the noti
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const tmux = fakeTmux(socketOf(r), (s) => (s.entered ? IDLE : picker()))
   const { ctx } = ctxFor(r, fs, clock, tmux.exec)
@@ -869,7 +951,7 @@ test('no tmux on this computer: no key; the owner gets the one tap fix (Restart 
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const tmux = fakeTmux(socketOf(r), () => picker())
   const { ctx } = ctxFor(r, fs, clock, tmux.exec, { tmuxPath: null })
@@ -882,7 +964,7 @@ test('a real turn after the limit (the agent already came back): nothing to do',
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord(), assistantTurn(LIMIT_AT + 20 * MIN)])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + 30 * MIN)
   const tmux = fakeTmux(socketOf(r), () => picker())
   const { ctx } = ctxFor(r, fs, clock, tmux.exec)
@@ -895,7 +977,7 @@ test('an agent the keep-alive switch did not clear is never looked at', async ()
   const r = linuxRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const tmux = fakeTmux(socketOf(r), () => picker())
   const { ctx } = ctxFor(r, fs, clock, tmux.exec, { assistantIds: [] })
@@ -903,16 +985,230 @@ test('an agent the keep-alive switch did not clear is never looked at', async ()
   assert.deepEqual([out.agents, tmux.calls], [[], []])
 })
 
-test('macOS keeps the login in the Keychain: a credential file there is not evidence, only the reset time is', async () => {
+test('macOS keeps the login in the Keychain: the account is read the same way, so another account frees the agent there too', async () => {
   const r = { ...linuxRig(), platform: 'darwin' }
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
-  const tmux = fakeTmux(agentServiceNamesFor('912', r.home, 'darwin')!.current.tmuxSocket, () => picker())
+  const tmux = fakeTmux(agentServiceNamesFor('912', r.home, 'darwin')!.current.tmuxSocket, (s) => (s.entered ? IDLE : picker()))
   const { ctx } = ctxFor(r, fs, clock, tmux.exec)
-  const out = await runLimitPass(ctx)
-  assert.deepEqual([out.agents[0].outcome, tmux.calls.length], ['limited', 0])
+  const out: any = await runLimitPass(ctx)
+  assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['login_changed', 1])
+})
+
+// -- rule A: only another ACCOUNT is proof; rule C: a status read that fails presses nothing --------------
+
+/** A limited agent, its first look recorded by the pass itself (no seeded record). */
+function firstLookRig(platform: 'linux' | 'darwin' = 'linux') {
+  const r = { ...linuxRig(), platform }
+  const fs = agentFs(r)
+  writeTranscript(fs, r, [assistantTurn(LIMIT_AT - 5 * MIN), limitRecord()])
+  const clock = fakeClock(LIMIT_AT + 2 * MIN)
+  const tmux = fakeTmux(agentServiceNamesFor('912', r.home, platform)!.current.tmuxSocket, (s) => (s.entered ? IDLE : picker()))
+  clock.onSleep((nowMs) => {
+    if (tmux.state.entered === 1 && fs.readFile(r.transcript)!.split('\n').filter(Boolean).length === 2) appendTranscript(fs, r, assistantTurn(nowMs))
+  })
+  return { r, fs, clock, tmux }
+}
+const owner = (fs: MemoryFs, atMs: number, name: string) => accountsOf.set(fs, [...(accountsOf.get(fs) ?? [[Number.NEGATIVE_INFINITY, 'A']]), [atMs, name]])
+
+test('the first look at a limit records the signed in account, as a token only; then another account frees the agent', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx, accountReads } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.deepEqual(limitWatch(fs, r).limitAccount, { limitAt: new Date(LIMIT_AT).toISOString(), token: tokenOf('A') })
+  assert.equal(accountReads.length, 1, 'one status read on the first look, never a second for the same look')
+  assert.equal(accountReads[0].configDir, null, 'read as it launched: no config folder in its recipe, none for the read')
+  assert.deepEqual(tmux.calls, [])
+  owner(fs, SWAP_AT, 'B')
+  clock.set(SWAP_AT + MIN)
+  const out: any = await runLimitPass(ctx)
+  assert.deepEqual([out.agents[0].outcome, out.agents[0].how, enters(tmux.calls).length], ['freed', 'login_changed', 1])
+  assertOnlySafeTmux(tmux.calls)
+})
+
+test('R3-L1 a seat signed in just after the limit is not the account AT it: going back to the limited seat presses nothing', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  owner(fs, LIMIT_AT + 5_000, 'B') // the owner signs in to seat B five seconds after the limit on seat A
+  clock.set(LIMIT_AT + 20_000)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  owner(fs, LIMIT_AT + 5 * MIN, 'A') // and back to seat A, the seat that is limited
+  clock.set(LIMIT_AT + 6 * MIN)
+  await runLimitPass(ctx)
+  assert.deepEqual(enters(tmux.calls), [], 'seat A is the seat at the limit: no key')
+})
+
+test('M2 (r4): with no read from before the limit the account at it is unknown: another account presses nothing', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  const noMemory = (input: any) => ctx.readAccount(input)
+  const bare = { ...ctx, readAccount: noMemory }
+  assert.equal((await runLimitPass(bare)).agents[0].outcome, 'limited')
+  // Recorded as unknown (token null), so no later look takes a read for the account at it.
+  assert.deepEqual(limitWatch(fs, r)?.limitAccount, { limitAt: new Date(LIMIT_AT).toISOString(), token: null })
+  owner(fs, SWAP_AT, 'B')
+  clock.set(SWAP_AT + MIN)
+  await runLimitPass(bare)
+  assert.deepEqual(enters(tmux.calls), [])
+})
+
+test('M2 (r4): an agent with no limit keeps a read of its login for the next limit to compare with', async () => {
+  const r = linuxRig()
+  const fs = agentFs(r)
+  writeTranscript(fs, r, [assistantTurn(LIMIT_AT - 5 * MIN)])
+  const clock = fakeClock(LIMIT_AT)
+  const tmux = fakeTmux(agentServiceNamesFor('912', r.home, 'linux')!.current.tmuxSocket, () => IDLE)
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  const kept: any[] = []
+  const readAccount = Object.assign((input: any) => ctx.readAccount(input), { keepFresh: (input: any) => kept.push(input) })
+  assert.equal((await runLimitPass({ ...ctx, readAccount })).agents[0].outcome, 'none')
+  assert.deepEqual(kept.map((k) => k.configDir), [null], 'read as it launched')
+})
+
+test('a first look later than 5 minutes after the limit records no account: the owner signed in since, so only the reset counts', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx, accountReads } = ctxFor(r, fs, clock, tmux.exec)
+  // Limited on A; the owner signs in as B before the watcher first looks, 20 minutes on.
+  owner(fs, LIMIT_AT + 5 * MIN, 'B')
+  clock.set(LIMIT_AT + 20 * MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.equal(limitWatch(fs, r)?.limitAccount, undefined, 'B was not the account at the limit, so it is not kept as it')
+  assert.equal(accountReads.length, 0, 'too late to tell which account hit the limit: no read at all')
+  // Back on A, the limited account: A is not "another account", so no press.
+  owner(fs, LIMIT_AT + 25 * MIN, 'A')
+  clock.set(LIMIT_AT + 30 * MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.deepEqual(tmux.calls, [])
+})
+
+test('m7 (r1): the account kept for one limit never stands in for the next: a second limit, on another seat, is read afresh', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.equal(limitWatch(fs, r).limitAccount.token, tokenOf('A'))
+  // The owner moves the agent to seat B; it works again, then hits a second limit, on B.
+  const LIMIT2 = LIMIT_AT + 3 * HOUR
+  owner(fs, LIMIT_AT + 30 * MIN, 'B')
+  appendTranscript(fs, r, assistantTurn(LIMIT_AT + 31 * MIN))
+  appendTranscript(fs, r, limitRecord(LIMIT2))
+  clock.set(LIMIT2 + MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', 'B is the seat AT this limit, never proof that usage is back')
+  assert.deepEqual(limitWatch(fs, r).limitAccount, { limitAt: new Date(LIMIT2).toISOString(), token: tokenOf('B') })
+  assert.deepEqual(enters(tmux.calls), [])
+})
+
+test('m2: the account token, the email and the organization never reach a log line, a notice or the pass result', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx, logs } = ctxFor(r, fs, clock, tmux.exec)
+  const results: unknown[] = [await runLimitPass(ctx)]
+  const ok = ctx.readAccount
+  ctx.readAccount = () => ({ ok: false, why: 'timed_out' })
+  clock.set(LIMIT_AT + 5 * MIN)
+  results.push(await runLimitPass(ctx))
+  ctx.readAccount = ok
+  owner(fs, SWAP_AT, 'B')
+  clock.set(SWAP_AT + MIN)
+  const freed: any = await runLimitPass(ctx)
+  results.push(freed)
+  assert.equal(freed.agents[0].how, 'login_changed', 'the whole path ran, to a notice')
+  const secrets = [tokenOf('A'), tokenOf('B'), tokenOf('A').split(':')[1], tokenOf('B').split(':')[1], 'a@seats.example.test', 'b@seats.example.test', FIXTURE_ORG]
+  const watchFile = watchPathOf(r)
+  const said = [
+    ...logs,
+    ...results.map((x) => JSON.stringify(x)),
+    ...[...fs.files].filter(([path]) => !path.startsWith(watchFile)).map(([, text]) => text),
+  ]
+  for (const text of said) for (const secret of secrets) assert.ok(!text.includes(secret), `${secret.slice(0, 12)}... reached: ${text.slice(0, 120)}`)
+  assert.ok(fs.readFile(watchFile)!.includes(tokenOf('A')), 'the watch record on this computer is the one place the token lives')
+})
+
+test('the same account again (a saved login on the same account, or signed out and back in): no press, the screen is not read', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  await runLimitPass(ctx)
+  owner(fs, SWAP_AT, 'B')
+  owner(fs, SWAP_AT + 2 * MIN, 'A')
+  clock.set(SWAP_AT + 5 * MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.deepEqual(tmux.calls, [])
+})
+
+test('a token refresh or a touched credential file is no proof: no press, and the file is never even stat-ed', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const stat = fs.stat
+  fs.stat = (p: string) => {
+    if (/\.credentials\.json$/.test(p)) throw new Error(`the credential file was stat-ed: ${p}`)
+    return stat(p)
+  }
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  await runLimitPass(ctx)
+  fs.touch(r.credentials, SWAP_AT) // the CLI renewed its token: same account
+  clock.set(SWAP_AT + MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.deepEqual(tmux.calls, [])
+})
+
+test('a status read that fails or times out now presses nothing; the reset time then frees the agent with one Enter', async () => {
+  for (const why of ['timed_out', 'failed', 'unsupported_version', 'no_account', 'throws']) {
+    const { r, fs, clock, tmux } = firstLookRig()
+    let broken = false
+    const { ctx, logs } = ctxFor(r, fs, clock, tmux.exec)
+    const ok = ctx.readAccount
+    ctx.readAccount = Object.assign((input: any) => {
+      if (!broken) return ok(input)
+      if (why === 'throws') throw new Error('spawnSync claude ETIMEDOUT')
+      return { ok: false, why }
+    }, { before: ok.before }) as any
+    await runLimitPass(ctx)
+    owner(fs, SWAP_AT, 'B')
+    broken = true
+    clock.set(SWAP_AT + MIN)
+    assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', why)
+    assert.deepEqual(tmux.calls, [], `${why}: nothing read, nothing pressed`)
+    clock.set(RESETS_AT + 2 * MIN)
+    const out: any = await runLimitPass(ctx)
+    assert.deepEqual([out.agents[0].how, enters(tmux.calls).length], ['reset_passed', 1], why)
+    assert.ok(!logs.join('\n').includes(tokenOf('A')), 'a token never reaches the log')
+  }
+})
+
+test('a status read that fails at the limit records nothing, so no later account can prove usage back until a read lands', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx, logs } = ctxFor(r, fs, clock, tmux.exec)
+  const ok = ctx.readAccount
+  ctx.readAccount = (() => ({ ok: false, why: 'timed_out' })) as any
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.equal(limitWatch(fs, r), null, 'nothing recorded on a failed read')
+  assert.match(logs.join('\n'), /could not be read \(timed_out\); only the reset time counts/)
+  // The owner switches while reads fail; the next read that lands sees B, not the A from before the
+  // limit: the account at the limit is unknown, so no later account is proof of anything.
+  owner(fs, LIMIT_AT + 4 * MIN, 'B')
+  ctx.readAccount = ok
+  clock.set(LIMIT_AT + 5 * MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.equal(limitWatch(fs, r).limitAccount.token, null)
+  assert.deepEqual(tmux.calls, [])
+  owner(fs, LIMIT_AT + 20 * MIN, 'C')
+  clock.set(LIMIT_AT + 21 * MIN)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited', 'only the reset counts for this limit')
+  assert.deepEqual(tmux.calls, [])
+})
+
+test('the account is read with the config folder the agent launched with (a saved login)', async () => {
+  const r = linuxRig()
+  const saved = `${r.home}/.bgos-agent/helper-accounts/0b6c1f8e-1111-4aaa-8bbb-000000000001`
+  const fs = agentFs(r)
+  const launch = `${r.stateDir}/launch.json`
+  fs.writeFile(launch, JSON.stringify({ ...JSON.parse(fs.readFile(launch)!), claudeConfigDir: saved }))
+  const transcript = `${saved}/projects/${r.cwd.replace(/[^a-zA-Z0-9]/g, '-')}/${SID}.jsonl`
+  fs.writeFile(transcript, `${limitRecord()}\n`)
+  const clock = fakeClock(LIMIT_AT + 2 * MIN)
+  const tmux = fakeTmux(socketOf(r), () => picker())
+  const { ctx, accountReads } = ctxFor(r, fs, clock, tmux.exec)
+  await runLimitPass(ctx)
+  assert.deepEqual(accountReads.map((a) => [a.configDir, a.home]), [[saved, r.home]])
 })
 
 // -- Windows: the helper reads the hidden console, and presses only on the screen it was shown ------------
@@ -960,7 +1256,7 @@ test('Windows: the helper reads the agent console, and presses ONE Enter only fo
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const helper = fakeHelper((s) => (s.pressed ? IDLE : picker()))
   clock.onSleep((nowMs) => {
@@ -979,7 +1275,7 @@ test('Windows: a dead launcher (no console to attach to) is never pressed; the o
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const helper = fakeHelper(() => picker())
   const { ctx } = ctxFor(r, fs, clock, helper.exec, { pidAlive: () => false })
@@ -996,7 +1292,7 @@ test('Windows: the console pid must still be the hoai launcher (row.launcherLive
     const r = winRig()
     const fs = agentFs(r)
     writeTranscript(fs, r, [limitRecord()])
-    fs.touch(r.credentials, SWAP_AT)
+    switchAccount(fs, r, SWAP_AT)
     const clock = fakeClock(SWAP_AT + MIN)
     // The fake helper only records the read and the press it would get.
     const helper = fakeHelper((s) => (s.pressed ? IDLE : picker()))
@@ -1032,7 +1328,7 @@ test('Windows: the launcher is proven from the process table read NOW; a table t
     const fs = agentFs(r)
     arrange(fs, r)
     writeTranscript(fs, r, [limitRecord()])
-    fs.touch(r.credentials, SWAP_AT)
+    switchAccount(fs, r, SWAP_AT)
     const clock = fakeClock(SWAP_AT + MIN)
     // The fake helper only records the read and the press it would get.
     const helper = fakeHelper(() => picker())
@@ -1047,7 +1343,7 @@ test('Windows: while the hour gate holds the key, the launcher is not proven aga
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const helper = fakeHelper(() => picker()) // the Enter "does not take": the picker stays
   let queries = 0
@@ -1068,7 +1364,7 @@ test('Windows: a checkup inside the hour still proves the console, so the owner 
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const helper = fakeHelper(() => picker()) // the Enter "does not take": the picker stays
   let table = processTable(HOAI_LAUNCHER)
@@ -1094,7 +1390,7 @@ test('Windows: the hour ending between the look and the press never lets an unpr
     const r = winRig()
     const fs = agentFs(r)
     writeTranscript(fs, r, [limitRecord()])
-    fs.touch(r.credentials, SWAP_AT)
+    switchAccount(fs, r, SWAP_AT)
     const t0 = SWAP_AT + MIN
     // A clock that moves 1 ms on every look once racing: the hour runs out somewhere inside the pass.
     let base = t0
@@ -1138,7 +1434,7 @@ test("Windows: a record the agent's daemon declares (its pid is the daemon, not 
     JSON.stringify({ pid: 4242, capabilities: ['relaunch'], startedAt: new Date(LIMIT_AT - 6 * HOUR).toISOString(), supervisor: { kind: 'launcher' } }),
   )
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const helper = fakeHelper(() => picker())
   const { ctx } = ctxFor(r, fs, clock, helper.exec)
@@ -1151,7 +1447,7 @@ test('Windows: a helper answer that does not hash to its own text is unreadable,
   const r = winRig()
   const fs = agentFs(r)
   writeTranscript(fs, r, [limitRecord()])
-  fs.touch(r.credentials, SWAP_AT)
+  switchAccount(fs, r, SWAP_AT)
   const clock = fakeClock(SWAP_AT + MIN)
   const calls: ExecCall[] = []
   const exec = async (file: string, args: string[]) => {
@@ -1181,14 +1477,245 @@ test('structure: the only key the watcher modules can send is one Enter; no path
 
 test('the watcher bundle carries the limit pass, its pure rules, the key module and the Windows helper', async () => {
   const { WATCHER_BUNDLE_FILES } = await import('../lib/watcher-bundle.mjs')
-  for (const rel of ['lib/watcher-limit.mjs', 'lib/limit-screen.mjs', 'lib/limit-keys.mjs', 'bin/win32-limit-screen.ps1']) {
+  for (const rel of ['lib/watcher-limit.mjs', 'lib/limit-screen.mjs', 'lib/claude-account-id.mjs', 'lib/limit-keys.mjs', 'bin/win32-limit-screen.ps1']) {
     assert.ok(WATCHER_BUNDLE_FILES.includes(rel), rel)
   }
 })
 
 test('house style: no em or en dashes in the new modules, the helper or this test', () => {
-  for (const path of ['../lib/watcher-limit.mjs', '../lib/limit-keys.mjs', '../bin/win32-limit-screen.ps1', './watcher-limit.test.ts']) {
+  for (const path of ['../lib/watcher-limit.mjs', '../lib/limit-keys.mjs', '../lib/claude-account-id.mjs', '../bin/win32-limit-screen.ps1', './watcher-limit.test.ts', './claude-account-id.test.ts']) {
     const source = readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
     assert.doesNotMatch(source, new RegExp('[\\u2013\\u2014]'), path)
   }
+})
+
+test('R2-L1 a read from before the limit is never the account AT the limit, and never presses', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  // The folder is on seat A until 10 s before the limit, then on seat B, the seat that hits the limit.
+  owner(fs, LIMIT_AT - 10_000, 'B')
+  const reader = createStatusReader({ now: clock.now, read: async () => ({ read: true, signedIn: true, account: tokenOf(accountAt(fs, clock.now())) }) })
+  ;(ctx as any).readAccount = peekAccount(reader)
+  // The heartbeat's snapshot read this folder 20 s before the limit: seat A.
+  clock.set(LIMIT_AT - 20_000)
+  await reader.read(statusInput({ env: ctx.env, home: ctx.home, configDir: null, platform: ctx.platform }))
+  clock.set(LIMIT_AT + 20_000)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.equal(limitWatch(fs, r)?.limitAccount ?? null, null, 'a read from before the limit records nothing')
+  clock.set(LIMIT_AT + 61_000)
+  await runLimitPass(ctx)
+  await new Promise((done) => setImmediate(done))
+  clock.set(LIMIT_AT + 62_000)
+  const out: any = await runLimitPass(ctx)
+  assert.deepEqual(enters(tmux.calls), [], 'the account never changed since the limit: no key')
+})
+
+test('B1: a read with no time on it, or from before the limit, is never the account now either: no key', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  assert.equal(limitWatch(fs, r).limitAccount.token, tokenOf('A'))
+  owner(fs, LIMIT_AT + MIN, 'B')
+  for (const readAt of [undefined, LIMIT_AT - 1]) {
+    ;(ctx as any).readAccount = () => ({ ok: true, token: tokenOf('B'), ...(readAt === undefined ? {} : { readAt }) })
+    await runLimitPass(ctx)
+    assert.deepEqual(enters(tmux.calls), [], String(readAt))
+  }
+})
+
+test('n3: the watch record that holds the account token is written for this user only (0600)', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  const modes: Array<number | undefined> = []
+  const write = fs.writeFile.bind(fs)
+  fs.writeFile = (path: string, text: string, opts?: { mode?: number }) => {
+    if (path.includes(LIMIT_WATCH_FILE_NAME)) modes.push(opts?.mode)
+    return write(path, text, opts)
+  }
+  await runLimitPass(ctx)
+  assert.ok(modes.length > 0)
+  assert.ok(modes.every((m) => m === 0o600), String(modes))
+})
+
+test('M2 (r4): a limit recorded as unknown stays unknown: the login going back and away again inside the window presses nothing', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  owner(fs, LIMIT_AT + 5_000, 'B') // seat B five seconds after the limit on seat A: the reads differ
+  clock.set(LIMIT_AT + 20_000)
+  assert.equal((await runLimitPass(ctx)).agents[0].outcome, 'limited')
+  const unknown = { limitAt: new Date(LIMIT_AT).toISOString(), token: null }
+  assert.deepEqual(limitWatch(fs, r)?.limitAccount, unknown)
+  owner(fs, LIMIT_AT + MIN, 'A') // back to seat A, now the same as the read from before the limit
+  clock.set(LIMIT_AT + 2 * MIN)
+  await runLimitPass(ctx)
+  assert.deepEqual(limitWatch(fs, r)?.limitAccount, unknown, 'never read again into a known account')
+  owner(fs, LIMIT_AT + 3 * MIN, 'B') // and away again
+  clock.set(LIMIT_AT + 4 * MIN)
+  await runLimitPass(ctx)
+  assert.deepEqual(enters(tmux.calls), [], 'only the reset counts for this limit')
+})
+
+
+// -- the round 4 review's limit watch attacks (R4X), kept as tests -------------------------------------------
+
+for (const [name, gap] of [['60.001 s apart, as the watcher loop spaces its looks', 60_001], ['59 s apart (control)', 59_000]] as const) {
+  test(`R4X-L1 the limit watch records the account at a limit from its own reads, looks ${name}`, async () => {
+    const { r, fs, clock, tmux } = firstLookRig()
+    const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+    let cli = 0
+    const reader = createStatusReader({ now: clock.now, read: async () => (cli++, { read: true, signedIn: true, account: tokenOf(accountAt(fs, clock.now())) }) })
+    const readAccount: any = peekAccount(reader)
+    ;(ctx as any).readAccount = readAccount
+    // The read the limit watch kept of this folder while it had no limit (keepFresh), 2 min before the limit.
+    clock.set(LIMIT_AT - 2 * MIN)
+    readAccount.keepFresh({ env: ctx.env, home: ctx.home, configDir: null, platform: ctx.platform })
+    await new Promise((d) => setImmediate(d))
+    let at = LIMIT_AT + 20_000
+    let looks = 0
+    while (at - LIMIT_AT <= 5 * MIN && !limitWatch(fs, r)?.limitAccount) {
+      clock.set(at)
+      await runLimitPass(ctx)
+      looks++
+      await new Promise((d) => setImmediate(d)) // the CLI answers long before the next look
+      at += gap
+    }
+    console.log(`PROBE gap ${gap}: looks ${looks}, CLI reads ${cli}, recorded ${limitWatch(fs, r)?.limitAccount ? 'yes' : 'no'}`)
+    assert.equal(limitWatch(fs, r)?.limitAccount?.token, tokenOf('A'), 'seat A was signed in before and after the limit, and the watcher read it inside the window')
+  })
+}
+
+// The later half: the account NOW (watcher-limit.mjs:334, readAccountSince) is read through the same peek.
+for (const [name, gap] of [['60.001 s apart', 60_001], ['59 s apart (control)', 59_000]] as const) {
+  test(`R4X-L1b after the account at the limit is known, a login change frees the agent, looks ${name}`, async () => {
+    const { r, fs, clock, tmux } = firstLookRig()
+    const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+    let cli = 0
+    const reader = createStatusReader({ now: clock.now, read: async () => (cli++, { read: true, signedIn: true, account: tokenOf(accountAt(fs, clock.now())) }) })
+    const readAccount: any = peekAccount(reader)
+    ;(ctx as any).readAccount = readAccount
+    clock.set(LIMIT_AT - 2 * MIN)
+    readAccount.keepFresh({ env: ctx.env, home: ctx.home, configDir: null, platform: ctx.platform })
+    await new Promise((d) => setImmediate(d))
+    // Two looks 59 s apart record seat A as the account at the limit (the R4X-L1 control path).
+    let at = LIMIT_AT + 20_000
+    for (let i = 0; i < 3 && !limitWatch(fs, r)?.limitAccount; i++) {
+      clock.set(at)
+      await runLimitPass(ctx)
+      await new Promise((d) => setImmediate(d))
+      at += 59_000
+    }
+    const recorded = limitWatch(fs, r)?.limitAccount?.token === tokenOf('A')
+    owner(fs, at, 'B') // the owner signs the agent's folder in to seat B
+    let looks = 0
+    let freed = false
+    at += 1000
+    while (looks < 6 && !freed) {
+      clock.set(at)
+      const out: any = await runLimitPass(ctx)
+      looks++
+      freed = out.agents[0].outcome === 'freed'
+      await new Promise((d) => setImmediate(d))
+      at += gap
+    }
+    console.log(`PROBE L1b gap ${gap}: recorded A ${recorded}, looks ${looks}, CLI reads ${cli}, freed ${freed}, enters ${enters(tmux.calls).length}`)
+    assert.ok(recorded, 'setup: seat A recorded at the limit')
+    assert.ok(freed, 'seat B is another account: usage is back on this login')
+  })
+}
+
+test('R4X-B1 keeping the reads of 10 agents on 10 folders never has more than two CLI status reads out at once', async () => {
+  let inFlight = 0
+  let peak = 0
+  let starts = 0
+  const reader = createStatusReader({
+    now: () => 1_000_000,
+    read: () => {
+      starts++
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      return new Promise((done) => setTimeout(() => (inFlight--, done({ read: true, signedIn: true, account: null })), 5))
+    },
+  })
+  const readAccount: any = peekAccount(reader)
+  // runLimitPass walks the agents in order and keepAccountRead never waits (lib/watcher-limit.mjs:613-615, 450).
+  for (let i = 0; i < 10; i++) readAccount.keepFresh({ env: {}, home: '/home/user', configDir: `/home/user/agents/a${i}/.claude`, platform: 'linux' })
+  await new Promise((d) => setTimeout(d, 30))
+  console.log(`PROBE ten folders: reads started ${starts}, at once ${peak}`)
+  assert.ok(peak <= 2, `no more status reads at once than the snapshot's batch of two; saw ${peak}`)
+})
+
+test('R5-W1 the limit watch: a read that began before the limit and answered after it is not the read from before it', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  let release: ((v: any) => void) | null = null
+  const reader = createStatusReader({
+    now: clock.now,
+    read: async () => {
+      const answer = { read: true, signedIn: true, account: tokenOf(accountAt(fs, clock.now())) }
+      if (!release) return answer
+      const held = await new Promise<any>((done) => (release = done))
+      return held
+    },
+  })
+  const readAccount: any = peekAccount(reader)
+  ;(ctx as any).readAccount = readAccount
+  const input = statusInput({ env: ctx.env, home: ctx.home, configDir: null, platform: ctx.platform })
+  // Another path (the switcher's heartbeat) read this folder 2 min before the limit: seat A.
+  clock.set(LIMIT_AT - 2 * MIN)
+  await reader.read(input)
+  // Its next read starts 1 s before the limit; the owner signs the folder in to seat B 1 s after it, and
+  // that read answers B, 2 s after the limit.
+  release = (() => {}) as any
+  clock.set(LIMIT_AT - 1000)
+  const late = reader.read(input)
+  await new Promise((d) => setImmediate(d))
+  owner(fs, LIMIT_AT + 1000, 'B')
+  clock.set(LIMIT_AT + 2000)
+  const hand = release as any
+  release = null
+  hand({ read: true, signedIn: true, account: tokenOf('B') })
+  await late
+  for (let at = LIMIT_AT + 20_000; at <= LIMIT_AT + 4 * MIN; at += 75_000) {
+    clock.set(at)
+    await runLimitPass(ctx)
+    await new Promise((d) => setImmediate(d))
+  }
+  assert.equal(limitWatch(fs, r)?.limitAccount?.token, null, 'before the limit seat A, after it seat B: the account at it is not known')
+})
+
+/** The limit watch on the real reader and its log, over the fake account clock; `input` is the agent's folder. */
+function realReaderCtx(r: Rig, fs: MemoryFs, clock: ReturnType<typeof fakeClock>, exec: any) {
+  const { ctx } = ctxFor(r, fs, clock, exec)
+  const reader = createStatusReader({ now: clock.now, read: async () => ({ read: true, signedIn: true, account: tokenOf(accountAt(fs, clock.now())) }) })
+  ;(ctx as any).readAccount = peekAccount(reader)
+  const input = statusInput({ env: ctx.env, home: ctx.home, configDir: null, platform: ctx.platform })
+  return { ctx, reader, input }
+}
+
+test('R5-F2 the limit watch takes the FIRST read since the limit, not the newest: a login change after it frees the agent', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx, reader, input } = realReaderCtx(r, fs, clock, tmux.exec)
+  clock.set(LIMIT_AT - 2 * MIN)
+  await reader.read(input) // the switcher's heartbeat, before the limit: seat A
+  clock.set(LIMIT_AT + 10_000)
+  await reader.read(input) // and 10 s after it: still seat A
+  owner(fs, LIMIT_AT + MIN, 'B') // the owner signs this folder in to seat B to free the agent
+  clock.set(LIMIT_AT + 70_000)
+  await reader.read(input)
+  clock.set(LIMIT_AT + 75_000)
+  const out: any = await runLimitPass(ctx) // the limit watch's first look comes after both
+  assert.equal(limitWatch(fs, r)?.limitAccount?.token, tokenOf('A'), 'seat A before the limit and on the first read after it')
+  assert.deepEqual([out.agents[0].outcome, out.agents[0].how, enters(tmux.calls).length], ['freed', 'login_changed', 1])
+})
+
+test('R5-S1 a read begun inside the five minute window is still collected by a look after it', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx, reader, input } = realReaderCtx(r, fs, clock, tmux.exec)
+  clock.set(LIMIT_AT - 2 * MIN)
+  await reader.read(input)
+  clock.set(LIMIT_AT + 4 * MIN + 50_000)
+  await reader.read(input) // the first read since the limit, 10 s before its window closes
+  clock.set(LIMIT_AT + 6 * MIN + 5_000) // the next look, 75 s on
+  await runLimitPass(ctx)
+  assert.equal(limitWatch(fs, r)?.limitAccount?.token, tokenOf('A'))
 })
