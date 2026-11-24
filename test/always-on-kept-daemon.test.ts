@@ -336,3 +336,10 @@ test('r7 M1: Linux, a removal whose not-kept run.sh cannot be written is said as
   assert.ok(out.logs.some((l) => /always-on: not kept running \([^)]*\), supervisor removed in part: .*could not be replaced/.test(l)), out.logs.join('\n'))
   assert.equal(out.logs.some((l) => /supervisor removed:|supervisor NOT removed/.test(l)), false, out.logs.join('\n'))
 })
+
+test('r7 M3: the daemon\'s removal takes bin/bgos-agent\'s install lock through its own file system: one directory, never a recursive mkdir', () => {
+  const start = SERVER.indexOf('const alwaysOnReleaseFs = {')
+  const body = SERVER.slice(start, SERVER.indexOf('\n}\n', start))
+  assert.match(body, /mkdirExclusive: \(path: string\) => void mkdirSync\(path\),/)
+  assert.match(body, /rmdir: \(path: string\) => rmdirSync\(path\),/)
+})

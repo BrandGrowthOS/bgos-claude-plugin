@@ -1228,6 +1228,7 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -20319,6 +20320,9 @@ const alwaysOnReleaseFs = {
   writeFile: (path: string, text: string, opts?: { mode?: number }) => writeFileSync(path, text, opts?.mode != null ? { mode: opts.mode } : undefined),
   rename: (from: string, to: string) => renameSync(from, to),
   rm: (path: string) => rmSync(path, { force: true }),
+  // bin/bgos-agent's install lock, taken by the removal (lib/agent-kept.mjs, review round 7 M3).
+  mkdirExclusive: (path: string) => void mkdirSync(path),
+  rmdir: (path: string) => rmdirSync(path),
 }
 
 /** The removal's last failure, said once until it changes. */

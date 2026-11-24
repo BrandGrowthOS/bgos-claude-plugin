@@ -341,3 +341,15 @@ test('r7 M1: an install clears a removal\'s not-kept marker once its service is 
   assert.ok(clear > service, 'cleared after the service is installed, never before: an install that fails keeps the sign')
   assert.ok(clear < sh.indexOf('\ncmd_', service), 'inside cmd_install')
 })
+
+test('r7 M3: install --always-on asks the switch again under its lock, after the slow part and right before it writes the supervisor', () => {
+  const start = sh.indexOf('cmd_install() {')
+  const lock = sh.indexOf('acquire_install_lock "$ASSISTANT_ID"', start)
+  const first = sh.indexOf('kept-switch --assistant "$ASSISTANT_ID" --os "$OS"', start)
+  const bun = sh.indexOf('bun install --no-summary', start)
+  const again = sh.indexOf('kept-switch --assistant "$ASSISTANT_ID" --os "$OS"', first + 1)
+  const write = sh.indexOf('date +%s > "$statedir/installed-at"', start)
+  assert.ok(start < lock && lock < first && first < bun, 'the lock first, then the first ask, then the slow part')
+  assert.ok(again > bun && again < write, 'asked again after it, before the first supervisor file')
+  assert.match(sh.slice(again - 60, write), /\[ "\$\{ALWAYS_ON:-\}" = "1" \] && \[ "\$\(agent_service_js kept-switch[^\n]*= "switch_off" \]; then\n\s+die "refused: Keep agents running went off for this computer[^"\n]*"\n/)
+})

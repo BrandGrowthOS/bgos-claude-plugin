@@ -581,6 +581,12 @@ cmd_install() {
     path="$path:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   fi
   path="$(dedupe_path "$path")"
+  # Asked again here, under the install lock, right before the supervisor is written: the switch
+  # may have gone off while this install ran, and a watcher removal waits only so long for the
+  # lock (lib/agent-kept.mjs, review round 7 M3).
+  if [ "${ALWAYS_ON:-}" = "1" ] && [ "$(agent_service_js kept-switch --assistant "$ASSISTANT_ID" --os "$OS" | head -n 1)" = "switch_off" ]; then
+    die "refused: Keep agents running went off for this computer while agent $ASSISTANT_ID was being installed, so no supervisor was written; turn it on in HOAI (Settings, Computers), then try again in a minute."
+  fi
   # Stamped for EVERY always-on install (fact 3). The app records alwaysOn in BGOS only
   # after it has seen this agent connect, and until then the agent's own daemon reads
   # "off" with a supervisor installed, which used to mean "remove it", within seconds,

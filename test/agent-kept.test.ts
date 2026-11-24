@@ -48,6 +48,10 @@ import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { main as agentServiceMain } from '../bin/hoai-agent-service.mjs'
 import { fakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 import { memoryFs } from './helpers/memory-fs.ts'
+import { mkdtempSync, rmSync as rmTree } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join as joinPath } from 'node:path'
+import { nodeFs } from '../lib/watcher-bundle.mjs'
 
 const NOW = 1_800_000_000_000
 const MIN = 60_000
@@ -583,4 +587,65 @@ test('r7 M1: on Mac and Linux the not-kept marker alone reads as removed; with n
   for (const platform of ['linux', 'darwin']) assert.equal(supervisorRemovedNotKept({ platform, ...io }), false, platform)
   files.set(MARKER_912, 'not_kept\n')
   for (const platform of ['linux', 'darwin']) assert.equal(supervisorRemovedNotKept({ platform, ...io }), true, platform)
+})
+
+const LOCK_912 = `${HOME}/.bgos-agent/912.install.lock`
+const MAC_SERVICE = { kind: 'launchd', handle: LABEL, file: PLIST }
+
+test('r7 M3 (r7rev P5): a removal waits for an install of the same agent that holds bin/bgos-agent\'s lock, then removes what that install wrote, and lets go of the lock', async () => {
+  const fs = memoryFs({ [PLIST]: '<plist/>', [RUN_SH]: '#!/usr/bin/env bash\nexec hoai-core\n' })
+  // cmd_install holds its lock: it passed its switch check while the agent was kept, and is still writing.
+  fs.mkdirExclusive(LOCK_912)
+  let waits = 0
+  const removal = releasePosixSupervisor({ platform: 'darwin', service: MAC_SERVICE, assistantId: '912', home: HOME, exec: recordingExec().exec, fs, env: {}, sleep: async () => void (waits += 1) } as any)
+  // The install writes its run.sh and plist, then exits and lets go of its lock.
+  fs.writeFile(RUN_SH, '#!/usr/bin/env bash\nexec hoai-core\n')
+  fs.writeFile(PLIST, '<plist/>')
+  fs.rmdir(LOCK_912)
+  const out = await removal
+  assert.equal(out.ok, true, out.message)
+  assert.ok(waits >= 1, 'it waited for the install')
+  assert.equal(fs.files.has(PLIST), false, 'the plist the install wrote is gone')
+  assert.ok((fs.files.get(RUN_SH) ?? '').includes(NOT_KEPT_RUN_SH_MARK), 'and so is its run.sh')
+  assert.equal(fs.exists(LOCK_912), false, 'the lock is let go')
+})
+
+test('r7 M3: a lock still held after 30 seconds does not keep the supervisor: the removal goes ahead, as uninstall does, says so, and leaves the install its own lock', async () => {
+  const fs = memoryFs({ [PLIST]: '<plist/>' })
+  fs.mkdirExclusive(LOCK_912)
+  let waited = 0
+  const out = await releasePosixSupervisor({ platform: 'darwin', service: MAC_SERVICE, assistantId: '912', home: HOME, exec: recordingExec().exec, fs, env: {}, sleep: async (ms: number) => void (waited += ms) } as any)
+  assert.equal(out.ok, true, out.message)
+  assert.equal(waited, 30_000)
+  assert.equal(fs.files.has(PLIST), false)
+  assert.match(out.note ?? '', /still held .*912\.install\.lock after 30s, so it was removed anyway/)
+  assert.equal(fs.exists(LOCK_912), true, 'not taken from the install that holds it')
+})
+
+test('r7 M3: the removal holds the lock while it works and lets go of it whatever the outcome', async () => {
+  const fs = memoryFs({ [UNIT_FILE]: '[Service]\n' })
+  let heldDuring = false
+  const exec = async (file: string, args: readonly string[]) => {
+    heldDuring = fs.exists(LOCK_912)
+    return { code: args[1] === 'disable' ? 1 : 0, stdout: '', stderr: 'no bus', error: null, timedOut: false }
+  }
+  const out = await releasePosixSupervisor({ platform: 'linux', service: LINUX_SERVICE, assistantId: '912', home: HOME, exec, fs, env: {}, sleep: async () => {} } as any)
+  assert.equal(out.ok, false, 'the disable failed')
+  assert.equal(heldDuring, true, 'an install would stand down meanwhile')
+  assert.equal(fs.exists(LOCK_912), false, 'let go after a failure too')
+})
+
+test('r7 M3: the real adapter takes the lock as bin/bgos-agent does: mkdir of one directory, EEXIST when it is there, never a recursive mkdir', () => {
+  const dir = mkdtempSync(joinPath(tmpdir(), 'r7-lock-'))
+  try {
+    const real = nodeFs()
+    const lock = joinPath(dir, '912.install.lock')
+    real.mkdirExclusive!(lock)
+    assert.throws(() => real.mkdirExclusive!(lock), (err: any) => err?.code === 'EEXIST')
+    real.rmdir!(lock)
+    assert.equal(real.exists(lock), false)
+    real.mkdirExclusive!(lock)
+  } finally {
+    rmTree(dir, { recursive: true, force: true })
+  }
 })

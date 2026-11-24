@@ -4681,3 +4681,13 @@ test('r7 M2: installProductSupervisor never runs bgos-agent install without a fo
     assert.deepEqual(rec.calls, [], String(cwd))
   }
 })
+
+test('r7 M3: the sweep\'s removal waits on its own clock for an install that holds the lock, then goes ahead and says so', { timeout: 20_000 }, async () => {
+  const fs = onceKept()
+  fs.writeFile(RUN_SH('912'), R7_REAL)
+  fs.mkdirExclusive(`${HOME}/.bgos-agent/912.install.lock`)
+  const clock = fakeClock()
+  const logs = await sweepWith(fs, clock, SWITCH_OFF([912]))
+  assert.equal(fs.files.has(PLIST('912')), false, logs.join('\n'))
+  assert.ok(logs.some((l) => /keep-alive 912: an install of agent 912 still held .* after 30s, so it was removed anyway/.test(l)), logs.join('\n'))
+})
