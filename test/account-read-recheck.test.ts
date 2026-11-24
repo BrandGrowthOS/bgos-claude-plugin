@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { createHelperAccounts, profileDirectory } from '../lib/helper-accounts.mjs'
+import { createHelperAccounts, profileDirectory, readAccountRegistry } from '../lib/helper-accounts.mjs'
 import { createStatusReader } from '../lib/claude-account-id.mjs'
 import { seatToken } from './helpers/claude-auth-status.ts'
 
@@ -117,11 +117,35 @@ async function atLimit(t: any) {
   return { f, s1, s2, L }
 }
 
-test('R3-C1 control: nothing changed, the switch lands on the next look', async (t) => {
+test('R3-C1 control: nothing changed, the switch lands on the next look, on the read taken before the limit', async (t) => {
   const { f, s2, L } = await atLimit(t)
   f.clock.at = L + 62_000
   await f.look()
   assert.deepEqual(f.restarts.map((r) => r.choice), [s2])
+  // Not vacuous: the heartbeat read S1 on seat A before the limit, so the account at it is known.
+  assert.deepEqual(readAccountRegistry(f.home)?.targets?.['41']?.limitAccount, { atMs: L, token: A })
+})
+
+test('R3-C1b control: the same rig with no read at all from before the limit never moves (the account at it is unknown)', async (t) => {
+  const f = rig(t)
+  f.clock.at = T0 - 20 * 60_000 // the logins are added (and read) long before: not "before the limit"
+  const s1 = await f.add('S1'), s2 = await f.add('S2')
+  f.folders.set(s1, on(A))
+  f.folders.set(s2, on(B))
+  f.rows[0].accountId = s1
+  f.clock.at = T0 + 122_000
+  await f.job({ action: 'assign', mode: 'limit', accountId: s2, assistantId: 41 })
+  const L = f.clock.at + 1000
+  f.rows[0].limit = limitAt(L)
+  f.clock.at = L + 1000
+  f.slow.ms = 20
+  await f.look()
+  await settle()
+  f.clock.at = L + 62_000
+  await f.look()
+  await settle()
+  assert.deepEqual(f.restarts, [])
+  assert.deepEqual(readAccountRegistry(f.home)?.targets?.['41']?.limitAccount, { atMs: L, token: null })
 })
 
 test('R3-S1 a read the watcher is already replacing must not move the agent onto the seat it is limited on', async (t) => {
@@ -321,6 +345,17 @@ test('R4 a last read that fails moves nothing: Switch at limit keeps its rule an
   assert.deepEqual(f.restarts, [])
   const agent = (await f.watcher.snapshot()).agents[0]
   assert.deepEqual([agent.status, agent.rule], ['waiting_for_room', { mode: 'limit', accountId: s2 }])
+})
+
+test('R5-E1 a last read that finds the target signed out ends a Switch at limit with needs sign in, never waits for room', async (t) => {
+  const { f, s2, L } = await atLimit(t)
+  f.clock.at = L + 62_000
+  f.folders.set(s2, OUT)
+  await f.look()
+  await settle()
+  assert.deepEqual(f.restarts, [])
+  const agent = (await f.watcher.snapshot()).agents[0]
+  assert.deepEqual([agent.status, agent.rule], ['needs_sign_in', undefined])
 })
 
 test('R4 at a limit the agent\'s own login is read again too: if it now names the target\'s seat, nothing moves', async (t) => {

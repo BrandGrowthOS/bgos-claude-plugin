@@ -11,7 +11,7 @@ import { nodeFs } from '../lib/watcher-bundle.mjs'
 import { applyHelperAccount } from '../lib/helper-account-launch.mjs'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
 import { transcriptPathFor } from '../lib/watcher-keepalive.mjs'
-import { accountTokenFrom } from '../lib/claude-account-id.mjs'
+import { accountTokenFrom, createStatusReader, statusInput } from '../lib/claude-account-id.mjs'
 import { seatStatus, seatToken } from './helpers/claude-auth-status.ts'
 
 test('a watcher reports only fresh capkeeper windows from the matching signed-in profile', async (t) => {
@@ -338,7 +338,7 @@ test('review #14: without the pinned transcript the watcher never asks for a res
 /** Each folder is another seat of one Team organization (the CLI's real key set: orgId and email). */
 const folderAccount = (env: any) => seatToken(`seat-${String(env.CLAUDE_CONFIG_DIR ?? 'own').split(/[\\/]/).pop()}`)
 
-type RigOptions = { ownLogin?: boolean; env?: Record<string, string>; clock?: { skew: number }; exec?: (file: string, args: string[], opts: any) => Promise<any> }
+type RigOptions = { ownLogin?: boolean; env?: Record<string, string>; clock?: { skew: number }; exec?: (file: string, args: string[], opts: any) => Promise<any>; statusReader?: any }
 async function limitSwitchRig(t: any, probe: (env: any) => Promise<any>, opts: RigOptions = {}) {
   const home = mkdtempSync(join(tmpdir(), 'account-limit-'))
   t.after(() => rmSync(home, { recursive: true, force: true }))
@@ -369,7 +369,7 @@ async function limitSwitchRig(t: any, probe: (env: any) => Promise<any>, opts: R
   const calls = { eligible: 0, limitEligible: 0 }
   const watcher = createAccountWatcher({ home, credentials, now: () => Date.now() + clock.skew, env: opts.env ?? {}, fs: nodeFs(), pidAlive: () => true, sleep: async () => {} }, {
     list: () => [row],
-    ...(opts.exec ? { exec: opts.exec } : { probe }),
+    ...(opts.statusReader ? { statusReader: opts.statusReader } : opts.exec ? { exec: opts.exec } : { probe }),
     eligible: async () => { calls.eligible++; return false },
     limitEligible: async () => { calls.limitEligible++; return true },
     requestRestart: async () => {
@@ -382,9 +382,13 @@ async function limitSwitchRig(t: any, probe: (env: any) => Promise<any>, opts: R
   const job = (accountCommand: any, targets: any[] = []) => watcher.run(randomUUID(), {
     op: 'helper_accounts', requestedBy: 'owner', ...credentials, watcherPairingId: 9, ownerUserId: 'user_fixture', targets, accountCommand,
   })
+  // The logins are added well before the limit below: the add's own reads are not the first since it.
+  const skew = clock.skew
+  clock.skew = skew - 20 * 60_000
   await job({ action: 'add', label: 'Studio' })
   await job({ action: 'add', label: 'Reserve' })
   const [a, b] = (await watcher.snapshot()).accounts.map((x: any) => x.id)
+  clock.skew = skew
   const profileA = join(home, '.bgos-agent', 'helper-accounts', a)
   const profileB = join(home, '.bgos-agent', 'helper-accounts', b)
   // On saved login A, or (ownLogin) on its own login: no config folder in its recipe, so ~/.claude.
@@ -408,7 +412,7 @@ async function limitSwitchRig(t: any, probe: (env: any) => Promise<any>, opts: R
     await watcher.tick()
     clock.skew = back
   }
-  return { job, watcher, a, b, calls, transcript, cwd, pin, profileA, profileB, iso, at, clock, beforeLimit }
+  return { job, watcher, a, b, calls, transcript, cwd, pin, profileA, profileB, iso, at, clock, beforeLimit, home }
 }
 
 /** A folder's answer in the CLI's real key set: the seat (email) of one Team organization it is signed
@@ -463,6 +467,7 @@ test('M2: one status read per folder a minute whatever the path (snapshot, the l
     reads.set(folder, (reads.get(folder) ?? 0) + 1)
     return { read: false } // a hung CLI: every read times out
   }, { clock })
+  reads.clear() // the setup's adds read every login 20 minutes earlier: count from here
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
   for (let i = 0; i < 3; i++) {
     await watcher.snapshot()
@@ -631,4 +636,30 @@ test('B1 (r4): an agent on its own login is read again at its limit, never hande
   await watcher.tick()
   await watcher.tick()
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
+})
+
+test('R5 (M-B): an agent on its own login, pressed after its limit, moves on the read the limit watch kept before it', async (t) => {
+  const folders: Record<string, string | null> = { own: 'own@seats.example.test' }
+  const clock = { skew: -120_000 } // a minute before the limit line
+  // The one reader of the process, as lib/watcher-core.mjs shares it with the limit watch.
+  const reader = createStatusReader({ now: () => Date.now() + clock.skew, read: async (input: any) => seatsByFolder(folders)(input.env) })
+  const { job, watcher, b, home } = await limitSwitchRig(t, async () => ({ read: false }), { ownLogin: true, clock, statusReader: reader })
+  // The limit watch's keepFresh of the agent's own folder while it had no limit (lib/watcher-limit.mjs).
+  reader.keepFresh(statusInput({ env: {}, home, configDir: null }))
+  await new Promise((d) => setTimeout(d, 20))
+  clock.skew = 0 // a minute after the limit, no rule was armed; the owner presses Switch at limit now
+  await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
+  await watcher.tick()
+  await watcher.tick()
+  assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
+})
+
+test('R5 (M-B): with no rule and no keep-alive limit watch, the watcher itself asks a read of an own-login agent since its limit', async (t) => {
+  const reader: any = createStatusReader({ now: () => Date.now(), read: async (input: any) => seatsByFolder({})(input.env) })
+  const peeked: string[] = []
+  const peek = reader.peek
+  reader.peek = (input: any) => (peeked.push(input.key), peek(input))
+  const { watcher, home } = await limitSwitchRig(t, async () => ({ read: false }), { ownLogin: true, statusReader: reader })
+  await watcher.tick() // the agent hit its limit a minute ago; nothing reads its folder but this
+  assert.deepEqual(peeked, [statusInput({ env: {}, home, configDir: null }).key])
 })

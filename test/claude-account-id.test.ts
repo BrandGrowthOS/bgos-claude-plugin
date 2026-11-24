@@ -229,6 +229,63 @@ test('the limit watch reads a failed, signed out or seatless answer as no accoun
   }
 })
 
+test('R5 (M-A): peek answers the last finished read while it is under two minutes old, as a newer one runs', async () => {
+  let at = 1_000_000
+  const held: Array<(v: any) => void> = []
+  const reader = createStatusReader({ now: () => at, read: () => new Promise((r) => held.push(r)) })
+  const peek = peekAccount(reader)
+  const folder = { env: {}, home: '/home/user', configDir: '/a', platform: 'linux' }
+  assert.deepEqual(peek(folder), { ok: false, why: 'pending' })
+  held.shift()!({ read: true, signedIn: true, account: seatToken('ana') })
+  await new Promise((r) => setImmediate(r))
+  at += 75_000 // the watcher's next look: 60 s gate plus the heartbeat POST
+  assert.deepEqual(peek(folder), { ok: true, token: seatToken('ana'), readAt: 1_000_000 }, 'the read this look started is still out')
+  assert.equal(held.length, 1, 'and a new read was started, the minute being over')
+  at += 45_001
+  assert.deepEqual(peek(folder), { ok: false, why: 'pending' }, 'two minutes on, the old answer is too old to stand')
+})
+
+test('R5 (m-D): keeping the reads of ten folders runs two at a time, and every one of them is read', async () => {
+  let inFlight = 0
+  let peak = 0
+  const started: string[] = []
+  const reader = createStatusReader({
+    now: () => 1_000_000,
+    read: (input: any) => {
+      started.push(input.key)
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      return new Promise((done) => setTimeout(() => (inFlight--, done(OK)), 2))
+    },
+  })
+  for (let i = 0; i < 10; i++) reader.keepFresh({ ...one, key: `/f${i}` })
+  reader.keepFresh({ ...one, key: '/f3' }) // asked again while it waits its turn: still one read
+  assert.equal(started.length, 2, 'two at once, never waits')
+  for (let i = 0; i < 100 && started.length < 10; i++) await new Promise((r) => setTimeout(r, 2))
+  await new Promise((r) => setTimeout(r, 10))
+  assert.deepEqual([peak, started.length, new Set(started).size], [2, 10, 10])
+})
+
+test('R5 (m-C, M-B): the reader logs when each read answered, and the first read since a limit', async () => {
+  let at = 1_000_000
+  let release!: (v: any) => void
+  const answers: Array<() => any> = [() => OK, () => new Promise((r) => (release = r)), () => ({ ...OK, account: 'seat:' + '2'.repeat(32) })]
+  const reader: any = createStatusReader({ now: () => at, read: async () => answers.shift()!() })
+  await reader.read(one)
+  at += 61_000
+  const late = reader.read(one) // began a second before the limit
+  const L = at + 1000
+  at = L + 2000
+  release(OK)
+  await late
+  assert.deepEqual(reader.before(one, L), { readAt: 1_000_000, account: OK.account }, 'answered after the limit: not from before it')
+  assert.equal(reader.after(one, L), null)
+  at += 61_000
+  await reader.read(one)
+  assert.deepEqual(reader.after(one, L), { readAt: L + 63_000, account: 'seat:' + '2'.repeat(32) })
+  assert.equal((peekAccount(reader) as any).after({ env: {}, home: '/home/user', configDir: null, platform: 'linux' }, L), null, 'another folder')
+})
+
 // -- M3: a timeout on Windows ends the whole tree it started ---------------------------------------------
 
 test('M3: a timed out run through `cmd /c` (the claude.cmd shim) ends its child too, not only cmd.exe', { skip: process.platform !== 'win32' && 'Windows only: the shim is cmd.exe' }, async (t) => {

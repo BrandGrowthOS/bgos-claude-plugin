@@ -1046,7 +1046,8 @@ test('M2 (r4): with no read from before the limit the account at it is unknown: 
   const noMemory = (input: any) => ctx.readAccount(input)
   const bare = { ...ctx, readAccount: noMemory }
   assert.equal((await runLimitPass(bare)).agents[0].outcome, 'limited')
-  assert.equal(limitWatch(fs, r)?.limitAccount, undefined)
+  // Recorded as unknown (token null), so no later look takes a read for the account at it.
+  assert.deepEqual(limitWatch(fs, r)?.limitAccount, { limitAt: new Date(LIMIT_AT).toISOString(), token: null })
   owner(fs, SWAP_AT, 'B')
   clock.set(SWAP_AT + MIN)
   await runLimitPass(bare)
@@ -1552,4 +1553,169 @@ test('M2 (r4): a limit recorded as unknown stays unknown: the login going back a
   clock.set(LIMIT_AT + 4 * MIN)
   await runLimitPass(ctx)
   assert.deepEqual(enters(tmux.calls), [], 'only the reset counts for this limit')
+})
+
+
+// -- the round 4 review's limit watch attacks (R4X), kept as tests -------------------------------------------
+
+for (const [name, gap] of [['60.001 s apart, as the watcher loop spaces its looks', 60_001], ['59 s apart (control)', 59_000]] as const) {
+  test(`R4X-L1 the limit watch records the account at a limit from its own reads, looks ${name}`, async () => {
+    const { r, fs, clock, tmux } = firstLookRig()
+    const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+    let cli = 0
+    const reader = createStatusReader({ now: clock.now, read: async () => (cli++, { read: true, signedIn: true, account: tokenOf(accountAt(fs, clock.now())) }) })
+    const readAccount: any = peekAccount(reader)
+    ;(ctx as any).readAccount = readAccount
+    // The read the limit watch kept of this folder while it had no limit (keepFresh), 2 min before the limit.
+    clock.set(LIMIT_AT - 2 * MIN)
+    readAccount.keepFresh({ env: ctx.env, home: ctx.home, configDir: null, platform: ctx.platform })
+    await new Promise((d) => setImmediate(d))
+    let at = LIMIT_AT + 20_000
+    let looks = 0
+    while (at - LIMIT_AT <= 5 * MIN && !limitWatch(fs, r)?.limitAccount) {
+      clock.set(at)
+      await runLimitPass(ctx)
+      looks++
+      await new Promise((d) => setImmediate(d)) // the CLI answers long before the next look
+      at += gap
+    }
+    console.log(`PROBE gap ${gap}: looks ${looks}, CLI reads ${cli}, recorded ${limitWatch(fs, r)?.limitAccount ? 'yes' : 'no'}`)
+    assert.equal(limitWatch(fs, r)?.limitAccount?.token, tokenOf('A'), 'seat A was signed in before and after the limit, and the watcher read it inside the window')
+  })
+}
+
+// The later half: the account NOW (watcher-limit.mjs:334, readAccountSince) is read through the same peek.
+for (const [name, gap] of [['60.001 s apart', 60_001], ['59 s apart (control)', 59_000]] as const) {
+  test(`R4X-L1b after the account at the limit is known, a login change frees the agent, looks ${name}`, async () => {
+    const { r, fs, clock, tmux } = firstLookRig()
+    const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+    let cli = 0
+    const reader = createStatusReader({ now: clock.now, read: async () => (cli++, { read: true, signedIn: true, account: tokenOf(accountAt(fs, clock.now())) }) })
+    const readAccount: any = peekAccount(reader)
+    ;(ctx as any).readAccount = readAccount
+    clock.set(LIMIT_AT - 2 * MIN)
+    readAccount.keepFresh({ env: ctx.env, home: ctx.home, configDir: null, platform: ctx.platform })
+    await new Promise((d) => setImmediate(d))
+    // Two looks 59 s apart record seat A as the account at the limit (the R4X-L1 control path).
+    let at = LIMIT_AT + 20_000
+    for (let i = 0; i < 3 && !limitWatch(fs, r)?.limitAccount; i++) {
+      clock.set(at)
+      await runLimitPass(ctx)
+      await new Promise((d) => setImmediate(d))
+      at += 59_000
+    }
+    const recorded = limitWatch(fs, r)?.limitAccount?.token === tokenOf('A')
+    owner(fs, at, 'B') // the owner signs the agent's folder in to seat B
+    let looks = 0
+    let freed = false
+    at += 1000
+    while (looks < 6 && !freed) {
+      clock.set(at)
+      const out: any = await runLimitPass(ctx)
+      looks++
+      freed = out.agents[0].outcome === 'freed'
+      await new Promise((d) => setImmediate(d))
+      at += gap
+    }
+    console.log(`PROBE L1b gap ${gap}: recorded A ${recorded}, looks ${looks}, CLI reads ${cli}, freed ${freed}, enters ${enters(tmux.calls).length}`)
+    assert.ok(recorded, 'setup: seat A recorded at the limit')
+    assert.ok(freed, 'seat B is another account: usage is back on this login')
+  })
+}
+
+test('R4X-B1 keeping the reads of 10 agents on 10 folders never has more than two CLI status reads out at once', async () => {
+  let inFlight = 0
+  let peak = 0
+  let starts = 0
+  const reader = createStatusReader({
+    now: () => 1_000_000,
+    read: () => {
+      starts++
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      return new Promise((done) => setTimeout(() => (inFlight--, done({ read: true, signedIn: true, account: null })), 5))
+    },
+  })
+  const readAccount: any = peekAccount(reader)
+  // runLimitPass walks the agents in order and keepAccountRead never waits (lib/watcher-limit.mjs:613-615, 450).
+  for (let i = 0; i < 10; i++) readAccount.keepFresh({ env: {}, home: '/home/user', configDir: `/home/user/agents/a${i}/.claude`, platform: 'linux' })
+  await new Promise((d) => setTimeout(d, 30))
+  console.log(`PROBE ten folders: reads started ${starts}, at once ${peak}`)
+  assert.ok(peak <= 2, `no more status reads at once than the snapshot's batch of two; saw ${peak}`)
+})
+
+test('R5-W1 the limit watch: a read that began before the limit and answered after it is not the read from before it', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx } = ctxFor(r, fs, clock, tmux.exec)
+  let release: ((v: any) => void) | null = null
+  const reader = createStatusReader({
+    now: clock.now,
+    read: async () => {
+      const answer = { read: true, signedIn: true, account: tokenOf(accountAt(fs, clock.now())) }
+      if (!release) return answer
+      const held = await new Promise<any>((done) => (release = done))
+      return held
+    },
+  })
+  const readAccount: any = peekAccount(reader)
+  ;(ctx as any).readAccount = readAccount
+  const input = statusInput({ env: ctx.env, home: ctx.home, configDir: null, platform: ctx.platform })
+  // Another path (the switcher's heartbeat) read this folder 2 min before the limit: seat A.
+  clock.set(LIMIT_AT - 2 * MIN)
+  await reader.read(input)
+  // Its next read starts 1 s before the limit; the owner signs the folder in to seat B 1 s after it, and
+  // that read answers B, 2 s after the limit.
+  release = (() => {}) as any
+  clock.set(LIMIT_AT - 1000)
+  const late = reader.read(input)
+  await new Promise((d) => setImmediate(d))
+  owner(fs, LIMIT_AT + 1000, 'B')
+  clock.set(LIMIT_AT + 2000)
+  const hand = release as any
+  release = null
+  hand({ read: true, signedIn: true, account: tokenOf('B') })
+  await late
+  for (let at = LIMIT_AT + 20_000; at <= LIMIT_AT + 4 * MIN; at += 75_000) {
+    clock.set(at)
+    await runLimitPass(ctx)
+    await new Promise((d) => setImmediate(d))
+  }
+  assert.equal(limitWatch(fs, r)?.limitAccount?.token, null, 'before the limit seat A, after it seat B: the account at it is not known')
+})
+
+/** The limit watch on the real reader and its log, over the fake account clock; `input` is the agent's folder. */
+function realReaderCtx(r: Rig, fs: MemoryFs, clock: ReturnType<typeof fakeClock>, exec: any) {
+  const { ctx } = ctxFor(r, fs, clock, exec)
+  const reader = createStatusReader({ now: clock.now, read: async () => ({ read: true, signedIn: true, account: tokenOf(accountAt(fs, clock.now())) }) })
+  ;(ctx as any).readAccount = peekAccount(reader)
+  const input = statusInput({ env: ctx.env, home: ctx.home, configDir: null, platform: ctx.platform })
+  return { ctx, reader, input }
+}
+
+test('R5-F2 the limit watch takes the FIRST read since the limit, not the newest: a login change after it frees the agent', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx, reader, input } = realReaderCtx(r, fs, clock, tmux.exec)
+  clock.set(LIMIT_AT - 2 * MIN)
+  await reader.read(input) // the switcher's heartbeat, before the limit: seat A
+  clock.set(LIMIT_AT + 10_000)
+  await reader.read(input) // and 10 s after it: still seat A
+  owner(fs, LIMIT_AT + MIN, 'B') // the owner signs this folder in to seat B to free the agent
+  clock.set(LIMIT_AT + 70_000)
+  await reader.read(input)
+  clock.set(LIMIT_AT + 75_000)
+  const out: any = await runLimitPass(ctx) // the limit watch's first look comes after both
+  assert.equal(limitWatch(fs, r)?.limitAccount?.token, tokenOf('A'), 'seat A before the limit and on the first read after it')
+  assert.deepEqual([out.agents[0].outcome, out.agents[0].how, enters(tmux.calls).length], ['freed', 'login_changed', 1])
+})
+
+test('R5-S1 a read begun inside the five minute window is still collected by a look after it', async () => {
+  const { r, fs, clock, tmux } = firstLookRig()
+  const { ctx, reader, input } = realReaderCtx(r, fs, clock, tmux.exec)
+  clock.set(LIMIT_AT - 2 * MIN)
+  await reader.read(input)
+  clock.set(LIMIT_AT + 4 * MIN + 50_000)
+  await reader.read(input) // the first read since the limit, 10 s before its window closes
+  clock.set(LIMIT_AT + 6 * MIN + 5_000) // the next look, 75 s on
+  await runLimitPass(ctx)
+  assert.equal(limitWatch(fs, r)?.limitAccount?.token, tokenOf('A'))
 })

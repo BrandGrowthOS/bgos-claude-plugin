@@ -80,9 +80,17 @@ function fixture(t: any) {
       accountCommand: command,
       ...extra,
     })
+  // A login is added well before the limits the tests place just before now: the add's own reads (signed
+  // out, before the test signs it in) are then not the first reads since those limits.
   const add = async (label: string) => {
-    await job({ action: 'add', label })
-    return (await watcher.snapshot()).accounts.find((a: any) => a.label === label).id
+    const back = clockRef.at
+    clockRef.at = back - 20 * 60_000
+    try {
+      await job({ action: 'add', label })
+      return (await watcher.snapshot()).accounts.find((a: any) => a.label === label).id
+    } finally {
+      clockRef.at = back
+    }
   }
   const assign = (mode: string, id?: string, assistantId?: number) =>
     job({ action: 'assign', mode, ...(id ? { accountId: id } : {}), ...(assistantId ? { assistantId } : {}) })
@@ -507,7 +515,7 @@ test('A: reads as slow as the one minute heartbeat still land a switch: the last
   assert.deepEqual(f.restarts.map((r: any) => r.choice), [b], 'one heartbeat later')
 })
 
-test('A: a finished read older than two minutes never stands in while a new one runs', { timeout: 15_000 }, async (t) => {
+test('A: the first read since a limit names the account at it however long ago it landed, and the move still waits for a fresh read of the limited login', { timeout: 15_000 }, async (t) => {
   const f = fixture(t)
   const a = await f.add('A'),
     b = await f.add('B')
@@ -521,8 +529,31 @@ test('A: a finished read older than two minutes never stands in while a new one 
   await watcher.tick()
   await held.land()
   f.setNow(now + 121_000)
-  await watcher.tick()
-  assert.deepEqual(f.restarts, [], 'the only finished read of the limited login is too old')
+  // The read since the limit landed two minutes ago: seat A at the limit. The last read before the
+  // restart asks for one since now, and it is held: nothing moves while it is out.
+  const second = watcher.tick()
+  assert.equal(await returnsAtOnce(second), false, 'the last read of the limited login is still out')
+  assert.deepEqual(f.restarts, [], 'and nothing moved on the old read')
+  held.open()
+  await held.land()
+  await second
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [b])
+})
+
+test('R5 (M-B): a Switch at limit pressed more than five minutes after the limit, with no look since the read after it, names the account at it from the log', { timeout: 15_000 }, async (t) => {
+  const f = fixture(t)
+  const a = await f.add('A'),
+    b = await f.add('B')
+  f.sign(a, 1, 1, 1)
+  f.sign(b, 1, 1, 1)
+  f.row.accountId = a
+  await f.hitLimit(now - 6 * 60_000)
+  // The heartbeat a minute after the limit reads every login: seat A, as before it. No look since.
+  f.setNow(now - 5 * 60_000)
+  await f.watcher.snapshot()
+  f.setNow(now)
+  await f.assign('limit', b, 41)
+  assert.deepEqual(f.restarts.map((r: any) => r.choice), [b])
 })
 
 test('A: Auto never picks from a partial view: while one candidate read is out it waits, then takes the most room', { timeout: 15_000 }, async (t) => {

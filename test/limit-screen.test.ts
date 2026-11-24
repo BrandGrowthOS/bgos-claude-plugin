@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import {
   LIMIT_ENTER_MIN_INTERVAL_MS,
   UNSAFE_DIALOG_REASONS,
+  accountAtLimitFrom,
   createReadLog,
   decideLimitFree,
   limitNoticeText,
@@ -392,4 +393,48 @@ test('M2 (r4): the read log answers the last read started BEFORE a time, the new
   assert.equal(log.before('other', L), null)
   log.note('k', Number.NaN, 'seat-c')
   assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: null }, 'a read with no time is never logged')
+})
+
+test('R5 (m-C): a read counts as from before a limit only if it ANSWERED before it, not only began before it', () => {
+  const log = createReadLog()
+  const L = Date.UTC(2026, 10, 24, 12)
+  log.note('k', L - 120_000, 'seat-a', L - 118_000)
+  log.note('k', L - 1000, 'seat-b', L + 2000) // began a second before the limit, answered after the owner changed login
+  assert.deepEqual(log.before('k', L), { readAt: L - 120_000, account: 'seat-a' })
+  assert.deepEqual(log.before('k', L + 3000), { readAt: L - 1000, account: 'seat-b' }, 'it answered before this later time')
+  log.note('k', L - 60_000, 'seat-c') // no landing time: as before, its start dates it
+  assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: 'seat-c' })
+})
+
+test('R5 (m-C): one read noted twice (by the reader and by the switcher, on the one shared log) keeps its FIRST landing', () => {
+  const log = createReadLog()
+  const L = Date.UTC(2026, 10, 24, 12)
+  log.note('k', L - 60_000, 'seat-a', L - 50_000)
+  log.note('k', L - 60_000, 'seat-a', L + 30_000) // the same read, handed on after the limit
+  assert.deepEqual(log.before('k', L), { readAt: L - 60_000, account: 'seat-a' }, 'it answered before the limit')
+})
+
+test('R5 (M-A): the read log answers the FIRST read started since a limit, within five minutes of it', () => {
+  const log = createReadLog()
+  const L = Date.UTC(2026, 10, 24, 12)
+  log.note('k', L - 1000, 'seat-a', L - 500)
+  assert.equal(log.after('k', L), null, 'none started since the limit')
+  log.note('k', L + 5 * 60_000 + 1, 'seat-a')
+  assert.equal(log.after('k', L), null, 'one started past the window says nothing about the limit')
+  log.note('k', L + 80_000, 'seat-b')
+  log.note('k', L + 20_000, null) // signed out: an answer too
+  log.note('k', L + 140_000, 'seat-c')
+  assert.deepEqual(log.after('k', L), { readAt: L + 20_000, account: null })
+  assert.deepEqual(log.after('k', L + 21_000), { readAt: L + 80_000, account: 'seat-b' })
+  assert.equal(log.after('other', L), null)
+})
+
+test('R5: the account at a limit needs both reads to name the same account; a signed out or missing one is unknown', () => {
+  const at = (account: string | null) => ({ readAt: 1, account })
+  assert.equal(accountAtLimitFrom(at('seat-a'), at('seat-a')), 'seat-a')
+  assert.equal(accountAtLimitFrom(at('seat-a'), at('seat-b')), null)
+  assert.equal(accountAtLimitFrom(null, at('seat-a')), null, 'no read from before the limit')
+  assert.equal(accountAtLimitFrom(at('seat-a'), null), null)
+  assert.equal(accountAtLimitFrom(at(null), at(null)), null, 'signed out (or no email) on both: still unknown')
+  assert.equal(accountAtLimitFrom(at('seat-a'), at(null)), null, 'the first read since it found the login signed out')
 })
