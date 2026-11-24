@@ -46,7 +46,7 @@ import { agentTaskSpec } from '../lib/agent-task-win32.mjs'
 import { RESTART_EXEC_TIMEOUT_MS } from '../lib/agent-restart.mjs'
 import { CHANNEL_DEAF_CONFIRM_MS, CHANNEL_DEAF_EPISODE_CLEAR_MS, buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
-import { KEPT_CACHE_FRESH_MS, KEPT_CHECK_CAPABILITY, keepAliveStandingFromCache, releasePosixSupervisor } from '../lib/agent-kept.mjs'
+import { KEPT_CACHE_FRESH_MS, KEPT_CHECK_CAPABILITY, decideKeptSupervisor, keepAliveStandingFromCache, releasePosixSupervisor, supervisorRemovedNotKept } from '../lib/agent-kept.mjs'
 import { fakeAgentTasks, type FakeAgentTaskOptions, type FakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 
 const HOME = '/Users/kc'
@@ -4703,4 +4703,94 @@ test('r7 M4 (r6 F1 path): a key agent the switch OFF removed is told how it is k
   const pairedLogs = await sweepWith(paired, fakeClock(), SWITCH_OFF([912]))
   assert.equal(pairedLogs.some((l) => /start it once/.test(l)), false, 'a paired agent is brought back by the switch')
   assert.doesNotMatch(paired.files.get(RUN_SH('912')) ?? '', /start it once/)
+})
+
+// The review's sequence test (r7rev FUZZ), its seed and steps kept. One Mac agent, paired, kept and installed at the
+// start; another agent (7) is always listed. Each step is drawn at random: a live read (what the backend would say for
+// the owner's switches now), a failed read, a refusal, a live empty list, the owner flipping the computer switch or
+// Always on (its daemon hears an Always on change at once, when it runs), a daemon reconcile, the daemon going up or
+// down, a clock step. The sweep is the real one. The daemon is the real decideKeptSupervisor and
+// releasePosixSupervisor over the same files, given what server.ts gives them (the cache, the removal's sign); an
+// install by either actor writes what bin/bgos-agent writes. Checked at every install: both switches are on.
+const R7_FUZZ_RUNS = Number(process.env.R7_FUZZ_RUNS ?? 600)
+const R7_FUZZ_LABEL = `ai.bgos.agent.912.home-${HID}`
+test(`r7 M5 (r7rev FUZZ): ${R7_FUZZ_RUNS} random runs of owner actions, failed and refused reads, daemon reconciles and clock steps across both actors: nothing installs while the agent is not kept`, { timeout: 900_000 }, async () => {
+  let seed = 20261123
+  const rnd = () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)]!
+  const STEPS = ['live', 'live', 'live', 'down', 'down', 'refused', 'empty', 'sw', 'ao', 'daemon', 'daemon', 'daemonToggle', 'wait'] as const
+  const IAT = `${HOME}/.bgos-agent/912/installed-at`
+  const KS = `${HOME}/.bgos-agent/912/kept-seen`
+  const failures: string[] = []
+  let installsSeen = 0
+  let removalsSeen = 0
+  for (let run = 0; run < R7_FUZZ_RUNS && failures.length < 3; run++) {
+    const fs = onceKept()
+    fs.writeFile(RUN_SH('912'), R7_REAL)
+    const clock = fakeClock()
+    const runs = new Map()
+    const owner = { sw: true, ao: true }
+    let daemonUp = true
+    const trail: string[] = []
+    const kept = () => owner.sw && owner.ao
+    const install = (who: string) => {
+      installsSeen += 1
+      fs.writeFile(IAT, `${Math.floor(clock.now() / 1000)}\n`)
+      fs.writeFile(RUN_SH('912'), R7_REAL)
+      fs.writeFile(PLIST('912'), '<plist/>')
+      if (!kept()) failures.push(`run ${run}: ${who} installed with sw ${owner.sw} ao ${owner.ao}; steps: ${trail.join(' > ')}`)
+    }
+    const liveAnswer = () =>
+      owner.sw ? { enabled: true, enabledAt: 'e', assistantIds: owner.ao ? [7, 912] : [7], switchState: 'on' } : { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off' }
+    const sweep = async (fetchKeepAlive: unknown) => {
+      const rec = recorder({ ps: IDLE_PS })
+      const exec = async (file: string, args: string[], o?: unknown) => {
+        if (file === 'bash' && args.includes('install')) install('sweep')
+        return rec.exec(file, args, o as any)
+      }
+      const had = fs.files.has(PLIST('912'))
+      const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive, listReads: runs, exec })
+      await runKeepAliveSweep(ctx as any)
+      if (had && !fs.files.has(PLIST('912'))) removalsSeen += 1
+    }
+    const daemon = async () => {
+      if (!daemonUp) return
+      const standing = keepAliveStandingFromCache(fs.readFile(keepAliveCachePath(HOME)), '912', clock.now(), { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled: true, paired: true })
+      const removedNotKept = supervisorRemovedNotKept({ platform: 'darwin', stateDir: `${HOME}/.bgos-agent/912`, exists: (p: string) => fs.exists(p), readFile: (p: string) => fs.readFile(p) })
+      const d = decideKeptSupervisor({ alwaysOn: owner.ao, standing, installed: fs.files.has(PLIST('912')), installedAt: fs.readFile(IAT), keptSeen: fs.readFile(KS), now: clock.now(), removedNotKept })
+      if (d.markSeen) fs.writeFile(KS, String(fs.readFile(IAT)))
+      if (d.action === 'remove') {
+        await releasePosixSupervisor({ platform: 'darwin', service: { kind: 'launchd', handle: R7_FUZZ_LABEL, file: PLIST('912') }, assistantId: '912', home: HOME, exec: async () => ({ code: 0, stdout: '', stderr: '' }), fs, env: {}, sleep: clock.sleep } as any)
+        removalsSeen += 1
+      }
+      if (d.action === 'install') {
+        install('daemon')
+        fs.writeFile(KS, String(fs.readFile(IAT)))
+      }
+    }
+    for (let step = 0; step < 16; step++) {
+      const what = pick(STEPS)
+      if (what === 'live') await sweep(consent(liveAnswer()).fetchKeepAlive)
+      else if (what === 'down') await sweep(consent(null, false, 503).fetchKeepAlive)
+      else if (what === 'refused') await sweep(consent({ message: 'Invalid pairing token' }, false, 401).fetchKeepAlive)
+      else if (what === 'empty') await sweep(consent(owner.sw ? { enabled: true, enabledAt: 'e', assistantIds: [], switchState: 'on' } : liveAnswer()).fetchKeepAlive)
+      else if (what === 'sw') owner.sw = !owner.sw
+      else if (what === 'ao') {
+        owner.ao = !owner.ao
+        await daemon()
+      } else if (what === 'daemon') await daemon()
+      else if (what === 'daemonToggle') daemonUp = !daemonUp
+      trail.push(`${what}[${owner.sw ? 'S' : 's'}${owner.ao ? 'A' : 'a'}${daemonUp ? 'D' : 'd'}${fs.files.has(PLIST('912')) ? 'P' : 'p'}]`)
+      clock.advance(pick([20_000, 55_000, 60_000, 65_000, 125_000, 6 * MIN] as const))
+    }
+  }
+  console.log(`r7 FUZZ: runs ${R7_FUZZ_RUNS}, installs ${installsSeen}, removals ${removalsSeen}, failures ${failures.length}`)
+  assert.deepEqual(failures, [], `runs ${R7_FUZZ_RUNS}, installs ${installsSeen}, removals ${removalsSeen}`)
+  // The sequence test must exercise both acts, or a green run proves nothing.
+  assert.ok(installsSeen > 50 && removalsSeen > 50, `installs ${installsSeen}, removals ${removalsSeen}`)
 })

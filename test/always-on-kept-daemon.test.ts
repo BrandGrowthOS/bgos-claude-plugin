@@ -75,6 +75,8 @@ type Scene = {
   noAlwaysOn?: boolean
   /** The not-kept run.sh cannot be written beside run.sh (review round 7 M1). */
   runShWriteFails?: boolean
+  /** A removal took the supervisor: no service file, the not-kept run.sh in its place (review round 7 M5). */
+  removed?: boolean
 }
 
 const ON = { enabled: true, assistantIds: ['912'], switchState: 'on' }
@@ -94,6 +96,11 @@ async function reconcile(scene: Scene) {
     const stamp = stampAgo(scene.installedAgoMs ?? 60 * MIN)
     files.set(`${sd}/${kept.INSTALLED_AT_FILE_NAME}`, stamp)
     if (scene.seen) files.set(`${sd}/${kept.KEPT_SEEN_FILE_NAME}`, stamp)
+  }
+  if (scene.removed) {
+    files.set(`${sd}/run.sh`, `#!/usr/bin/env bash\n${kept.NOT_KEPT_RUN_SH_MARK}\nexit 0\n`)
+    files.set(`${sd}/${kept.INSTALLED_AT_FILE_NAME}`, stampAgo(60 * MIN))
+    files.set(`${sd}/${kept.KEPT_SEEN_FILE_NAME}`, stampAgo(60 * MIN))
   }
   if (scene.watcher !== false) files.set(kept.watcherServiceFiles({ platform, home, env: {} })[0]!, 'x')
   if (scene.cache) {
@@ -116,6 +123,7 @@ async function reconcile(scene: Scene) {
     reconcileDisabledReason: null,
     alwaysOnDeferLogged: false,
     alwaysOnWaitLogged: false,
+    alwaysOnHeldLogged: false,
     alwaysOnRefusalLogged: null,
     alwaysOnReleaseFailure: null,
     process: { platform, env: {}, getuid: () => 501 },
@@ -342,4 +350,15 @@ test('r7 M3: the daemon\'s removal takes bin/bgos-agent\'s install lock through 
   const body = SERVER.slice(start, SERVER.indexOf('\n}\n', start))
   assert.match(body, /mkdirExclusive: \(path: string\) => void mkdirSync\(path\),/)
   assert.match(body, /rmdir: \(path: string\) => rmdirSync\(path\),/)
+})
+
+test('r7 M5 (r7rev FUZZ run 427): a supervisor a removal took is not put back by the daemon on the watcher\'s cached list, which can be older than the removal; the watcher\'s live read does it', async () => {
+  // Always on off (the daemon removed), the computer switch then off with no read since, Always on back on.
+  const held = await reconcile({ removed: true, alwaysOn: true, cache: { answer: ON, agoMs: MIN } })
+  assert.equal(held.installs, 0, held.logs.join('\n'))
+  assert.ok(held.logs.some((l) => /not installing it here; the watcher installs it once a live keep-alive read names it/.test(l)), held.logs.join('\n'))
+  // Controls: never removed, it is installed as before; kept by Always on alone (a key agent, no watcher), too.
+  assert.equal((await reconcile({ alwaysOn: true, cache: { answer: ON, agoMs: MIN } })).installs, 1)
+  assert.equal((await reconcile({ removed: true, alwaysOn: true, auth: 'apikey', cache: { answer: OTHERS_ONLY, agoMs: MIN, listedRecently: ['7'] } })).installs, 1)
+  assert.equal((await reconcile({ removed: true, alwaysOn: true, watcher: false })).installs, 1)
 })

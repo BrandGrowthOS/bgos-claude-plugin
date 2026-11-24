@@ -142,11 +142,13 @@ import {
   INSTALLED_AT_FILE_NAME,
   KEPT_CACHE_FRESH_MS,
   KEPT_SEEN_FILE_NAME,
+  WAITS_FOR_LIVE_LIST,
   decideKeptSupervisor,
   keepAliveCacheFile,
   keepAliveStandingFromCache,
   markInstallSeenKept,
   releasePosixSupervisor,
+  supervisorRemovedNotKept,
   watcherServiceInstalled,
 } from './lib/agent-kept.mjs'
 import {
@@ -20275,6 +20277,8 @@ let reconcileDisabledReason: string | null = null
 let alwaysOnDeferLogged = false
 // F4: so is the "could not read the job list, asking again next cycle" line.
 let alwaysOnWaitLogged = false
+// Review round 7 M5: "a removed supervisor waits for the watcher's live list" is said once per wait.
+let alwaysOnHeldLogged = false
 // Board row d6198bb6: a refusal from bin/bgos-agent (this agent's service name
 // is held by a registration another HOME installed, which it never touches) is
 // said once per refusal, not every 15 minutes.
@@ -20425,6 +20429,8 @@ async function reconcileAlwaysOn(): Promise<void> {
       installedAt,
       keptSeen: readTextOrNull(joinPath(stateDir, KEPT_SEEN_FILE_NAME)),
       now,
+      // A supervisor a removal took is put back by the watcher's live list, never by this cached one (review round 7 M5).
+      removedNotKept: supervisorRemovedNotKept({ platform: process.platform, stateDir, exists: (path: string) => existsSync(path), readFile: readTextOrNull }),
     })
     if (kept.markSeen) {
       try {
@@ -20433,6 +20439,15 @@ async function reconcileAlwaysOn(): Promise<void> {
         // Marked by the next read; until then this install keeps the grace of one never seen kept.
       }
     }
+    const held = kept.reason === WAITS_FOR_LIVE_LIST
+    if (held && !alwaysOnHeldLogged) {
+      log(
+        `always-on: Always on is on and the watcher's cached list keeps this agent, but its supervisor was removed ` +
+          `when it was not kept, and that list may be older than the removal: not installing it here; the watcher ` +
+          `installs it once a live keep-alive read names it. Logged once.`,
+      )
+    }
+    alwaysOnHeldLogged = held
     if (kept.action === 'none') return
     if (kept.action === 'grace') {
       log(`always-on: not kept running (${kept.reason}), but this supervisor was installed ${Math.round((INSTALL_GRACE_MS - kept.graceLeftMs) / 1000)}s ago and never seen kept; leaving it for the app to record always-on (grace ${Math.round(kept.graceLeftMs / 1000)}s left)`)

@@ -673,3 +673,12 @@ test('r7 M4: the start-once words sit inside the double quotes of the echo, so t
   assert.match(words, /^Turn it back on, then start it once and it will be kept again/)
   assert.doesNotMatch(words, /[$`"\\]/)
 })
+
+test('r7 M5: kept only by the list, a supervisor a removal took waits for a live list; kept by Always on alone it is installed as before', () => {
+  const base = { alwaysOn: true, installed: false, installedAt: stamp(60 * MIN), keptSeen: stamp(60 * MIN), now: NOW, removedNotKept: true }
+  const held = decideKeptSupervisor({ ...base, standing: 'kept' })
+  assert.deepEqual([held.action, held.reason], ['none', 'removed:waits_for_live_list'])
+  for (const standing of ['no_pairing', 'never_set', 'no_watcher']) assert.equal(decideKeptSupervisor({ ...base, standing }).action, 'install', standing)
+  assert.equal(decideKeptSupervisor({ ...base, standing: 'kept', removedNotKept: false }).action, 'install', 'never removed')
+  assert.equal(decideKeptSupervisor({ ...base, standing: 'kept', installed: true }).action, 'leave', 'installed: nothing to hold')
+})
