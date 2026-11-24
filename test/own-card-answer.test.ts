@@ -5,6 +5,7 @@ import ts from 'typescript'
 import { decideButtonsAnswered, viewStreamMessage, buildStreamClickMeta } from '../lib/stream-apply.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { LOGIN_METHOD_WINDOW_MS } from '../lib/auth-login.ts'
+import { markCommandAnswer } from '../lib/connection-texts.ts'
 
 const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 function declaration(name: string): string {
@@ -40,6 +41,8 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown>, post = asy
   const flags = { deleted: false, others: false }
   const scope = {
     bgosGet: read, bgosPost: post, USER_ID: 'owner', ASSISTANT_ID: '42', LOGIN_METHOD_WINDOW_MS,
+    // The sign-in answer is a command answer (lib/connection-texts.ts).
+    markCommandAnswer,
     chatUnansweredButtons: open, announcedClickIds: announced, FORWARD_CACHE_MAX: 500,
     postedButtonCards: new Map(),
     recentButtonPrompts: prompts,
@@ -276,4 +279,24 @@ test('historic sign-in cards never enter generic tracking; ordinary reply and pl
   plan.messageOptions = [{ callbackData: 'plan:go', text: 'Go ahead' }]
   const selected = rowsOf({ messages: [card(1002, false), card(1003, true), reply, plan] }, { chatId: '501', messageId: 1004 }, '501')
   assert.deepEqual(selected.map((r) => r.id), [1005, 1006])
+})
+
+test('the sign-in answer the daemon posts carries the command answer mark, with and without chips', async () => {
+  // The answer to the owner's /login. Unmarked, it read as the agent
+  // answering and cleared the server's usage limit hold (lib/connection-texts.ts).
+  const bodies: any[] = []
+  const h = rig(async () => ({ messages: [] }), async (...args: unknown[]) => {
+    bodies.push(args[1])
+    return { message: { id: 1002 } }
+  })
+  assert.equal(await h.api.sendLoginText('501', 'Pick how to sign in.', card().messageOptions), 1002)
+  await h.api.sendLoginText('501', 'Signed in.')
+  assert.equal(bodies.length, 2)
+  for (const body of bodies) {
+    assert.equal(body.postedBy, 'command_answer')
+    assert.equal(body.sender, 'assistant')
+    assert.equal(body.chatId, 501)
+  }
+  assert.equal(bodies[0].renderMode, 'inline')
+  assert.equal(bodies[0].options.length, 1)
 })

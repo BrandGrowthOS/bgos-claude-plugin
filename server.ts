@@ -683,7 +683,7 @@ import {
 import { errorBodyText } from './lib/error-body'
 import { OwnMessages, ownMessageRefusal, ownMessagesFilePath } from './lib/own-messages'
 import { mcpServerInfo } from './lib/mcp-server-info'
-import { markConnectionText } from './lib/connection-texts.ts'
+import { markCommandAnswer, markConnectionText } from './lib/connection-texts.ts'
 import { createVerdictSender } from './lib/verdict-sender.ts'
 import {
   buildSessionStatus,
@@ -2470,10 +2470,12 @@ function fmtPct(pct: number | null): string {
 }
 
 /** Direct daemon text to a chat (no model involvement, no reply tool). An
- *  ANSWER to the owner's own command (/status, /login, /compact): unmarked,
- *  because it answers a row the owner wrote (sendConnectionNotice's note). */
+ *  ANSWER to the owner's own command (/status, /compact): never marked as the
+ *  connection, because it answers a row the owner wrote (sendConnectionNotice's
+ *  note), but marked as a command answer, so the server's usage limit hold
+ *  waits for the session's own reply (lib/connection-texts.ts). */
 async function sendDaemonText(chatId: string, text: string): Promise<void> {
-  await bgosPost('send-message', {
+  await bgosPost('send-message', markCommandAnswer({
     chatId: Number(chatId),
     assistantId: Number(ASSISTANT_ID),
     text,
@@ -2481,7 +2483,7 @@ async function sendDaemonText(chatId: string, text: string): Promise<void> {
     sentDate: new Date().toISOString(),
     hasAttachment: false,
     files: [],
-  })
+  }))
 }
 
 /** A text this daemon posts UNPROMPTED, as itself (the deaf warning, the goal
@@ -2674,7 +2676,8 @@ async function sendLoginText(
     if (loginMethodCard) settleLoginMethodCard(loginMethodCard)
     loginMethodCard = card
   }
-  const result = await bgosPost('send-message', {
+  // The answer to the owner's /login: a command answer (sendDaemonText's note).
+  const result = await bgosPost('send-message', markCommandAnswer({
     chatId: Number(chatId),
     assistantId: Number(ASSISTANT_ID),
     text,
@@ -2684,7 +2687,7 @@ async function sendLoginText(
     files: [],
     options,
     ...(options.length > 0 ? { renderMode: 'inline' } : {}),
-  })
+  }))
   const msgId = (result as { message?: { id?: unknown } } | null)?.message?.id
   if (card && loginMethodCard === card && typeof msgId === 'number') {
     card.messageId = msgId
@@ -15999,9 +16002,10 @@ const voiceRpc = new VoiceRpcHandler({
   },
   getIdentity: getVoiceIdentity,
   // stop_turn's short plain confirmation rides the normal outbound send
-  // path (POST send-message), same shape as the permission-prompt sender.
+  // path (POST send-message), same shape as the permission-prompt sender. It
+  // answers the owner's Stop, so it is a command answer (sendDaemonText's note).
   sendChatMessage: (chatId, text) =>
-    bgosPost('send-message', {
+    bgosPost('send-message', markCommandAnswer({
       chatId: Number(chatId),
       assistantId: Number(ASSISTANT_ID),
       text,
@@ -16009,7 +16013,7 @@ const voiceRpc = new VoiceRpcHandler({
       sentDate: new Date().toISOString(),
       hasAttachment: false,
       files: [],
-    }),
+    })),
   // The armed goal case (P6 stage 3): a stop that reached the model pauses
   // the mission a Keep working loop is on, so its Stop hook cannot re prompt.
   onStopDelivered: (chatId) => pauseArmedGoalOnStop(chatId),
