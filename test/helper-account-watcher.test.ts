@@ -654,6 +654,27 @@ test('R5 (M-B): an agent on its own login, pressed after its limit, moves on the
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
 })
 
+test('R6 (N3): with no rule and no keep-alive limit watch, the watcher itself keeps a read of an own-login agent before its limit, so a press after it moves', async (t) => {
+  const folders: Record<string, string | null> = { own: 'own@seats.example.test' }
+  const clock = { skew: 0 }
+  const reader = createStatusReader({ now: () => Date.now() + clock.skew, read: async (input: any) => seatsByFolder(folders)(input.env) })
+  const { job, watcher, b, transcript } = await limitSwitchRig(t, async () => ({ read: false }), { ownLogin: true, clock, statusReader: reader })
+  // The switcher's own look two minutes before the limit, when the transcript has no limit line yet:
+  // nothing else keeps a read of this folder. The read lands on that look, as a real one would.
+  const lines = readFileSync(transcript, 'utf8')
+  writeFileSync(transcript, lines.split('\n').slice(0, 2).join('\n') + '\n')
+  clock.skew = -120_000
+  await watcher.tick()
+  await new Promise((d) => setTimeout(d, 20))
+  writeFileSync(transcript, lines)
+  clock.skew = 0
+  // A minute after the limit, no rule was armed; the owner presses Switch at limit now.
+  await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
+  await watcher.tick()
+  await watcher.tick()
+  assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
+})
+
 test('R5 (M-B): with no rule and no keep-alive limit watch, the watcher itself asks a read of an own-login agent since its limit', async (t) => {
   const reader: any = createStatusReader({ now: () => Date.now(), read: async (input: any) => seatsByFolder({})(input.env) })
   const peeked: string[] = []
