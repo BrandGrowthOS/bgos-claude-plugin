@@ -46,6 +46,8 @@ Not checked against a real server in this release: the server routes are built i
 
 **New capability `lane_vault`.** Declared on a pairing where person lanes run, not on Windows, and only while the browser host is not switched off (`HOAI_BROWSER_HOST=off`). `lane_threads` is kept.
 
+**A permission card goes to the chat of the owner's turn that asked.** A card for a tool on the owner's machine went to the owner's chat confirmed most recently, so when the owner wrote in another of their chats while a turn was running, the card for that turn landed in the other chat. The card now goes to the chat of the verified turn that raised it when that turn is the owner's own and its chat is one of the owner's own main chats, watched and not refusing cards. A share recipient's turn, a turn that names no person, and a turn in a group or a chat of unknown owner change nothing: the card is about the owner's machine and goes to the owner's own chat, never the recipient's, and only the owner can answer it. A person's lane and a person's thread raise no card at all: they run `--permission-mode dontAsk`, and the lane daemon declares no permission relay. Guard: three new cases in `test/permission-card-owner-chat.test.ts` (the pick, and the relay executed from `server.ts`), red on the merged branch first.
+
 ## 0.90.17 (2026-11-21)
 
 **feat(chat): hear reactions to the agent's replies.** With a matching server, the agent hears who reacted and which emoji they chose. A later line can report a changed or removed reaction and how many people reacted. A room member speaks only as themselves. A reaction never grants permission to use a tool.

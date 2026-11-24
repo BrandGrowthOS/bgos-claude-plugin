@@ -4415,6 +4415,9 @@ function relayPermissionToOwner(
   // card goes to the chat of the owner's turn: only the agent's own main chat
   // with its owner can carry an Allow. It skips the same chats and reads the
   // same ownership, so a 403 retry never posts it into one chat twice.
+  // The verified turn that raised a card that is not an email's: the owner's own
+  // turn gets the card in its own chat (lib/peer-refusal.ts pickPermissionChat).
+  const cardTurn = emailCard ? null : privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS })
   const chatId = emailCard
     ? emailSendCardChat({
         turn: privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS }),
@@ -4424,7 +4427,11 @@ function relayPermissionToOwner(
         refused: [hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats],
         ownership: chatOwnership,
       })
-    : pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats], chatOwnership)
+    : pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats], chatOwnership, {
+        ownerUserId: USER_ID,
+        actingUserId: cardTurn?.actingUserId ?? null,
+        chatId: cardTurn?.chatId ?? null,
+      })
   if (emailCard && !chatId) {
     // DATA, 2026-10-15 (the 0.69.0 review, finding 4), fail closed: no main
     // chat of the owner can take this card, so it is posted NOWHERE. Never
