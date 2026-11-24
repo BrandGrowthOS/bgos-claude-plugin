@@ -16,19 +16,19 @@ Saved Claude accounts (Helper Accounts). The version these notes ship in is set 
 
 **feat(watcher): saved Claude accounts, switched now, at the limit, or by Auto.** The owner saves Claude logins per computer (each in its own folder under `~/.bgos-agent/helper-accounts/`) and assigns one to the computer's new starts or to one agent from HOAI Helper. Switch now waits for the agent's turn and restarts it in the same conversation. Switch at limit keeps the current login until the agent's own "You've hit your ... limit" line appears in its transcript (any model, read the way capkeeper reads it; the statusline has no per model usage), then switches once. Auto switches now to the saved login with the most week room (capkeeper's statusline sample, up to a day old; a tie keeps the current login) and picks again at each limit. A login whose agent just hit a model limit has no room for that model until the reset Claude gave; a session or weekly limit blocks it for every model. With no login left with room, the agent waits. At a limit the switch does not wait for the turn (the agent cannot answer anyway), but never cuts a permission question, thread work or a background job (`atLimitSafe`). The refused message is not sent again by itself.
 
-Security round (acctbuild3): a saved login now mirrors the source login's `permissions`, `hooks`, `sandbox` and `disableAllHooks` settings and its global `CLAUDE.md` at every start, and a source it cannot read stops the start; a rollback or an unassigned start gets the supervisor's own launch login and provider settings back; one bad registry entry hides that login only, and an unreadable registry or a lost computer default no longer stops other agents; the sign in check runs from home, never inside a saved login folder.
+**fix(watcher): a saved login starts with the source login's settings.** A saved login now mirrors the source login's `permissions`, `hooks`, `sandbox` and `disableAllHooks` settings and its global `CLAUDE.md` at every start, and a source it cannot read stops the start; a rollback or an unassigned start gets the supervisor's own launch login and provider settings back; one bad registry entry hides that login only, and an unreadable registry or a lost computer default no longer stops other agents; the sign in check runs from home, never inside a saved login folder.
 
-**fix(watcher): Helper Accounts review findings (REVIEW-rvacctbuild).**
-- #1: a recovered switch rolls back only the conversation it was made for, never one the owner opened since.
-- #3: a rollback held by a safety check waits and runs, instead of being dropped.
-- #4: the registry is bound to the backend that issued it, and another deployment sees and uses nothing.
-- #7: a Switch now waiting for its turn is cancelled (`clear`), never silently replaced.
-- #9: a provably stopped agent takes the new login at its next start.
-- #10: a job that threw is recorded as failed under its own id, and statuses name their account.
-- #11: `rebind` brings a re-enrolled watcher's logins back for the same owner without a slot.
-- #14: a test now pins that no restart is requested without the pinned transcript.
+**fix(watcher): Helper Accounts switches, rollbacks and jobs.**
+- A recovered switch rolls back only the conversation it was made for, never one the owner opened since.
+- A rollback held by a safety check waits and runs, instead of being dropped.
+- The registry is bound to the backend that issued it, and another deployment sees and uses nothing.
+- A Switch now waiting for its turn is cancelled (`clear`), never silently replaced.
+- A provably stopped agent takes the new login at its next start.
+- A job that threw is recorded as failed under its own id, and statuses name their account.
+- `rebind` brings a re-enrolled watcher's logins back for the same owner without a slot.
+- No restart is requested without the pinned transcript, and a test pins it.
 
-**fix(watcher): the independent verification of the review fixes.**
+**fix(watcher): refused jobs reach the owner, and a held rollback gives up.**
 - A refused or thrown account job is published by its id (`refusedRpcIds`, memory only), even with no registry and without overwriting a change still waiting.
 - A rollback held by a safety check gives up after 30 minutes.
 - New tests drive the real stopped-agent reading and the frame handler's failure hook.

@@ -185,7 +185,7 @@ test('authenticated watcher frame returns only after the selected child resumes 
   assert.ok(!JSON.stringify(snapshot).includes(home))
 })
 
-test('verify #10: a job that throws in the real frame handler reaches the owner as refused, by its own id', async (t) => {
+test('a job that throws in the real frame handler reaches the owner as refused, by its own id', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'account-throw-'))
   t.after(() => rmSync(home, { recursive: true, force: true }))
   const credentials = { machineId: 'machine12345', pairingId: 9, backendUrl: 'http://127.0.0.1:1' }
@@ -210,7 +210,7 @@ test('verify #10: a job that throws in the real frame handler reaches the owner 
   assert.equal(progress.at(-1).state, 'failed')
 })
 
-test('verify B: a second press refused in the real frame handler never overwrites the change still waiting', async (t) => {
+test('a second press refused in the real frame handler never overwrites the change still waiting', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'account-inflight-'))
   t.after(() => rmSync(home, { recursive: true, force: true }))
   const write = (p: string, value: string) => {
@@ -255,7 +255,7 @@ test('verify B: a second press refused in the real frame handler never overwrite
   assert.deepEqual(snap.refusedRpcIds, [second])
 })
 
-test('verify #9: the real watcher reads a stopped agent and saves the login for its next start, without a restart', async (t) => {
+test('the real watcher reads a stopped agent and saves the login for its next start, without a restart', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'account-stopped-'))
   t.after(() => rmSync(home, { recursive: true, force: true }))
   const write = (p: string, value: string) => {
@@ -296,7 +296,7 @@ test('verify #9: the real watcher reads a stopped agent and saves the login for 
   assert.equal(registry.targets['11'].choice, b)
 })
 
-test('review #14: without the pinned transcript the watcher never asks for a restart', async (t) => {
+test('without the pinned transcript the watcher never asks for a restart', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'account-pin-'))
   t.after(() => rmSync(home, { recursive: true, force: true }))
   const write = (p: string, value: string) => {
@@ -424,7 +424,7 @@ const seatsByFolder = (emails: Record<string, string | null>) => async (env: any
 }
 const OTHER_ORG = '9e8d7c6b-5a49-4382-a716-151413121110'
 
-test('M1, end to end on fakes: two seats of one Team organization (different emails) are two accounts, so Switch at limit moves', async (t) => {
+test('end to end on fakes: two seats of one Team organization (different emails) are two accounts, so Switch at limit moves', async (t) => {
   const folders: Record<string, string | null> = {}
   const { job, watcher, a, b, clock, beforeLimit } = await limitSwitchRig(t, async (env) => seatsByFolder(folders)(env))
   folders[a] = 'ana@seats.example.test'
@@ -436,7 +436,7 @@ test('M1, end to end on fakes: two seats of one Team organization (different ema
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
 })
 
-test('M1, end to end on fakes: the same organization and the same email is one account, so nothing moves', async (t) => {
+test('end to end on fakes: the same organization and the same email is one account, so nothing moves', async (t) => {
   const { job, watcher, a, b, calls } = await limitSwitchRig(t, async () => ({ read: true, signedIn: true, account: accountTokenFrom(seatStatus('ana@seats.example.test')) }))
   await job({ action: 'assign', mode: 'limit', accountId: b, assistantId: 11 }, [{ assistantId: 11, pairingId: 19 }])
   await watcher.tick()
@@ -444,7 +444,7 @@ test('M1, end to end on fakes: the same organization and the same email is one a
   assert.deepEqual(calls, { eligible: 0, limitEligible: 0 })
 })
 
-test('M1, end to end on fakes: a status with no email names no account (even in another organization): nothing moves, the rule waits', async (t) => {
+test('end to end on fakes: a status with no email names no account (even in another organization): nothing moves, the rule waits', async (t) => {
   const target = { id: '\0none' }
   const { job, watcher, a, b, calls, clock, beforeLimit } = await limitSwitchRig(t, async (env) => {
     const isTarget = String(env.CLAUDE_CONFIG_DIR ?? '').endsWith(target.id)
@@ -459,7 +459,7 @@ test('M1, end to end on fakes: a status with no email names no account (even in 
   assert.deepEqual(calls, { eligible: 0, limitEligible: 0 })
 })
 
-test('M2: one status read per folder a minute whatever the path (snapshot, the limit, the target), failures included', async (t) => {
+test('one status read per folder a minute whatever the path (snapshot, the limit, the target), failures included', async (t) => {
   const reads = new Map<string, number>()
   const clock = { skew: 0 }
   const { job, watcher, a, b, calls } = await limitSwitchRig(t, async (env) => {
@@ -481,7 +481,7 @@ test('M2: one status read per folder a minute whatever the path (snapshot, the l
   assert.deepEqual([reads.get(a), reads.get(b)], [2, 2], 'a minute on, one more read each')
 })
 
-test("m1: an agent on its own login is read from the folder its limit is read from (~/.claude), not the watcher's CLAUDE_CONFIG_DIR", async (t) => {
+test("an agent on its own login is read from the folder its limit is read from (~/.claude), not the watcher's CLAUDE_CONFIG_DIR", async (t) => {
   const elsewhere = join(tmpdir(), 'not-this-agents-folder')
   const folders: Record<string, string | null> = { own: 'own@seats.example.test', 'not-this-agents-folder': 'elsewhere@seats.example.test' }
   const clock = { skew: 0 }
@@ -571,7 +571,7 @@ const fail = (fields: Record<string, unknown>) => Object.assign(new Error('fake'
 const V = { stdout: '2.1.330 (Claude Code)\n' }
 const ana = 'ana@seats.example.test'
 
-test('M4: the real status reader on a fake CLI: a failed or timed out read is no read, never "signed out"', async () => {
+test('the real status reader on a fake CLI: a failed or timed out read is no read, never "signed out"', async () => {
   const cases: Array<[string, any, any, any]> = [
     ['version timed out', fail({ code: 'ETIMEDOUT', killed: true, stdout: '' }), undefined, { read: false }],
     ['no CLI on any candidate', fail({ code: 'ENOENT' }), undefined, { read: false }],
@@ -586,7 +586,7 @@ test('M4: the real status reader on a fake CLI: a failed or timed out read is no
   }
 })
 
-test('M4: the real status reader on a fake CLI: what the CLI does say', async () => {
+test('the real status reader on a fake CLI: what the CLI does say', async () => {
   const cases: Array<[string, any, any, any]> = [
     ['an old CLI never runs auth status: signed out, as before', { stdout: '2.1.316 (Claude Code)\n' }, undefined, { read: true, signedIn: false, account: null }],
     ['exit 1 with JSON is the CLI saying logged out', V, fail({ code: 1, stdout: JSON.stringify({ loggedIn: false }) }), { read: true, signedIn: false, account: null }],
@@ -603,7 +603,7 @@ test('M4: the real status reader on a fake CLI: what the CLI does say', async ()
   }
 })
 
-test('M4, end to end through the real reader (fake CLI): a target whose version read times out keeps Switch at limit, waiting', async (t) => {
+test('end to end through the real reader (fake CLI): a target whose version read times out keeps Switch at limit, waiting', async (t) => {
   // The second saved login (the target) answers nothing: its version read times out.
   const seen: string[] = []
   let hung = true
@@ -626,7 +626,7 @@ test('M4, end to end through the real reader (fake CLI): a target whose version 
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
 })
 
-test('B1 (r4): an agent on its own login is read again at its limit, never handed the read from just before it', async (t) => {
+test('an agent on its own login is read again at its limit, never handed the read from just before it', async (t) => {
   const folders: Record<string, string | null> = { own: 'own@seats.example.test' }
   const clock = { skew: -61_000 } // a second before the limit line (a minute before the rig's now)
   const { job, watcher, b } = await limitSwitchRig(t, async (env) => seatsByFolder(folders)(env), { ownLogin: true, clock })
@@ -638,7 +638,7 @@ test('B1 (r4): an agent on its own login is read again at its limit, never hande
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
 })
 
-test('R5 (M-B): an agent on its own login, pressed after its limit, moves on the read the limit watch kept before it', async (t) => {
+test('an agent on its own login, pressed after its limit, moves on the read the limit watch kept before it', async (t) => {
   const folders: Record<string, string | null> = { own: 'own@seats.example.test' }
   const clock = { skew: -120_000 } // a minute before the limit line
   // The one reader of the process, as lib/watcher-core.mjs shares it with the limit watch.
@@ -654,7 +654,7 @@ test('R5 (M-B): an agent on its own login, pressed after its limit, moves on the
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
 })
 
-test('R6 (N3): with no rule and no keep-alive limit watch, the watcher itself keeps a read of an own-login agent before its limit, so a press after it moves', async (t) => {
+test('with no rule and no keep-alive limit watch, the watcher itself keeps a read of an own-login agent before its limit, so a press after it moves', async (t) => {
   const folders: Record<string, string | null> = { own: 'own@seats.example.test' }
   const clock = { skew: 0 }
   const reader = createStatusReader({ now: () => Date.now() + clock.skew, read: async (input: any) => seatsByFolder(folders)(input.env) })
@@ -675,7 +675,7 @@ test('R6 (N3): with no rule and no keep-alive limit watch, the watcher itself ke
   assert.deepEqual((await watcher.snapshot()).agents, [{ assistantId: 11, accountId: b, status: 'back_online' }])
 })
 
-test('R5 (M-B): with no rule and no keep-alive limit watch, the watcher itself asks a read of an own-login agent since its limit', async (t) => {
+test('with no rule and no keep-alive limit watch, the watcher itself asks a read of an own-login agent since its limit', async (t) => {
   const reader: any = createStatusReader({ now: () => Date.now(), read: async (input: any) => seatsByFolder({})(input.env) })
   const peeked: string[] = []
   const peek = reader.peek
