@@ -12643,12 +12643,13 @@ async function readPostedButtonCard(chatId: string, messageId: number): Promise<
  * daemon ran is announced once, and the stream's replay is deduped by id. A
  * card this process holds open that the file no longer has was settled by
  * another daemon, and is settled here too. A boot the cursor store calls a
- * first run reads nothing back (R5).
+ * first run reads nothing back (R5). A re-arm always reads it: while this
+ * daemon stood down the holder settled cards and posted new ones (F1).
  */
 const openCardWatch = createOpenCardWatch()
 const openCardRehydrated = new Set<number>()
-function rehydrateOpenCards(): void {
-  if (!cursorBoot.fileExisted) return
+function rehydrateOpenCards(reason: 'boot' | 'rearm'): void {
+  if (reason === 'boot' && !cursorBoot.fileExisted) return
   const onDisk = openCardStore.reload()
   const kept = new Set(onDisk.map((card) => card.id))
   for (const [id, card] of postedButtonCards) if (!card.settled && !kept.has(id)) card.settled = true
@@ -21261,6 +21262,9 @@ async function main(): Promise<void> {
       // report each ignored frame kind once again, instead of inheriting the
       // "already said it" set from the previous passive spell.
       standDownIgnoredFrames.clear()
+      // The open card file as the holder left it, before delivery resumes: a
+      // card it settled is settled here, one it posted is watched (#417 F1).
+      rehydrateOpenCards('rearm')
       // A re-armed daemon never receives meeting_state_resync: the socket never
       // reconnected (it stayed up throughout the passive spell), and the resync
       // rides a connect. So a meeting floor this daemon held before it stood
@@ -21531,7 +21535,7 @@ async function main(): Promise<void> {
     // Every site goes through flushChatCursors, the deaf-session cursor gate.
     flushChatCursors()
     // Answers given while no daemon ran, to the cards the last one posted.
-    rehydrateOpenCards()
+    rehydrateOpenCards('boot')
     // Deliberately NOT gated on channelArmed, unlike the two delivery paths:
     // the store only goes dirty when a cursor advances, and both routes that
     // advance one (the poll tick, deliverWsInbound) refuse while stood down, so
