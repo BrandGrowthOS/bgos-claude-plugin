@@ -464,7 +464,7 @@ import {
   resolveCursorFilePath,
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
-import { OPEN_CARDS_FILE_NAME, OpenCardStore } from './lib/open-cards.js'
+import { OPEN_CARDS_FILE_NAME, OpenCardStore, dueOpenCardReads } from './lib/open-cards.js'
 import {
   ChannelLiveness,
   deafSessionAction,
@@ -12646,6 +12646,23 @@ function rehydrateOpenCards(): void {
   }
 }
 
+/**
+ * The second route for a tap in a chat the poll does not watch (a channel or
+ * room another agent founded): each open card this daemon posted there is
+ * read again by its exact id about once a minute until it is answered, so a
+ * tap the stream missed is still heard (lib/open-cards.ts dueOpenCardReads).
+ */
+const openCardWatchReadAt = new Map<number, number>()
+function watchOpenCards(nowMs: number): void {
+  if (updateDrainMode || !lockHeld) return
+  const cards = [...postedButtonCards].map(([id, card]) => ({ id, chatId: card.chatId, settled: card.settled }))
+  for (const id of openCardWatchReadAt.keys()) if (!postedButtonCards.has(id)) openCardWatchReadAt.delete(id)
+  for (const card of dueOpenCardReads({ cards, monitored: new Set(monitoredChatIds), lastReadAt: openCardWatchReadAt, nowMs })) {
+    openCardWatchReadAt.set(card.id, nowMs)
+    void readPostedButtonCard(card.chatId, card.id)
+  }
+}
+
 /** Direct and history reads share the same claim and nested message lane check. */
 function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
   const mm = m.message
@@ -21653,6 +21670,7 @@ async function main(): Promise<void> {
         // Agent Update Stream housekeeping on the existing 2s tick: consumer
         // gap deadlines + the beacon watchdog. No-op with the flag off.
         streamSchedulerTick(Date.now())
+        watchOpenCards(Date.now())
         const fastIds = fastScopeChatIds({
           meetingChatIds,
           // BOUNDED, like the button prompt beside it, but bounded by the

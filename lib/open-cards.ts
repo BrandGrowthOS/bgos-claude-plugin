@@ -154,3 +154,34 @@ export class OpenCardStore {
     return true
   }
 }
+
+/**
+ * THE SECOND ROUTE FOR A TAP IN A CHAT THE POLL DOES NOT WATCH.
+ *
+ * The poll reads only the chats whose agent is this one. A card this agent
+ * posted in a channel or room another agent founded was read once after the
+ * post and then left to the stream alone. Each open, unsettled card of this
+ * daemon in a chat outside `monitored` is due again once OPEN_CARD_WATCH_INTERVAL_MS
+ * has passed since the watch last read it (at once if it never has), at most
+ * OPEN_CARD_WATCH_MAX_READS per tick, the longest unread first. The read is the
+ * card's exact one (one row by id), so a channel's other messages are never read.
+ */
+export const OPEN_CARD_WATCH_INTERVAL_MS = 60_000
+export const OPEN_CARD_WATCH_MAX_READS = 10
+
+export function dueOpenCardReads<T extends { id: number; chatId: string; settled: boolean }>(opts: {
+  cards: readonly T[]
+  monitored: ReadonlySet<string>
+  lastReadAt: ReadonlyMap<number, number>
+  nowMs: number
+}): T[] {
+  const due: Array<{ card: T; at: number }> = []
+  for (const card of opts.cards) {
+    if (card.settled || opts.monitored.has(card.chatId)) continue
+    const at = opts.lastReadAt.get(card.id) ?? Number.NEGATIVE_INFINITY
+    if (opts.nowMs - at < OPEN_CARD_WATCH_INTERVAL_MS) continue
+    due.push({ card, at })
+  }
+  due.sort((a, b) => a.at - b.at)
+  return due.slice(0, OPEN_CARD_WATCH_MAX_READS).map((entry) => entry.card)
+}
