@@ -119,7 +119,8 @@ function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: Dae
   return {
     api, notes, reads, store: openCardStore, announced: announcedClickIds, cards: postedButtonCards,
     post: (id = ID) => api.notePostedButtonCard(CHAT, id),
-    boot: async () => { api.rehydrateOpenCards(); await tick() },
+    boot: async () => { api.rehydrateOpenCards('boot'); await tick() },
+    rearm: async () => { api.rehydrateOpenCards('rearm'); await tick() },
     tick,
     later: (ms: number) => { clock += ms },
     history: (r = answered()) => api.announcePostedButtonAnswer(CHAT, r),
@@ -203,7 +204,7 @@ test('rehydrating twice reads each card once', async () => {
   await flush()
   first.stop()
   const second = daemon(dir, async () => ({ messages: [answered()] }))
-  second.api.rehydrateOpenCards()
+  second.api.rehydrateOpenCards('boot')
   await second.boot()
   assert.equal(second.reads.length, 1)
   assert.equal(second.notes.length, 1)
@@ -238,7 +239,7 @@ test('a missing or broken file loads as no cards, never throws', () => {
 })
 
 test('the boot path reads the open cards once the first cursors are flushed, and every flush writes them', () => {
-  const boot = source.indexOf('    // Answers given while no daemon ran, to the cards the last one posted.\n    rehydrateOpenCards()')
+  const boot = source.indexOf("    // Answers given while no daemon ran, to the cards the last one posted.\n    rehydrateOpenCards('boot')")
   assert.ok(boot > 0, 'rehydrateOpenCards runs on the boot path')
   assert.ok(source.lastIndexOf('    flushChatCursors()\n', boot) > boot - 200, 'right after the boot flush')
   assert.match(declaration('flushChatCursors'), /openCardStore\.flushIfDirty\(\)/)
@@ -380,4 +381,44 @@ test('R6: a flush with nothing new writes nothing', () => {
   store.add({ id: 5, chatId: '9', postedAtMs: Date.now() })
   assert.equal(store.flushIfDirty(), true)
   assert.equal(store.flushIfDirty(), false)
+})
+
+// A DAEMON THAT STOOD DOWN AND RE-ARMS READS THE FILE AGAIN (review of #417
+// round 2, F1). While it was passive the holder announced and settled its
+// cards and posted new ones. The re-arm reads the file as it is then: a card
+// the holder settled is settled here, never announced twice, and a card the
+// holder posted is watched here. A daemon that booted as a first run re-arms
+// with the holder's file too, so the first run gate is the boot's alone.
+for (const firstRun of [false, true]) {
+  test(`F1: a re-arm settles what the holder settled and watches what it posted (${firstRun ? 'a first run boot' : 'a normal boot'})`, async () => {
+    const dir = scratchDir('open-cards-')
+    const reArmer = daemon(dir, async (path) => ({ messages: [path.includes(String(ID)) ? answered() : unanswered()] }), { firstRun })
+    reArmer.post()
+    await flush()
+    reArmer.stop()
+    // The holder, while the first daemon stood down: it announces and settles
+    // the first card, then posts a second.
+    const holder = daemon(dir, async () => ({ messages: [answered()] }))
+    await holder.boot()
+    assert.equal(holder.notes.length, 1, 'the holder announced the tap')
+    holder.post(2002)
+    await flush()
+    holder.stop()
+    await reArmer.rearm()
+    assert.equal(reArmer.notes.length, 0, 'a tap the holder announced is not announced again')
+    assert.equal(reArmer.cards.get(ID)?.settled, true, 'the card the holder settled is settled here')
+    assert.equal(reArmer.cards.get(2002)?.settled, false, 'the card the holder posted is watched here')
+  })
+}
+
+test('F1: both arm paths read the open cards, the re-arm before delivery resumes', () => {
+  const start = source.indexOf('  const armDelivery = async (): Promise<void> => {')
+  assert.ok(start > 0, 'armDelivery exists')
+  const reArm = source.slice(start, source.indexOf('\n    deliveryLoopsStarted = true\n', start))
+  assert.ok(reArm.includes('if (deliveryLoopsStarted) {'), 'the re-arm branch is read')
+  const read = reArm.indexOf("rehydrateOpenCards('rearm')")
+  assert.ok(read > 0, 'the re-arm reads the open cards')
+  assert.ok(read < reArm.indexOf('      channelArmed = true\n'), 'before delivery resumes')
+  assert.ok(source.includes("    rehydrateOpenCards('boot')\n"), 'the first arm reads them too')
+  assert.match(declaration('rehydrateOpenCards'), /if \(reason === 'boot' && !cursorBoot\.fileExisted\) return/)
 })
