@@ -3723,8 +3723,10 @@ const mcp = new Server(
       '`end_run` with outcome "could_not_check" and the closest reason code:',
       'site_unreachable, needs_sign_in, ran_out_of_time, missing_access or',
       'something_else. Your owner reads fixed words for it on a card. It takes',
-      'no free text: put any details in a normal reply. Take task_id and',
-      'fire_id from that payload',
+      'no free text: put any details in a normal reply. The Could not check',
+      'card comes back to you in this chat as a system message: it needs no',
+      'reply, so do not announce the failure again, and give details only if',
+      'you have not already. Take task_id and fire_id from that payload',
       '(scheduledTaskId and fireId). Otherwise reply normally: never end a run',
       'instead of telling your owner what you found.',
       '`when_it_runs` (wakes only) sets how this routine\'s runs show in your',
@@ -6208,7 +6210,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'site was down, a sign in failed) and pick the closest reason code: ' +
         'your owner reads the platform\'s fixed words for it on a Could not ' +
         'check card. It takes no free text, so put any details in a normal ' +
-        'reply. Never use it instead of a ' +
+        'reply. The card also comes back to you in this chat as a system ' +
+        'message: it needs no reply, so do not announce the failure again. ' +
+        'Never use it instead of a ' +
         'reply when you found something: then reply normally. task_id and ' +
         'fire_id are the scheduledTaskId and fireId of that same wake\'s ' +
         'event payload.',

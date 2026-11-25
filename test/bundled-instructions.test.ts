@@ -245,6 +245,21 @@ test('the bundled instructions say when to call end_run, with which outcome, and
   assert.ok(text.includes('Otherwise reply normally: never end a run instead of telling your owner what you found.'), 'reply otherwise')
 })
 
+// Review rv418 F1: the Could not check card is a system row in the agent's own chat, so it is pushed back to the
+// agent, which reads system messages as "reply normally if a reply is warranted". The end_run paragraph says the card
+// comes back and needs no reply, so the failure is announced once, right after the sentence that sends details to a
+// normal reply.
+test('the bundled instructions say the Could not check card comes back and needs no reply', () => {
+  const text = instructionWords()
+  const sentence =
+    'The Could not check card comes back to you in this chat as a system message: it needs no reply, so do not announce the failure again, and give details only if you have not already.'
+  assert.ok(text.includes(sentence), 'the card comes back sentence')
+  assert.ok(
+    text.indexOf(sentence) > text.indexOf('It takes no free text: put any details in a normal reply.'),
+    'it follows the details sentence',
+  )
+})
+
 test('the bundled instructions say to leave when_it_runs out unless the owner asked', () => {
   const text = instructionWords()
   assert.ok(

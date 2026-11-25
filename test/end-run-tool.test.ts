@@ -600,6 +600,42 @@ test('the end_run tool says when to use each outcome, and never instead of a rep
   assert.doesNotMatch(schema, /[\u2013\u2014]/)
 })
 
+// Review rv418 F1. A could_not_check end makes the server post the Could not check card as a SYSTEM row in the agent's
+// own chat, and every system row in that chat is pushed to the paired daemon too (BGOS send-message.service.ts,
+// "System messages (sender='system') reach the agent"). So the agent reads its own card a moment later, under the
+// system message rule "reply normally if a reply is warranted". Unless it is told that card needs no reply, it is
+// invited to announce the same failure twice: the card, then an apology about it. Every place the model reads about
+// a could_not_check end says so: the tool's answer, the tool's description and the README row that mirrors it.
+const CARD_COMES_BACK = 'That card also comes back to you in this chat as a system message: it needs no reply.'
+
+test('a could_not_check answer says the card comes back as a system message and needs no reply', () => {
+  assert.ok(RUN_END_COULD_NOT_CHECK_TEXT.includes(CARD_COMES_BACK), RUN_END_COULD_NOT_CHECK_TEXT)
+  // Details at most once: a reply that already gave them is not repeated for the card.
+  assert.ok(
+    RUN_END_COULD_NOT_CHECK_TEXT.endsWith('If your owner needs the details and you have not given them yet, say them once in a normal reply.'),
+    RUN_END_COULD_NOT_CHECK_TEXT,
+  )
+  // The no change answer posts nothing and gets no card, so it says nothing about one coming back.
+  assert.doesNotMatch(RUN_END_NO_CHANGE_TEXT, /comes back/)
+  assert.doesNotMatch(RUN_END_COULD_NOT_CHECK_TEXT, /[\u2013\u2014]/)
+})
+
+test('the end_run description says the card comes back and the failure is announced once, as its README row does', () => {
+  const description = toolDescription('end_run')
+  assert.ok(
+    description.includes('The card also comes back to you in this chat as a system message: it needs no reply, so do not announce the failure again.'),
+    description,
+  )
+  // The README tool table is the markdown mirror of the tool list: it says the same thing, in the same place.
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  const row = readme.split('\n').find((line) => line.startsWith('| `end_run` |'))
+  assert.ok(row, 'the README lists end_run')
+  assert.ok(
+    row.includes('the card also comes back to the agent as a system message, which needs no reply, so the failure is announced once'),
+    row,
+  )
+})
+
 // The helper guard is the second half of "gated like every other write tool": a helper agent started in an earlier
 // turn may not call a private tool in a later one. schedule is on its list in every install, so end_run is too.
 test('end_run is a private tool for the helper guard, under any install prefix, in every install', () => {

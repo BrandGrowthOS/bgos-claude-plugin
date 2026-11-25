@@ -234,9 +234,15 @@ export async function sendScheduleCreate(opts: ScheduleSendOptions): Promise<Sch
 /** What the agent reads when its no change end was taken. */
 export const RUN_END_NO_CHANGE_TEXT = 'Run ended: no change. Post nothing more for this run.'
 
-/** What the agent reads when its could not check end was taken. */
+/**
+ * What the agent reads when its could not check end was taken. The card is a system row in the agent's own chat, and
+ * the server pushes every such row back to the agent (review rv418 F1), so this says that card needs no reply: the
+ * failure is announced once, by the card, with the details at most once in the agent's own reply.
+ */
 export const RUN_END_COULD_NOT_CHECK_TEXT =
-  'Run ended: could not check. Your owner gets a Could not check card with the reason you picked. If they need the details, say them in a normal reply.'
+  'Run ended: could not check. Your owner gets a Could not check card with the reason you picked. ' +
+  'That card also comes back to you in this chat as a system message: it needs no reply. ' +
+  'If your owner needs the details and you have not given them yet, say them once in a normal reply.'
 
 /** A 404: the server offers no run ends yet, or this run is not one this agent may end. */
 export const RUN_END_NOT_TAKEN_TEXT =
