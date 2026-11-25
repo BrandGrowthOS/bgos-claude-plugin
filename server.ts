@@ -12631,7 +12631,11 @@ async function readPostedButtonCard(chatId: string, messageId: number): Promise<
     const card = postedButtonCards.get(messageId)
     if (card) card.fresh = true
     log(`Own button card ${messageId} answer read failed: ${err}`)
-    return { ok: false, status: readFailureStatus(err) }
+    const status = readFailureStatus(err)
+    // Refused for good (gone, or not this daemon's to read): settled, so it is
+    // not read again for a week (review of #417 round 2, F2).
+    if (status === 403 || status === 404 || status === 410) settlePostedButtonCard(messageId)
+    return { ok: false, status }
   }
 }
 
@@ -12676,10 +12680,13 @@ function watchOpenCards(nowMs: number): void {
   })
   for (const card of openCardWatch.due({ cards, monitored: new Set(monitoredChatIds), nowMs, unmonitoredAllowed: !groupLanesOn() })) {
     openCardWatch.noteRead(card.id, nowMs)
-    openCardRehydrated.delete(card.id)
+    const readBack = openCardRehydrated.delete(card.id)
     void readPostedButtonCard(card.chatId, card.id).then((outcome) => {
-      if (outcome.ok) openCardWatch.noteSuccess()
-      else openCardWatch.noteFailure(outcome.status, Date.now())
+      if (outcome.ok) { openCardWatch.noteSuccess(); return }
+      openCardWatch.noteFailure(outcome.status, Date.now())
+      // A read back that failed is still owed its one read (F3): in a chat
+      // the poll watches, the watch reads only cards marked read back.
+      if (readBack && postedButtonCards.get(card.id)?.settled === false) openCardRehydrated.add(card.id)
     })
   }
 }

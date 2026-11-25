@@ -152,11 +152,14 @@ export class OpenCardStore {
   }
 
   remove(id: number): void {
+    const held = this.cards.has(id) || this.added.has(id)
     this.added.delete(id)
     if (this.removed.has(id)) return
     this.removed.add(id)
     this.cards.delete(id)
-    this.dirty = true
+    // A card this store never held (a sign in card, another daemon's) costs
+    // no write; its removal rides the next one (review of #417 round 2, F5).
+    if (held) this.dirty = true
   }
 
   list(): OpenCard[] {
@@ -263,6 +266,9 @@ export function createOpenCardWatch(opts: { random?: () => number } = {}): OpenC
     },
     noteFailure(status, nowMs) {
       if (status === null || (status !== 429 && status < 500)) return
+      // A failure that lands while a pause already runs is the same burst (the
+      // reads of one tick resolve together): one step, not one per read (F4).
+      if (nowMs < pausedUntil) return
       pauses += 1
       pausedUntil = nowMs + Math.min(OPEN_CARD_WATCH_FIRST_MS * 2 ** (pauses - 1), OPEN_CARD_WATCH_MAX_MS)
     },
