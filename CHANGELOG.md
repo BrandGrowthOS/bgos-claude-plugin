@@ -14,6 +14,10 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
+## 0.90.18 (2026-11-25)
+
+**fix(vault): the server decides which site a login may fill.** The plugin no longer refuses a fill on its own when a saved login's website differs from the open tab; the server decides, and its refusal reaches the agent word for word (a plain string of at most 500 characters with no control characters; anything else falls back to the fixed text). No password, code or secret reaches the agent's context, logs or chat. Pairs with BGOS #6057.
+
 ## 0.90.17 (2026-11-21)
 
 **feat(chat): hear reactions to the agent's replies.** With a matching server, the agent hears who reacted and which emoji they chose. A later line can report a changed or removed reaction and how many people reacted. A room member speaks only as themselves. A reaction never grants permission to use a tool.
