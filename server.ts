@@ -464,6 +464,7 @@ import {
   resolveCursorFilePath,
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
+import { OPEN_CARDS_FILE_NAME, OpenCardStore } from './lib/open-cards.js'
 import {
   ChannelLiveness,
   deafSessionAction,
@@ -9887,6 +9888,10 @@ let homeStepDone = false
 const BEACON_HEARTBEAT_PATH = pathJoin(pathDirname(CURSOR_FILE_PATH), BEACON_HEARTBEAT_FILE)
 const cursorStore = new CursorStore(CURSOR_FILE_PATH)
 const cursorBoot = cursorStore.load()
+// The open cards this daemon posted, kept beside the cursors so a restart
+// between a question and its answer still hears the answer (lib/open-cards.ts).
+const openCardStore = new OpenCardStore(pathJoin(pathDirname(CURSOR_FILE_PATH), OPEN_CARDS_FILE_NAME))
+const openCardsBoot = openCardStore.load()
 const chatLastSeen = cursorBoot.cursors
 
 // First-run gate: no cursor file at all (genuine first install, or an
@@ -10063,6 +10068,7 @@ function adoptChatCursor(chatId: string, id: number): void {
  */
 function flushChatCursors(): void {
   if (!channelLiveness.live) return
+  openCardStore.flushIfDirty()
   // Nothing to write means nothing to clobber, and this is the hot path (every
   // CURSOR_FLUSH_INTERVAL_MS), so the file read below only happens when a write
   // is actually about to.
@@ -12576,6 +12582,7 @@ async function readOwnPostedCard(chatId: string, messageId: number, card: LoginM
 function notePostedButtonCard(chatId: string, messageId: number, recoveryWindowMs = BUTTON_PROMPT_FAST_WINDOW_MS): void {
   if (postedButtonCards.has(messageId)) return
   postedButtonCards.set(messageId, { chatId, settled: announcedClickIds.has(messageId), fresh: false, recoverUntilMs: Date.now() + recoveryWindowMs })
+  if (!postedButtonCards.get(messageId)!.settled) openCardStore.add({ id: messageId, chatId, postedAtMs: Date.now() })
   if (postedButtonCards.size > FORWARD_CACHE_MAX) {
     const oldest = postedButtonCards.keys().next().value
     if (oldest !== undefined) postedButtonCards.delete(oldest)
@@ -12586,6 +12593,7 @@ function notePostedButtonCard(chatId: string, messageId: number, recoveryWindowM
 }
 
 function settlePostedButtonCard(messageId: number): void {
+  openCardStore.remove(messageId)
   const card = postedButtonCards.get(messageId)
   if (!card) return
   card.settled = true
@@ -12619,6 +12627,22 @@ async function readPostedButtonCard(chatId: string, messageId: number): Promise<
     const card = postedButtonCards.get(messageId)
     if (card) card.fresh = true
     log(`Own button card ${messageId} answer read failed: ${err}`)
+  }
+}
+
+/**
+ * At boot, once this daemon owns the channel: every card the last process
+ * posted and saw no answer for is read once through the same exact read a live
+ * card uses, so an answer given while no daemon was running is announced (and
+ * one still open stays watched). The shared claim (announcedClickIds) keeps the
+ * stream's replay of the same answer from announcing it twice. Each card is
+ * read once however often this runs.
+ */
+function rehydrateOpenCards(): void {
+  for (const card of openCardsBoot.cards) {
+    if (postedButtonCards.has(card.id) || announcedClickIds.has(card.id)) continue
+    postedButtonCards.set(card.id, { chatId: card.chatId, settled: false, fresh: true, recoverUntilMs: Date.now() + BUTTON_PROMPT_FAST_WINDOW_MS })
+    void readPostedButtonCard(card.chatId, card.id)
   }
 }
 
@@ -21461,6 +21485,8 @@ async function main(): Promise<void> {
     // dedups a short replay); the signal/exit hooks cover normal shutdowns.
     // Every site goes through flushChatCursors, the deaf-session cursor gate.
     flushChatCursors()
+    // Answers given while no daemon ran, to the cards the last one posted.
+    rehydrateOpenCards()
     // Deliberately NOT gated on channelArmed, unlike the two delivery paths:
     // the store only goes dirty when a cursor advances, and both routes that
     // advance one (the poll tick, deliverWsInbound) refuse while stood down, so
