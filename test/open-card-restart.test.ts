@@ -1,10 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import ts from 'typescript'
 import { channelNotifyFor } from './helpers/channel-notify.ts'
+import { scratchDir } from './helpers/scratch-dirs'
 import * as plan from '../lib/plan-card.ts'
 import * as stream from '../lib/stream-apply.ts'
 import * as text from '../lib/message-text.ts'
@@ -112,7 +112,7 @@ function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: { l
 }
 
 test('an open card answered while the daemon was down is announced once at the next boot', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'open-cards-'))
+  const dir = scratchDir('open-cards-')
   let answeredNow = false
   const first = daemon(dir, async () => ({ messages: [answeredNow ? answered() : unanswered()] }))
   first.post()
@@ -134,7 +134,7 @@ test('an open card answered while the daemon was down is announced once at the n
 })
 
 test('a card already announced before the restart is not announced again', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'open-cards-'))
+  const dir = scratchDir('open-cards-')
   const first = daemon(dir, async () => ({ messages: [unanswered()] }))
   first.post()
   await flush()
@@ -149,7 +149,7 @@ test('a card already announced before the restart is not announced again', async
 })
 
 test('a card still open at boot stays open and is announced when it is answered', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'open-cards-'))
+  const dir = scratchDir('open-cards-')
   const first = daemon(dir, async () => ({ messages: [unanswered()] }))
   first.post()
   await flush()
@@ -163,7 +163,7 @@ test('a card still open at boot stays open and is announced when it is answered'
 })
 
 test('an upgrade boot (a cursor file but no card file) replays nothing', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'open-cards-'))
+  const dir = scratchDir('open-cards-')
   writeFileSync(join(dir, 'chat-cursors.json'), JSON.stringify({ v: 1, cursors: { [CHAT]: 1500 } }))
   const second = daemon(dir, async () => ({ messages: [answered()] }))
   second.api.rehydrateOpenCards()
@@ -173,7 +173,7 @@ test('an upgrade boot (a cursor file but no card file) replays nothing', async (
 })
 
 test("with person lanes on, a recipient's chat is still refused to the owner's session at boot", async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'open-cards-'))
+  const dir = scratchDir('open-cards-')
   const first = daemon(dir, async () => ({ messages: [unanswered()] }))
   first.post()
   await flush()
@@ -185,7 +185,7 @@ test("with person lanes on, a recipient's chat is still refused to the owner's s
 })
 
 test('rehydrating twice reads each card once', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'open-cards-'))
+  const dir = scratchDir('open-cards-')
   const first = daemon(dir, async () => ({ messages: [unanswered()] }))
   first.post()
   await flush()
@@ -206,7 +206,7 @@ test('the file keeps card and chat ids only, drops cards older than 7 days, and 
   assert.equal(kept.length, OPEN_CARDS_MAX)
   assert.equal(kept.some((c) => c.id === 1), false)
   assert.equal(kept.some((c) => c.id === 100), true, 'the newest are kept')
-  const dir = mkdtempSync(join(tmpdir(), 'open-cards-'))
+  const dir = scratchDir('open-cards-')
   const store = new OpenCardStore(join(dir, OPEN_CARDS_FILE_NAME), () => now)
   store.load()
   store.add({ id: 7, chatId: '9', postedAtMs: now })
@@ -216,7 +216,7 @@ test('the file keeps card and chat ids only, drops cards older than 7 days, and 
 })
 
 test('a missing or broken file loads as no cards, never throws', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'open-cards-'))
+  const dir = scratchDir('open-cards-')
   const path = join(dir, OPEN_CARDS_FILE_NAME)
   assert.deepEqual(loadOpenCards(path, Date.now()), { cards: [], fileExisted: false })
   writeFileSync(path, '{not json')
