@@ -20,8 +20,10 @@ import {
   OPEN_CARD_MAX_AGE_MS,
   OPEN_CARDS_MAX,
   OpenCardStore,
+  createOpenCardWatch,
   loadOpenCards,
   pruneOpenCards,
+  readFailureStatus,
 } from '../lib/open-cards.ts'
 
 // A CARD ANSWERED WHILE THE DAEMON WAS DOWN IS STILL HEARD, ONCE.
@@ -48,12 +50,12 @@ const ID = 1002
 const OWNER = 'sample-owner'
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
 
-function answered(lane?: string) {
+function answered(lane?: string, answeredAt = new Date().toISOString()) {
   return {
     lane: 'owner',
     message: {
       id: ID, chatId: Number(CHAT), sender: 'assistant', messageType: 'standard', text: 'Ship it?', lane,
-      answeredAt: new Date().toISOString(),
+      answeredAt,
       answerPayload: { callbackData: 'u:yes', buttonText: 'Yes', answeredByUserId: OWNER, senderUserId: OWNER },
     },
     messageOptions: [{ text: 'Yes', callbackData: 'u:yes' }],
@@ -65,13 +67,14 @@ function unanswered() {
 }
 
 /** One daemon process: its own memory, the shared state folder. */
-function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: { lanesOn?: boolean; others?: boolean } = {}) {
+type DaemonOpts = { lanesOn?: boolean; others?: boolean; firstRun?: boolean; groupLanes?: boolean; groupTap?: boolean; monitored?: string[] }
+function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: DaemonOpts = {}) {
   const postedButtonCards = new Map<number, { chatId: string; settled: boolean; fresh: boolean; recoverUntilMs: number }>()
   const announcedClickIds = new Set<number>()
   const notes: Array<{ params: { content: string; meta: Record<string, string> } }> = []
   const reads: string[] = []
   const openCardStore = new OpenCardStore(join(dir, OPEN_CARDS_FILE_NAME))
-  const openCardsBoot = openCardStore.load()
+  openCardStore.load()
   const scope = {
     ...plan, ...stream, ...text, ...permission, ...inbound, ...card,
     BUTTON_PROMPT_FAST_WINDOW_MS, selectClickTransitions,
@@ -83,7 +86,13 @@ function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: { l
     humanMessageEdits: { isChatDeleted: () => false },
     lanesOnForThisAgent: opts.lanesOn ?? false, chatOwnership: { isOthers: () => opts.others ?? false },
     ownerAnnounceRefused, ownerLaneVerdict, noteLaneMisroute: () => {},
-    routeGroupStreamTap: () => false, routeGroupPollTaps: () => undefined,
+    routeGroupStreamTap: () => opts.groupTap ?? false, routeGroupPollTaps: () => undefined,
+    groupLanesOn: () => opts.groupLanes ?? false,
+    monitoredChatIds: opts.monitored ?? [],
+    cursorBoot: { fileExisted: !opts.firstRun },
+    openCardWatch: createOpenCardWatch({ random: () => 0 }),
+    openCardRehydrated: new Set<number>(),
+    readFailureStatus,
     log: () => {}, trackMessageOperation: (op: () => Promise<void>) => op(),
     get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (note: (typeof notes)[number]) => { notes.push(note) } },
@@ -92,19 +101,26 @@ function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: { l
     streamAuthority: null, askTracker: { askIdOf: () => null, trackedMessageIds: () => new Set() },
     pendingLoginMethodCard: () => null, announceCompleteAsks: () => {},
     pendingPermissions: new Map(), senderUserIdOf: () => OWNER,
-    openCardStore, openCardsBoot,
+    openCardStore,
   }
   const js = ts.transpileModule([
     'notePostedButtonCard', 'settlePostedButtonCard', 'hasPendingPostedButtonCard',
     'readPostedButtonCard', 'announcePostedButtonAnswer', 'rememberAnnouncedClick',
-    'foreignPlanTap', 'applyPlanAnswer', 'applyStreamButtonsAnswered', 'rehydrateOpenCards',
+    'foreignPlanTap', 'applyPlanAnswer', 'applyStreamButtonsAnswered', 'rehydrateOpenCards', 'watchOpenCards',
   ].map(declaration).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText
   const api = new Function(...Object.keys(scope), `${js}\nreturn {
-    notePostedButtonCard, announcePostedButtonAnswer, applyStreamButtonsAnswered, rehydrateOpenCards,
+    notePostedButtonCard, announcePostedButtonAnswer, applyStreamButtonsAnswered, rehydrateOpenCards, watchOpenCards,
+    rememberAnnouncedClick,
   }`)(...Object.values(scope))
+  let clock = Date.now()
+  // The watch's tick: a card first seen is scheduled, then read (random 0).
+  const tick = async () => { api.watchOpenCards(clock); api.watchOpenCards(clock); await flush() }
   return {
-    api, notes, reads, store: openCardStore,
-    post: () => api.notePostedButtonCard(CHAT, ID),
+    api, notes, reads, store: openCardStore, announced: announcedClickIds, cards: postedButtonCards,
+    post: (id = ID) => api.notePostedButtonCard(CHAT, id),
+    boot: async () => { api.rehydrateOpenCards(); await tick() },
+    tick,
+    later: (ms: number) => { clock += ms },
     history: (r = answered()) => api.announcePostedButtonAnswer(CHAT, r),
     stream: (r = answered()) => api.applyStreamButtonsAnswered({ seq: 1, kind: 'buttons_answered', chatId: Number(CHAT), messageId: r.message.id, payload: r }),
     stop: () => { openCardStore.flushIfDirty() },
@@ -121,8 +137,7 @@ test('an open card answered while the daemon was down is announced once at the n
   first.stop()
   answeredNow = true
   const second = daemon(dir, async () => ({ messages: [answered()] }))
-  second.api.rehydrateOpenCards()
-  await flush()
+  await second.boot()
   assert.equal(second.notes.length, 1)
   assert.equal(second.notes[0].params.meta.callback_data, 'yes')
   assert.deepEqual(second.reads, ['chats/501/messages?userId=sample-owner&afterId=1001&beforeId=1003&limit=1'])
@@ -142,8 +157,7 @@ test('a card already announced before the restart is not announced again', async
   assert.equal(first.notes.length, 1)
   first.stop()
   const second = daemon(dir, async () => ({ messages: [answered()] }))
-  second.api.rehydrateOpenCards()
-  await flush()
+  await second.boot()
   assert.equal(second.notes.length, 0)
   assert.deepEqual(second.reads, [])
 })
@@ -155,8 +169,7 @@ test('a card still open at boot stays open and is announced when it is answered'
   await flush()
   first.stop()
   const second = daemon(dir, async () => ({ messages: [unanswered()] }))
-  second.api.rehydrateOpenCards()
-  await flush()
+  await second.boot()
   assert.equal(second.notes.length, 0)
   second.history()
   assert.equal(second.notes.length, 1)
@@ -166,8 +179,7 @@ test('an upgrade boot (a cursor file but no card file) replays nothing', async (
   const dir = scratchDir('open-cards-')
   writeFileSync(join(dir, 'chat-cursors.json'), JSON.stringify({ v: 1, cursors: { [CHAT]: 1500 } }))
   const second = daemon(dir, async () => ({ messages: [answered()] }))
-  second.api.rehydrateOpenCards()
-  await flush()
+  await second.boot()
   assert.equal(second.notes.length, 0)
   assert.deepEqual(second.reads, [])
 })
@@ -179,8 +191,7 @@ test("with person lanes on, a recipient's chat is still refused to the owner's s
   await flush()
   first.stop()
   const second = daemon(dir, async () => ({ messages: [answered()] }), { lanesOn: true, others: true })
-  second.api.rehydrateOpenCards()
-  await flush()
+  await second.boot()
   assert.equal(second.notes.length, 0)
 })
 
@@ -192,8 +203,7 @@ test('rehydrating twice reads each card once', async () => {
   first.stop()
   const second = daemon(dir, async () => ({ messages: [answered()] }))
   second.api.rehydrateOpenCards()
-  second.api.rehydrateOpenCards()
-  await flush()
+  await second.boot()
   assert.equal(second.reads.length, 1)
   assert.equal(second.notes.length, 1)
 })
@@ -233,4 +243,138 @@ test('the boot path reads the open cards once the first cursors are flushed, and
   assert.match(declaration('flushChatCursors'), /openCardStore\.flushIfDirty\(\)/)
   assert.match(declaration('settlePostedButtonCard'), /openCardStore\.remove\(messageId\)/)
   assert.match(declaration('notePostedButtonCard'), /openCardStore\.add\(/)
+})
+
+// Review of #417 (R1, R2, R4, R5, R6).
+
+test('R1: a tap the stream hands to a group lane is claimed, so no other route announces it in the main session', async () => {
+  const dir = scratchDir('open-cards-')
+  const d = daemon(dir, async () => ({ messages: [answered()] }), { groupTap: true })
+  d.post()
+  await flush()
+  d.stream()
+  assert.equal(d.notes.length, 0, 'the group lane took it')
+  assert.equal(d.announced.has(ID), true, 'and the id is claimed')
+  d.history()
+  await d.tick()
+  assert.equal(d.notes.length, 0)
+})
+
+test('R1: with group lanes on, a chat the poll does not watch is not read by the watch', async () => {
+  const dir = scratchDir('open-cards-')
+  const d = daemon(dir, async () => ({ messages: [unanswered()] }), { groupLanes: true })
+  d.post()
+  await flush()
+  const before = d.reads.length
+  d.later(10 * 60_000)
+  await d.tick()
+  assert.equal(d.reads.length, before)
+})
+
+test('R2: a daemon promoted later reads the file as it is then, not as it was at its boot', async () => {
+  const dir = scratchDir('open-cards-')
+  const holder = daemon(dir, async () => ({ messages: [unanswered()] }))
+  holder.post()
+  await flush()
+  holder.stop()
+  const passive = daemon(dir, async () => ({ messages: [answered()] }))
+  holder.history()
+  assert.equal(holder.notes.length, 1)
+  await passive.boot()
+  assert.equal(passive.notes.length, 0, 'the holder already announced it')
+  assert.deepEqual(passive.reads, [])
+})
+
+test("R2: a daemon's write keeps the cards another daemon added meanwhile", async () => {
+  const dir = scratchDir('open-cards-')
+  const passive = daemon(dir, async () => ({ messages: [unanswered()] }))
+  const holder = daemon(dir, async () => ({ messages: [unanswered()] }))
+  holder.post(2002)
+  await flush()
+  holder.stop()
+  passive.post(3003)
+  await flush()
+  passive.stop()
+  const ids = loadOpenCards(join(dir, OPEN_CARDS_FILE_NAME), Date.now()).cards.map((c) => c.id).sort()
+  assert.deepEqual(ids, [2002, 3003])
+})
+
+test('R4: an answered card leaves the file at once, before any timed flush', async () => {
+  const dir = scratchDir('open-cards-')
+  const d = daemon(dir, async () => ({ messages: [unanswered()] }))
+  d.post()
+  await flush()
+  d.stop()
+  d.history()
+  assert.equal(d.notes.length, 1)
+  assert.deepEqual(loadOpenCards(join(dir, OPEN_CARDS_FILE_NAME), Date.now()).cards, [], 'no flush called, already gone')
+})
+
+test('R5: a boot the cursor store calls a first run reads no card back', async () => {
+  const dir = scratchDir('open-cards-')
+  const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+  first.post()
+  await flush()
+  first.stop()
+  const second = daemon(dir, async () => ({ messages: [answered()] }), { firstRun: true })
+  await second.boot()
+  assert.deepEqual(second.reads, [])
+  assert.equal(second.notes.length, 0)
+})
+
+test('R5: an answer older than a day is settled, never announced as fresh', async () => {
+  const dir = scratchDir('open-cards-')
+  const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+  first.post()
+  await flush()
+  first.stop()
+  const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()
+  const second = daemon(dir, async () => ({ messages: [answered(undefined, old)] }))
+  await second.boot()
+  assert.equal(second.reads.length, 1)
+  assert.equal(second.notes.length, 0)
+  assert.equal(second.cards.get(ID)?.settled, true)
+})
+
+test('R6: a card already answered when its post returns is never kept in the file', async () => {
+  const dir = scratchDir('open-cards-')
+  const d = daemon(dir, async () => ({ messages: [answered()] }))
+  d.api.rememberAnnouncedClick(ID)
+  d.post()
+  await flush()
+  d.stop()
+  assert.deepEqual(loadOpenCards(join(dir, OPEN_CARDS_FILE_NAME), Date.now()).cards, [])
+})
+
+test('R6: a card this daemon already announced is not read back at boot', async () => {
+  const dir = scratchDir('open-cards-')
+  const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+  first.post()
+  await flush()
+  first.stop()
+  const second = daemon(dir, async () => ({ messages: [answered()] }))
+  second.api.rememberAnnouncedClick(ID)
+  await second.boot()
+  assert.deepEqual(second.reads, [])
+})
+
+test('R6: a card older than 7 days is dropped even when it is not the oldest of many', () => {
+  const now = Date.parse('2026-11-25T12:00:00Z')
+  const kept = pruneOpenCards(
+    [
+      { id: 1, chatId: '9', postedAtMs: now - 1000 },
+      { id: 2, chatId: '9', postedAtMs: now - OPEN_CARD_MAX_AGE_MS - 1 },
+    ],
+    now,
+  )
+  assert.deepEqual(kept.map((c) => c.id), [1])
+})
+
+test('R6: a flush with nothing new writes nothing', () => {
+  const dir = scratchDir('open-cards-')
+  const store = new OpenCardStore(join(dir, OPEN_CARDS_FILE_NAME))
+  store.load()
+  store.add({ id: 5, chatId: '9', postedAtMs: Date.now() })
+  assert.equal(store.flushIfDirty(), true)
+  assert.equal(store.flushIfDirty(), false)
 })
