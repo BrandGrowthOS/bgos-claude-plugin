@@ -623,7 +623,7 @@ test('a could_not_check answer says the card comes back as a system message and 
 test('the end_run description says the card comes back and the failure is announced once, as its README row does', () => {
   const description = toolDescription('end_run')
   assert.ok(
-    description.includes('The card also comes back to you in this chat as a system message: it needs no reply, so do not announce the failure again.'),
+    description.includes('The card also comes back to you in this chat as a system message: it needs no reply, so do not announce the failure again, and give details only if you have not already.'),
     description,
   )
   // The README tool table is the markdown mirror of the tool list: it says the same thing, in the same place.

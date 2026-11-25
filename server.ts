@@ -6211,7 +6211,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'your owner reads the platform\'s fixed words for it on a Could not ' +
         'check card. It takes no free text, so put any details in a normal ' +
         'reply. The card also comes back to you in this chat as a system ' +
-        'message: it needs no reply, so do not announce the failure again. ' +
+        'message: it needs no reply, so do not announce the failure again, ' +
+        'and give details only if you have not already. ' +
         'Never use it instead of a ' +
         'reply when you found something: then reply normally. task_id and ' +
         'fire_id are the scheduledTaskId and fireId of that same wake\'s ' +
