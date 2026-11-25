@@ -464,7 +464,7 @@ import {
   resolveCursorFilePath,
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
-import { OPEN_CARDS_FILE_NAME, OpenCardStore, dueOpenCardReads } from './lib/open-cards.js'
+import { OPEN_CARDS_FILE_NAME, OPEN_CARD_STALE_ANSWER_MS, OpenCardStore, createOpenCardWatch, readFailureStatus } from './lib/open-cards.js'
 import {
   ChannelLiveness,
   deafSessionAction,
@@ -9891,7 +9891,7 @@ const cursorBoot = cursorStore.load()
 // The open cards this daemon posted, kept beside the cursors so a restart
 // between a question and its answer still hears the answer (lib/open-cards.ts).
 const openCardStore = new OpenCardStore(pathJoin(pathDirname(CURSOR_FILE_PATH), OPEN_CARDS_FILE_NAME))
-const openCardsBoot = openCardStore.load()
+openCardStore.load()
 const chatLastSeen = cursorBoot.cursors
 
 // First-run gate: no cursor file at all (genuine first install, or an
@@ -12593,7 +12593,10 @@ function notePostedButtonCard(chatId: string, messageId: number, recoveryWindowM
 }
 
 function settlePostedButtonCard(messageId: number): void {
+  // At once, not on the cursor timer (review of #417, R4): a crash inside the
+  // timer's window would read this answered card back at the next boot.
   openCardStore.remove(messageId)
+  openCardStore.flushIfDirty()
   const card = postedButtonCards.get(messageId)
   if (!card) return
   card.settled = true
@@ -12612,54 +12615,71 @@ function hasPendingPostedButtonCard(chatId: string, freshOnly = false): boolean 
 }
 
 /** One unconditional, ID-bounded read, using the same request as sign-in. */
-async function readPostedButtonCard(chatId: string, messageId: number): Promise<void> {
-  if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
+async function readPostedButtonCard(chatId: string, messageId: number): Promise<{ ok: boolean; status: number | null }> {
+  if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return { ok: true, status: null }
   try {
     const raw = await bgosGet(
       `chats/${encodeURIComponent(chatId)}/messages?userId=${USER_ID}&afterId=${messageId - 1}&beforeId=${messageId + 1}&limit=1`,
       { conditional: false },
     ) as ChatHistoryResponse
-    if (raw.messages?.length === 0) { settlePostedButtonCard(messageId); return }
+    if (raw.messages?.length === 0) { settlePostedButtonCard(messageId); return { ok: true, status: null } }
     const row = raw.messages?.find((entry) => entry.message.id === messageId && String(entry.message.chatId) === chatId)
     if (row) announcePostedButtonAnswer(chatId, row)
+    return { ok: true, status: null }
   } catch (err) {
     // Keep the card pending so the next history read bypasses validators.
     const card = postedButtonCards.get(messageId)
     if (card) card.fresh = true
     log(`Own button card ${messageId} answer read failed: ${err}`)
+    return { ok: false, status: readFailureStatus(err) }
   }
 }
 
 /**
- * At boot, once this daemon owns the channel: every card the last process
- * posted and saw no answer for is read once through the same exact read a live
- * card uses, so an answer given while no daemon was running is announced (and
- * one still open stays watched). The shared claim (announcedClickIds) keeps the
- * stream's replay of the same answer from announcing it twice. Each card is
- * read once however often this runs.
+ * At every arm, once this daemon owns the channel: the open cards in the file
+ * as it is NOW (review of #417, R2: a daemon promoted hours after its boot
+ * reads the holder's file, not the one it saw at boot). Each is handed to the
+ * watch for one exact read through its budget, so an answer given while no
+ * daemon ran is announced once, and the stream's replay is deduped by id. A
+ * card this process holds open that the file no longer has was settled by
+ * another daemon, and is settled here too. A boot the cursor store calls a
+ * first run reads nothing back (R5).
  */
+const openCardWatch = createOpenCardWatch()
+const openCardRehydrated = new Set<number>()
 function rehydrateOpenCards(): void {
-  for (const card of openCardsBoot.cards) {
+  if (!cursorBoot.fileExisted) return
+  const onDisk = openCardStore.reload()
+  const kept = new Set(onDisk.map((card) => card.id))
+  for (const [id, card] of postedButtonCards) if (!card.settled && !kept.has(id)) card.settled = true
+  for (const card of onDisk) {
     if (postedButtonCards.has(card.id) || announcedClickIds.has(card.id)) continue
     postedButtonCards.set(card.id, { chatId: card.chatId, settled: false, fresh: true, recoverUntilMs: Date.now() + BUTTON_PROMPT_FAST_WINDOW_MS })
-    void readPostedButtonCard(card.chatId, card.id)
+    openCardRehydrated.add(card.id)
   }
 }
 
 /**
  * The second route for a tap in a chat the poll does not watch (a channel or
- * room another agent founded): each open card this daemon posted there is
- * read again by its exact id about once a minute until it is answered, so a
- * tap the stream missed is still heard (lib/open-cards.ts dueOpenCardReads).
+ * room another agent founded), on a bounded schedule (lib/open-cards.ts
+ * createOpenCardWatch, review of #417 R3): each open card this daemon posted
+ * there is read again by its exact id, at 1, 2, 4 ... up to 30 minutes, never
+ * past the file's 7 days, paused while 429s or 5xxs last. With group lanes on,
+ * such a chat is the group lane's and is not read here (R1).
  */
-const openCardWatchReadAt = new Map<number, number>()
 function watchOpenCards(nowMs: number): void {
   if (updateDrainMode || !lockHeld) return
-  const cards = [...postedButtonCards].map(([id, card]) => ({ id, chatId: card.chatId, settled: card.settled }))
-  for (const id of openCardWatchReadAt.keys()) if (!postedButtonCards.has(id)) openCardWatchReadAt.delete(id)
-  for (const card of dueOpenCardReads({ cards, monitored: new Set(monitoredChatIds), lastReadAt: openCardWatchReadAt, nowMs })) {
-    openCardWatchReadAt.set(card.id, nowMs)
-    void readPostedButtonCard(card.chatId, card.id)
+  const cards = openCardStore.list().flatMap((card) => {
+    const held = postedButtonCards.get(card.id)
+    return held ? [{ ...card, settled: held.settled, rehydrated: openCardRehydrated.has(card.id) }] : []
+  })
+  for (const card of openCardWatch.due({ cards, monitored: new Set(monitoredChatIds), nowMs, unmonitoredAllowed: !groupLanesOn() })) {
+    openCardWatch.noteRead(card.id, nowMs)
+    openCardRehydrated.delete(card.id)
+    void readPostedButtonCard(card.chatId, card.id).then((outcome) => {
+      if (outcome.ok) openCardWatch.noteSuccess()
+      else openCardWatch.noteFailure(outcome.status, Date.now())
+    })
   }
 }
 
@@ -12679,6 +12699,13 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
     return
   }
   if (announcedClickIds.has(mm.id)) { settlePostedButtonCard(mm.id); return }
+  // An answer older than a day is not a fresh turn (review of #417, R5): it is
+  // settled and logged, never announced as if it had just happened.
+  if (Date.now() - Date.parse(mm.answeredAt) > OPEN_CARD_STALE_ANSWER_MS) {
+    log(`button_clicked NOT announced for message ${mm.id}: its answer is over a day old`)
+    settlePostedButtonCard(mm.id)
+    return
+  }
   const payload = mm.answerPayload ?? {}
   const callbackData = payload.callbackData ?? payload.callback_data ?? ''
   const buttonText = payload.buttonText ?? payload.button_text ?? ''
@@ -17731,6 +17758,9 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   // never announced into the owner's session.
   // Group threads: a group's tap is a turn line in its lane, never the main session's.
   if (routeGroupStreamTap(view)) {
+    // Claimed, so no other route (the poll, the open card watch) announces the
+    // same tap in the main session (review of #417, R1).
+    rememberAnnouncedClick(view.messageId)
     log(`button_clicked SKIPPED for the main session: message ${view.messageId} is a group's tap, which only its group lane may take (streamAuthority=${authorityAtReceipt})`)
     return
   }

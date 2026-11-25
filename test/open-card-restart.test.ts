@@ -24,6 +24,7 @@ import {
   loadOpenCards,
   pruneOpenCards,
   readFailureStatus,
+  OPEN_CARD_STALE_ANSWER_MS,
 } from '../lib/open-cards.ts'
 
 // A CARD ANSWERED WHILE THE DAEMON WAS DOWN IS STILL HEARD, ONCE.
@@ -92,7 +93,7 @@ function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: Dae
     cursorBoot: { fileExisted: !opts.firstRun },
     openCardWatch: createOpenCardWatch({ random: () => 0 }),
     openCardRehydrated: new Set<number>(),
-    readFailureStatus,
+    readFailureStatus, OPEN_CARD_STALE_ANSWER_MS,
     log: () => {}, trackMessageOperation: (op: () => Promise<void>) => op(),
     get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (note: (typeof notes)[number]) => { notes.push(note) } },
@@ -249,9 +250,11 @@ test('the boot path reads the open cards once the first cursors are flushed, and
 
 test('R1: a tap the stream hands to a group lane is claimed, so no other route announces it in the main session', async () => {
   const dir = scratchDir('open-cards-')
-  const d = daemon(dir, async () => ({ messages: [answered()] }), { groupTap: true })
+  let tapped = false
+  const d = daemon(dir, async () => ({ messages: [tapped ? answered() : unanswered()] }), { groupTap: true })
   d.post()
   await flush()
+  tapped = true
   d.stream()
   assert.equal(d.notes.length, 0, 'the group lane took it')
   assert.equal(d.announced.has(ID), true, 'and the id is claimed')
