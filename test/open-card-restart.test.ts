@@ -23,6 +23,7 @@ import {
   createOpenCardWatch,
   loadOpenCards,
   pruneOpenCards,
+  buildUnreadableCardNotice,
   readFailureStatus,
   OPEN_CARD_STALE_ANSWER_MS,
 } from '../lib/open-cards.ts'
@@ -93,7 +94,7 @@ function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: Dae
     cursorBoot: { fileExisted: !opts.firstRun },
     openCardWatch: createOpenCardWatch({ random: () => 0 }),
     openCardRehydrated: new Set<number>(),
-    readFailureStatus, OPEN_CARD_STALE_ANSWER_MS,
+    readFailureStatus, buildUnreadableCardNotice, OPEN_CARD_STALE_ANSWER_MS,
     log: () => {}, trackMessageOperation: (op: () => Promise<void>) => op(),
     get channelNotify(): ReturnType<typeof channelNotifyFor> { return channelNotifyFor(() => (this as unknown as { mcp: { notification: (n: unknown) => unknown } }).mcp) },
     mcp: { notification: async (note: (typeof notes)[number]) => { notes.push(note) } },

@@ -464,7 +464,7 @@ import {
   resolveCursorFilePath,
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
-import { OPEN_CARDS_FILE_NAME, OPEN_CARD_STALE_ANSWER_MS, OpenCardStore, createOpenCardWatch, readFailureStatus } from './lib/open-cards.js'
+import { OPEN_CARDS_FILE_NAME, OPEN_CARD_STALE_ANSWER_MS, OpenCardStore, buildUnreadableCardNotice, createOpenCardWatch, readFailureStatus } from './lib/open-cards.js'
 import {
   ChannelLiveness,
   deafSessionAction,
@@ -12632,9 +12632,17 @@ async function readPostedButtonCard(chatId: string, messageId: number): Promise<
     if (card) card.fresh = true
     log(`Own button card ${messageId} answer read failed: ${err}`)
     const status = readFailureStatus(err)
-    // Refused for good (gone, or not this daemon's to read): settled, so it is
-    // not read again for a week (review of #417 round 2, F2).
-    if (status === 403 || status === 404 || status === 410) settlePostedButtonCard(messageId)
+    // Refused for good (gone, or not this daemon's to read): closed unread, so
+    // it is not read again for a week (review of #417 round 2, F2), and the
+    // agent is told once, never as an answer (round 3): a tap it can no longer
+    // see is not silently lost.
+    if ((status === 403 || status === 404 || status === 410) && postedButtonCards.get(messageId)?.settled === false) {
+      settlePostedButtonCard(messageId)
+      const notice = buildUnreadableCardNotice({ chatId, messageId, status })
+      log(`WARN own button card ${messageId} in chat ${chatId} closed unread (${status})`)
+      void trackMessageOperation(() => channelNotify(() => ({ content: notice.content, meta: notice.meta })))
+        .catch((notifyErr) => log(`Failed to deliver card_unreadable to Claude: ${notifyErr}`))
+    }
     return { ok: false, status }
   }
 }

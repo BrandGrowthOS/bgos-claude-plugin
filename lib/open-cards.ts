@@ -278,6 +278,38 @@ export function createOpenCardWatch(opts: { random?: () => number } = {}): OpenC
   }
 }
 
+/**
+ * The one line the agent sees when its open button card is closed because the
+ * server refuses to read it back for good: 403 (this agent may no longer read
+ * that chat, or a person lane refuses the read), 404 or 410 (the card or its
+ * chat is gone). Closed unread, never counted as an answer, so a tap the
+ * plugin can no longer see is never silently lost (review of #417 round 3).
+ * Every meta value is a string: the harness drops a card that carries any
+ * other (the wake card contract).
+ */
+export function buildUnreadableCardNotice(input: {
+  chatId: string
+  messageId: number
+  status: number
+}): { content: string; meta: Record<string, string> } {
+  const why =
+    input.status === 403
+      ? 'this agent may no longer read that chat'
+      : 'the card or its chat is gone'
+  return {
+    content:
+      `[hoai] Your button card (message_id=${input.messageId}) can no longer be read: ` +
+      `the server answered ${input.status}, ${why}. A choice made on it cannot reach you, ` +
+      'and it is not counted as answered. If you still need that choice, ask again.',
+    meta: {
+      event_type: 'card_unreadable',
+      chat_id: String(input.chatId),
+      message_id: String(input.messageId),
+      status: String(input.status),
+    },
+  }
+}
+
 /** The HTTP status of a failed read, from the error the plugin's GET throws ("GET 429: ..."). */
 export function readFailureStatus(err: unknown): number | null {
   const message = err instanceof Error ? err.message : null
