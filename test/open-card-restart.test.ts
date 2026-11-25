@@ -69,7 +69,7 @@ function unanswered() {
 }
 
 /** One daemon process: its own memory, the shared state folder. */
-type DaemonOpts = { lanesOn?: boolean; others?: boolean; firstRun?: boolean; groupLanes?: boolean; groupTap?: boolean; monitored?: string[] }
+type DaemonOpts = { lanesOn?: boolean; others?: boolean; firstRun?: boolean; groupLanes?: boolean; groupTap?: boolean; monitored?: string[]; lock?: { held: boolean } }
 function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: DaemonOpts = {}) {
   const postedButtonCards = new Map<number, { chatId: string; settled: boolean; fresh: boolean; recoverUntilMs: number }>()
   const announcedClickIds = new Set<number>()
@@ -84,7 +84,7 @@ function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: Dae
     postedButtonCards, announcedClickIds, recentButtonPrompts: new Map(),
     chatUnansweredButtons: new Map(), postedButtons: createPostedButtons(), openPlansByChat: new Map(),
     bgosGet: async (path: string) => { reads.push(path); return read(path) },
-    updateDrainMode: false, lockHeld: true,
+    updateDrainMode: false, lockHeld: true, __lock: opts.lock ?? { held: true },
     humanMessageEdits: { isChatDeleted: () => false },
     lanesOnForThisAgent: opts.lanesOn ?? false, chatOwnership: { isOthers: () => opts.others ?? false },
     ownerAnnounceRefused, ownerLaneVerdict, noteLaneMisroute: () => {},
@@ -110,9 +110,11 @@ function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: Dae
     'readPostedButtonCard', 'announcePostedButtonAnswer', 'rememberAnnouncedClick',
     'foreignPlanTap', 'applyPlanAnswer', 'applyStreamButtonsAnswered', 'rehydrateOpenCards', 'watchOpenCards',
   ].map(declaration).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText
+    // A lock that can change while a read is in flight (review of #417 round 4, N1).
+    .replace(/\blockHeld\b/g, '__lock.held')
   const api = new Function(...Object.keys(scope), `${js}\nreturn {
     notePostedButtonCard, announcePostedButtonAnswer, applyStreamButtonsAnswered, rehydrateOpenCards, watchOpenCards,
-    rememberAnnouncedClick,
+    rememberAnnouncedClick, readPostedButtonCard,
   }`)(...Object.values(scope))
   let clock = Date.now()
   // The watch's tick: a card first seen is scheduled, then read (random 0).
@@ -481,3 +483,86 @@ test('F5: removing a card the store never held writes nothing', () => {
   assert.equal(store.isDirty, false)
   assert.equal(store.flushIfDirty(), false)
 })
+
+// REVIEW OF #417 ROUND 4, N1: a daemon that stands down while its exact read is
+// in flight does nothing with the answer: the holder owns the card from then.
+test('N1: a refusal that lands after this daemon stood down closes nothing and tells nobody', async () => {
+  const dir = scratchDir('open-cards-')
+  const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+  first.post()
+  await flush()
+  first.stop()
+  const lock = { held: true }
+  const passive = daemon(dir, async () => { lock.held = false; throw new Error('GET 403: refused') }, { lock })
+  await passive.boot()
+  assert.equal(passive.reads.length, 1)
+  assert.equal(passive.cards.get(ID)?.settled, false, 'the card stays open for the holder')
+  assert.equal(passive.notes.length, 0, 'no line in a passive session')
+  passive.stop()
+  const onDisk = loadOpenCards(join(dir, OPEN_CARDS_FILE_NAME), Date.now()).cards.map((c) => c.id)
+  assert.deepEqual(onDisk, [ID], 'the shared file still holds it')
+})
+
+test('N1: across a lock handover the agent is told once, by the daemon holding the lock', async () => {
+  const dir = scratchDir('open-cards-')
+  const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+  first.post()
+  await flush()
+  first.stop()
+  const lock = { held: true }
+  const leaving = daemon(dir, async () => { lock.held = false; throw new Error('GET 410: gone') }, { lock })
+  await leaving.boot()
+  const holder = daemon(dir, async () => { throw new Error('GET 410: gone') })
+  await holder.boot()
+  assert.equal(leaving.notes.length + holder.notes.length, 1, 'one line in all')
+  assert.equal(holder.notes.length, 1, 'from the holder')
+})
+
+test("N1 (P4c): the holder reads the file, the leaving daemon's refusal lands, then the holder reads: one line, the holder's", async () => {
+  const dir = scratchDir('open-cards-')
+  const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+  first.post()
+  await flush()
+  first.stop()
+  const lock = { held: true }
+  let refuse: () => void = () => undefined
+  const leaving = daemon(dir, () => new Promise((_, reject) => { refuse = () => reject(new Error('GET 403: refused')) }), { lock })
+  leaving.api.rehydrateOpenCards('boot')
+  await leaving.tick()
+  const holder = daemon(dir, async () => { throw new Error('GET 403: refused') })
+  holder.api.rehydrateOpenCards('boot')
+  lock.held = false
+  refuse()
+  await flush()
+  await holder.tick()
+  assert.equal(leaving.notes.length, 0)
+  assert.equal(holder.notes.length, 1)
+})
+
+test('N2: two refused reads of one card in flight at once give one line', async () => {
+  const dir = scratchDir('open-cards-')
+  const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+  first.post()
+  await flush()
+  first.stop()
+  const second = daemon(dir, async () => { throw new Error('GET 410: gone') })
+  second.api.rehydrateOpenCards('boot')
+  await Promise.all([second.api.readPostedButtonCard(CHAT, ID), second.api.readPostedButtonCard(CHAT, ID)])
+  await flush()
+  assert.equal(second.notes.length, 1)
+})
+
+test('N4: a failure that is not a refusal for good keeps the card open and tells nobody', async () => {
+  for (const err of ['GET 401: unauthorised', 'GET 400: bad', 'GET 429: slow down', 'GET 503: down', 'socket hang up']) {
+    const dir = scratchDir('open-cards-')
+    const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+    first.post()
+    await flush()
+    first.stop()
+    const second = daemon(dir, async () => { throw new Error(err) })
+    await second.boot()
+    assert.equal(second.cards.get(ID)?.settled, false, `${err}: still open`)
+    assert.equal(second.notes.length, 0, `${err}: nobody told`)
+  }
+})
+
