@@ -124,3 +124,13 @@ test('the daemon runs the watch on its poll tick, through the exact card read', 
   assert.match(body, /readPostedButtonCard\(/)
   assert.match(source, /\n {8}watchOpenCards\(Date\.now\(\)\)\n/, 'called on the poll tick')
 })
+
+test('F4: a burst of failures in one tick is one pause step, not one per read', () => {
+  const watch = createOpenCardWatch({ random: () => 0 })
+  const cards = Array.from({ length: OPEN_CARD_WATCH_MAX_READS }, (_, i) => card(100 + i))
+  watch.due(input(cards, NOW))
+  assert.equal(watch.due(input(cards, NOW)).length, OPEN_CARD_WATCH_MAX_READS)
+  for (let i = 0; i < OPEN_CARD_WATCH_MAX_READS; i++) watch.noteFailure(429, NOW + i)
+  assert.deepEqual(watch.due(input(cards, NOW + 59_000)), [], 'paused for the first step')
+  assert.ok(watch.due(input(cards, NOW + 61_000)).length > 0, 'one minute, not the 30 minute cap')
+})

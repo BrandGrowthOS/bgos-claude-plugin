@@ -422,3 +422,50 @@ test('F1: both arm paths read the open cards, the re-arm before delivery resumes
   assert.ok(source.includes("    rehydrateOpenCards('boot')\n"), 'the first arm reads them too')
   assert.match(declaration('rehydrateOpenCards'), /if \(reason === 'boot' && !cursorBoot\.fileExisted\) return/)
 })
+
+// REVIEW OF #417 ROUND 2, F2, F3 AND F5.
+test('F2: a card the server refuses for good (403, 404, 410) is settled, not read for a week', async () => {
+  for (const status of [403, 404, 410]) {
+    const dir = scratchDir('open-cards-')
+    const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+    first.post()
+    await flush()
+    first.stop()
+    const second = daemon(dir, async () => { throw new Error(`GET ${status}: refused`) })
+    await second.boot()
+    assert.equal(second.reads.length, 1, `${status}: read once`)
+    assert.equal(second.cards.get(ID)?.settled, true, `${status}: settled`)
+    second.later(OPEN_CARD_MAX_AGE_MS / 2)
+    await second.tick()
+    assert.equal(second.reads.length, 1, `${status}: never read again`)
+  }
+})
+
+test('F3: a read back that fails is read again by the watch, in a chat the poll watches', async () => {
+  const dir = scratchDir('open-cards-')
+  const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+  first.post()
+  await flush()
+  first.stop()
+  let fail = true
+  const second = daemon(dir, async () => {
+    if (fail) { fail = false; throw new Error('GET 502: bad gateway') }
+    return { messages: [answered()] }
+  }, { monitored: [CHAT] })
+  await second.boot()
+  assert.equal(second.reads.length, 1)
+  assert.equal(second.notes.length, 0)
+  second.later(5 * 60_000)
+  await second.tick()
+  assert.equal(second.reads.length, 2, 'read again after the failure')
+  assert.equal(second.notes.length, 1, 'and the answer is heard')
+})
+
+test('F5: removing a card the store never held writes nothing', () => {
+  const dir = scratchDir('open-cards-')
+  const store = new OpenCardStore(join(dir, OPEN_CARDS_FILE_NAME))
+  store.load()
+  store.remove(999)
+  assert.equal(store.isDirty, false)
+  assert.equal(store.flushIfDirty(), false)
+})
