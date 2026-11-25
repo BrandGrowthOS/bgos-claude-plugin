@@ -14,7 +14,7 @@ From 0.86.9 to 0.86.11 the browser shim pin recorded BGOS main commit `aed69c93b
 
 Running commands is not available for people you share with yet. Your own tools are not available for people you share with yet. Stored grants for either option are ignored until person lanes can run as a separate OS user. Each refused grant is reported once. At the next owner check, older person lanes with command access or owner tools stop and tell the person to send their message again. The owner's own threads keep sandboxed Bash, including git commit on Linux with bwrap and socat. Shared conversations keep their file tools and other supported options.
 
-## 0.90.19 (2026-11-25)
+## 0.90.20 (2026-11-25)
 
 **fix(chat): a tap on the agent's buttons is never lost to a restart or a chat the poll does not watch.** The cards the agent posted that are still open are kept beside its cursors (card and chat ids only, at most 500, at most 7 days), shared safely by every daemon of the agent: a write is the file as it is now plus that daemon's own changes, and an answered card leaves it at once. At each arm the file as it is then is read back, and each card gets one exact read, so an answer given while no daemon ran is heard once; nothing is read back on a first run, and an answer over a day old is not announced as fresh. A card in a channel or room another agent founded is read again by its exact id at 1, 2, 4 ... up to 30 minutes, at most 10 reads a tick, paused while the server answers 429 or 5xx, never past its 7 days; with group lanes on such a chat is the group lane's, and a tap the stream hands to a group lane is claimed so no other route announces it in the main session.
 
