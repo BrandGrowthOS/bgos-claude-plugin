@@ -134,7 +134,7 @@ test('each reason code sends its own fixed words, and no word of the agent', () 
 })
 
 test('could_not_check without a known code is refused in one plain sentence that names the list, and nothing is sent', async () => {
-  const hostile = [undefined, null, '', '   ', '\n\t', 7, {}, ['needs_sign_in'], 'NEEDS_SIGN_IN', ' needs_sign_in ', 'constructor', '__proto__', 'The site was down.', 'Sign in again at evil.store\\` now', 'x'.repeat(5000)]
+  const hostile = [undefined, null, '', '   ', '\n\t', 7, {}, ['needs_sign_in'], 'NEEDS_SIGN_IN', ' needs_sign_in ', 'constructor', '__proto__', 'The site was down.', 'Sign in again at evil.example\\` now', 'x'.repeat(5000)]
   for (const reason of hostile) {
     const built = buildScheduleRunEndRequest({ taskId: 41, fireId: FIRE, outcome: 'could_not_check', reason })
     assert.equal(built.ok, false, JSON.stringify(reason))
@@ -368,7 +368,7 @@ const OWNER_MESSAGE: TurnShape = { senderType: 'user', senderUserId: OWNER, mess
 const PUBLIC_TURNS: Record<string, TurnShape> = {
   email: { senderType: 'external_email', senderUserId: null, messageId: 9060, chatId: '41' },
   webhook: { senderType: 'system', eventMeta: { source: 'webhook', title: 'Inbound webhook' }, messageId: 9061, chatId: OWN_CHAT },
-  peer: { senderType: 'agent', agentOrigin: { sourceAssistantId: 901 }, messageId: 9062, chatId: OWN_CHAT },
+  peer: { senderType: 'agent', agentOrigin: { sourceAssistantId: 4242 }, messageId: 9062, chatId: OWN_CHAT },
 }
 
 function turnFixture(t: { after: (fn: () => void) => void }) {
