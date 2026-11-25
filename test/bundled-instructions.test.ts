@@ -218,3 +218,64 @@ test('item 3 of #282: the wait_seconds field says what leaving it out does', () 
   assert.match(d, /600 s/)
   assert.doesNotMatch(d, /Default 0/)
 })
+
+// ── When a routine runs (2026-11-22) ─────────────────────────────────────────
+//
+// A routine's wake carries quietEnd in its event payload when the run may end in silence. The agent ends such a run
+// with the end_run tool: no_change posts nothing, could_not_check sends a reason the owner reads on a card. Any other
+// run, and any run where something was found, is answered normally. And the owner now picks how runs show in their
+// chat (a card, one line a day, or nothing), so no line may promise that a system message always shows as a card.
+
+/** The bundled instructions as one line of words, so a sentence can be found whatever its line breaks. */
+function instructionWords(): string {
+  return bundledInstructions().replace(/\s+/g, ' ')
+}
+
+test('the bundled instructions say when to call end_run, with which outcome, and to reply normally otherwise', () => {
+  const text = instructionWords()
+  assert.ok(
+    text.includes("When a routine's wake carries `quietEnd` in its `meta.event_payload` and nothing changed since the last run, call `end_run` with outcome \"no_change\" and post nothing."),
+    'the no_change sentence',
+  )
+  assert.ok(
+    text.includes('When you could not do the check, call `end_run` with outcome "could_not_check" and the closest reason code: site_unreachable, needs_sign_in, ran_out_of_time, missing_access or something_else. Your owner reads fixed words for it on a card. It takes no free text: put any details in a normal reply.'),
+    'the could_not_check sentence',
+  )
+  assert.ok(text.includes('Take task_id and fire_id from that payload (scheduledTaskId and fireId).'), 'where the ids come from')
+  assert.ok(text.includes('Otherwise reply normally: never end a run instead of telling your owner what you found.'), 'reply otherwise')
+})
+
+// Review rv418 F1: the Could not check card is a system row in the agent's own chat, so it is pushed back to the
+// agent, which reads system messages as "reply normally if a reply is warranted". The end_run paragraph says the card
+// comes back and needs no reply, so the failure is announced once, right after the sentence that sends details to a
+// normal reply.
+test('the bundled instructions say the Could not check card comes back and needs no reply', () => {
+  const text = instructionWords()
+  const sentence =
+    'The Could not check card comes back to you in this chat as a system message: it needs no reply, so do not announce the failure again, and give details only if you have not already.'
+  assert.ok(text.includes(sentence), 'the card comes back sentence')
+  assert.ok(
+    text.indexOf(sentence) > text.indexOf('It takes no free text: put any details in a normal reply.'),
+    'it follows the details sentence',
+  )
+})
+
+test('the bundled instructions say to leave when_it_runs out unless the owner asked', () => {
+  const text = instructionWords()
+  assert.ok(
+    text.includes("`when_it_runs` (wakes only) sets how this routine's runs show in your owner's chat: show_nothing, one_line_a_day or card_every_run. Leave it out unless your owner asked for one; the routine then follows their own When a routine runs setting."),
+  )
+  // Groups keep their one line a day whatever the routine says (When a routine runs, 2026-11-22).
+  assert.ok(
+    text.includes('It applies only to your own chat with your owner; a group chat keeps its one line a day whatever you choose.'),
+    'the group sentence',
+  )
+})
+
+test('no line promises that a system message always shows as a card', () => {
+  const text = instructionWords()
+  assert.doesNotMatch(text, /renders as a quiet system card/)
+  assert.ok(
+    text.includes("In the BGOS app it never shows as a user bubble. A routine's run may show as a small card, one line a day, or nothing at all, as your owner chose, so your reply must make sense on its own."),
+  )
+})

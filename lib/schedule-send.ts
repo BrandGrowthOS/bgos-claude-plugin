@@ -20,7 +20,11 @@
  *   2. An OLDER SERVER that refuses the field (it answers 400
  *      "property clientRequestId should not exist"): that refusal made nothing,
  *      so the same body is sent once more WITHOUT the id and the call works as
- *      it always did. An older server that quietly drops the field needs no
+ *      it always did. The same goes for runDisplay, the routine's own "when it
+ *      runs" choice: sent once more without it, and the agent is told
+ *      the routine follows its owner's Settings. One 400 may name both; one
+ *      resend then leaves out both. Each field is left out at most once. An
+ *      older server that quietly drops the field needs no
  *      handling for the normal case: the call works as it always did. ONE
  *      COST: that server has no memory of the id, so if it made the routine
  *      and the answer was lost, path 1 asks again and the add-on itself makes
@@ -46,7 +50,13 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { SCHEDULE_REQUEST_ID_PATTERN, type ScheduleCreateBody } from './schedule.js'
+import {
+  RUN_DISPLAY_WORDS,
+  SCHEDULE_REQUEST_ID_PATTERN,
+  type RunDisplay,
+  type RunEndBody,
+  type ScheduleCreateBody,
+} from './schedule.js'
 
 export { SCHEDULE_REQUEST_ID_PATTERN }
 
@@ -69,7 +79,46 @@ export function httpFailure(method: string, status: number, detail: string): Err
   return Object.assign(new Error(`${method} ${status}: ${detail}`), { status, detail })
 }
 
-export type ScheduleSendResult = { ok: true; result: unknown } | { ok: false; error: string }
+export type ScheduleSendResult =
+  | {
+      ok: true
+      result: unknown
+      /** The optional fields an older server refused, left out of the send that made the routine. */
+      dropped?: readonly OptionalCreateField[]
+      /** One sentence on the routine's when_it_runs choice (whenItRunsNote); absent when none was chosen. */
+      note?: string
+    }
+  | { ok: false; error: string }
+
+/**
+ * The newer, optional create fields an older strict server refuses with 400 "property <field> should not exist".
+ * That refusal made nothing, so the create goes once more without the refused ones.
+ */
+export const OPTIONAL_CREATE_FIELDS = Object.freeze(['clientRequestId', 'runDisplay'] as const)
+export type OptionalCreateField = (typeof OPTIONAL_CREATE_FIELDS)[number]
+
+/** "This routine follows your owner's Settings", said once, the same everywhere. */
+const FOLLOWS_SETTINGS = "so this routine follows your owner's When a routine runs setting."
+
+/**
+ * WHEN A ROUTINE RUNS (2026-11-22): what the agent reads about the routine's when_it_runs choice after a create, from
+ * the server's own answer, so it never tells its owner a choice was kept when it was not. Nothing chosen says nothing
+ * (the routine follows the owner's Settings, as every routine did before). An older server that refused the field, or
+ * an answer that names another value, means the routine follows Settings. An answer that does not name the field at
+ * all says only that much.
+ */
+export function whenItRunsNote(input: { sent: RunDisplay | undefined; dropped: boolean; result: unknown }): string {
+  if (input.sent === undefined) return ''
+  if (input.dropped) return `This server cannot keep a when_it_runs choice yet, ${FOLLOWS_SETTINGS}`
+  const result = input.result
+  if (result === null || typeof result !== 'object' || !Object.hasOwn(result, 'runDisplay')) {
+    return 'The server did not say whether it kept the when_it_runs choice.'
+  }
+  if ((result as { runDisplay?: unknown }).runDisplay === input.sent) {
+    return `When it runs: ${RUN_DISPLAY_WORDS[input.sent]}, kept for this routine.`
+  }
+  return `The server did not keep the when_it_runs choice, ${FOLLOWS_SETTINGS}`
+}
 
 export interface ScheduleSendOptions {
   /** The body from buildScheduleCreateBody. Its id (if any) is the one name of this request. */
@@ -118,9 +167,15 @@ function isLostAnswer(status: number | null, text: string): boolean {
   return status === 429 && BUSY_RE.test(text)
 }
 
-function withoutId(body: ScheduleCreateBody): ScheduleCreateBody {
-  const { clientRequestId: _id, ...rest } = body
+function without(body: ScheduleCreateBody, fields: readonly OptionalCreateField[]): ScheduleCreateBody {
+  const rest = { ...body }
+  for (const field of fields) delete rest[field]
   return rest
+}
+
+/** The optional fields this body carries that a 400 says should not exist. */
+function refusedFields(body: ScheduleCreateBody, text: string): OptionalCreateField[] {
+  return OPTIONAL_CREATE_FIELDS.filter((field) => body[field] !== undefined && text.includes(`${field} should not exist`))
 }
 
 export async function sendScheduleCreate(opts: ScheduleSendOptions): Promise<ScheduleSendResult> {
@@ -128,10 +183,12 @@ export async function sendScheduleCreate(opts: ScheduleSendOptions): Promise<Sch
   const log = opts.log ?? (() => {})
   let body = opts.body
   let askedAgain = false
-  let resentWithoutId = false
+  const dropped: OptionalCreateField[] = []
   for (;;) {
     try {
-      return { ok: true, result: await opts.post(body) }
+      const result = await opts.post(body)
+      const note = whenItRunsNote({ sent: opts.body.runDisplay, dropped: dropped.includes('runDisplay'), result })
+      return { ok: true, result, ...(dropped.length > 0 ? { dropped } : {}), ...(note ? { note } : {}) }
     } catch (err) {
       const status = statusOf(err)
       const lost = isLostAnswer(status, textOf(err))
@@ -141,15 +198,13 @@ export async function sendScheduleCreate(opts: ScheduleSendOptions): Promise<Sch
         await sleep(SCHEDULE_REASK_DELAY_MS)
         continue
       }
-      if (
-        status === 400 &&
-        body.clientRequestId !== undefined &&
-        !resentWithoutId &&
-        /clientRequestId should not exist/.test(textOf(err))
-      ) {
-        resentWithoutId = true
-        log('schedule: this server does not know request ids, sending again without one')
-        body = withoutId(body)
+      // A field once left out is gone from the body, so it is never refused, or left out, twice.
+      const refused = status === 400 ? refusedFields(body, textOf(err)) : []
+      if (refused.length > 0) {
+        dropped.push(...refused)
+        if (refused.includes('clientRequestId')) log('schedule: this server does not know request ids, sending again without one')
+        if (refused.includes('runDisplay')) log('schedule: this server cannot keep a when_it_runs choice, sending again without it')
+        body = without(body, refused)
         continue
       }
       if (status === 409) {
@@ -166,4 +221,96 @@ export async function sendScheduleCreate(opts: ScheduleSendOptions): Promise<Sch
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   }
+}
+
+// ── end_run: the end of one run of a routine (When a routine runs, 2026-11-22) ──
+//
+// The agent ends one run with no change (post nothing) or could not check (its owner gets a Could not check card with
+// the words for its reason code). Only a private turn may call it, as only one may call schedule (server.ts admission), and the daemon
+// posts it as it posts schedule: its own credential and X-Caller-Assistant-Id, plus the acting user header on a share
+// recipient's turn. Every answer reads as one plain sentence. When the end was not taken, the sentence says to reply
+// normally instead: a reply is never wrong for a run, and a run left silent turns into a red card on the server's sweep.
+
+/** What the agent reads when its no change end was taken. */
+export const RUN_END_NO_CHANGE_TEXT = 'Run ended: no change. Post nothing more for this run.'
+
+/**
+ * What the agent reads when its could not check end was taken. The card is a system row in the agent's own chat, and
+ * the server pushes every such row back to the agent (review rv418 F1), so this says that card needs no reply: the
+ * failure is announced once, by the card, with the details at most once in the agent's own reply.
+ */
+export const RUN_END_COULD_NOT_CHECK_TEXT =
+  'Run ended: could not check. Your owner gets a Could not check card with the reason you picked. ' +
+  'That card also comes back to you in this chat as a system message: it needs no reply. ' +
+  'If your owner needs the details and you have not given them yet, say them once in a normal reply.'
+
+/** A 404: the server offers no run ends yet, or this run is not one this agent may end. */
+export const RUN_END_NOT_TAKEN_TEXT =
+  'The server did not take a run end for this routine: it does not offer run ends yet, or this run is not yours to end. Reply normally instead.'
+
+/** No usable answer came back. The end may or may not have been taken; a reply is right either way. */
+export const RUN_END_UNREAD_TEXT = 'The run end did not reach the server, or its answer was lost. Reply normally instead.'
+
+/** How a run ended, in words: the two the agent sends, and the server's own (no answer). */
+const RUN_END_OUTCOME_WORDS: Readonly<Record<string, string>> = Object.freeze({
+  no_change: 'no change',
+  could_not_check: 'could not check',
+  no_answer: 'no answer',
+})
+
+/** The server's sentence, ending in a full stop. */
+function asSentence(text: string): string {
+  const trimmed = text.trim()
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
+export interface RunEndSendOptions {
+  path: string
+  body: RunEndBody
+  /** One attempt at the POST: bgosPeerPost in server.ts. Throws httpFailure for an answered refusal. */
+  post: (path: string, body: Record<string, unknown>) => Promise<unknown>
+}
+
+/**
+ * One post, and once more without the code if a strict older server refuses that field: the refusal ended nothing, and
+ * the body still carries the code's fixed words as `reason`, which every server takes.
+ */
+async function postRunEnd(opts: RunEndSendOptions): Promise<unknown> {
+  try {
+    return await opts.post(opts.path, { ...opts.body })
+  } catch (err) {
+    if (opts.body.reasonCode === undefined || statusOf(err) !== 400 || !textOf(err).includes('reasonCode should not exist')) throw err
+    const { reasonCode: _refused, ...older } = opts.body
+    return await opts.post(opts.path, { ...older })
+  }
+}
+
+export async function sendRunEnd(opts: RunEndSendOptions): Promise<{ ok: boolean; text: string }> {
+  let answer: unknown
+  try {
+    answer = await postRunEnd(opts)
+  } catch (err) {
+    const status = statusOf(err)
+    const detail = textOf(err)
+    // The server's own sentence: this run must answer, or the fire is no longer the latest run.
+    if (status === 409 && detail.trim()) return { ok: false, text: asSentence(detail) }
+    if (status === 404) return { ok: false, text: RUN_END_NOT_TAKEN_TEXT }
+    if (status === 400) {
+      return {
+        ok: false,
+        text: `The server refused this run end: ${asSentence(detail)} Copy task_id and fire_id from the same wake's event payload, or reply normally instead.`,
+      }
+    }
+    if (status === null || isLostAnswer(status, detail)) return { ok: false, text: RUN_END_UNREAD_TEXT }
+    return { ok: false, text: `The run end did not go through (${status}${detail.trim() ? `: ${detail.trim()}` : ''}). Reply normally instead.` }
+  }
+  const ended = answer !== null && typeof answer === 'object' ? (answer as { ended?: unknown; outcome?: unknown }) : null
+  if (ended?.ended === true) {
+    return { ok: true, text: opts.body.outcome === 'could_not_check' ? RUN_END_COULD_NOT_CHECK_TEXT : RUN_END_NO_CHANGE_TEXT }
+  }
+  if (ended?.ended === false) {
+    const how = typeof ended.outcome === 'string' && Object.hasOwn(RUN_END_OUTCOME_WORDS, ended.outcome) ? RUN_END_OUTCOME_WORDS[ended.outcome] : undefined
+    return { ok: true, text: `This run was already ended${how ? ` (${how})` : ''}. Nothing more to do for it.` }
+  }
+  return { ok: false, text: 'The server answered, but did not say the run ended. Reply normally instead.' }
 }

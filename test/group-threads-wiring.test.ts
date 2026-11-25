@@ -131,7 +131,8 @@ test('server.ts answers group_thread_end through the group lanes, and stops them
 
 test('group_threads is declared only where thread lanes can run, and only on a pairing', () => {
   const on = declaredCapabilities({ canInjectGoal: false, floorHook: true, threads: true, authMode: 'pairing', platform: 'darwin' })
-  assert.equal(on.at(-1), GROUP_THREADS_TOKEN)
+  // run_end (a pairing only, 2026-11-22) is appended after every other token, so group_threads sits just before it.
+  assert.equal(on.filter((t) => t !== 'run_end').at(-1), GROUP_THREADS_TOKEN)
   for (const shape of [
     { threads: true, authMode: 'apikey' as const, platform: 'darwin' as const },
     { threads: true, authMode: 'pairing' as const, platform: 'win32' as const },
@@ -453,7 +454,8 @@ test('round 5 B: HOAI_GROUP_LEVELS is on only for the literal true, and group_le
     assert.equal(groupLevelsEnabled({ HOAI_GROUP_LEVELS: v }), false, String(v))
   }
   const base = { canInjectGoal: false, floorHook: true, threads: true, authMode: 'pairing' as const, platform: 'darwin' as const }
-  assert.deepEqual(declaredCapabilities({ ...base, groupLevels: true }).slice(-2), [GROUP_THREADS_TOKEN, GROUP_LEVELS_TOKEN])
+  // run_end (a pairing only, 2026-11-22) is appended after every other token, so the pair sits just before it.
+  assert.deepEqual(declaredCapabilities({ ...base, groupLevels: true }).filter((t) => t !== 'run_end').slice(-2), [GROUP_THREADS_TOKEN, GROUP_LEVELS_TOKEN])
   assert.equal(declaredCapabilities({ ...base, groupLevels: false }).includes(GROUP_LEVELS_TOKEN), false)
   // Absent, the daemon's own environment decides.
   const saved = process.env.HOAI_GROUP_LEVELS
