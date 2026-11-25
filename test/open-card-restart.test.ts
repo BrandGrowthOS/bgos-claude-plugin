@@ -424,7 +424,7 @@ test('F1: both arm paths read the open cards, the re-arm before delivery resumes
 })
 
 // REVIEW OF #417 ROUND 2, F2, F3 AND F5.
-test('F2: a card the server refuses for good (403, 404, 410) is settled, not read for a week', async () => {
+test('F2: a card the server refuses for good (403, 404, 410) is closed unread, the agent is told once, and it is not read for a week', async () => {
   for (const status of [403, 404, 410]) {
     const dir = scratchDir('open-cards-')
     const first = daemon(dir, async () => ({ messages: [unanswered()] }))
@@ -435,9 +435,20 @@ test('F2: a card the server refuses for good (403, 404, 410) is settled, not rea
     await second.boot()
     assert.equal(second.reads.length, 1, `${status}: read once`)
     assert.equal(second.cards.get(ID)?.settled, true, `${status}: settled`)
+    // Never a silent lost tap (Data, round 3): the agent is told once that the
+    // card is closed unread, and nothing is announced as an answer.
+    assert.equal(second.notes.length, 1, `${status}: one line the agent sees`)
+    const [note] = second.notes
+    assert.equal(note.params.meta.event_type, 'card_unreadable')
+    assert.equal(note.params.meta.message_id, String(ID))
+    assert.equal(note.params.meta.status, String(status))
+    for (const [key, value] of Object.entries(note.params.meta)) assert.equal(typeof value, 'string', `meta.${key} is a string`)
+    assert.match(note.params.content, /not (counted as )?answered/)
+    assert.doesNotMatch(note.params.content, /\[button_clicked\]/)
     second.later(OPEN_CARD_MAX_AGE_MS / 2)
     await second.tick()
     assert.equal(second.reads.length, 1, `${status}: never read again`)
+    assert.equal(second.notes.length, 1, `${status}: and told once`)
   }
 })
 

@@ -6,6 +6,7 @@ import {
   OPEN_CARD_WATCH_FIRST_MS,
   OPEN_CARD_WATCH_MAX_MS,
   OPEN_CARD_WATCH_MAX_READS,
+  buildUnreadableCardNotice,
   createOpenCardWatch,
   readFailureStatus,
 } from '../lib/open-cards.ts'
@@ -133,4 +134,16 @@ test('F4: a burst of failures in one tick is one pause step, not one per read', 
   for (let i = 0; i < OPEN_CARD_WATCH_MAX_READS; i++) watch.noteFailure(429, NOW + i)
   assert.deepEqual(watch.due(input(cards, NOW + 59_000)), [], 'paused for the first step')
   assert.ok(watch.due(input(cards, NOW + 61_000)).length > 0, 'one minute, not the 30 minute cap')
+})
+
+test('the unreadable card notice says the card is closed unread, never answered, and its meta is all strings', () => {
+  for (const status of [403, 404, 410]) {
+    const notice = buildUnreadableCardNotice({ chatId: '900', messageId: 7, status })
+    assert.match(notice.content, /message_id=7/)
+    assert.match(notice.content, /not counted as answered/)
+    assert.match(notice.content, /ask again/)
+    assert.deepEqual(Object.keys(notice.meta).sort(), ['chat_id', 'event_type', 'message_id', 'status'])
+    for (const [key, value] of Object.entries(notice.meta)) assert.equal(typeof value, 'string', `meta.${key} is a string`)
+    assert.equal(notice.meta.status, String(status))
+  }
 })
