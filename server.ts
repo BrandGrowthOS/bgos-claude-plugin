@@ -17758,8 +17758,6 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   // never announced into the owner's session.
   // Group threads: a group's tap is a turn line in its lane, never the main session's.
   if (routeGroupStreamTap(view)) {
-    // Claimed, so no other route (the poll, the open card watch) announces the
-    // same tap in the main session (review of #417, R1).
     rememberAnnouncedClick(view.messageId)
     log(`button_clicked SKIPPED for the main session: message ${view.messageId} is a group's tap, which only its group lane may take (streamAuthority=${authorityAtReceipt})`)
     return
