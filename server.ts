@@ -12622,6 +12622,9 @@ async function readPostedButtonCard(chatId: string, messageId: number): Promise<
       `chats/${encodeURIComponent(chatId)}/messages?userId=${USER_ID}&afterId=${messageId - 1}&beforeId=${messageId + 1}&limit=1`,
       { conditional: false },
     ) as ChatHistoryResponse
+    // The lock may have moved while the read was in flight: from then the card
+    // is the holder's (review of #417 round 4, N1).
+    if (updateDrainMode || !lockHeld) return { ok: true, status: null }
     if (raw.messages?.length === 0) { settlePostedButtonCard(messageId); return { ok: true, status: null } }
     const row = raw.messages?.find((entry) => entry.message.id === messageId && String(entry.message.chatId) === chatId)
     if (row) announcePostedButtonAnswer(chatId, row)
@@ -12632,6 +12635,9 @@ async function readPostedButtonCard(chatId: string, messageId: number): Promise<
     if (card) card.fresh = true
     log(`Own button card ${messageId} answer read failed: ${err}`)
     const status = readFailureStatus(err)
+    // Stood down while the read was in flight: the holder closes it and says
+    // so, never a passive session (review of #417 round 4, N1).
+    if (updateDrainMode || !lockHeld) return { ok: false, status }
     // Refused for good (gone, or not this daemon's to read): closed unread, so
     // it is not read again for a week (review of #417 round 2, F2), and the
     // agent is told once, never as an answer (round 3): a tap it can no longer
