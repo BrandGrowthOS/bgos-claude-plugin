@@ -212,6 +212,7 @@ import {
   handleBoardsTool,
   sweepBoardFiles,
 } from './lib/boards-tools.js'
+import { sendLocalChatFile, boardUploadLimit, type DirectUploadDeps } from './lib/direct-upload.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
@@ -1572,11 +1573,8 @@ async function trackMessageOperation<T>(operation: () => Promise<T>): Promise<T>
 // ./lib/message-text.ts (pure + eval-tested) and are imported above. Size limits
 // and the S3 threshold remain here since they govern upload behavior, not text.
 
-const SIZE_LIMITS: Record<string, number> = {
-  image: 10 * 1024 * 1024, video: 100 * 1024 * 1024,
-  audio: 20 * 1024 * 1024, document: 25 * 1024 * 1024,
-}
-
+// The size cap per credential (200 MB for a pairing, the old caps for an API
+// key) and the streamed upload live in lib/direct-upload.ts.
 const S3_THRESHOLD = 5 * 1024 * 1024
 
 // Keep imported symbols referenced so a future tree-shake / unused-import lint
@@ -3355,36 +3353,18 @@ interface ResolvedFile {
   isAudio: boolean
 }
 
-async function uploadViaS3(
-  fileName: string, contentType: string, fileBuffer: Buffer,
-): Promise<{ s3Key: string; downloadUrl: string }> {
-  const uploadInfo = (await bgosPost(
-    `files/upload-url?userId=${encodeURIComponent(USER_ID)}`,
-    { fileName, contentType, size: fileBuffer.length },
-  )) as { uploadUrl: string; key: string }
-  await bgosCall(
-    {
-      url: uploadInfo.uploadUrl,
-      init: {
-        method: 'PUT',
-        headers: { 'Content-Type': contentType },
-        body: new Uint8Array(fileBuffer),
-      },
-      // A 100 MB video on a slow uplink is genuinely minutes of PUT, so this
-      // deadline is generous on purpose. What it still refuses to do is wait
-      // forever on a socket that stopped moving.
-      timeoutMs: UPLOAD_TIMEOUT_MS,
-      label: `PUT s3 upload (${fileBuffer.length} bytes)`,
-    },
-    async (putResp) => {
-      if (!putResp.ok) throw new Error(`S3 upload failed (HTTP ${putResp.status})`)
-    },
-  )
-  const fileMeta = (await bgosPost(
-    `files?userId=${encodeURIComponent(USER_ID)}`,
-    { key: uploadInfo.key, type: contentType, size: fileBuffer.length },
-  )) as { id: string; url: string; key: string }
-  return { s3Key: uploadInfo.key, downloadUrl: fileMeta.url }
+/**
+ * The direct upload calls (lib/direct-upload.ts): the agent's own credential
+ * and no acting-user header, since the session routes act for the
+ * credential's owner. Completing a session has the server assemble and read
+ * back up to 200 MB, so it gets the upload deadline, not the 30 s of a JSON
+ * call. Each part goes to its signed URL with none of these headers.
+ */
+const directUploadDeps: DirectUploadDeps = {
+  post: (path, body) =>
+    bgosPost(path, body, path.endsWith('/complete') ? { timeoutMs: UPLOAD_TIMEOUT_MS } : {}),
+  del: (path) => bgosDelete(path),
+  log,
 }
 
 async function resolveFile(fileSpec: {
@@ -3408,20 +3388,13 @@ async function resolveFile(fileSpec: {
     if (!mime) throw new Error(unsupportedFileMessage(fileName))
     const category = getFileCategory(mime)
     if (!category) throw new Error(unsupportedFileMessage(fileName, mime))
-    const fileStat = await stat(filePath)
-    const limit = SIZE_LIMITS[category]
-    if (fileStat.size > limit) throw new Error(`File exceeds ${Math.round(limit / 1024 / 1024)}MB limit`)
-    const buffer = Buffer.from(await readFile(filePath))
-    let fileData: string
-    let s3Key: string | null = null
-    if (buffer.length > S3_THRESHOLD) {
-      log(`Uploading ${fileName} via S3...`)
-      const result = await uploadViaS3(fileName, mime, buffer)
-      fileData = result.downloadUrl
-      s3Key = result.s3Key
-    } else {
-      fileData = `data:${mime};base64,${buffer.toString('base64')}`
-    }
+    // The size on disk is checked against this credential's cap before a byte
+    // is read; a file over 5 MB is then sent from disk in parts, never whole.
+    const { fileData, s3Key } = await sendLocalChatFile(
+      { path: filePath, fileName, mime, category },
+      { mode: AUTH.mode === 'pairing' ? 'pairing' : 'apiKey', inlineMaxBytes: S3_THRESHOLD, log },
+      directUploadDeps,
+    )
     return {
       fileName, fileData, fileMimeType: mime, s3Key,
       isImage: category === 'image', isVideo: category === 'video',
@@ -3807,9 +3780,10 @@ const mcp = new Server(
       'The `reply` tool supports file attachments alongside text:',
       '- Pass a `files` array with objects containing either `url` (remote file) or `path` (local file).',
       '- Optional fields: `file_name` (display name), `mime_type` (override auto-detection).',
-      '- Supported images: JPEG, PNG, GIF, WebP, SVG, BMP, TIFF (max 10 MB).',
-      '- Supported videos: MP4, WebM, MOV, AVI, MKV (max 100 MB).',
-      '- Supported documents: PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, YAML/YML, ZIP (max 25 MB).',
+      '- Supported images: JPEG, PNG, GIF, WebP, SVG, BMP, TIFF (max 200 MB).',
+      '- Supported videos: MP4, WebM, MOV, AVI, MKV (max 200 MB).',
+      '- Supported documents: PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, YAML/YML, ZIP (max 200 MB).',
+      '- A local file over 5 MB is sent from disk in parts, so a large one is fine. (An agent on a raw API key keeps the older caps: 10 MB images, 100 MB videos, 25 MB documents.)',
       '- Images display as thumbnails the user can tap to view full-size.',
       '- Videos play inline in the chat.',
       '- Documents show as download cards.',
@@ -7104,6 +7078,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
   if (req.params.name.startsWith('boards_')) {
     return handleBoardsTool(req.params.name, rawArgs, {
       ...boardsTransports(privateCall!.headers),
+      // A file over 25 MB: the session calls carry no acting-user header.
+      uploads: directUploadDeps,
+      maxAttachBytes: boardUploadLimit(AUTH.mode === 'pairing' ? 'pairing' : 'apiKey'),
       assistantId: ASSISTANT_ID,
       downloadDir: boardFilesFolder(BOARD_FILES_ROOT, privateCall!.actingUserId, USER_ID),
     })

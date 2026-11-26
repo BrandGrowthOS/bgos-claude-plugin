@@ -1192,7 +1192,8 @@ test('an oversized file is refused from its size on disk, never read in', async 
   const path = join(dir, 'huge.bin')
   try {
     await writeFile(path, '')
-    await truncate(path, 26 * 1024 * 1024)
+    // 200 MB is the paired agent's limit (it was 25 MB before 0.90.26).
+    await truncate(path, 201 * 1024 * 1024)
     await chmod(path, 0o000)
     const f = fakeDeps()
     const r = await handleBoardsTool(
@@ -1202,7 +1203,7 @@ test('an oversized file is refused from its size on disk, never read in', async 
     )
     assert.equal(r.isError, true)
     const t = textOf(r)
-    assert.ok(t.includes('25 MB'), t)
+    assert.ok(t.includes('over the 200 MB limit'), t)
     assert.ok(!t.toUpperCase().includes('EACCES'), `read before stat: ${t}`)
     assert.equal(f.calls.length, 0)
   } finally {

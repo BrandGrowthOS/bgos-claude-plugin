@@ -267,9 +267,10 @@ test('a link that is not https is never fetched', async () => {
 })
 
 test('a file bigger than the ceiling is refused before it is fetched', async () => {
+  // The ceiling is 200 MB since 0.90.26: a paired agent attaches files up to 200 MB.
   await withDir(async (dir) => {
     const { deps: d, seen } = deps(dir, {
-      minted: { url: SIGNED, expiresInSeconds: 300, name: 'huge.mov', mime: 'video/quicktime', size: 101 * 1024 * 1024 },
+      minted: { url: SIGNED, expiresInSeconds: 300, name: 'huge.mov', mime: 'video/quicktime', size: 201 * 1024 * 1024 },
     })
     const r = await handleBoardsTool('boards_download', { board: 'b', attachment_id: ATT }, d)
     assert.equal(r.isError, true)
