@@ -1192,7 +1192,11 @@ when it did not:
   server: that is not an agent's folder;
 - when `.claude/settings.local.json` is not JSON (a comment in it, a stray
   comma): the file is left exactly as it is, because it may hold your own hooks
-  and permissions. A byte order mark, which Windows PowerShell writes, is fine;
+  and permissions. The folder then has no HOAI hook at all, the one that asks
+  before a risky action included, until you fix or remove the file; a refused
+  boards, schedule or browser call names the file and says so. A byte order
+  mark, which Windows PowerShell writes, is read past, and the file is written
+  again without it;
 - when this `hoai` is the installed plugin's own: a marketplace install is
   never touched (the plugin registers its hooks itself, and a second set would
   run each of them twice). In a folder that starts a checkout of its own, the

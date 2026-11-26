@@ -115,7 +115,7 @@ import {
   ensureMarketplaceAutoUpdate,
   preseedClaudeTrust,
 } from '../lib/claude-preseed.mjs'
-import { declaredCheckout } from '../lib/clone-hooks.mjs'
+import { declaredCheckout, namesServer } from '../lib/clone-hooks.mjs'
 import { ATTACH_SCOPE_DIR_ENV, ATTACH_SCOPE_ENV } from '../lib/attach-scope.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
@@ -849,7 +849,9 @@ export function runHooksCommand(
     )
     return 1
   }
-  if (!declaredName && !served) {
+  // Any entry named for the clone server makes this an agent's folder, even one whose command cannot be read as
+  // a checkout: the line a boot logs for such a folder sends its owner here.
+  if (!declaredName && !served && !namesServer(mcpText, CLONE_SERVER_NAME)) {
     printError(
       `[hoai] hooks: nothing written. This folder has no ${MCP_CONFIG_FILE_NAME} that starts a HOAI server, so it is not an agent's folder. ` +
         "Run hoai hooks in the agent's own folder.",

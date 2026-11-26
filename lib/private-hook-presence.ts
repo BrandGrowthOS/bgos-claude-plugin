@@ -40,6 +40,13 @@ export interface PrivateHookPresence {
   registered: boolean
   /** Where it was found, or why it was not, for the daemon's one boot line. */
   where: string
+  /**
+   * A session folder's `.claude/settings.local.json` that is there and is not a JSON object, while the hook is not
+   * registered. The hook writer leaves such a file exactly as it is (it holds the owner's own hooks and
+   * permissions, lib/claude-preseed.mjs loadSettingsOrRefuse), so no hook is written until the owner mends or
+   * removes it, and a restart cannot help.
+   */
+  unreadableSettings?: string
 }
 
 export function privateHookPresence(input: PrivateHookPresenceInput): PrivateHookPresence {
@@ -53,29 +60,60 @@ export function privateHookPresence(input: PrivateHookPresenceInput): PrivateHoo
     if (fileRegisters(file, input, true)) return { registered: true, where: file }
   }
   const settingsFiles: string[] = []
+  // The files the hook writer writes: the only ones whose state decides whether a hook CAN be written.
+  const writerFiles = new Set<string>()
   for (const folder of input.folders) {
     if (!folder) continue
-    settingsFiles.push(input.join(folder, '.claude', 'settings.local.json'))
+    const local = input.join(folder, '.claude', 'settings.local.json')
+    writerFiles.add(local)
+    settingsFiles.push(local)
     settingsFiles.push(input.join(folder, '.claude', 'settings.json'))
   }
   if (input.configDir) settingsFiles.push(input.join(input.configDir, 'settings.json'))
+  let unreadableSettings: string | undefined
   for (const file of settingsFiles) {
-    if (fileRegisters(file, input, false)) return { registered: true, where: file }
+    const read = readJsonObject(file, input)
+    if (read.state === 'ok' && registersPrivateHook(read.parsed, { exists: input.exists, pluginRootVariable: false })) {
+      return { registered: true, where: file }
+    }
+    if (read.state === 'unreadable' && unreadableSettings === undefined && writerFiles.has(file)) unreadableSettings = file
   }
   return {
     registered: false,
     where: `no ${PRIVATE_HOOK_SCRIPT} UserPromptSubmit entry in ${[...hooksFiles, ...settingsFiles].join(', ') || 'any file'}`,
+    ...(unreadableSettings === undefined ? {} : { unreadableSettings }),
+  }
+}
+
+/**
+ * One settings or hooks file as the hook writer would read it: not there, a JSON object, or there and not one. A
+ * byte order mark is read past (Windows PowerShell writes one, and JSON.parse refuses it), and an empty file is an
+ * empty object, exactly as lib/claude-preseed.mjs loadSettingsOrRefuse has it.
+ */
+function readJsonObject(
+  file: string,
+  input: PrivateHookPresenceInput,
+): { state: 'missing' } | { state: 'unreadable' } | { state: 'ok'; parsed: Record<string, unknown> } {
+  let text: unknown
+  try {
+    text = input.readFile(file)
+  } catch {
+    return { state: 'missing' }
+  }
+  if (typeof text !== 'string') return { state: 'missing' }
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  if (body.trim() === '') return { state: 'ok', parsed: {} }
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return isRecord(parsed) ? { state: 'ok', parsed } : { state: 'unreadable' }
+  } catch {
+    return { state: 'unreadable' }
   }
 }
 
 function fileRegisters(file: string, input: PrivateHookPresenceInput, pluginHooksFile: boolean): boolean {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(input.readFile(file))
-  } catch {
-    return false
-  }
-  return registersPrivateHook(parsed, { exists: input.exists, pluginRootVariable: pluginHooksFile })
+  const read = readJsonObject(file, input)
+  return read.state === 'ok' && registersPrivateHook(read.parsed, { exists: input.exists, pluginRootVariable: pluginHooksFile })
 }
 
 /**
@@ -118,6 +156,14 @@ export function privateHookBootLine(presence: PrivateHookPresence): string {
   if (presence.registered) {
     return `private turn: the private turn hook is registered (${presence.where})`
   }
+  if (presence.unreadableSettings) {
+    return (
+      `private turn: the private turn hook is NOT registered for this session (${presence.where}). ` +
+      'Boards, schedule and browser tools will refuse every call until it is, and this daemon cannot write it: the ' +
+      `settings file ${presence.unreadableSettings} is not valid JSON, so it was left untouched. ` +
+      'Fix or remove that file, then start this agent again'
+    )
+  }
   return (
     `private turn: the private turn hook is NOT registered for this session (${presence.where}). ` +
     // Not "run bgos-agent update": that resets a clone to the head of origin/main, released or not (board row
@@ -131,6 +177,21 @@ export function privateHookBootLine(presence: PrivateHookPresence): string {
 export const PRIVATE_HOOK_MISSING_REFUSAL =
   'This private action did not start because the HOAI private turn hook is not registered for this session, so no sender can be verified. ' +
   'Ask the owner to restart this agent, so it loads the hook its daemon writes at boot.'
+
+/**
+ * What a refused private call says when the cause is the missing hook. Which advice is right depends on why it is
+ * missing: a daemon writes the hook at boot and a restart loads it, unless the folder's settings file is not JSON.
+ * Then nothing can be written until the owner mends or removes that file, so the refusal names it.
+ */
+export function privateHookMissingRefusal(presence: Pick<PrivateHookPresence, 'unreadableSettings'> | null | undefined): string {
+  const file = presence?.unreadableSettings
+  if (!file) return PRIVATE_HOOK_MISSING_REFUSAL
+  return (
+    'This private action did not start because the HOAI private turn hook is not registered for this session, so no sender can be verified. ' +
+    `The hook cannot be written because the settings file ${file} is not valid JSON. ` +
+    'Ask the owner to fix that file or remove it, and then start this agent again: a restart alone will not help.'
+  )
+}
 
 /**
  * Is the private turn hook live in the session this daemon serves, NOW (QUIETTURN4, the two account test,
@@ -167,6 +228,7 @@ export function createPrivateHookLiveness({ atBoot, log = () => {} }: {
   const presence: PrivateHookPresence = {
     get registered() { return live() },
     get where() { return atBoot.registered || !proven ? atBoot.where : 'its marker was read for a turn in this daemon life' },
+    get unreadableSettings() { return live() ? undefined : atBoot.unreadableSettings },
   }
   return {
     live,

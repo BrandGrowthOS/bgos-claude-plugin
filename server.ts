@@ -371,7 +371,7 @@ import {
   type StopGoalView,
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
-import { PRIVATE_HOOK_MISSING_REFUSAL, createPrivateHookLiveness, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
+import { createPrivateHookLiveness, privateHookBootLine, privateHookMissingRefusal, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
 import { cloneHooksSkippedLine, registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
 import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
@@ -16656,6 +16656,9 @@ const PRIVATE_HOOK_AT_BOOT: PrivateHookPresence = (() => {
 // boot hook registration below read what they always did.
 const privateHook = createPrivateHookLiveness({ atBoot: PRIVATE_HOOK_AT_BOOT, log })
 const PRIVATE_HOOK: PrivateHookPresence = privateHook.presence
+// What a refused private call says while the hook is missing, worded once from the boot read. A settings file that
+// is not JSON is named in it: nothing can be written there, so "restart" would be advice that cannot work.
+const PRIVATE_HOOK_MISSING_REFUSAL = privateHookMissingRefusal(PRIVATE_HOOK)
 
 function safeUsername(): string {
   try {

@@ -96,7 +96,10 @@ function fileRegistersFloorHook(
 ): boolean {
   let parsed: unknown
   try {
-    parsed = JSON.parse(input.readFile(file))
+    // Windows PowerShell writes a byte order mark, which JSON.parse refuses: read past it, or hooks that are in
+    // the file count as missing.
+    const text = input.readFile(file)
+    parsed = JSON.parse(typeof text === 'string' && text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)
   } catch {
     return false
   }
