@@ -1723,9 +1723,10 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>, over: Record<stri
     log: (line: string) => logs.push(String(line)),
     ...over,
   }) as (...args: unknown[]) => Promise<void>
-  const tap = async (callbackData: string, emailSendApproval: unknown) => {
+  // A tap on the card the fake post created (id 501) unless another row is named.
+  const tap = async (callbackData: string, emailSendApproval: unknown, cardMessageId: number = 501) => {
     for (let i = 0; i < 50 && posts.length === 0; i++) await new Promise((r) => setImmediate(r))
-    relayNs.resolvePermissionClick({ callbackData, clickerUserId: OWNER, pending, emailSendApproval } as never)
+    return relayNs.resolvePermissionClick({ callbackData, clickerUserId: OWNER, pending, emailSendApproval, cardMessageId } as never)
   }
   return { relay, tap, posts, notes, logs, store }
 }
@@ -1747,6 +1748,24 @@ test('server.ts, run: a held email_send card goes to the owner\'s chat with the 
   // Recorded BEFORE the CLI heard allow, with the tap's approval and the binding the card showed.
   assert.deepEqual(run.notes[0]!.claimed, { requestId: 'abcde', approval: APPROVAL_CLICK, binding: SEND_BLOCK })
   assert.equal(run.logs.some((line) => line.includes(APPROVAL_ID)), false, 'the approval id is never logged')
+})
+
+test('server.ts, run: an Allow given on another card that names the same request id sends no verdict; the posted card\'s Allow does', async (t) => {
+  const f = fixture(t)
+  const fs = await import('../lib/floor-state.mjs')
+  const run = await relayRun(t, f)
+  f.start(TURNS.ownerMessage)
+  const record = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: SEND_ARGS, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
+  const params = { request_id: 'abcde', tool_name: SEND_TOOL, description: 'email_send', input_preview: previewOf(SEND_ARGS) }
+  const done = run.relay(params, SEND_TOOL, true, record)
+  const other = await run.tap('ea:once:abcde', APPROVAL_CLICK, 999)
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
+  assert.equal((other as { kind: string }).kind, 'other_card')
+  assert.deepEqual(run.notes, [], 'no verdict reaches the CLI from another card')
+  assert.equal(run.store.claim?.(SEND_ARGS) ?? null, null, 'and no Allow is recorded')
+  await run.tap('ea:once:abcde', APPROVAL_CLICK)
+  await done
+  assert.deepEqual(run.notes.map((n) => n.params), [{ request_id: 'abcde', behavior: 'allow' }])
 })
 
 test('server.ts, run: a card the floor did not hold records nothing, and a deny records nothing', async (t) => {
