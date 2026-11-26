@@ -123,8 +123,9 @@ test('server.ts answers group_thread_end through the group lanes, and stops them
   assert.match(server, /Promise\.allSettled\(\[threadLanes\.stopAll\(\), groupLanes\.stopAll\(\), asideForks\.stopAll\(\)\]\)/)
   assert.match(server, /onPaused: \(\{ chatId, title, summary \}\) => groupSummaries\.add\(\{ chatId, title, summary \}\)/)
   // A group lane's prompt meets the owner's gate: approvals always the card, full the owner's whole handler.
-  assert.match(server, /const ownHandler = input\.level === 'full' \? permissionRequestHandler\(\) : null/)
-  assert.match(server, /\? ownHandler\(\{ method: 'notifications\/claude\/channel\/permission_request', params \}\)\n\s*: relayPermissionToOwner\(params\)/)
+  // Full goes through the owner's own handler, under the id the group prompt already holds.
+  assert.match(server, /const ownHandler = input\.level === 'full' \? handlePermissionRequest : null/)
+  assert.match(server, /\? ownHandler\(params\)\n\s*: relayPermissionToOwner\(params\)/)
 })
 
 // -- the capability -----------------------------------------------------------

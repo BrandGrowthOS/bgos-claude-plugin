@@ -186,7 +186,8 @@ test('the request remembers the id of the card it posted, as soon as the post re
     SRC.indexOf('const choice = await Promise.race<PermissionChoice>(['),
   )
   assert.ok(handler.length > 0)
-  assert.match(handler, /held\.cardMessageId = cardMessageId/)
+  // On this operation's own entry, once it is known to still hold it.
+  assert.match(handler, /if \(!holdsOwn\(\)\) \{[\s\S]*?return\n\s*\}\n\s*own\.waitMs = permissionBackstopMs\(storedWait\)[\s\S]*?own\.cardMessageId = cardMessageId/)
 })
 
 test('both click intakes hand the resolver the row the click was given on', () => {

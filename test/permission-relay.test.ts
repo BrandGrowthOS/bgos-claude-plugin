@@ -1564,12 +1564,12 @@ test('nothing is awaited between minting the request and posting the card', () =
   // nothing, and the obvious fix for that is to delete the guard.
   const between = stripComments(
     handler.slice(
-      handler.indexOf('pendingPermissions.set(request_id,'),
+      handler.indexOf('const own: PendingPermission = {'),
       handler.indexOf('const posted = await bgosPost('),
     ),
   ).code
   assert.ok(
-    between.includes('pendingPermissions.set(request_id,') &&
+    between.includes('pendingPermissions.set(request_id, own)') &&
       between.includes('resolve: resolveButtonChoice'),
     'the handler must still mint the request before it posts, and this must be reading its CODE',
   )

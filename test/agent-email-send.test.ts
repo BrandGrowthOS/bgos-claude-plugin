@@ -1270,7 +1270,7 @@ test('Always ask: what each floor answer means for a send no card allowed, and a
 
 test('the relay records the owner\'s Allow of a card before it answers the CLI, so that one send may go', () => {
   const relay = serverSlice('function relayPermissionToOwner(', '\n}\n')
-  const verdict = relay.indexOf('const behavior = choiceToBehavior(choice)')
+  const verdict = relay.indexOf("const behavior = stillOwn ? choiceToBehavior(choice) : 'deny'")
   // Only a card the floor HELD, which only a person's tap can allow (a typed yes never answers one), with
   // what the tap issued and the card named (server approval, Data 2026-10-13).
   const allow = relay.search(/if \(behavior === 'allow' && floorHeld\) \{\n\s*emailSendApprovals\.allow\(tool_name, input_preview, \{\n\s*requestId: request_id,\n\s*approval: choice === 'once' \? tapApproval : null,\n\s*binding: emailCard\?\.block \?\? null,/)
@@ -1414,9 +1414,9 @@ test('Always ask: an email_send the tool would refuse is refused on its preview,
 test('server.ts, run: a held email_send carrying a secret is denied before any card is posted, and the log never repeats it', async () => {
   const m = await tools()
   const a = await approval()
-  const handler = serverSlice('mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {', '\n})\n')
-    .replace('mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {', 'const onPermission = ({ params }) => {')
-    .replace(/\n\}\)\n$/, '\n}\n')
+  // The steps behind the handler's admission (lib/permission-request-ids.ts).
+  const handler = serverSlice('function handlePermissionRequest(params: PermissionRequestParams): Promise<void> {', '\n}\n')
+    .replace('function handlePermissionRequest(params: PermissionRequestParams): Promise<void> {', 'const onPermission = ({ params }) => {')
   const notes: Array<{ params: unknown }> = []
   const posts: unknown[] = []
   const logs: string[] = []
@@ -1979,9 +1979,9 @@ test('review: a long email in any script pairs with its own record, and an email
 test('review: a denied email_send leaves no floor record behind for a later request to pair with', async () => {
   const m = await tools()
   const a = await approval()
-  const handler = serverSlice('mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {', '\n})\n')
-    .replace('mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {', 'const onPermission = ({ params }) => {')
-    .replace(/\n\}\)\n$/, '\n}\n')
+  // The steps behind the handler's admission (lib/permission-request-ids.ts).
+  const handler = serverSlice('function handlePermissionRequest(params: PermissionRequestParams): Promise<void> {', '\n}\n')
+    .replace('function handlePermissionRequest(params: PermissionRequestParams): Promise<void> {', 'const onPermission = ({ params }) => {')
   const taken: unknown[] = []
   const onPermission = compileServer(handler, 'onPermission', {
     ...m,
