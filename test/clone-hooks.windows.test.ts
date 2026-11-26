@@ -15,7 +15,7 @@
  * Run: npx tsx --test test/clone-hooks.windows.test.ts
  */
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, parse, resolve, sep } from 'node:path'
 import { test } from 'node:test'
@@ -274,11 +274,8 @@ test('a boot that wrote no hooks because no folder starts this checkout says so,
 
 /** The 8.3 short spelling of a path, or the path itself on a volume that keeps no short names. */
 function shortSpelling(path: string): string {
-  try {
-    return execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${path}") do @echo %~sI`], { encoding: 'utf8', windowsVerbatimArguments: true }).trim() || path
-  } catch {
-    return path
-  }
+  const asked = spawnSync('cmd.exe', ['/d', '/c', `for %I in ("${path}") do @echo %~sI`], { encoding: 'utf8', windowsVerbatimArguments: true })
+  return (asked.status === 0 && asked.stdout.trim()) || path
 }
 
 /** Every spelling Windows accepts for one folder, by name. A null spelling does not exist on this volume. */
