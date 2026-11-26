@@ -60,7 +60,7 @@ const schemas = {
     itemId: uuid.describe('A login id from vault_items.'),
     sessionId: bounded.describe('The HOAI desktop browser session id.'),
     tabId: bounded.describe('The HOAI desktop browser tab id.'),
-    origin: httpsOrigin.describe('The exact HTTPS origin of that tab; it must match the login website.'),
+    origin: httpsOrigin.describe('The exact HTTPS origin of that tab. HOAI decides whether the login may fill it (its own website, or another host of the same site such as accounts.google.com for a google.com login, which the owner confirms); a refusal says why.'),
   }),
 }
 type VaultToolName = keyof typeof schemas
@@ -122,18 +122,19 @@ const MESSAGES: Record<string, string> = {
   VAULT_HOST_KEY_INVALID: 'The vault host key file is damaged or belongs to another agent. Ask the owner to remove it and run `hoai vault-host` in a terminal on this agent machine.',
   VAULT_SIGNING_KEY_INVALID: `The stored agent signing key is not usable. ${HOST_SETUP}`,
   VAULT_NOT_PAIRED: 'The vault needs this agent\'s owner pairing. Ask the owner to pair this agent again.',
-  VAULT_ORIGIN_MISMATCH: 'That login is saved for a different website than this tab. Use a login whose website matches the tab origin, or ask the owner with vault_request_login.',
   VAULT_REQUEST_REFUSED: 'The vault refused this request. Check the item, website and tab and try again once; do not retry in a loop.',
   VAULT_UNAVAILABLE: 'The vault item or service is not available to this agent. Do not retry in a loop; ask the owner to check the item is shared with this agent.',
 }
+
+const FINGERPRINT_SHAPE = /[0-9a-f]{4}(?:\s+[0-9a-f]{4}){4}/i
 
 class ToolRefusal extends Error {
   constructor(public code: string) { super(code) }
 }
 
-function refusal(code: string) {
+function refusal(code: string, serverText?: string) {
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify({ error: code, message: MESSAGES[code] ?? MESSAGES.VAULT_UNAVAILABLE }) }],
+    content: [{ type: 'text' as const, text: JSON.stringify({ error: code, message: serverText ?? MESSAGES[code] ?? MESSAGES.VAULT_UNAVAILABLE }) }],
     isError: true as const,
   }
 }
@@ -168,6 +169,9 @@ type VaultToolResult = { content: Array<{ type: 'text'; text: string }>; isError
 
 export async function handleVaultTool(name: string, args: unknown, deps: VaultToolDeps): Promise<VaultToolResult> {
   const log = (line: string) => { try { deps.log?.(`vault: ${line}`) } catch {} }
+  // Host secrets, known once the host key is loaded: a server sentence that
+  // carries one is never passed on.
+  let hostSecrets: string[] = []
   try {
     if (!Object.hasOwn(schemas, name)) throw new ToolRefusal('VAULT_INPUT_INVALID')
     if (!deps.ownerId || deps.actingUserId !== deps.ownerId) throw new ToolRefusal('VAULT_OWNER_ONLY')
@@ -194,6 +198,7 @@ export async function handleVaultTool(name: string, args: unknown, deps: VaultTo
     }
     // Installed, or a server without zero setup: the first use that always was.
     const host = await loadOrCreateHostKey(deps.stateDir, assistantId, undefined, deps.security)
+    hostSecrets = [host.signingSecret, host.hostSeed].filter((s): s is string => typeof s === 'string' && s.length > 0)
     const call = (method: 'GET' | 'POST', sub: string, extra: { query?: Row; body?: Row } = {}) => {
       if (!host.signingSecret) throw new ToolRefusal('VAULT_HOST_SETUP_REQUIRED')
       return vaultCall({ method, apiBase: deps.apiBase, assistantId, sub, ...extra, signingSecret: host.signingSecret, pairingToken: deps.pairingToken, fetch: deps.fetch })
@@ -220,7 +225,10 @@ export async function handleVaultTool(name: string, args: unknown, deps: VaultTo
     if (hostPinStatus(host) !== 'pinned') throw new ToolRefusal('VAULT_HOST_NOT_PINNED')
     const item = rows(await call('GET', 'items')).find((row) => row.id === input.itemId)
     if (!item || item.kind !== 'login') throw new ToolRefusal('VAULT_UNAVAILABLE')
-    if (item.website !== input.origin) throw new ToolRefusal('VAULT_ORIGIN_MISMATCH')
+    // No site check here: the server decides which site a login may fill (the
+    // login's own website, or since BGOS #6057 another host of the same site
+    // the owner confirms on the desktop), and its refusal reaches the agent in
+    // its own words below. A server without #6057 refuses every other host.
     if (item.ownerId !== deps.ownerId || !str(item.vaultId) || !posInt(item.vaultAssistantId) || !posInt(item.revision)) {
       throw new ToolRefusal('VAULT_UNAVAILABLE')
     }
@@ -259,6 +267,16 @@ export async function handleVaultTool(name: string, args: unknown, deps: VaultTo
       : 'VAULT_UNAVAILABLE'
     const status = error instanceof VaultError && typeof (error as { status?: number }).status === 'number' ? ` (HTTP ${(error as { status?: number }).status})` : ''
     log(`${name} refused ${code}${status}`)
-    return refusal(code)
+    // The fill's refusal in the server's own words (never logged above).
+    const serverText = name === 'vault_fill_prepare' && error instanceof VaultError
+      ? (error as { serverText?: unknown }).serverText
+      : undefined
+    const secrets = [deps.pairingToken, ...hostSecrets].filter((s) => typeof s === 'string' && s.length > 0)
+    // Nor one shaped like the host fingerprint (five groups of four hex digits),
+    // which only the owner's terminal may show.
+    const passOn = typeof serverText === 'string' && !secrets.some((s) => serverText.includes(s)) && !FINGERPRINT_SHAPE.test(serverText)
+      ? serverText
+      : undefined
+    return refusal(code, passOn)
   }
 }

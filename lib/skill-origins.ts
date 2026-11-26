@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync,
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { unescapeAgentButtonValue } from './message-text.ts'
-import { SKILL_NAME_RE, type IdentFs, type SkillItem, type SkillsList } from './skills-inventory.ts'
+import { SKILL_NAME_RE, parseFrontmatter, readSkillHead, type IdentFs, type SkillItem, type SkillsList } from './skills-inventory.ts'
 import { OWN_MCP_TOOLS } from './hook-events.ts'
 import { deliveredNeedle, promptCarriesDelivered, type TurnChatNote } from './turn-chat.ts'
 
@@ -463,12 +463,36 @@ export function noteSkillToolUse(input: {
   }
 }
 
-export function originForRow(row: Pick<SkillItem, 'scope'>, stamp: OriginStamp | undefined, identNow: string | null): SkillOrigin | undefined {
+/**
+ * The origin a skill's own front matter claims, as far as this daemon takes it: `made` and nothing else.
+ *
+ * The served canon's rule 3 tells an agent to "Put origin: made in its front matter" of a skill it saves itself,
+ * and no other writer marks such a skill, so before the kit check (2026-11-25, finding 3) a made skill listed with
+ * no origin at all. A file is the agent's own words, so it may never claim what only this daemon can see (taught,
+ * after the owner's Approve) or what the scope already says (installed, repo, synced, shared): any other value
+ * reads as no claim. Read from the leading `---` block only, through the inventory's bounded head read and its
+ * front matter parser (a byte order mark, CRLF, quotes and a trailing comment are handled there). Never throws.
+ */
+export function frontMatterOrigin(skillFolder: string): 'made' | undefined {
+  try {
+    const value = parseFrontmatter(readSkillHead(join(skillFolder, 'SKILL.md')))?.fields.origin
+    return typeof value === 'string' && value.trim().toLowerCase() === 'made' ? 'made' : undefined
+  } catch { return undefined }
+}
+
+/**
+ * A row's origin. The scope decides for installed, repo and synced skills. For the agent's own skills a mark of
+ * this daemon wins when it still names this very folder; else the skill's front matter `origin: made`
+ * (frontMatterOrigin), so a taught skill stays taught whatever its file says. Other scopes (the computer's skills
+ * folder) never take a front matter claim.
+ */
+export function originForRow(row: Pick<SkillItem, 'scope'>, stamp: OriginStamp | undefined, identNow: string | null, frontOrigin?: unknown): SkillOrigin | undefined {
   try {
     if (row.scope === 'plugin' || row.scope === 'managed') return 'installed'
     if (row.scope === 'repo') return 'repo'
     if (row.scope === 'synced') return 'synced'
     if (row.scope === 'agent' && identNow !== null && stamp?.ident === identNow) return stamp.origin
+    if (row.scope === 'agent' && frontOrigin === 'made') return 'made'
   } catch { failed() }
   return undefined
 }
@@ -478,7 +502,12 @@ export function applyOrigins(list: SkillsList, file: string, fs?: IdentFs): Skil
     const stamps = readOrigins(file)
     return { ...list, skills: list.skills.map((row) => {
       const path = row.path.startsWith('~/') || row.path.startsWith('~\\') ? join(homedir(), row.path.slice(2)) : row.path
-      const origin = originForRow(row, stamps.skills[basename(path)], row.scope === 'agent' ? originIdentOf(path, fs) : null)
+      const stamp = stamps.skills[basename(path)]
+      const identNow = row.scope === 'agent' ? originIdentOf(path, fs) : null
+      // The front matter is read only when no current mark of this daemon decides the row.
+      const marked = identNow !== null && stamp?.ident === identNow
+      const front = row.scope === 'agent' && !marked ? frontMatterOrigin(path) : undefined
+      const origin = originForRow(row, stamp, identNow, front)
       return origin === undefined ? row : { ...row, origin }
     }) }
   } catch { failed(); return list }

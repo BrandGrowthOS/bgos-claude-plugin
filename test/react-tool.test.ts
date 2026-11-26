@@ -58,7 +58,14 @@ test('react is advertised with only message_id, emoji and optional remove', () =
   assert.match(REACT_TOOL.description, /one emoji per message/i)
   assert.match(REACT_TOOL.description, /replaces/i)
   assert.match(REACT_TOOL.description, /acknowledge or agree/i)
-  assert.match(REACT_TOOL.description, /not instead of a reply/i)
+  // Rule 1 of the served canon (lib/core-rules.ts): in the owner's own chat a
+  // message that needs no words back gets a reaction and NOTHING else. The old
+  // "not instead of a reply" contradicted it, and the kit check saw "thanks"
+  // answered with a bubble (2026-11-25, finding 1).
+  assert.doesNotMatch(REACT_TOOL.description, /not instead of a reply/i)
+  assert.match(REACT_TOOL.description, /needs no words back/i)
+  assert.match(REACT_TOOL.description, /send nothing else/i)
+  assert.match(REACT_TOOL.description, /never react instead of answering a question or reporting a result/i)
   assert.match(source, /import\s*\{[^}]*REACT_TOOL[^}]*handleReactTool[^}]*\}\s*from '\.\/lib\/react-tool\.ts'/)
   const list = source.slice(source.indexOf('mcp.setRequestHandler(ListToolsRequestSchema'), source.indexOf('mcp.setRequestHandler(CallToolRequestSchema'))
   assert.match(list, /\bREACT_TOOL\b/)

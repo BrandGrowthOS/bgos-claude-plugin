@@ -20,7 +20,27 @@ The ticket is single use and expires in 60 seconds.
 Every call goes to `/api/v1/vault/agent/<id>/...` with the pairing credential
 (`X-BGOS-Pairing`) and a BGOS-A2A-V1 request signature over the exact body. A
 turn admitted for anyone but the owner is refused before any request. Failures
-are fixed `VAULT_*` codes that never echo a response body.
+are fixed `VAULT_*` codes. One exception: when the server refuses a
+`vault_fill_prepare` (HTTP 400, 409 or 422, code `VAULT_REQUEST_REFUSED`), the
+result's `message` is the server's own sentence, unchanged, for example "The
+login must match this browser website.". It is passed on only when it is one
+plain line of at most 500 characters that carries neither the pairing
+credential, a host key nor anything shaped like the host fingerprint;
+otherwise the fixed text is used. It is never written to the log.
+
+### Which site a login may fill: the server decides
+
+The plugin does not compare the login's website with the tab's origin. It signs
+the tab's exact origin into the intent and asks the server, which decides. A
+server with BGOS #6057 lets a login fill its own website or another host of the
+same site by the public suffix list (a `google.com` login on
+`accounts.google.com`), never across sites or between two people's sites on a
+public suffix, and the owner's desktop asks the owner once for that host and
+unlocks every such fill. A server without #6057 refuses every other host with
+"The login must match this browser website.", which reaches the agent as is.
+Every other refusal stays here: no such item, an item that is not a login, a
+login of another owner, a host the owner has not pinned and a turn not admitted
+for the owner.
 
 ## Setting up the host: nothing to do (0.90.0)
 

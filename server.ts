@@ -13,6 +13,8 @@
 
 import { cardAnswerClickOf, cardAnswerText } from './lib/card-answer.ts'
 import { groupReactionKey, groupReactionText, reactionCard, REACTION_GUIDANCE, HEARD_REACTIONS_CAPABILITY } from './lib/heard-reaction.ts'
+import { capabilityGuideAnswer } from './lib/capability-guide.ts'
+import { CORE_RULES_TEXT } from './lib/core-rules.ts'
 import { REACT_TOOL, handleReactTool } from './lib/react-tool.ts'
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
@@ -465,6 +467,7 @@ import {
   resolveCursorFilePath,
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
+import { OPEN_CARDS_FILE_NAME, OPEN_CARD_STALE_ANSWER_MS, OpenCardStore, buildUnreadableCardNotice, createOpenCardWatch, readFailureStatus } from './lib/open-cards.js'
 import {
   ChannelLiveness,
   deafSessionAction,
@@ -3578,15 +3581,48 @@ const mcp = new Server(
       'Messages from the BGOS chat app arrive as <channel source="bgos"> events.',
       'Each message includes chat_id and message_id attributes.',
       '',
-      'At the START of a session, call the `bgos_capabilities` tool to load the',
-      'authoritative, always-current HOAI capability guide. It is fetched live',
-      'from the backend at connect and supersedes the capability summary below.',
+      '## Core rules (they apply in every session)',
+      '1. ACKNOWLEDGE WITH A REACTION, NOT A REPLY. In your chat with your owner, when their message needs no words back (thanks, ok, a fact to keep, a done confirmation), react 👍, ❤️ or 🙏 and send nothing else. When you start work longer than a minute, react 👀 at once, then reply with the result. Never react instead of answering a question or reporting a result. If the reaction fails, send one short line instead. React with the react tool and the message_id of their message. In a group, a meeting or a channel this rule does not apply.',
+      '2. In your own chat with your owner, a question your owner answers yes or no, except a dangerous command, which stays on the approval, always goes through ask_user_input as one question with two options, Yes and No (or two short words of your own), with the values yes and no, never as a question in plain text: the app draws it as two buttons to tap. In a group or a channel, ask with reply buttons instead.',
+      '3. SAVE WHAT YOU REPEAT AS A SKILL, without drafting or asking first (a request to teach yourself a skill still drafts first). When you do a task for your owner the second time, or work out a many step procedure, save it as a short skill where your channel section says your skills go: when to use it, the steps, the pitfalls. Put origin: made in its front matter. Never put a secret or your owner\'s private data in one. When a skill you used was wrong or missing a step, fix it before you finish. Do not announce it. Without a place for skills, skip this. Your skills go in .claude/skills/<name>/SKILL.md inside your working folder, never ~/.claude/skills.',
+      '',
+      'IMPORTANT: The user reads BGOS, not this session transcript. Plain text in',
+      'your turn output never reaches their chat, it stays in your local terminal',
+      'only. Every response to a BGOS message MUST go through the `reply` tool.',
+      'If you forget to call `reply`, the user sees nothing. The plugin enforces',
+      'this by sending a [reply-overdue] notification 4 minutes after any inbound',
+      'message that has not been answered via the `reply` (or `meeting_reply`) tool.',
+      '',
+      'Once you have a response, use the `reply` tool to send it back.',
+      'The reply will appear as a chat bubble in the BGOS desktop/mobile app.',
+      'You can use markdown in your replies: **bold**, *italic*, `inline code`,',
+      'fenced code blocks, [links](url), #/##/### headers, lists, > blockquotes.',
+      'Tables do not render on mobile - use lists instead.',
+      '',
+      'At the START of a session, call the `bgos_capabilities` tool. It answers with these core rules, the guide\'s',
+      'short introduction and an index of its topics; call it again with {"topic": "<id>"} to read the one you need.',
+      'The guide is fetched live from the backend at connect and supersedes the capability summary below.',
+      '',
+      'Backslashes: the chat renders CommonMark, which (outside code) eats a',
+      'backslash before punctuation - `a\\*b` would show as `a*b`. The plugin',
+      'auto-protects backslashes in prose so file paths and regexes survive, but',
+      'for anything the user must COPY EXACTLY (a Windows path, a regex, a shell',
+      'snippet) prefer a code span or fenced block - inside code, every character',
+      'is preserved verbatim and never linkified.',
       '',
       'When you produce a dashboard, report, chart, table, plan, document or any page a person will read, share or revisit, make it an Artifact instead of a long chat message, then send a short reply with its link. Update the same Artifact for revisions rather than creating new ones.',
       'Use artifact_create, artifact_update, artifact_read, artifact_list and artifact_versions.',
       'Agent vault: never ask for or repeat a password in chat. vault_items lists metadata, vault_request_login asks the owner to add a login,',
       'and vault_fill_prepare returns a signed one-use request to pass unchanged to hoai_vault_fill on the HOAI desktop browser.',
       'Read artifact_read without id for the live content schema. The server posts the reference beside the chat.',
+      '',
+      'Links are Telegram-style: bare URLs auto-link (https://…, www.…, bare',
+      'domains like foo.com incl. modern TLDs .dev/.app, and emails), no',
+      '[text](url) needed. A masked link ([text](url) where the text differs',
+      'from the target) shows the user an "Open this link?" confirmation with',
+      'the full URL before opening, so prefer bare URLs when transparency',
+      'matters. URLs inside code spans/fences never linkify, use code when',
+      'the user should copy a URL rather than open it.',
       '',
       'When you receive a message, process it using your full capabilities, ',
       'you can use Bash, Read, Write, Edit, Grep, Glob, WebSearch, and all',
@@ -3619,34 +3655,6 @@ const mcp = new Server(
       'the person to choose a profile, a preview or a private window.',
       'Follow hoai_browser_status and the shipped managed browser skill. The',
       'separate legacy browser mode retains its own permission and storage rules.',
-      '',
-      'IMPORTANT: The user reads BGOS, not this session transcript. Plain text in',
-      'your turn output never reaches their chat, it stays in your local terminal',
-      'only. Every response to a BGOS message MUST go through the `reply` tool.',
-      'If you forget to call `reply`, the user sees nothing. The plugin enforces',
-      'this by sending a [reply-overdue] notification 4 minutes after any inbound',
-      'message that has not been answered via the `reply` (or `meeting_reply`) tool.',
-      '',
-      'Once you have a response, use the `reply` tool to send it back.',
-      'The reply will appear as a chat bubble in the BGOS desktop/mobile app.',
-      'You can use markdown in your replies: **bold**, *italic*, `inline code`,',
-      'fenced code blocks, [links](url), #/##/### headers, lists, > blockquotes.',
-      'Tables do not render on mobile - use lists instead.',
-      '',
-      'Backslashes: the chat renders CommonMark, which (outside code) eats a',
-      'backslash before punctuation - `a\\*b` would show as `a*b`. The plugin',
-      'auto-protects backslashes in prose so file paths and regexes survive, but',
-      'for anything the user must COPY EXACTLY (a Windows path, a regex, a shell',
-      'snippet) prefer a code span or fenced block - inside code, every character',
-      'is preserved verbatim and never linkified.',
-      '',
-      'Links are Telegram-style: bare URLs auto-link (https://…, www.…, bare',
-      'domains like foo.com incl. modern TLDs .dev/.app, and emails), no',
-      '[text](url) needed. A masked link ([text](url) where the text differs',
-      'from the target) shows the user an "Open this link?" confirmation with',
-      'the full URL before opening, so prefer bare URLs when transparency',
-      'matters. URLs inside code spans/fences never linkify, use code when',
-      'the user should copy a URL rather than open it.',
       '',
       '## Adding an agent to a meeting (add_to_meeting)',
       'Use `add_to_meeting` to seat another agent (by assistantId, see',
@@ -5276,11 +5284,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'exactly what you can do through this channel: message formatting, ' +
         'inline buttons, files, ask_user_input, approvals, peers, voice, status, ' +
         'and more. Call this once at the start of a session (and any time you are ' +
-        'unsure what HOAI supports); the returned guide supersedes any older ' +
-        'summary in these instructions. Falls back to a bundled copy offline.',
+        'unsure what HOAI supports): without a topic it answers the core rules, the ' +
+        'guide\'s short introduction and an index of its topics; pass topic (an id ' +
+        'from the index) to read one, and part when that topic says it comes in ' +
+        'parts. The guide supersedes any older summary in these instructions. ' +
+        'Falls back to a bundled copy offline.',
       inputSchema: {
         type: 'object' as const,
-        properties: {},
+        properties: {
+          topic: {
+            type: 'string',
+            maxLength: 200,
+            description: 'A topic id from the index (or its title). Leave it out for the core rules and the index.',
+          },
+          part: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Which part of a topic that comes in parts, from 1. Defaults to 1.',
+          },
+        },
       },
     },
     {
@@ -7118,8 +7140,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
   switch (req.params.name) {
     case 'bgos_capabilities': {
+      // Never the whole guide in one result (kit check 2026-11-25, finding 1):
+      // about 208,000 characters, which Claude Code refused and saved to a file
+      // the model never read. The core rules and a topic index, or one topic,
+      // each under GUIDE_ANSWER_MAX_BYTES (lib/capability-guide.ts).
       const caps = await loadServedCapabilities()
-      return { content: [{ type: 'text', text: `${caps.text}\n${REACTION_GUIDANCE}` }] }
+      const answer = capabilityGuideAnswer(caps.text, rawArgs, { coreRules: CORE_RULES_TEXT, trailer: REACTION_GUIDANCE })
+      return { content: [{ type: 'text', text: answer.text }], ...(answer.isError ? { isError: true } : {}) }
     }
 
     case 'reply': {
@@ -9895,6 +9922,10 @@ let homeStepDone = false
 const BEACON_HEARTBEAT_PATH = pathJoin(pathDirname(CURSOR_FILE_PATH), BEACON_HEARTBEAT_FILE)
 const cursorStore = new CursorStore(CURSOR_FILE_PATH)
 const cursorBoot = cursorStore.load()
+// The open cards this daemon posted, kept beside the cursors so a restart
+// between a question and its answer still hears the answer (lib/open-cards.ts).
+const openCardStore = new OpenCardStore(pathJoin(pathDirname(CURSOR_FILE_PATH), OPEN_CARDS_FILE_NAME))
+openCardStore.load()
 const chatLastSeen = cursorBoot.cursors
 
 // First-run gate: no cursor file at all (genuine first install, or an
@@ -10071,6 +10102,7 @@ function adoptChatCursor(chatId: string, id: number): void {
  */
 function flushChatCursors(): void {
   if (!channelLiveness.live) return
+  openCardStore.flushIfDirty()
   // Nothing to write means nothing to clobber, and this is the hot path (every
   // CURSOR_FLUSH_INTERVAL_MS), so the file read below only happens when a write
   // is actually about to.
@@ -12584,6 +12616,7 @@ async function readOwnPostedCard(chatId: string, messageId: number, card: LoginM
 function notePostedButtonCard(chatId: string, messageId: number, recoveryWindowMs = BUTTON_PROMPT_FAST_WINDOW_MS): void {
   if (postedButtonCards.has(messageId)) return
   postedButtonCards.set(messageId, { chatId, settled: announcedClickIds.has(messageId), fresh: false, recoverUntilMs: Date.now() + recoveryWindowMs })
+  if (!postedButtonCards.get(messageId)!.settled) openCardStore.add({ id: messageId, chatId, postedAtMs: Date.now() })
   if (postedButtonCards.size > FORWARD_CACHE_MAX) {
     const oldest = postedButtonCards.keys().next().value
     if (oldest !== undefined) postedButtonCards.delete(oldest)
@@ -12594,6 +12627,10 @@ function notePostedButtonCard(chatId: string, messageId: number, recoveryWindowM
 }
 
 function settlePostedButtonCard(messageId: number): void {
+  // At once, not on the cursor timer (review of #417, R4): a crash inside the
+  // timer's window would read this answered card back at the next boot.
+  openCardStore.remove(messageId)
+  openCardStore.flushIfDirty()
   const card = postedButtonCards.get(messageId)
   if (!card) return
   card.settled = true
@@ -12612,21 +12649,93 @@ function hasPendingPostedButtonCard(chatId: string, freshOnly = false): boolean 
 }
 
 /** One unconditional, ID-bounded read, using the same request as sign-in. */
-async function readPostedButtonCard(chatId: string, messageId: number): Promise<void> {
-  if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
+async function readPostedButtonCard(chatId: string, messageId: number): Promise<{ ok: boolean; status: number | null }> {
+  if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return { ok: true, status: null }
   try {
     const raw = await bgosGet(
       `chats/${encodeURIComponent(chatId)}/messages?userId=${USER_ID}&afterId=${messageId - 1}&beforeId=${messageId + 1}&limit=1`,
       { conditional: false },
     ) as ChatHistoryResponse
-    if (raw.messages?.length === 0) { settlePostedButtonCard(messageId); return }
+    // The lock may have moved while the read was in flight: from then the card
+    // is the holder's (review of #417 round 4, N1).
+    if (updateDrainMode || !lockHeld) return { ok: true, status: null }
+    if (raw.messages?.length === 0) { settlePostedButtonCard(messageId); return { ok: true, status: null } }
     const row = raw.messages?.find((entry) => entry.message.id === messageId && String(entry.message.chatId) === chatId)
     if (row) announcePostedButtonAnswer(chatId, row)
+    return { ok: true, status: null }
   } catch (err) {
     // Keep the card pending so the next history read bypasses validators.
     const card = postedButtonCards.get(messageId)
     if (card) card.fresh = true
     log(`Own button card ${messageId} answer read failed: ${err}`)
+    const status = readFailureStatus(err)
+    // Stood down while the read was in flight: the holder closes it and says
+    // so, never a passive session (review of #417 round 4, N1).
+    if (updateDrainMode || !lockHeld) return { ok: false, status }
+    // Refused for good (gone, or not this daemon's to read): closed unread, so
+    // it is not read again for a week (review of #417 round 2, F2), and the
+    // agent is told once, never as an answer (round 3): a tap it can no longer
+    // see is not silently lost.
+    if ((status === 403 || status === 404 || status === 410) && postedButtonCards.get(messageId)?.settled === false) {
+      settlePostedButtonCard(messageId)
+      const notice = buildUnreadableCardNotice({ chatId, messageId, status })
+      log(`WARN own button card ${messageId} in chat ${chatId} closed unread (${status})`)
+      void trackMessageOperation(() => channelNotify(() => ({ content: notice.content, meta: notice.meta })))
+        .catch((notifyErr) => log(`Failed to deliver card_unreadable to Claude: ${notifyErr}`))
+    }
+    return { ok: false, status }
+  }
+}
+
+/**
+ * At every arm, once this daemon owns the channel: the open cards in the file
+ * as it is NOW (review of #417, R2: a daemon promoted hours after its boot
+ * reads the holder's file, not the one it saw at boot). Each is handed to the
+ * watch for one exact read through its budget, so an answer given while no
+ * daemon ran is announced once, and the stream's replay is deduped by id. A
+ * card this process holds open that the file no longer has was settled by
+ * another daemon, and is settled here too. A boot the cursor store calls a
+ * first run reads nothing back (R5). A re-arm always reads it: while this
+ * daemon stood down the holder settled cards and posted new ones (F1).
+ */
+const openCardWatch = createOpenCardWatch()
+const openCardRehydrated = new Set<number>()
+function rehydrateOpenCards(reason: 'boot' | 'rearm'): void {
+  if (reason === 'boot' && !cursorBoot.fileExisted) return
+  const onDisk = openCardStore.reload()
+  const kept = new Set(onDisk.map((card) => card.id))
+  for (const [id, card] of postedButtonCards) if (!card.settled && !kept.has(id)) card.settled = true
+  for (const card of onDisk) {
+    if (postedButtonCards.has(card.id) || announcedClickIds.has(card.id)) continue
+    postedButtonCards.set(card.id, { chatId: card.chatId, settled: false, fresh: true, recoverUntilMs: Date.now() + BUTTON_PROMPT_FAST_WINDOW_MS })
+    openCardRehydrated.add(card.id)
+  }
+}
+
+/**
+ * The second route for a tap in a chat the poll does not watch (a channel or
+ * room another agent founded), on a bounded schedule (lib/open-cards.ts
+ * createOpenCardWatch, review of #417 R3): each open card this daemon posted
+ * there is read again by its exact id, at 1, 2, 4 ... up to 30 minutes, never
+ * past the file's 7 days, paused while 429s or 5xxs last. With group lanes on,
+ * such a chat is the group lane's and is not read here (R1).
+ */
+function watchOpenCards(nowMs: number): void {
+  if (updateDrainMode || !lockHeld) return
+  const cards = openCardStore.list().flatMap((card) => {
+    const held = postedButtonCards.get(card.id)
+    return held ? [{ ...card, settled: held.settled, rehydrated: openCardRehydrated.has(card.id) }] : []
+  })
+  for (const card of openCardWatch.due({ cards, monitored: new Set(monitoredChatIds), nowMs, unmonitoredAllowed: !groupLanesOn() })) {
+    openCardWatch.noteRead(card.id, nowMs)
+    const readBack = openCardRehydrated.delete(card.id)
+    void readPostedButtonCard(card.chatId, card.id).then((outcome) => {
+      if (outcome.ok) { openCardWatch.noteSuccess(); return }
+      openCardWatch.noteFailure(outcome.status, Date.now())
+      // A read back that failed is still owed its one read (F3): in a chat
+      // the poll watches, the watch reads only cards marked read back.
+      if (readBack && postedButtonCards.get(card.id)?.settled === false) openCardRehydrated.add(card.id)
+    })
   }
 }
 
@@ -12646,6 +12755,13 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
     return
   }
   if (announcedClickIds.has(mm.id)) { settlePostedButtonCard(mm.id); return }
+  // An answer older than a day is not a fresh turn (review of #417, R5): it is
+  // settled and logged, never announced as if it had just happened.
+  if (Date.now() - Date.parse(mm.answeredAt) > OPEN_CARD_STALE_ANSWER_MS) {
+    log(`button_clicked NOT announced for message ${mm.id}: its answer is over a day old`)
+    settlePostedButtonCard(mm.id)
+    return
+  }
   const payload = mm.answerPayload ?? {}
   const callbackData = payload.callbackData ?? payload.callback_data ?? ''
   const buttonText = payload.buttonText ?? payload.button_text ?? ''
@@ -17698,6 +17814,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   // never announced into the owner's session.
   // Group threads: a group's tap is a turn line in its lane, never the main session's.
   if (routeGroupStreamTap(view)) {
+    rememberAnnouncedClick(view.messageId)
     log(`button_clicked SKIPPED for the main session: message ${view.messageId} is a group's tap, which only its group lane may take (streamAuthority=${authorityAtReceipt})`)
     return
   }
@@ -21210,6 +21327,9 @@ async function main(): Promise<void> {
       // report each ignored frame kind once again, instead of inheriting the
       // "already said it" set from the previous passive spell.
       standDownIgnoredFrames.clear()
+      // The open card file as the holder left it, before delivery resumes: a
+      // card it settled is settled here, one it posted is watched (#417 F1).
+      rehydrateOpenCards('rearm')
       // A re-armed daemon never receives meeting_state_resync: the socket never
       // reconnected (it stayed up throughout the passive spell), and the resync
       // rides a connect. So a meeting floor this daemon held before it stood
@@ -21479,6 +21599,8 @@ async function main(): Promise<void> {
     // dedups a short replay); the signal/exit hooks cover normal shutdowns.
     // Every site goes through flushChatCursors, the deaf-session cursor gate.
     flushChatCursors()
+    // Answers given while no daemon ran, to the cards the last one posted.
+    rehydrateOpenCards('boot')
     // Deliberately NOT gated on channelArmed, unlike the two delivery paths:
     // the store only goes dirty when a cursor advances, and both routes that
     // advance one (the poll tick, deliverWsInbound) refuse while stood down, so
@@ -21645,6 +21767,7 @@ async function main(): Promise<void> {
         // Agent Update Stream housekeeping on the existing 2s tick: consumer
         // gap deadlines + the beacon watchdog. No-op with the flag off.
         streamSchedulerTick(Date.now())
+        watchOpenCards(Date.now())
         const fastIds = fastScopeChatIds({
           meetingChatIds,
           // BOUNDED, like the button prompt beside it, but bounded by the

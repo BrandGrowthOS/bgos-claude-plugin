@@ -974,3 +974,109 @@ test('the tap card\'s own turn writing the skill marks it taught', () => {
   assert.equal(writeOf(w, windows, 101), true)
   assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'taught')
 })
+
+// ── Front matter origin: made (kit check 2026-11-25, finding 3) ──────────────
+//
+// The served canon's rule 3 tells an agent to "Put origin: made in its front
+// matter" of a skill it saves itself, and the live kit check found Rowan's
+// friday-update written exactly so, yet listed with no origin: originForRow
+// read only this daemon's own marks file, which only Teach and installs write.
+// The front matter is now read too. A mark of this daemon still wins (a taught
+// skill stays taught whatever its file says), only `made` is taken from a
+// file (an agent writes its own front matter, so a file can never claim
+// taught, installed or shared), and only for the agent's own skills folder.
+
+function madeWorld(front: string) {
+  const w = world()
+  writeFileSync(join(w.folder, 'SKILL.md'), front)
+  return w
+}
+
+test('a skill whose front matter says origin: made lists as made with no mark of this daemon', () => {
+  const { applyOrigins } = api()
+  const w = madeWorld('---\nname: friday-update\ndescription: The Friday update.\norigin: made\n---\n\n# Friday update\n')
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'made')
+})
+
+for (const [label, front] of [
+  ['CRLF line ends', '---\r\nname: foo\r\norigin: made\r\n---\r\n'],
+  ['a byte order mark', '﻿---\nname: foo\norigin: made\n---\n'],
+  ['a double quoted value', '---\nname: foo\norigin: "made"\n---\n'],
+  ['a single quoted value', "---\nname: foo\norigin: 'made'\n---\n"],
+  ['a trailing comment', '---\nname: foo\norigin: made   # saved by the agent\n---\n'],
+  ['capital letters', '---\nname: foo\norigin: Made\n---\n'],
+] as const) {
+  test(`front matter origin: made is read with ${label}`, () => {
+    const { applyOrigins } = api()
+    const w = madeWorld(front)
+    assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'made')
+  })
+}
+
+test('a front matter origin other than made gives no origin: a file cannot claim taught, installed or shared', () => {
+  const { applyOrigins } = api()
+  for (const value of ['taught', 'installed', 'shared', 'repo', 'synced', 'invented', '', '[made]']) {
+    const w = madeWorld(`---\nname: foo\norigin: ${value}\n---\n`)
+    assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined, value)
+  }
+})
+
+test('origin: made outside the front matter block, or in an unclosed block, is not read', () => {
+  const { applyOrigins } = api()
+  for (const text of [
+    '# Notes\n\norigin: made\n',
+    '---\nname: foo\n---\n\norigin: made\n',
+    '---\nname: foo\norigin: made\n',
+    'name: foo\n---\norigin: made\n---\n',
+  ]) {
+    const w = madeWorld(text)
+    assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined, JSON.stringify(text))
+  }
+})
+
+test('a mark of this daemon wins over the front matter', () => {
+  const { applyOrigins, stampOrigin, originIdentOf } = api()
+  const w = madeWorld('---\nname: foo\norigin: made\n---\n')
+  stampOrigin(w.file, 'foo', { origin: 'taught', ident: originIdentOf(w.folder)! }, 123)
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'taught')
+})
+
+test('a stale mark (the folder was made again) falls back to the front matter', () => {
+  const { applyOrigins, stampOrigin } = api()
+  const w = madeWorld('---\nname: foo\norigin: made\n---\n')
+  stampOrigin(w.file, 'foo', { origin: 'taught', ident: 'not-this-folder' }, 123)
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, 'made')
+})
+
+test('front matter origin: made is read only for the agent\'s own skills; other scopes keep their own origin', () => {
+  const { applyOrigins } = api()
+  const w = madeWorld('---\nname: foo\norigin: made\n---\n')
+  const scopes: Array<[SkillScope, string | undefined]> = [['computer', undefined], ['repo', 'repo'], ['plugin', 'installed'], ['managed', 'installed'], ['synced', 'synced']]
+  for (const [scope, origin] of scopes) {
+    assert.equal(applyOrigins({ skills: [row(w.folder, scope)] }, w.file).skills[0]?.origin, origin, scope)
+  }
+})
+
+test('originForRow takes the front matter origin as its own argument and still prefers a matching mark', () => {
+  const { originForRow } = api()
+  const stamp = { origin: 'taught' as const, at: 1, ident: 'a' }
+  assert.equal(originForRow({ scope: 'agent' }, undefined, 'a', 'made'), 'made')
+  assert.equal(originForRow({ scope: 'agent' }, stamp, 'a', 'made'), 'taught')
+  assert.equal(originForRow({ scope: 'agent' }, stamp, 'b', 'made'), 'made')
+  assert.equal(originForRow({ scope: 'agent' }, undefined, 'a', 'taught'), undefined)
+  assert.equal(originForRow({ scope: 'computer' }, undefined, 'a', 'made'), undefined)
+  assert.equal(originForRow({ scope: 'agent' }, undefined, 'a', undefined), undefined)
+})
+
+test('a missing, unreadable or huge SKILL.md never throws and reads no origin', () => {
+  const { applyOrigins } = api()
+  const w = world()
+  unlinkSync(join(w.folder, 'SKILL.md'))
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
+  mkdirSync(join(w.folder, 'SKILL.md'))
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
+  rmdirSync(join(w.folder, 'SKILL.md'))
+  // The block closes past the bounded head read, so it is never parsed.
+  writeFileSync(join(w.folder, 'SKILL.md'), '---\nname: foo\ndescription: ' + 'x'.repeat(200_000) + '\norigin: made\n---\n')
+  assert.equal(applyOrigins({ skills: [row(w.folder)] }, w.file).skills[0]?.origin, undefined)
+})
