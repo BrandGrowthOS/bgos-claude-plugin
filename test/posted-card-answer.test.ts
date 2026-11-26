@@ -73,6 +73,11 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown> = async () 
     streamAuthority: null, askTracker: { askIdOf: () => null, trackedMessageIds: () => new Set() },
     pendingLoginMethodCard: () => null, announceCompleteAsks: () => {},
     pendingPermissions: new Map(), senderUserIdOf: () => OWNER,
+    // The open card file (lib/open-cards.ts) is test/open-card-restart.test.ts's.
+    openCardStore: { add: () => {}, remove: () => {}, flushIfDirty: () => false },
+    OPEN_CARD_STALE_ANSWER_MS: 24 * 60 * 60 * 1000,
+    readFailureStatus: () => null,
+    buildUnreadableCardNotice: () => ({ content: '', meta: {} }),
   }
   const pageStart = source.indexOf('    const prevUnanswered = chatUnansweredButtons.get(chatId)')
   const pageEndLine = '    chatUnansweredButtons.set(chatId, nextUnanswered)'

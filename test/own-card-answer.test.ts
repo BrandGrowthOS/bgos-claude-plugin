@@ -42,6 +42,9 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown>, post = asy
     bgosGet: read, bgosPost: post, USER_ID: 'owner', ASSISTANT_ID: '42', LOGIN_METHOD_WINDOW_MS,
     chatUnansweredButtons: open, announcedClickIds: announced, FORWARD_CACHE_MAX: 500,
     postedButtonCards: new Map(),
+    // The open card file (lib/open-cards.ts) is test/open-card-restart.test.ts's.
+    openCardStore: { add: () => {}, remove: () => {}, flushIfDirty: () => false },
+    OPEN_CARD_STALE_ANSWER_MS: 24 * 60 * 60 * 1000,
     recentButtonPrompts: prompts,
     updateDrainMode: false, lockHeld: true, humanMessageEdits: { isChatDeleted: () => flags.deleted },
     ownerLaneVerdict, ownerAnnounceRefused, lanesOnForThisAgent: false,
