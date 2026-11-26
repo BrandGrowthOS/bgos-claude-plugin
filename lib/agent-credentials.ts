@@ -457,6 +457,71 @@ export function lockRouteFor(via: CredentialsVia): IdentityRoute {
   return 'elimination'
 }
 
+// ── The claim needs the paired agent's id (board 01a072c5) ──────────────────
+//
+// The lock route above says HOW a session found its identity, never WHICH
+// agent it names. Two holes followed on a host paired for one agent:
+//   - The shared legacy file. The real agent, started from its pinned folder
+//     or by hoai with BGOS_ASSISTANT_ID, reaches credentials.json through the
+//     resolver's ownOrNothing with via 'legacy', so it recorded 'elimination'
+//     like any stray, stayed passive behind one that booted first, and was
+//     judged as an elimination start by the home binding.
+//   - A session naming ANOTHER agent (a worker that inherited the agent's
+//     BGOS_CREDENTIALS_PATH but runs with its own BGOS_ASSISTANT_ID) recorded
+//     'env', a pinned route, and the real agent never takes a lock from a
+//     pinned holder.
+// So the claim is checked against the assistantId in the pairing credentials.
+
+/** The lock route of a session that names a different agent than the pairing
+ *  it resolved to: it never takes, refreshes or overwrites the lock. Never
+ *  written to a lock file (only the three IdentityRoute words are). */
+export const NOT_THIS_AGENT = 'not-this-agent'
+export type LockRoute = IdentityRoute | typeof NOT_THIS_AGENT
+
+export interface SessionClaim {
+  /** The route the home binding judges: the resolver's, except that the shared
+   *  legacy file reached through this session's own id counts as the route
+   *  that named it ('folder-pin' or 'env-assistant'). */
+  via: CredentialsVia
+  /** What the pairing lock records and decides with. */
+  lockRoute: LockRoute
+  /** The agent id this session names ('' when it names none). */
+  sessionAgentId: string
+  /** The agent id the pairing credentials were made for ('' when unknown). */
+  pairedAgentId: string
+}
+
+function sameAgentId(a: string, b: string): boolean {
+  if (/^\d{1,12}$/.test(a) && /^\d{1,12}$/.test(b)) return Number(a) === Number(b)
+  return a === b
+}
+
+/**
+ * Which agent this session claims to be, against the agent the pairing it
+ * resolved to was made for. The session's own id is read in the resolver's
+ * order: BGOS_ASSISTANT_ID, else the folder pin, except beside an explicit
+ * BGOS_CREDENTIALS_PATH, which names a file and ignores the folder pin just as
+ * the resolver does. A session that names no agent (elimination) and a
+ * pairing with no assistantId keep today's route.
+ */
+export function decideSessionClaim(input: {
+  via: CredentialsVia
+  env?: Env
+  folderPinId?: string
+  pairedAssistantId?: unknown
+}): SessionClaim {
+  const paired = str(input.pairedAssistantId).trim()
+  const envId = configuredAssistantId(input.env ?? {})
+  const pin = input.via === 'env-path' ? '' : str(input.folderPinId).trim()
+  const own = envId || pin
+  if (own && paired && !sameAgentId(own, paired)) {
+    return { via: input.via, lockRoute: NOT_THIS_AGENT, sessionAgentId: own, pairedAgentId: paired }
+  }
+  const via: CredentialsVia =
+    input.via === 'legacy' && own && paired ? (envId ? 'env-assistant' : 'folder-pin') : input.via
+  return { via, lockRoute: lockRouteFor(via), sessionAgentId: own, pairedAgentId: paired }
+}
+
 /** The digits in <folder>/.bgos-agent-id, or '' when there is no usable pin. */
 export function readFolderPinId(
   cwd: string,
