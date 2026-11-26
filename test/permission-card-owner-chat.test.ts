@@ -321,8 +321,8 @@ test('both click intakes read the server tapper first, so a recipient click is f
     assert.equal(tapper({ answeredByUserId: RECIPIENT }), RECIPIENT, lane)
     assert.equal(tapper({ answeredByUserId: OWNER }), OWNER, lane)
     assert.equal(tapper({}), OWNER, `${lane}: unstamped keeps the old owner fallback`)
-    const pending = new Map([['abcde', { requesterUserId: OWNER, resolve: () => {} } as any]])
-    assert.equal(permissionRelay.resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: tapper({ answeredByUserId: RECIPIENT }), pending }).kind, 'foreign', lane)
+    const pending = new Map([['abcde', { requesterUserId: OWNER, resolve: () => {}, cardMessageId: 100 } as any]])
+    assert.equal(permissionRelay.resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: tapper({ answeredByUserId: RECIPIENT }), pending, cardMessageId: 100 }).kind, 'foreign', lane)
   }
 })
 

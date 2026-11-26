@@ -1643,14 +1643,14 @@ test('the owner\'s tap hands its approval on: only an Allow once of a pending ca
   }
   const { resolvePermissionClick } = await import('../lib/permission-relay.ts')
   const seen: unknown[] = []
-  const pending = () => new Map([['abcde', { requesterUserId: OWNER, resolve: (choice: unknown, approval?: unknown) => seen.push([choice, approval ?? null]) }]])
-  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: { ...APPROVAL_CLICK, extra: 1 } } as never)
-  resolvePermissionClick({ callbackData: 'ea:deny:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: APPROVAL_CLICK } as never)
-  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: { id: 'forged' } } as never)
+  const pending = () => new Map([['abcde', { requesterUserId: OWNER, cardMessageId: 501, resolve: (choice: unknown, approval?: unknown) => seen.push([choice, approval ?? null]) }]])
+  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: { ...APPROVAL_CLICK, extra: 1 }, cardMessageId: 501 } as never)
+  resolvePermissionClick({ callbackData: 'ea:deny:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: APPROVAL_CLICK, cardMessageId: 501 } as never)
+  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: { id: 'forged' }, cardMessageId: 501 } as never)
   assert.deepEqual(seen, [['once', APPROVAL_CLICK], ['deny', null], ['once', null]])
   // A stranger's tap resolves nothing, approval or not.
   const foreign = pending()
-  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: 'user_other', pending: foreign, emailSendApproval: APPROVAL_CLICK } as never)
+  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: 'user_other', pending: foreign, emailSendApproval: APPROVAL_CLICK, cardMessageId: 501 } as never)
   assert.equal(foreign.size, 1)
   // The stream lane keeps the field; the card read finds it on an answered Allow once only.
   const { viewStreamMessage } = await import('../lib/stream-apply.ts')
@@ -1663,8 +1663,8 @@ test('the owner\'s tap hands its approval on: only an Allow once of a pending ca
 
 test('server.ts reads the tap\'s approval on every lane it learns of a tap, through the one shared resolver, and adds no inbound_click listener', () => {
   // Release 0.69.0: both intakes read the server's tapper first (#233, shared agents Phase 0, item 0.8).
-  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData,\n\s*clickerUserId: readTapperUserId\(payload\) \?\? senderUserIdOf\(payload\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: payload\.emailSendApproval,\n\s*\}\)/)
-  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData: answer\.callbackData,\n\s*clickerUserId: answer\.tapperUserId \?\? senderUserIdOf\(answer\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: answer\.emailSendApproval,\n\s*\}\)/)
+  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData,\n\s*clickerUserId: readTapperUserId\(payload\) \?\? senderUserIdOf\(payload\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: payload\.emailSendApproval,\n\s*cardMessageId: mm\.id,\n\s*\}\)/)
+  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData: answer\.callbackData,\n\s*clickerUserId: answer\.tapperUserId \?\? senderUserIdOf\(answer\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: answer\.emailSendApproval,\n\s*cardMessageId: view\.messageId,\n\s*\}\)/)
   assert.equal((SRC.match(/resolvePermissionClick\(/g) ?? []).length, 2)
   const wait = serverSlice('async function waitForVerdict(', '\n}\n')
   assert.match(wait, /if \(choice === 'once'\) onTapApproval\?\.\(answeredEmailSendApproval\(msg\.message\)\)/)
@@ -1726,6 +1726,9 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>, over: Record<stri
   // A tap on the card the fake post created (id 501) unless another row is named.
   const tap = async (callbackData: string, emailSendApproval: unknown, cardMessageId: number = 501) => {
     for (let i = 0; i < 50 && posts.length === 0; i++) await new Promise((r) => setImmediate(r))
+    // The tap comes after the post has RETURNED, as a person's tap does: the
+    // request learns its card id there, and a click settles it only on that row.
+    await new Promise((r) => setImmediate(r))
     return relayNs.resolvePermissionClick({ callbackData, clickerUserId: OWNER, pending, emailSendApproval, cardMessageId } as never)
   }
   return { relay, tap, posts, notes, logs, store }
@@ -1761,7 +1764,7 @@ test('server.ts, run: an Allow given on another card that names the same request
   const other = await run.tap('ea:once:abcde', APPROVAL_CLICK, 999)
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
   assert.equal((other as { kind: string }).kind, 'other_card')
-  assert.deepEqual(run.notes, [], 'no verdict reaches the CLI from another card')
+  assert.equal(run.notes.length, 0, 'no verdict reaches the CLI from another card')
   assert.equal(run.store.claim?.(SEND_ARGS) ?? null, null, 'and no Allow is recorded')
   await run.tap('ea:once:abcde', APPROVAL_CLICK)
   await done

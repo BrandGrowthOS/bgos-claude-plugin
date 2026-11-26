@@ -3460,6 +3460,12 @@ interface PendingPermission {
    */
   floorHeld?: boolean
   /**
+   * The message id of the card posted for this request, once the post has
+   * returned (null when it returned none). A click settles the request only
+   * when it was given on this row (resolvePermissionClick).
+   */
+  cardMessageId?: number | null
+  /**
    * How long this daemon is still listening to this request: the backstop
    * built from the wait the SERVER stored, written once the card comes back.
    * It is what keeps this chat on the scheduler's 2 s fast scope, and it is
@@ -4546,7 +4552,12 @@ function relayPermissionToOwner(
     // daemon is still listening to the request. Until this line runs the entry
     // states no wait, which reads as the longest it could be.
     const held = pendingPermissions.get(request_id)
-    if (held) held.waitMs = permissionBackstopMs(storedWait)
+    if (held) {
+      held.waitMs = permissionBackstopMs(storedWait)
+      // The card this request answers to: a click settles it only on this row
+      // (lib/permission-relay.ts resolvePermissionClick).
+      held.cardMessageId = cardMessageId
+    }
 
     log(
       `Permission card sent to chat ${chatId} for ${tool_name} [${request_id}] ` +
@@ -13270,10 +13281,17 @@ async function pollChat(chatId: string): Promise<void> {
         clickerUserId: readTapperUserId(payload) ?? senderUserIdOf(payload),
         pending: pendingPermissions,
         emailSendApproval: payload.emailSendApproval,
+        cardMessageId: mm.id,
       })
       if (permOutcome.kind !== 'not_permission') {
         if (permOutcome.kind === 'resolved') {
           log(`Permission inline-button click: ${permOutcome.choice} [${permOutcome.requestId}]`)
+        } else if (permOutcome.kind === 'other_card') {
+          log(
+            `Ignoring permission button click ${permOutcome.choice} [${permOutcome.requestId}] on message ` +
+              `${permOutcome.cardMessageId ?? 'unknown'}: the request answers only on its own card ` +
+              `${permOutcome.expectedCardMessageId ?? 'unknown'}`,
+          )
         } else if (permOutcome.kind === 'foreign') {
           log(
             `Ignoring permission button click ${permOutcome.choice} [${permOutcome.requestId}] from ` +
@@ -17898,6 +17916,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
       clickerUserId: answer.tapperUserId ?? senderUserIdOf(answer),
       pending: pendingPermissions,
       emailSendApproval: answer.emailSendApproval,
+      cardMessageId: view.messageId,
     })
     if (outcome.kind === 'not_permission') {
       // decideButtonsAnswered said 'permission' but the callback will not
@@ -17913,6 +17932,14 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     if (outcome.kind === 'stale') {
       log(
         `Stale permission click ${outcome.choice} [${outcome.requestId}] via stream, no pending entry`,
+      )
+      return
+    }
+    if (outcome.kind === 'other_card') {
+      log(
+        `Ignoring stream permission click ${outcome.choice} [${outcome.requestId}] on message ` +
+          `${outcome.cardMessageId ?? 'unknown'}: the request answers only on its own card ` +
+          `${outcome.expectedCardMessageId ?? 'unknown'}`,
       )
       return
     }

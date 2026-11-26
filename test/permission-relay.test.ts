@@ -386,13 +386,16 @@ test('the card id is read off the response, or the server expiry arm is off', ()
 
 // ── Clicks, on both transports and both vocabularies ─────────────────────────
 
+/** The message id of the card the pending request was posted as. */
+const CARD_ID = 100
+
 function pendingWith(requesterUserId: string): {
   pending: Map<string, PendingPermissionLike>
   answered: PermissionChoice[]
 } {
   const answered: PermissionChoice[] = []
   const pending = new Map<string, PendingPermissionLike>([
-    [REQ, { requesterUserId, resolve: (c) => answered.push(c) }],
+    [REQ, { requesterUserId, resolve: (c) => answered.push(c), cardMessageId: CARD_ID }],
   ])
   return { pending, answered }
 }
@@ -407,6 +410,7 @@ test('an ea: click resolves the pending request, allow and deny alike', () => {
       callbackData,
       clickerUserId: 'user-1',
       pending,
+      cardMessageId: CARD_ID,
     })
     assert.equal(outcome.kind, 'resolved')
     assert.deepEqual(answered, [choice])
@@ -423,6 +427,7 @@ test('a legacy perm: click from a prompt posted before the update still resolves
     callbackData: `perm:session:${REQ}`,
     clickerUserId: 'user-1',
     pending,
+    cardMessageId: CARD_ID,
   })
   assert.equal(outcome.kind, 'resolved')
   assert.equal(outcome.kind === 'resolved' ? outcome.vocabulary : null, 'perm')
@@ -437,6 +442,7 @@ test('a foreign user click is ignored and the request stays open', () => {
     callbackData: `ea:once:${REQ}`,
     clickerUserId: 'someone-else',
     pending,
+    cardMessageId: CARD_ID,
   })
   assert.equal(outcome.kind, 'foreign')
   assert.deepEqual(answered, [])
@@ -449,6 +455,7 @@ test('a click for a request this daemon is not holding reads as stale', () => {
     callbackData: 'ea:once:zyxwv',
     clickerUserId: 'user-1',
     pending,
+    cardMessageId: CARD_ID,
   })
   assert.equal(outcome.kind, 'stale')
   assert.deepEqual(answered, [])
@@ -462,6 +469,7 @@ test('an ordinary agent button is not a permission click', () => {
       callbackData: 'u:ship-it',
       clickerUserId: 'user-1',
       pending,
+      cardMessageId: CARD_ID,
     }).kind,
     'not_permission',
   )
@@ -752,6 +760,7 @@ test('a tap the watch reads settles the request exactly once, whoever sees it se
           taps.push(choice)
           resolveButton(choice)
         },
+        cardMessageId: CARD_ID,
       },
     ],
   ])
@@ -789,6 +798,7 @@ test('a tap the watch reads settles the request exactly once, whoever sees it se
     callbackData: `ea:once:${REQ}`,
     clickerUserId: 'user-1',
     pending,
+    cardMessageId: CARD_ID,
   })
   assert.equal(late.kind, 'stale', 'the late copy finds nothing to resolve')
   assert.deepEqual(verdicts, ['once'], 'the CLI hears exactly one verdict')
