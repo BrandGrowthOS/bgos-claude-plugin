@@ -213,6 +213,17 @@ test('another checkout is still not this one: a different folder, the same name 
   }
 })
 
+test('one id is not enough: folders with different names are different checkouts even when the volume gives both one id (a cloned disk)', () => {
+  const ours = checkout()
+  const copy = checkout()
+  const cloned = { ...windowsVolume(), identity: () => 'one id for every folder' }
+  for (const form of FORMS) {
+    const dir = workspace(copy, form)
+    assert.deepEqual(outcomes(boot(dir, ours, false, cloned)), ['not_clone'], form)
+    assert.equal(existsSync(settingsPath(dir)), false, form)
+  }
+})
+
 test('a marketplace install is never touched, whatever the workspace names and however it spells it', () => {
   const ours = checkout()
   for (const spelled of [ours, otherCase(ours)]) {

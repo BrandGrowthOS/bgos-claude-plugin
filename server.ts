@@ -372,7 +372,7 @@ import {
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { PRIVATE_HOOK_MISSING_REFUSAL, createPrivateHookLiveness, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
-import { registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
+import { cloneHooksSkippedLine, registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
 import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
@@ -20713,6 +20713,9 @@ async function main(): Promise<void> {
     if (result.outcome === 'registered') log(`hooks: registered the current agent hooks in ${result.folder}; they load at this agent's next launch`)
     else if (result.outcome === 'failed') log(`hooks: could not register the agent hooks in ${result.folder}: ${result.detail ?? 'unknown'}`)
   }
+  // A boot that took every folder for another checkout's wrote nothing, and used to say nothing.
+  const hooksSkipped = cloneHooksSkippedLine(bootHooks.results)
+  if (hooksSkipped) log(hooksSkipped)
   const hookOutcomes: string[] = bootHooks.restartOutcomes
   void phase('capability-canon warm-up', () => loadServedCapabilities()).catch(
     // loadServedCapabilities does not throw (it falls back), but a background

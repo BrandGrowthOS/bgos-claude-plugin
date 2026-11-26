@@ -503,6 +503,7 @@ function collectRunFlags(tokens) {
  *   (nothing) / run  -> run     doctor -> doctor     pair -> pair
  *   setup -> setup              logs -> logs         help / -h / --help -> help
  *   install-cli -> install-cli (put the hoai command on PATH)
+ *   hooks -> hooks (write this folder's agent hooks, start nothing)
  * A run flag (-c / --continue / --resume, --new, --force and --keep-alive)
  * routes to run, either as the first token or right after `run`; `fresh`,
  * `force` and `keepAlive` say which ones were given, and they combine.
@@ -512,7 +513,7 @@ function collectRunFlags(tokens) {
  * routes to pair with itself prepended, so `hoai BGOS-7F3A-2K` just works.
  * Anything else routes to help (with the tokens kept, so main can name them).
  * @param {readonly string[]} argv
- * @returns {{ action: 'run' | 'doctor' | 'pair' | 'setup' | 'logs' | 'install-cli' | 'help',
+ * @returns {{ action: 'run' | 'doctor' | 'pair' | 'setup' | 'logs' | 'install-cli' | 'hooks' | 'help',
  *             rest: string[], fresh: boolean, force: boolean, keepAlive?: true }}
  */
 export function resolveHoaiAction(argv) {
@@ -532,6 +533,7 @@ export function resolveHoaiAction(argv) {
   if (lowered === 'setup') return route('setup', rest)
   if (lowered === 'logs') return route('logs', rest)
   if (lowered === 'install-cli') return route('install-cli', rest)
+  if (lowered === 'hooks') return route('hooks', rest)
   if (lowered === 'vault-host') return route('vault-host', rest)
   if (lowered === 'help' || lowered === '-h' || lowered === '--help') {
     return route('help', rest)
@@ -722,6 +724,102 @@ export function hookScriptDirFor({ cwd, scriptDir, serverName, readFile, exists 
 }
 
 /**
+ * The hook entries a launch from `cwd` registers, or null where it registers
+ * none (a marketplace install, whose hooks come from the plugin's own hooks
+ * file). One place, so a `hoai` launch and `hoai hooks` can never write
+ * different entries.
+ * @param {{ cwd: string, scriptDir: string, resolution: { method: string, serverName: string },
+ *   readFile: (path: string) => string | null, exists: (path: string) => boolean }} input
+ * @returns {{ settingsPath: string, forwarderPath: string } | null}
+ */
+export function launchHooksFor({ cwd, scriptDir, resolution, readFile, exists }) {
+  return hookRegistrationFor({
+    cwd,
+    scriptDir: hookScriptDirFor({ cwd, scriptDir, serverName: resolution.serverName, readFile, exists }),
+    method: resolution.method,
+  })
+}
+
+/**
+ * `hoai hooks`: write this folder's agent hooks now, and start nothing.
+ *
+ * A `hoai` launch writes a clone folder's hooks right before it starts claude
+ * (the CLI reads them once, at launch). A launcher that starts claude itself
+ * skipped that step, and nothing else writes them BEFORE a launch: the daemon
+ * registers them after the CLI has read them, and it never adds the blocking
+ * floor hook to a folder that had no rail (lib/clone-hooks.mjs). This is that
+ * one step as a command, for such a launcher to run first: the same entries to
+ * the same file as a launch (launchHooksFor), the floor hook included, because
+ * the owner's own launcher asked for them. Idempotent: a folder whose hooks
+ * hold is not written. A marketplace install is left alone, as a launch leaves
+ * it. `hoai hooks register` is the same command.
+ * @param {readonly string[]} rest  the words after `hooks`
+ * @param {{ cwd: string, env: Record<string, string | undefined>, home: string, scriptDir: string,
+ *   readFile: (path: string) => string | null, exists?: (path: string) => boolean,
+ *   register?: typeof ensureHookEntries, print?: (line: string) => void, printError?: (line: string) => void }} opts
+ * @returns {number} 0 when the hooks hold or there is nothing to write, 1 when they could not be written
+ */
+export function runHooksCommand(
+  rest,
+  {
+    cwd,
+    env,
+    home,
+    scriptDir,
+    readFile,
+    exists = existsSync,
+    register = ensureHookEntries,
+    print = (line) => console.log(line),
+    printError = (line) => console.error(line),
+  },
+) {
+  const words = (Array.isArray(rest) ? rest : []).map((word) => String(word ?? '').trim()).filter(Boolean)
+  const unknown = words.find((word) => word.toLowerCase() !== 'register') ?? words[1]
+  if (unknown !== undefined) {
+    printError(`[hoai] hooks: unknown word "${unknown}". Run hoai hooks from the agent's folder, with nothing after it.`)
+    return 1
+  }
+  const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
+  if (!isResolvedChannel(resolution)) {
+    const reason = String(resolution.reason ?? '').trim() || 'the install method could not be determined.'
+    printError(`[hoai] hooks: nothing written, because hoai would not launch here either: ${reason}`)
+    return 1
+  }
+  const hooks = launchHooksFor({ cwd, scriptDir, resolution, readFile, exists })
+  if (!hooks) {
+    if (String(resolution.method) === 'marketplace') {
+      print(
+        '[hoai] hooks: nothing to write. This is a marketplace install: the plugin registers its own ' +
+          'hooks, and a second set would run each of them twice.',
+      )
+      return 0
+    }
+    printError('[hoai] hooks: nothing written. hoai could not tell where its own folder is, so it cannot name the hook scripts.')
+    return 1
+  }
+  let result
+  try {
+    result = register(hooks)
+  } catch (err) {
+    printError(`[hoai] hooks: could not write ${hooks.settingsPath}: ${err?.message ?? err}`)
+    return 1
+  }
+  if (result?.reason === 'not_persisted') {
+    printError(
+      `[hoai] hooks: could not write ${hooks.settingsPath}: another program rewrote the file at the same moment. ` +
+        'Run hoai hooks again.',
+    )
+    return 1
+  }
+  print(
+    result?.changed
+      ? `[hoai] hooks: wrote this agent's hooks to ${hooks.settingsPath}. They load the next time claude starts in this folder.`
+      : `[hoai] hooks: already current in ${hooks.settingsPath}.`,
+  )
+  return 0
+}
+
+/**
  * Name the agent this launch is for in the env claude (and so the HOAI daemon
  * claude starts) inherits: HOAI_ATTACH_SCOPE (lib/attach-scope.mjs, board row
  * bab90cdb, design BGOS #1244). The daemon compares it with the agent it
@@ -836,11 +934,7 @@ export function buildRunPlan({
   // What the launch needs BESIDES the argv: the task tools flag, and (for a
   // clone) the hook entries that carry the activity rail into the session.
   const launchEnv = { ...LAUNCH_ENV }
-  const hooks = hookRegistrationFor({
-    cwd,
-    scriptDir: hookScriptDirFor({ cwd, scriptDir, serverName: resolution.serverName, readFile, exists }),
-    method: resolution.method,
-  })
+  const hooks = launchHooksFor({ cwd, scriptDir, resolution, readFile, exists })
 
   const declared = folderIdentity(cwd, readFile)
   if (declared.conflict) {
@@ -4430,6 +4524,10 @@ Usage:
   hoai pair <CODE>     pair this folder with a one time code from the HOAI app
   hoai <CODE>          shorthand for hoai pair <CODE> (BGOS-... / OC-... codes)
   hoai install-cli     put the hoai command on your PATH (or repair it)
+  hoai hooks           write this folder's agent hooks now and start nothing.
+                       hoai does this before every launch. If your own script
+                       starts claude, run this line first. Safe to run every
+                       time: it changes nothing when the hooks are current.
   hoai logs            show the last 60 lines of this agent's daemon log
   hoai vault-host      set this machine up as the agent's vault host: register
                        its host key and show the fingerprint here, in this
@@ -4539,6 +4637,20 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     const installCli = opts.installCliImpl ?? installHoaiCli
     const outcome = await installCli({ platform, env, home, scriptDir, force })
     return outcome.ok ? 0 : 1
+  }
+
+  if (action === 'hooks') {
+    return runHooksCommand(rest, {
+      cwd,
+      env,
+      home,
+      scriptDir,
+      readFile,
+      exists: opts.exists,
+      register: opts.registerHooks,
+      print: opts.print,
+      printError: opts.printError,
+    })
   }
 
   if (action === 'logs') {
