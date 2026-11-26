@@ -12623,8 +12623,10 @@ async function readPostedButtonCard(chatId: string, messageId: number): Promise<
       { conditional: false },
     ) as ChatHistoryResponse
     // The lock may have moved while the read was in flight: from then the card
-    // is the holder's (review of #417 round 4, N1).
-    if (updateDrainMode || !lockHeld) return { ok: true, status: null }
+    // is the holder's (review of #417 round 4, N1). Not a finished read: a
+    // card read back keeps its mark, so a daemon that re-arms reads it again
+    // (rv417d, R1).
+    if (updateDrainMode || !lockHeld) return { ok: false, status: null }
     if (raw.messages?.length === 0) { settlePostedButtonCard(messageId); return { ok: true, status: null } }
     const row = raw.messages?.find((entry) => entry.message.id === messageId && String(entry.message.chatId) === chatId)
     if (row) announcePostedButtonAnswer(chatId, row)
