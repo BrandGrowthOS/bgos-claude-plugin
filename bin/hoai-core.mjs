@@ -89,7 +89,9 @@ import {
   claudeConfigDir,
   detectInstallMethod,
   installedPluginsPath,
+  isUnderPluginsDir,
   marketplaceNameFromPluginPath,
+  parsePath,
 } from './bgos-install-method.mjs'
 import {
   BEACON_HEARTBEAT_FILE_NAME,
@@ -740,6 +742,29 @@ export function launchHooksFor({ cwd, scriptDir, resolution, readFile, exists })
   })
 }
 
+/** The server name a clone folder's .mcp.json uses unless it says another (bin/bgos-install-method.mjs CLONE_CHANNEL_SPEC). */
+const CLONE_SERVER_NAME = 'bgos'
+
+/**
+ * Is `folder` the home folder itself? Compared as text in the paths' own
+ * style: either slash, a trailing one or none, and any letter case for a
+ * Windows path.
+ * @param {string} folder
+ * @param {string} home
+ */
+export function isHomeFolder(folder, home) {
+  const a = String(folder ?? '').trim()
+  const b = String(home ?? '').trim()
+  if (!a || !b) return false
+  const root = (prefix) => (/^[A-Za-z]:/.test(prefix) ? prefix.slice(0, 2).toLowerCase() : prefix ? '/' : '')
+  const here = parsePath(a)
+  const there = parsePath(b)
+  if (!there.prefix || root(here.prefix) !== root(there.prefix) || here.segments.length !== there.segments.length) return false
+  const windows = [a, b].some((path) => /^[A-Za-z]:[\\/]/.test(path) || path.includes('\\'))
+  const fold = (segment) => (windows ? segment.toLowerCase() : segment)
+  return here.segments.every((segment, i) => fold(segment) === fold(there.segments[i]))
+}
+
 /**
  * `hoai hooks`: write this folder's agent hooks now, and start nothing.
  *
@@ -761,11 +786,21 @@ export function launchHooksFor({ cwd, scriptDir, resolution, readFile, exists })
  * with several, and a launcher of its own names the agent itself, often only
  * for the claude it starts. Refusing here would leave exactly that folder
  * without hooks, which is what this command exists to end.
+ *
+ * IT NEVER LOOKS LIKE SUCCESS WHEN IT WROTE NOTHING. A launcher runs this line
+ * and goes on, so "nothing to do" with exit 0 is a line that silently does
+ * nothing. Every case in which the hooks do not hold when it returns ends
+ * with 1 and ONE line saying why and what to do: the home folder (not an
+ * agent's folder, and its .claude is the CLI's own), a folder with no
+ * .mcp.json that starts a HOAI server, the installed plugin's own `hoai` (a
+ * marketplace install is never touched, so the line names the command of the
+ * checkout the folder starts), and a settings file that is not JSON (left
+ * exactly as it is, lib/claude-preseed.mjs loadSettingsOrRefuse).
  * @param {readonly string[]} rest  the words after `hooks`
  * @param {{ cwd: string, env: Record<string, string | undefined>, home: string, scriptDir: string,
  *   readFile: (path: string) => string | null, exists?: (path: string) => boolean,
  *   register?: typeof ensureHookEntries, print?: (line: string) => void, printError?: (line: string) => void }} opts
- * @returns {number} 0 when the hooks hold or there is nothing to write, 1 when they could not be written
+ * @returns {number} 0 when the hooks hold when it returns, 1 with one line of why whenever they do not
  */
 export function runHooksCommand(
   rest,
@@ -791,7 +826,36 @@ export function runHooksCommand(
     printError(`[hoai] hooks: unknown word "${unknown}". Run hoai hooks from the agent's folder, with nothing after it.`)
     return 1
   }
+  if (isHomeFolder(cwd, home)) {
+    printError("[hoai] hooks: nothing written. This is your home folder, not an agent's folder. Run hoai hooks in the agent's own folder.")
+    return 1
+  }
   const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
+  // What this folder's own .mcp.json starts, if it starts a HOAI server at all.
+  const mcpText = readFile(joinDir(cwd, MCP_CONFIG_FILE_NAME))
+  const declaredName = parseMcpChannelServerName(mcpText)
+  const served = declaredCheckout(mcpText, resolution.serverName || CLONE_SERVER_NAME)
+  if (String(resolution.method) === 'marketplace') {
+    // Never touched: the plugin registers its own hooks, and a second set would run each of them twice.
+    // The checkout is text from the folder's own file: only a plain path of ordinary length is printed back.
+    const plain = /^([A-Za-z]:[\\/]|[\\/])/.test(served) && served.length <= 400 && !/[\u0000-\u001f\u007f"]/.test(served)
+    const core = plain ? joinDir(joinDir(served.replace(/[\\/]+$/, ''), 'bin'), 'hoai-core.mjs') : ''
+    const own = core && !isUnderPluginsDir(core, { env, home }) && exists(core)
+    printError(
+      '[hoai] hooks: nothing written. This hoai is the installed plugin\'s own (a marketplace install), which never writes a folder\'s hooks. ' +
+        (own
+          ? `This folder starts the checkout ${served}, so run that checkout's own command instead: node "${core}" hooks`
+          : `If this folder starts a checkout of its own from its ${MCP_CONFIG_FILE_NAME}, run that checkout's bin/hoai-core.mjs with the word hooks instead; if it does not, take this line out, the plugin registers its hooks itself.`),
+    )
+    return 1
+  }
+  if (!declaredName && !served) {
+    printError(
+      `[hoai] hooks: nothing written. This folder has no ${MCP_CONFIG_FILE_NAME} that starts a HOAI server, so it is not an agent's folder. ` +
+        "Run hoai hooks in the agent's own folder.",
+    )
+    return 1
+  }
   if (!isResolvedChannel(resolution)) {
     const reason = String(resolution.reason ?? '').trim() || 'the install method could not be determined.'
     printError(`[hoai] hooks: nothing written, because hoai would not launch here either: ${reason}`)
@@ -799,13 +863,6 @@ export function runHooksCommand(
   }
   const hooks = launchHooksFor({ cwd, scriptDir, resolution, readFile, exists })
   if (!hooks) {
-    if (String(resolution.method) === 'marketplace') {
-      print(
-        '[hoai] hooks: nothing to write. This is a marketplace install: the plugin registers its own ' +
-          'hooks, and a second set would run each of them twice.',
-      )
-      return 0
-    }
     printError('[hoai] hooks: nothing written. hoai could not tell where its own folder is, so it cannot name the hook scripts.')
     return 1
   }
@@ -813,7 +870,13 @@ export function runHooksCommand(
   try {
     result = register(hooks)
   } catch (err) {
-    printError(`[hoai] hooks: could not write ${hooks.settingsPath}: ${err?.message ?? err}`)
+    // A refusal that already names the file (a settings file that is not JSON) is the whole line.
+    const why = String(err?.message ?? err)
+    printError(
+      why.includes(hooks.settingsPath)
+        ? `[hoai] hooks: nothing written. ${why}.`
+        : `[hoai] hooks: could not write ${hooks.settingsPath}: ${why}`,
+    )
     return 1
   }
   if (result?.reason === 'not_persisted') {
@@ -4539,7 +4602,8 @@ Usage:
   hoai hooks           write this folder's agent hooks now and start nothing.
                        hoai does this before every launch. If your own script
                        starts claude, run this line first. Safe to run every
-                       time: it changes nothing when the hooks are current.
+                       time: it changes nothing when the hooks are current,
+                       and it ends with 1 and says why when it wrote none.
   hoai logs            show the last 60 lines of this agent's daemon log
   hoai vault-host      set this machine up as the agent's vault host: register
                        its host key and show the fingerprint here, in this

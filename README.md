@@ -1180,12 +1180,25 @@ hoai hooks
 ```
 
 It writes exactly what a `hoai` launch writes (the full set, the blocking floor
-hook included), starts nothing, changes nothing when the hooks are already
-current, and leaves a marketplace install alone. `hoai hooks register` is the
-same command. It ends with 0 when the hooks hold and with 1 when it could not
-write them, and it says which in one line. It does not ask which agent the
-folder is, so it also works where your script names the agent itself. The
-daemon also keeps a clone folder's hooks current at every start and after an
+hook included), starts nothing, and changes nothing when the hooks are already
+current. `hoai hooks register` is the same command. It does not ask which agent
+the folder is, so it also works where your script names the agent itself.
+
+It ends with 0 only when the hooks hold. Whenever it wrote nothing it ends with
+1 and says why in one line, so a line in a script never looks like it worked
+when it did not:
+
+- in your home folder, or in a folder with no `.mcp.json` that starts a HOAI
+  server: that is not an agent's folder;
+- when `.claude/settings.local.json` is not JSON (a comment in it, a stray
+  comma): the file is left exactly as it is, because it may hold your own hooks
+  and permissions. A byte order mark, which Windows PowerShell writes, is fine;
+- when this `hoai` is the installed plugin's own: a marketplace install is
+  never touched (the plugin registers its hooks itself, and a second set would
+  run each of them twice). In a folder that starts a checkout of its own, the
+  line names that checkout's command to run instead.
+
+The daemon also keeps a clone folder's hooks current at every start and after an
 update, but that reaches the NEXT launch, and its first registration in a folder
 that had no hooks at all leaves the floor hook out (the one after it adds it).
 The command writes the full set now.
