@@ -12623,8 +12623,13 @@ async function readPostedButtonCard(chatId: string, messageId: number): Promise<
       { conditional: false },
     ) as ChatHistoryResponse
     // The lock may have moved while the read was in flight: from then the card
-    // is the holder's (review of #417 round 4, N1).
-    if (updateDrainMode || !lockHeld) return { ok: true, status: null }
+    // is the holder's (review of #417 round 4, N1). Not a finished read: a
+    // card read back keeps its mark, so a daemon that re-arms reads it again
+    // (rv417d, R1).
+    if (updateDrainMode || !lockHeld) return { ok: false, status: null }
+    // An empty read: the card's message is gone, or its chat is no longer this
+    // agent's to read (the server answers an empty page then too). Closed
+    // quietly (rv417d, R3).
     if (raw.messages?.length === 0) { settlePostedButtonCard(messageId); return { ok: true, status: null } }
     const row = raw.messages?.find((entry) => entry.message.id === messageId && String(entry.message.chatId) === chatId)
     if (row) announcePostedButtonAnswer(chatId, row)
@@ -12638,7 +12643,7 @@ async function readPostedButtonCard(chatId: string, messageId: number): Promise<
     // Stood down while the read was in flight: the holder closes it and says
     // so, never a passive session (review of #417 round 4, N1).
     if (updateDrainMode || !lockHeld) return { ok: false, status }
-    // Refused for good (gone, or not this daemon's to read): closed unread, so
+    // Refused for good (403, 404 or 410: gone, or not this daemon's to read): closed unread, so
     // it is not read again for a week (review of #417 round 2, F2), and the
     // agent is told once, never as an answer (round 3): a tap it can no longer
     // see is not silently lost.

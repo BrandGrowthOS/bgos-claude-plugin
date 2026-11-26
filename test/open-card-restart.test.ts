@@ -566,3 +566,41 @@ test('N4: a failure that is not a refusal for good keeps the card open and tells
   }
 })
 
+// FOLLOW UPS OF #417 (rv417d).
+test('R2: an empty read that lands after this daemon stood down closes nothing, in memory or in the file', async () => {
+  const dir = scratchDir('open-cards-')
+  const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+  first.post()
+  await flush()
+  first.stop()
+  const lock = { held: true }
+  const passive = daemon(dir, async () => { lock.held = false; return { messages: [] } }, { lock })
+  await passive.boot()
+  assert.equal(passive.reads.length, 1)
+  assert.equal(passive.cards.get(ID)?.settled, false, 'the card stays open for the holder')
+  passive.stop()
+  assert.deepEqual(loadOpenCards(join(dir, OPEN_CARDS_FILE_NAME), Date.now()).cards.map((c) => c.id), [ID])
+})
+
+test('R1: a read back that lands while this daemon stood down is read again once it re-arms, in a chat the poll watches', async () => {
+  const dir = scratchDir('open-cards-')
+  const first = daemon(dir, async () => ({ messages: [unanswered()] }))
+  first.post()
+  await flush()
+  first.stop()
+  const lock = { held: true }
+  let reads = 0
+  const flapping = daemon(dir, async () => {
+    reads += 1
+    if (reads === 1) { lock.held = false; return { messages: [answered()] } }
+    return { messages: [answered()] }
+  }, { lock, monitored: [CHAT] })
+  await flapping.boot()
+  assert.equal(flapping.notes.length, 0, 'nothing announced while stood down')
+  lock.held = true
+  flapping.later(5 * 60_000)
+  await flapping.tick()
+  assert.equal(flapping.reads.length, 2, 'read again after the re-arm')
+  assert.equal(flapping.notes.length, 1, 'and the answer is heard once')
+})
+
