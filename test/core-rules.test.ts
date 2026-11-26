@@ -85,7 +85,7 @@ test('a fresh session is shown rule 1 without a tool call: the core rules sit in
   assert.ok(shown.includes('react tool'), 'rule 1 does not say how to react on this channel')
 })
 
-test('moving the rules up keeps what was already shown: the reply mandate, the formatting lines and the guide pointer', () => {
+test('moving the rules up keeps what was already shown: the reply mandate, the formatting lines, the guide pointer and the Artifacts lines', () => {
   const shown = bundledInstructions().slice(0, CLAUDE_CODE_INSTRUCTIONS_SHOWN)
   for (const words of [
     'Messages from the BGOS chat app arrive as <channel source="bgos"> events.',
@@ -93,6 +93,10 @@ test('moving the rules up keeps what was already shown: the reply mandate, the f
     'Tables do not render on mobile - use lists instead.',
     'Backslashes:',
     'call the `bgos_capabilities` tool',
+    // The last line of the Artifacts block, so a line added above it that
+    // pushes the block past the window is red, not only one that pushes the
+    // rules out.
+    'Read artifact_read without id for the live content schema.',
   ]) {
     assert.ok(shown.includes(words), `no longer shown to the model: ${words}`)
   }
