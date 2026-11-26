@@ -291,6 +291,46 @@ test('a boot that wrote no hooks because no folder starts this checkout says so,
   assert.match(server, /cloneHooksSkippedLine\(bootHooks\.results\)/)
 })
 
+test('the skip line is one line, and what it quotes from a .mcp.json is cut at 200 characters', () => {
+  const skippedLine: any = (cloneHooks as Record<string, unknown>).cloneHooksSkippedLine
+  assert.equal(typeof skippedLine, 'function')
+  const ours = checkout()
+  const dir = volumeSpelling(scratchDir('clone-hooks-win-long-'))
+  // A server path of 50,000 characters with line breaks and a terminal escape in it.
+  const hostile = `${sep}x${sep}${'evil\n\r\u001b[2Jline '.repeat(3000)}${sep}server.ts`
+  writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [hostile] } } }))
+  const skipped = registerCloneHooksAtBoot({ folders: [dir], pluginDir: ours, installMethod: 'clone', privateHookRegistered: false, fs: windowsVolume() } as never)
+  assert.deepEqual(outcomes(skipped), ['not_clone'])
+  const line: string = skippedLine(skipped.results)
+  assert.doesNotMatch(line, /[\u0000-\u001f\u007f]/, 'a line break or a control character reached the log')
+  const quoted = line.slice(line.indexOf(dir) + dir.length)
+  assert.ok(quoted.length <= 200 + 120, `the folder's part of the line is ${quoted.length} characters`)
+  assert.ok(String(skipped.results[0]!.detail).length <= 200 + 40, `the detail is ${String(skipped.results[0]!.detail).length} characters`)
+})
+
+test('a settings file with a byte order mark keeps what the owner put in it when a boot registers the hooks', () => {
+  const ours = checkout()
+  const owners = { permissions: { deny: ['AskUserQuestion'] }, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'python3', args: ['/gate.py'] }] }] } }
+  const dir = workspace(ours, 'launch shim', `\ufeff${JSON.stringify(owners, null, 2)}`)
+  assert.deepEqual(outcomes(boot(dir, ours, false, windowsVolume())), ['registered'])
+  const after = JSON.parse(settingsText(dir).replace(/^\ufeff/, ''))
+  assert.deepEqual(after.permissions, owners.permissions, 'the owner\'s permissions are gone')
+  assert.match(JSON.stringify(after.hooks.PreToolUse), /gate\.py/, 'the owner\'s own hook is gone')
+  assert.match(settingsText(dir), /hoai-private-turn-hook\.mjs/)
+})
+
+test('a settings file that is not JSON is left exactly as it is by a boot, which says the write failed and why', () => {
+  const ours = checkout()
+  const text = '// my own notes\n{ "permissions": { "deny": ["AskUserQuestion"] } }\n'
+  const dir = workspace(ours, 'launch shim', text)
+  const result = boot(dir, ours, false, windowsVolume())
+  assert.deepEqual(outcomes(result), ['failed'])
+  assert.equal(settingsText(dir), text, 'the owner\'s file was replaced')
+  assert.ok(String(result.results[0]!.detail).includes(settingsPath(dir)), String(result.results[0]!.detail))
+  // A write that failed arms no restart.
+  assert.deepEqual(result.restartOutcomes, ['failed'])
+})
+
 // -- Windows only: the real file system ---------------------------------------------------------------------------
 
 /** The 8.3 short spelling of a path, or the path itself on a volume that keeps no short names. */

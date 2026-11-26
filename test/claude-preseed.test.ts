@@ -907,15 +907,64 @@ test('a hook the user wrote themselves survives untouched', () => {
   assert.ok(flat.some((h: any) => h.args?.[0] === FORWARDER))
 })
 
-test('a corrupt settings file is replaced rather than failing the install', () => {
-  const fs = memFs({ '/agent/.claude/settings.local.json': '{ not json' })
-  const result = ensureHookEntries({
-    settingsPath: '/agent/.claude/settings.local.json',
-    forwarderPath: FORWARDER,
-    fs,
+test('a settings file that does not parse is left exactly as it is, and the call refuses with its path', () => {
+  // It used to be replaced "rather than failing the install". But the file is the owner's too (their own hooks,
+  // their permissions), and a comment or a trailing comma in it is not a reason to lose them.
+  for (const text of ['{ not json', '// my notes\n{ "permissions": { "deny": ["AskUserQuestion"] } }', '{ "a": 1, }', '[]', 'null', '"a string"']) {
+    const fs = memFs({ '/agent/.claude/settings.local.json': text })
+    assert.throws(
+      () => ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs }),
+      /\/agent\/\.claude\/settings\.local\.json/,
+      text,
+    )
+    assert.equal(fs.files.get('/agent/.claude/settings.local.json'), text, text)
+    assert.equal(fs.files.size, 1, 'no temp file is left beside it')
+  }
+})
+
+test('a settings file with a byte order mark is read, and what the owner put in it stays', () => {
+  const mine = { type: 'command', command: 'python3', args: ['/tools/gate.py'] }
+  const owners = { permissions: { deny: ['AskUserQuestion'] }, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [mine] }] } }
+  const fs = memFs({ '/agent/.claude/settings.local.json': `\ufeff${JSON.stringify(owners, null, 2)}` })
+  assert.deepEqual(ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs }), { changed: true, reason: 'set' })
+  const settings = settingsOf(fs)
+  assert.deepEqual(settings.permissions, owners.permissions)
+  assert.deepEqual(settings.hooks.PreToolUse[0], { matcher: 'Bash', hooks: [mine] })
+  assert.ok(settings.hooks.PreToolUse.flatMap((m: any) => m.hooks).some((h: any) => h.args?.[0] === FLOOR_HOOK))
+  // A file with the mark whose hooks already hold is not written again.
+  const held = memFs({ '/agent/.claude/settings.local.json': `\ufeff${fs.files.get('/agent/.claude/settings.local.json')}` })
+  assert.deepEqual(ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs: held }), { changed: false, reason: 'already' })
+  assert.ok(held.files.get('/agent/.claude/settings.local.json')!.startsWith('\ufeff'))
+})
+
+test('an empty settings file has nothing to lose: it gets the entries', () => {
+  for (const text of ['', '  \n', '\ufeff']) {
+    const fs = memFs({ '/agent/.claude/settings.local.json': text })
+    assert.equal(ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs }).reason, 'set', JSON.stringify(text))
+    assert.equal(settingsOf(fs).hooks.Stop.length, 3)
+  }
+})
+
+test('an owner\'s hook whose path only contains a HOAI script name is the owner\'s: it stays', () => {
+  const owners = [
+    { type: 'command', command: 'node', args: ['/tools/not-hoai-hook.mjs'] },
+    { type: 'command', command: 'python3', args: ['/keep/hoai-hook.mjs.d/gate.py'] },
+    { type: 'command', command: 'bash', args: ['-c', 'echo hoai-floor-hook.mjsx'] },
+    { type: 'command', command: 'C:\\tools\\my-hoai-private-turn-hook.mjs' },
+  ]
+  // What an older install left: the forwarder of another checkout, in the args form and as one command line.
+  const stale = [
+    { type: 'command', command: 'node', args: ['/old/checkout/bin/hoai-hook.mjs'], timeout: 5, async: true },
+    { type: 'command', command: 'node "/old/checkout/bin/hoai-hook.mjs"' },
+    { type: 'command', command: 'node C:\\old\\bin\\hoai-floor-hook.mjs --quiet' },
+    { type: 'command', command: 'hoai-hook.mjs' },
+  ]
+  const fs = memFs({
+    '/agent/.claude/settings.local.json': JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [...owners, ...stale] }] } }),
   })
-  assert.equal(result.reason, 'set')
-  assert.equal(settingsOf(fs).hooks.Stop.length, 3)
+  assert.equal(ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs }).reason, 'set')
+  const kept = settingsOf(fs).hooks.PreToolUse.find((m: any) => m.matcher === 'Bash')
+  assert.deepEqual(kept?.hooks, owners, 'an owner\'s hook was taken for an old HOAI entry and dropped, or an old HOAI entry was kept')
 })
 
 test('no forwarder path means no entries, never a half written hooks block', () => {

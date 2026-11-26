@@ -14,7 +14,7 @@
  */
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
@@ -119,14 +119,29 @@ test('a folder that carries the rail without the floor gets the floor, and the o
   assert.deepEqual(JSON.parse(settingsText(dir)).permissions, { deny: ['AskUserQuestion'] })
 })
 
-test('a marketplace install is never touched: its hooks come from the plugin, and a second set would run each hook twice', async () => {
+test('the marketplace hoai writes nothing in a clone folder, fails, and names the command to run instead', async () => {
+  // A marketplace install is never touched: its hooks come from the plugin, and a second set would run each hook
+  // twice. But a launcher line that wrote nothing must not look like success.
   const dir = agentFolder()
   const home = realpathSync.native(scratchDir('hoai-hooks-cmd-market-'))
   const marketplaceBin = join(home, '.claude', 'plugins', 'cache', 'hoai', 'hoai', '1.2.3', 'bin')
-  const { code, said } = await hoai(['hooks'], dir, { home, scriptDir: marketplaceBin })
-  assert.equal(code, 0, said)
+  const errors: string[] = []
+  const { code, said } = await hoai(['hooks'], dir, { home, scriptDir: marketplaceBin, printError: (line: string) => errors.push(line) })
+  assert.equal(code, 1, `it wrote nothing and ended ${code}, saying: ${said}`)
   assert.equal(existsSync(settingsPath(dir)), false)
-  assert.match(said, /marketplace/)
+  assert.equal(errors.length, 1, errors.join('\n'))
+  assert.match(errors[0]!, /marketplace/)
+  assert.ok(errors[0]!.includes(`node "${join(repoRoot, 'bin', 'hoai-core.mjs')}" hooks`), errors[0])
+  assert.doesNotMatch(errors[0]!, /\n/)
+
+  // A folder whose checkout cannot be found gets the same refusal, without a command that would not run.
+  const gone = agentFolder(undefined, join(home, 'no such checkout'))
+  errors.length = 0
+  const lost = await hoai(['hooks'], gone, { home, scriptDir: marketplaceBin, printError: (line: string) => errors.push(line) })
+  assert.equal(lost.code, 1)
+  assert.equal(existsSync(settingsPath(gone)), false)
+  assert.match(errors.join('\n'), /marketplace/)
+  assert.doesNotMatch(errors.join('\n'), /no such checkout[\\/]bin/)
 })
 
 test('it does not ask which agent the folder is: where a launch refuses to pick one of several agents, the hooks are still written', async () => {
@@ -184,6 +199,73 @@ test('a write that fails, a write that did not hold and a word it does not know 
   assert.equal(unknown.code, 1)
   assert.match(errors.join('\n'), /remove/)
   assert.equal(existsSync(settingsPath(dir)), false)
+})
+
+test('a settings file with a byte order mark (PowerShell writes one) keeps the owner\'s own hooks and permissions', async () => {
+  const dir = agentFolder()
+  mkdirSync(join(dir, '.claude'), { recursive: true })
+  const owners = {
+    permissions: { deny: ['AskUserQuestion'] },
+    hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'python3', args: ['/gate.py'] }] }] },
+  }
+  writeFileSync(settingsPath(dir), `\ufeff${JSON.stringify(owners, null, 2)}`)
+  const { code, said } = await hoai(['hooks'], dir)
+  assert.equal(code, 0, said)
+  const after = JSON.parse(settingsText(dir).replace(/^\ufeff/, ''))
+  assert.deepEqual(after.permissions, owners.permissions, 'the owner\'s permissions are gone')
+  assert.match(JSON.stringify(after.hooks.PreToolUse), /gate\.py/, 'the owner\'s own hook is gone')
+  assert.match(JSON.stringify(after.hooks.PreToolUse), /hoai-floor-hook\.mjs/)
+  const again = await hoai(['hooks'], dir)
+  assert.equal(again.code, 0)
+  assert.match(again.said, /already/)
+})
+
+test('a settings file that is not JSON (a comment in it) is left exactly as it is, and the command fails with its path', async () => {
+  for (const text of ['// my own notes\n{\n  "permissions": { "deny": ["AskUserQuestion"] }\n}\n', '{ "permissions": { "deny": ["AskUserQuestion"] }, }', '[]']) {
+    const dir = agentFolder()
+    mkdirSync(join(dir, '.claude'), { recursive: true })
+    writeFileSync(settingsPath(dir), text)
+    const errors: string[] = []
+    const { code, said } = await hoai(['hooks'], dir, { printError: (line: string) => errors.push(line) })
+    assert.equal(code, 1, `it ended ${code} and said: ${said}`)
+    assert.equal(settingsText(dir), text, 'the owner\'s file was replaced')
+    assert.ok(errors.join('\n').includes(settingsPath(dir)), errors.join('\n'))
+  }
+})
+
+test('the home folder is not an agent\'s folder: nothing is written there, even with a server entry in it', async () => {
+  const home = realpathSync.native(scratchDir('hoai-hooks-cmd-athome-'))
+  writeFileSync(join(home, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')], env: { BGOS_ASSISTANT_ID: '7' } } } }))
+  const spellings = [home, `${home}${sep}`, ...(process.platform === 'win32' ? [home.toLowerCase(), home.toUpperCase(), home.replace(/\\/g, '/')] : [])]
+  for (const cwd of spellings) {
+    const errors: string[] = []
+    const { code, said } = await hoai(['hooks'], cwd, { home, printError: (line: string) => errors.push(line) })
+    assert.equal(code, 1, `${cwd}: it ended ${code} and said: ${said}`)
+    assert.match(errors.join('\n'), /home folder/)
+    assert.equal(existsSync(join(home, '.claude', 'settings.local.json')), false, cwd)
+  }
+})
+
+test('a folder with no .mcp.json, or one that starts no HOAI server, is not an agent\'s folder: nothing is written', async () => {
+  const folders: Array<[string, string | null]> = [
+    ['no .mcp.json', null],
+    ['another tool\'s .mcp.json', JSON.stringify({ mcpServers: { files: { command: 'npx', args: ['-y', 'some-file-server'] } } })],
+    ['a .mcp.json that is not JSON', '{ not json'],
+  ]
+  for (const [name, mcp] of folders) {
+    const dir = realpathSync.native(scratchDir('hoai-hooks-cmd-noagent-'))
+    if (mcp !== null) writeFileSync(join(dir, '.mcp.json'), mcp)
+    const errors: string[] = []
+    const { code, said } = await hoai(['hooks'], dir, { printError: (line: string) => errors.push(line) })
+    assert.equal(code, 1, `${name}: it ended ${code} and said: ${said}`)
+    assert.equal(existsSync(settingsPath(dir)), false, name)
+    assert.match(errors.join('\n'), /\.mcp\.json/, name)
+  }
+  // A `bgos` entry that starts a checkout is an agent's folder, with or without an id in it.
+  const plain = realpathSync.native(scratchDir('hoai-hooks-cmd-plain-'))
+  writeFileSync(join(plain, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')] } } }))
+  assert.equal((await hoai(['hooks'], plain)).code, 0)
+  assert.match(settingsText(plain), /hoai-floor-hook\.mjs/)
 })
 
 test('the daemon\'s own boot finds what hoai hooks wrote current and leaves it alone', async () => {
