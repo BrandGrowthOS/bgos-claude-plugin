@@ -1,0 +1,122 @@
+{
+  "date": "2026-11-09",
+  "version": "0.86.20",
+  "baselineCommit": "76cb515b25c2336267abb832b8fab1b5774d4791",
+  "result": "Privacy reads wait for the tracked work at a cutoff captured after readiness, and then recheck later proofs before returning. A page that keeps adding frames can no longer extend that wait indefinitely.",
+  "implementation": {
+    "source": "lib/browser-host-core/answer-privacy.js",
+    "sha256": "172e4b128e962bc6bf67fc1d5c4112fae9fa3f4900825092e09c5ca267ccd69c",
+    "changes": [
+      "Assign a monotonic order to both capture-order verification and frame rearming promises.",
+      "Capture upTo after await ready, and drain pending work only when order <= upTo.",
+      "Retain the later proof recheck and the set of unproved frames."
+    ],
+    "vendorWorkflow": "This host-core directory uses the manual copy and SHA-256 workflow in its vendor.json. Updated its shipped hash and labeled this local port with aheadOfSource. sourceCommit remains the original vendored base; no newer upstream commit or byte parity is claimed."
+  },
+  "verification": {
+    "dependencyInstall": {
+      "command": "npm ci --no-audit --no-fund",
+      "exitCode": 0,
+      "dependenciesChanged": false
+    },
+    "originalCopy": {
+      "command": "node --import tsx --test --test-concurrency=2 test/browser-privacy-settled.chromium.test.ts",
+      "exitCode": 1,
+      "passed": 1,
+      "failed": 1,
+      "reason": "The churn snapshot exceeded its 5000 ms bound. The mid-read privacy case passed on the original copy.",
+      "evidence": "baseline-red.log"
+    },
+    "focusedFixed": {
+      "passed": 12,
+      "failed": 0,
+      "skipped": 1,
+      "commands": [
+        "node --import tsx --test --test-concurrency=2 test/browser-privacy-settled.chromium.test.ts test/browser-host-core.vendor.test.ts",
+        "node --import tsx --test --test-concurrency=2 test/browser-privacy-settled.test.ts"
+      ],
+      "evidence": "focused-green.log"
+    },
+    "fullSuite": {
+      "command": "RUN_TESTS_WORKERS=2 npm test",
+      "exitCode": 0,
+      "passed": 11411,
+      "failed": 0,
+      "skipped": 62,
+      "files": 506,
+      "seconds": 2027,
+      "workerCap": 2,
+      "chromiumWorkers": 1,
+      "repositoryLitter": 0,
+      "evidence": "full-suite-summary.log"
+    },
+    "fullRunPrivacyDiagnostics": [
+      "protected snapshot completed in 1822 ms with 320 delayed frame seeds",
+      "late frame checked 5 times; protected read and snapshot withheld its text"
+    ],
+    "typeCheck": {
+      "command": "node_modules/.bin/tsc --noEmit",
+      "exitCode": 0,
+      "output": ""
+    },
+    "releaseGuard": {
+      "command": "node scripts/check-version-bump.mjs --head-pkg 0.86.20 --head-manifest 0.86.20 --base-pkg 0.86.19 --changed lib/browser-host-core/answer-privacy.js",
+      "exitCode": 0
+    },
+    "mutations": {
+      "productionFileChanged": false,
+      "copiedModulesOnly": true,
+      "evidence": "mutations.log",
+      "results": [
+        {
+          "name": "cutoff-before-ready",
+          "exitCode": 1,
+          "caught": true
+        },
+        {
+          "name": "missing-later-recheck",
+          "exitCode": 1,
+          "caught": true
+        }
+      ]
+    },
+    "skipReasons": [
+      "BGOS source checkout not present; local committed pin is always checked",
+      "Set HOAI_KEYCHAIN_REAL_TEST=1 on a Mac to run against a throwaway keychain.",
+      "Set HOAI_PROFILE_SYNC_CRYPTO_SOURCE to the shared committed or review source until vendoring lands.",
+      "Windows only",
+      "Windows only (the mocked cases above run everywhere)",
+      "Windows processes and the Windows console",
+      "an 8.3 name and a drive letter exist on Windows only",
+      "no source blob supplied; recorded source hash checked offline, live comparison needs trusted credentials",
+      "powershell parser check runs on Windows",
+      "set BGOS_CLAUDE_CAPABILITY_TOKENS_SOURCE to BGOS backend/src/integrations/claude-capability-tokens.ts",
+      "set HOAI_BROWSER_HOST_CORE_SOURCE to the BGOS agent-browser directory",
+      "the helper drives the Windows console API",
+      "the proof script is PowerShell"
+    ]
+  },
+  "codeMap": {
+    "beforeEdits": "Ran node scripts/codegraph/query.mjs <file> before editing each shipping, test, release and evidence file. Every attempt exited 1 with MODULE_NOT_FOUND because scripts/codegraph/query.mjs is absent from this checkout.",
+    "finalCommand": "node scripts/codegraph/query.mjs --changed origin/main",
+    "finalExitCode": 1,
+    "finalReason": "The codegraph script is absent. The local origin/main ref is also absent; it was not fetched.",
+    "fallback": "Reviewed local references with rg, compared the changes with the initial local HEAD, and ran all existing guards and contracts through the full test suite.",
+    "untouched": {
+      "test/browser-host-core.vendor.test.ts": "Already discovers the vendored JavaScript files and checks each manifest hash, LF bytes and CommonJS loading. It passed without a literal pin update in this test. Its external-source comparison was skipped because the source checkout is outside the authorized folder.",
+      ".gitattributes": "Already pins answer-privacy.js to LF. The existing vendor and line-ending tests passed; no new rule is needed.",
+      "scripts/vendor-browser-profile-core.mjs": "Vendors lib/browser-profile-core, a different directory. It does not generate the host privacy watcher and needs no edit.",
+      "bin/hoai-browser-host.mjs": "Already imports the vendored watcher. Its interface is unchanged and the real engine was exercised by the new and existing Chromium tests.",
+      "test/net-order.test.ts and test/browser-fill-submit.test.ts": "The redaction and input-dispatch contracts are unchanged. Existing coverage passed in the full run.",
+      "test/browser-answer-routes.chromium.test.ts, test/page-handoff.chromium.test.ts, test/page-read-scope.chromium.test.ts and test/round18.chromium.test.ts": "Existing privacy scenarios passed. New bounded-wait and late-proof regressions live in the two new browser-privacy-settled test files.",
+      "scripts/check-version-bump.mjs and test/version-bump.test.ts": "Existing release guards passed after the paired manifests and npm lockfile advanced to 0.86.20; guard logic did not need to change.",
+      "External desktop mirror and vendor guard": "Outside this folder, so neither modified nor verified. The shipped manifest records the local port rather than claiming a verified upstream copy."
+    }
+  },
+  "executionScope": {
+    "gitFetch": false,
+    "gitPush": false,
+    "dependenciesAndScratch": "Dependency installation, npm cache, TMPDIR, browser profiles and mutation copies stayed under this folder. During the run, the owned tsx cache was relocated under node_modules/.cache/privsync with a link from the local TMPDIR so runner cache files did not count as test litter. No test fixture output was removed during the run.",
+    "publicationSafety": "Evidence contains repository-relative paths and synthetic fixture values. Local checkout paths in captured stacks are replaced with <repo>."
+  }
+}

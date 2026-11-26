@@ -1,0 +1,20 @@
+✖ P1-6 a protected snapshot finishes while a page keeps adding frames every 5 ms (6871.276041ms)
+✔ P1-6 a frame arriving during a read is rechecked before any of its text can be returned (1142.045416ms)
+ℹ late frame checked 5 times; protected read and snapshot withheld its text
+ℹ tests 2
+ℹ suites 0
+ℹ pass 1
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8258.386417
+
+✖ failing tests:
+
+test at test/browser-privacy-settled.chromium.test.ts:1:2436
+✖ P1-6 a protected snapshot finishes while a page keeps adding frames every 5 ms (6871.276041ms)
+  Error: privacy read did not finish within 5000 ms
+      at Timeout.<anonymous> (<repo>/test/browser-privacy-settled.chromium.test.ts:18:39)
+      at listOnTimeout (node:internal/timers:605:17)
+      at process.processTimers (node:internal/timers:541:7)
