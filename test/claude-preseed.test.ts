@@ -931,10 +931,13 @@ test('a settings file with a byte order mark is read, and what the owner put in 
   assert.deepEqual(settings.permissions, owners.permissions)
   assert.deepEqual(settings.hooks.PreToolUse[0], { matcher: 'Bash', hooks: [mine] })
   assert.ok(settings.hooks.PreToolUse.flatMap((m: any) => m.hooks).some((h: any) => h.args?.[0] === FLOOR_HOOK))
-  // A file with the mark whose hooks already hold is not written again.
-  const held = memFs({ '/agent/.claude/settings.local.json': `\ufeff${fs.files.get('/agent/.claude/settings.local.json')}` })
+  // A file whose hooks already hold behind the mark is written once more, without it: the daemon's own readers of
+  // this file, and any other strict one, refuse the mark, so the hooks were there and counted as missing.
+  const current = fs.files.get('/agent/.claude/settings.local.json')!
+  const held = memFs({ '/agent/.claude/settings.local.json': `\ufeff${current}` })
+  assert.deepEqual(ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs: held }), { changed: true, reason: 'set' })
+  assert.equal(held.files.get('/agent/.claude/settings.local.json'), current, 'the same settings, without the mark')
   assert.deepEqual(ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs: held }), { changed: false, reason: 'already' })
-  assert.ok(held.files.get('/agent/.claude/settings.local.json')!.startsWith('\ufeff'))
 })
 
 test('an empty settings file has nothing to lose: it gets the entries', () => {

@@ -331,6 +331,18 @@ test('a settings file that is not JSON is left exactly as it is by a boot, which
   assert.deepEqual(result.restartOutcomes, ['failed'])
 })
 
+test('hooks that hold behind a byte order mark are written again without it, so the daemon\'s own readers see them', () => {
+  const ours = checkout()
+  const stage = join(volumeSpelling(scratchDir('clone-hooks-win-marked-')), 'settings.local.json')
+  ensureHookEntries({ settingsPath: stage, forwarderPath: join(ours, 'bin', 'hoai-hook.mjs') })
+  const current = readFileSync(stage, 'utf8')
+  const dir = workspace(ours, 'launch shim', `\ufeff${current}`)
+  const fs = windowsVolume()
+  assert.deepEqual(outcomes(boot(dir, ours, true, fs)), ['registered'], 'the boot said the hooks were current and left the mark in the file')
+  assert.equal(settingsText(dir), current)
+  assert.deepEqual(outcomes(boot(dir, ours, true, fs)), ['already'])
+})
+
 // -- Windows only: the real file system ---------------------------------------------------------------------------
 
 /** The 8.3 short spelling of a path, or the path itself on a volume that keeps no short names. */
@@ -426,4 +438,17 @@ test('Windows: hooks a launcher wrote under another spelling of this checkout ar
   const written = settingsText(dir)
   assert.equal(registerCloneHooks({ workdir: dir, pluginDir: ours }).outcome, 'already')
   assert.equal(settingsText(dir), written)
+})
+
+test('Windows: hooks written under the \\\\?\\ prefix cannot be started by node, so a boot writes them again without it', { skip: onWindows ? false : NOT_WINDOWS }, () => {
+  const ours = checkout()
+  writeFileSync(join(ours, 'bin', 'hoai-floor-hook.mjs'), '')
+  const dir = workspace(ours)
+  mkdirSync(join(dir, '.claude'), { recursive: true })
+  ensureHookEntries({ settingsPath: settingsPath(dir), forwarderPath: `\\\\?\\${join(ours, 'bin', 'hoai-hook.mjs')}` })
+  assert.match(settingsText(dir), /\\\\\\\\\?\\\\/)
+  assert.equal(registerCloneHooks({ workdir: dir, pluginDir: ours }).outcome, 'registered', 'the boot kept hook paths node cannot start')
+  assert.doesNotMatch(settingsText(dir), /\\\\\\\\\?\\\\/)
+  assert.match(settingsText(dir), /hoai-floor-hook\.mjs/)
+  assert.equal(registerCloneHooks({ workdir: dir, pluginDir: ours }).outcome, 'already')
 })

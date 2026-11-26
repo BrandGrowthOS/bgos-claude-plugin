@@ -18,7 +18,7 @@ import { dirname, join, sep } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { USAGE, buildRunPlan, main, resolveHoaiAction } from '../bin/hoai-core.mjs'
+import { USAGE, buildRunPlan, hookScriptDirFor, main, resolveHoaiAction } from '../bin/hoai-core.mjs'
 import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 import { registerCloneHooksAtBoot } from '../lib/clone-hooks.mjs'
 import { scratchDir } from './helpers/scratch-dirs.ts'
@@ -266,6 +266,51 @@ test('a folder with no .mcp.json, or one that starts no HOAI server, is not an a
   writeFileSync(join(plain, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')] } } }))
   assert.equal((await hoai(['hooks'], plain)).code, 0)
   assert.match(settingsText(plain), /hoai-floor-hook\.mjs/)
+  // So is any entry named bgos, even one whose command the boot cannot read (a whole command line in one string):
+  // the line that boot logs sends the owner to this command, so it must not refuse them.
+  const oneString = realpathSync.native(scratchDir('hoai-hooks-cmd-onestring-'))
+  writeFileSync(join(oneString, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'cmd', args: ['/c', `bun "${join(repoRoot, 'server.ts')}"`] } } }))
+  const sent = await hoai(['hooks'], oneString)
+  assert.equal(sent.code, 0, `the folder the boot's own line points at was refused: ${sent.said}`)
+  assert.match(settingsText(oneString), /hoai-floor-hook\.mjs/)
+})
+
+test('hooks that hold behind a byte order mark are written again without it, and the command says it wrote', async () => {
+  const dir = agentFolder()
+  assert.equal((await hoai(['hooks'], dir)).code, 0)
+  const current = settingsText(dir)
+  writeFileSync(settingsPath(dir), `\ufeff${current}`)
+  const { code, said } = await hoai(['hooks'], dir)
+  assert.equal(code, 0, said)
+  assert.equal(settingsText(dir), current, 'the mark is still in the file, where the daemon\'s own readers refuse it')
+  assert.doesNotMatch(said, /already/)
+  assert.match((await hoai(['hooks'], dir)).said, /already/)
+})
+
+test('a checkout named with the \\\\?\\ prefix gives hook paths without it: node cannot start a script named with the prefix', () => {
+  const dirFor = (server: string) =>
+    hookScriptDirFor({
+      cwd: '/agent',
+      scriptDir: '/own/bin',
+      serverName: 'bgos',
+      readFile: () => JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [server], env: { BGOS_ASSISTANT_ID: '7' } } } }),
+      exists: () => true,
+    })
+  assert.equal(dirFor('C:/plugin/server.ts'), 'C:/plugin/bin')
+  assert.equal(dirFor('//?/C:/plugin/server.ts'), 'C:/plugin/bin')
+  assert.equal(dirFor('//?/UNC/host/share/plugin/server.ts'), '//host/share/plugin/bin')
+})
+
+test('Windows: a folder that names its checkout with the \\\\?\\ prefix gets hook paths node can start, and the boot leaves them alone', { skip: process.platform === 'win32' ? false : 'the prefix is a Windows spelling' }, async () => {
+  const dir = agentFolder(undefined, `\\\\?\\${repoRoot}`)
+  const { code, said } = await hoai(['hooks'], dir)
+  assert.equal(code, 0, said)
+  const forwarders = (Object.values(hooksOf(dir)) as Array<Array<{ hooks: Array<{ args?: string[] }> }>>).flat().flatMap((m) => m.hooks).map((h) => h.args?.[0] ?? '')
+  assert.ok(forwarders.length > 0 && forwarders.every((path) => !path.startsWith('\\\\?\\')), forwarders.join(', '))
+  assert.ok(forwarders.includes(FORWARDER), forwarders.join(', '))
+  const written = settingsText(dir)
+  assert.deepEqual(registerCloneHooksAtBoot({ folders: [dir], pluginDir: repoRoot, installMethod: 'clone', privateHookRegistered: true }).results.map((r) => r.outcome), ['already'])
+  assert.equal(settingsText(dir), written)
 })
 
 test('the daemon\'s own boot finds what hoai hooks wrote current and leaves it alone', async () => {
