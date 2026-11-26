@@ -13,6 +13,8 @@
 
 import { cardAnswerClickOf, cardAnswerText } from './lib/card-answer.ts'
 import { groupReactionKey, groupReactionText, reactionCard, REACTION_GUIDANCE, HEARD_REACTIONS_CAPABILITY } from './lib/heard-reaction.ts'
+import { capabilityGuideAnswer } from './lib/capability-guide.ts'
+import { CORE_RULES_TEXT } from './lib/core-rules.ts'
 import { REACT_TOOL, handleReactTool } from './lib/react-tool.ts'
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
@@ -3578,15 +3580,48 @@ const mcp = new Server(
       'Messages from the BGOS chat app arrive as <channel source="bgos"> events.',
       'Each message includes chat_id and message_id attributes.',
       '',
-      'At the START of a session, call the `bgos_capabilities` tool to load the',
-      'authoritative, always-current HOAI capability guide. It is fetched live',
-      'from the backend at connect and supersedes the capability summary below.',
+      '## Core rules (they apply in every session)',
+      '1. ACKNOWLEDGE WITH A REACTION, NOT A REPLY. In your chat with your owner, when their message needs no words back (thanks, ok, a fact to keep, a done confirmation), react 👍, ❤️ or 🙏 and send nothing else. When you start work longer than a minute, react 👀 at once, then reply with the result. Never react instead of answering a question or reporting a result. If the reaction fails, send one short line instead. React with the react tool and the message_id of their message. In a group, a meeting or a channel this rule does not apply.',
+      '2. In your own chat with your owner, a question your owner answers yes or no, except a dangerous command, which stays on the approval, always goes through ask_user_input as one question with two options, Yes and No (or two short words of your own), with the values yes and no, never as a question in plain text: the app draws it as two buttons to tap. In a group or a channel, ask with reply buttons instead.',
+      '3. SAVE WHAT YOU REPEAT AS A SKILL, without drafting or asking first (a request to teach yourself a skill still drafts first). When you do a task for your owner the second time, or work out a many step procedure, save it as a short skill where your channel section says your skills go: when to use it, the steps, the pitfalls. Put origin: made in its front matter. Never put a secret or your owner\'s private data in one. When a skill you used was wrong or missing a step, fix it before you finish. Do not announce it. Without a place for skills, skip this. Your skills go in .claude/skills/<name>/SKILL.md inside your working folder, never ~/.claude/skills.',
+      '',
+      'IMPORTANT: The user reads BGOS, not this session transcript. Plain text in',
+      'your turn output never reaches their chat, it stays in your local terminal',
+      'only. Every response to a BGOS message MUST go through the `reply` tool.',
+      'If you forget to call `reply`, the user sees nothing. The plugin enforces',
+      'this by sending a [reply-overdue] notification 4 minutes after any inbound',
+      'message that has not been answered via the `reply` (or `meeting_reply`) tool.',
+      '',
+      'Once you have a response, use the `reply` tool to send it back.',
+      'The reply will appear as a chat bubble in the BGOS desktop/mobile app.',
+      'You can use markdown in your replies: **bold**, *italic*, `inline code`,',
+      'fenced code blocks, [links](url), #/##/### headers, lists, > blockquotes.',
+      'Tables do not render on mobile - use lists instead.',
+      '',
+      'At the START of a session, call the `bgos_capabilities` tool. It answers with these core rules, the guide\'s',
+      'short introduction and an index of its topics; call it again with {"topic": "<id>"} to read the one you need.',
+      'The guide is fetched live from the backend at connect and supersedes the capability summary below.',
+      '',
+      'Backslashes: the chat renders CommonMark, which (outside code) eats a',
+      'backslash before punctuation - `a\\*b` would show as `a*b`. The plugin',
+      'auto-protects backslashes in prose so file paths and regexes survive, but',
+      'for anything the user must COPY EXACTLY (a Windows path, a regex, a shell',
+      'snippet) prefer a code span or fenced block - inside code, every character',
+      'is preserved verbatim and never linkified.',
       '',
       'When you produce a dashboard, report, chart, table, plan, document or any page a person will read, share or revisit, make it an Artifact instead of a long chat message, then send a short reply with its link. Update the same Artifact for revisions rather than creating new ones.',
       'Use artifact_create, artifact_update, artifact_read, artifact_list and artifact_versions.',
       'Agent vault: never ask for or repeat a password in chat. vault_items lists metadata, vault_request_login asks the owner to add a login,',
       'and vault_fill_prepare returns a signed one-use request to pass unchanged to hoai_vault_fill on the HOAI desktop browser.',
       'Read artifact_read without id for the live content schema. The server posts the reference beside the chat.',
+      '',
+      'Links are Telegram-style: bare URLs auto-link (https://…, www.…, bare',
+      'domains like foo.com incl. modern TLDs .dev/.app, and emails), no',
+      '[text](url) needed. A masked link ([text](url) where the text differs',
+      'from the target) shows the user an "Open this link?" confirmation with',
+      'the full URL before opening, so prefer bare URLs when transparency',
+      'matters. URLs inside code spans/fences never linkify, use code when',
+      'the user should copy a URL rather than open it.',
       '',
       'When you receive a message, process it using your full capabilities, ',
       'you can use Bash, Read, Write, Edit, Grep, Glob, WebSearch, and all',
@@ -3619,34 +3654,6 @@ const mcp = new Server(
       'the person to choose a profile, a preview or a private window.',
       'Follow hoai_browser_status and the shipped managed browser skill. The',
       'separate legacy browser mode retains its own permission and storage rules.',
-      '',
-      'IMPORTANT: The user reads BGOS, not this session transcript. Plain text in',
-      'your turn output never reaches their chat, it stays in your local terminal',
-      'only. Every response to a BGOS message MUST go through the `reply` tool.',
-      'If you forget to call `reply`, the user sees nothing. The plugin enforces',
-      'this by sending a [reply-overdue] notification 4 minutes after any inbound',
-      'message that has not been answered via the `reply` (or `meeting_reply`) tool.',
-      '',
-      'Once you have a response, use the `reply` tool to send it back.',
-      'The reply will appear as a chat bubble in the BGOS desktop/mobile app.',
-      'You can use markdown in your replies: **bold**, *italic*, `inline code`,',
-      'fenced code blocks, [links](url), #/##/### headers, lists, > blockquotes.',
-      'Tables do not render on mobile - use lists instead.',
-      '',
-      'Backslashes: the chat renders CommonMark, which (outside code) eats a',
-      'backslash before punctuation - `a\\*b` would show as `a*b`. The plugin',
-      'auto-protects backslashes in prose so file paths and regexes survive, but',
-      'for anything the user must COPY EXACTLY (a Windows path, a regex, a shell',
-      'snippet) prefer a code span or fenced block - inside code, every character',
-      'is preserved verbatim and never linkified.',
-      '',
-      'Links are Telegram-style: bare URLs auto-link (https://…, www.…, bare',
-      'domains like foo.com incl. modern TLDs .dev/.app, and emails), no',
-      '[text](url) needed. A masked link ([text](url) where the text differs',
-      'from the target) shows the user an "Open this link?" confirmation with',
-      'the full URL before opening, so prefer bare URLs when transparency',
-      'matters. URLs inside code spans/fences never linkify, use code when',
-      'the user should copy a URL rather than open it.',
       '',
       '## Adding an agent to a meeting (add_to_meeting)',
       'Use `add_to_meeting` to seat another agent (by assistantId, see',
@@ -5269,11 +5276,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'exactly what you can do through this channel: message formatting, ' +
         'inline buttons, files, ask_user_input, approvals, peers, voice, status, ' +
         'and more. Call this once at the start of a session (and any time you are ' +
-        'unsure what HOAI supports); the returned guide supersedes any older ' +
-        'summary in these instructions. Falls back to a bundled copy offline.',
+        'unsure what HOAI supports): without a topic it answers the core rules, the ' +
+        'guide\'s short introduction and an index of its topics; pass topic (an id ' +
+        'from the index) to read one, and part when that topic says it comes in ' +
+        'parts. The guide supersedes any older summary in these instructions. ' +
+        'Falls back to a bundled copy offline.',
       inputSchema: {
         type: 'object' as const,
-        properties: {},
+        properties: {
+          topic: {
+            type: 'string',
+            maxLength: 200,
+            description: 'A topic id from the index (or its title). Leave it out for the core rules and the index.',
+          },
+          part: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Which part of a topic that comes in parts, from 1. Defaults to 1.',
+          },
+        },
       },
     },
     {
@@ -7111,8 +7132,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req, extra) => {
 
   switch (req.params.name) {
     case 'bgos_capabilities': {
+      // Never the whole guide in one result (kit check 2026-11-25, finding 1):
+      // about 208,000 characters, which Claude Code refused and saved to a file
+      // the model never read. The core rules and a topic index, or one topic,
+      // each under GUIDE_ANSWER_MAX_BYTES (lib/capability-guide.ts).
       const caps = await loadServedCapabilities()
-      return { content: [{ type: 'text', text: `${caps.text}\n${REACTION_GUIDANCE}` }] }
+      const answer = capabilityGuideAnswer(caps.text, rawArgs, { coreRules: CORE_RULES_TEXT, trailer: REACTION_GUIDANCE })
+      return { content: [{ type: 'text', text: answer.text }], ...(answer.isError ? { isError: true } : {}) }
     }
 
     case 'reply': {

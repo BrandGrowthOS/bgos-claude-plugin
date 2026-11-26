@@ -2,7 +2,10 @@ export const REACT_TOOL = {
   name: 'react',
   description:
     'React to a message with one emoji per message. A new emoji replaces the old one. ' +
-    'Use it to acknowledge or agree, not instead of a reply. Set remove to true to remove that emoji. Requires this agent to be paired.',
+    'Use it to acknowledge or agree. In your chat with your owner, when their message needs no words back ' +
+    '(thanks, ok, a fact to keep, a done confirmation), react and send nothing else; when you start work longer ' +
+    'than a minute, react 👀 at once, then reply with the result. Never react instead of answering a question or ' +
+    'reporting a result. Set remove to true to remove that emoji. Requires this agent to be paired.',
   inputSchema: {
     type: 'object' as const,
     properties: {
