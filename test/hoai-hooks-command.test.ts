@@ -3,10 +3,10 @@
  *
  * `hoai` writes a clone folder's agent hooks right before it starts claude, the full set, floor hook included. A
  * launcher that starts claude itself skipped that step, and nothing else writes the hooks BEFORE a launch: the
- * daemon's own registration runs after the CLI has read them, and it never adds the floor to a folder that had no
- * rail. So such a folder ran without the hook that asks before a risky action. This command is that one step and
- * nothing more: it starts nothing, it is safe to run before every launch, and a marketplace install is left alone
- * exactly as a launch leaves it.
+ * daemon's own registration runs after the CLI has read them, and its first one in a folder that had no rail leaves
+ * the floor out. So such a folder could run without the hook that asks before a risky action. This command is that
+ * one step and nothing more: it starts nothing, it is safe to run before every launch, and a marketplace install is
+ * left alone exactly as a launch leaves it.
  *
  * Real files on temp workspaces, the real ensureHookEntries, this checkout's own bin as the launcher's folder.
  *
@@ -129,7 +129,33 @@ test('a marketplace install is never touched: its hooks come from the plugin, an
   assert.match(said, /marketplace/)
 })
 
-test('a folder a launch would refuse gets no hooks, and the command says why and fails', async () => {
+test('it does not ask which agent the folder is: where a launch refuses to pick one of several agents, the hooks are still written', async () => {
+  // A launcher of its own names the agent itself, often only for the claude it starts. Two agents are paired on this
+  // computer and the folder names neither, so `hoai` refuses to launch here.
+  const home = realpathSync.native(scratchDir('hoai-hooks-cmd-two-agents-'))
+  mkdirSync(join(home, '.bgos-agent'), { recursive: true })
+  for (const id of ['7', '8']) writeFileSync(join(home, '.bgos-agent', `credentials-${id}.json`), '{}')
+  const dir = realpathSync.native(scratchDir('hoai-hooks-cmd-unnamed-'))
+  writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')], env: { BGOS_BACKEND_URL: 'https://example.invalid' } } } }))
+  const plan = buildRunPlan({ cwd: dir, env: {}, home, scriptDir: BIN })
+  assert.equal(plan.ok, false)
+  assert.equal((plan as { code?: string }).code, 'identity-ambiguous')
+  const { code, said } = await hoai(['hooks'], dir, { home })
+  assert.equal(code, 0, said)
+  assert.match(settingsText(dir), /hoai-floor-hook\.mjs/)
+})
+
+test('hoai hooks --help says what it does and writes nothing', async () => {
+  const dir = agentFolder()
+  for (const word of ['--help', '-h', 'help']) {
+    const { code, said } = await hoai(['hooks', word], dir)
+    assert.equal(code, 0)
+    assert.match(said, /starts nothing/)
+  }
+  assert.equal(existsSync(settingsPath(dir)), false)
+})
+
+test('a folder with no channel to name gets no hooks, as a launch there is refused, and the command says why and fails', async () => {
   // Reached through a package runner on a machine with no install record: no channel can be named (hoai refuses to launch).
   const dir = realpathSync.native(scratchDir('hoai-hooks-cmd-nowhere-'))
   const home = realpathSync.native(scratchDir('hoai-hooks-cmd-nohome-'))

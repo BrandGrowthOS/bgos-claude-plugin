@@ -746,13 +746,21 @@ export function launchHooksFor({ cwd, scriptDir, resolution, readFile, exists })
  * A `hoai` launch writes a clone folder's hooks right before it starts claude
  * (the CLI reads them once, at launch). A launcher that starts claude itself
  * skipped that step, and nothing else writes them BEFORE a launch: the daemon
- * registers them after the CLI has read them, and it never adds the blocking
- * floor hook to a folder that had no rail (lib/clone-hooks.mjs). This is that
- * one step as a command, for such a launcher to run first: the same entries to
- * the same file as a launch (launchHooksFor), the floor hook included, because
- * the owner's own launcher asked for them. Idempotent: a folder whose hooks
- * hold is not written. A marketplace install is left alone, as a launch leaves
- * it. `hoai hooks register` is the same command.
+ * registers them after the CLI has read them, and its first registration in a
+ * folder that had no rail leaves the blocking floor hook out
+ * (lib/clone-hooks.mjs). This is that one step as a command, for such a
+ * launcher to run first: the same entries to the same file as a launch
+ * (launchHooksFor), the floor hook included, because the owner's own launcher
+ * asked for them. Idempotent: a folder whose hooks hold is not written. A
+ * marketplace install is left alone, as a launch leaves it. `hoai hooks
+ * register` is the same command.
+ *
+ * It asks one thing a launch asks, which channel this folder is on, because
+ * that decides whether there is anything to write. It does NOT ask which agent
+ * the folder is: a launch refuses a folder that names no agent on a computer
+ * with several, and a launcher of its own names the agent itself, often only
+ * for the claude it starts. Refusing here would leave exactly that folder
+ * without hooks, which is what this command exists to end.
  * @param {readonly string[]} rest  the words after `hooks`
  * @param {{ cwd: string, env: Record<string, string | undefined>, home: string, scriptDir: string,
  *   readFile: (path: string) => string | null, exists?: (path: string) => boolean,
@@ -774,6 +782,10 @@ export function runHooksCommand(
   },
 ) {
   const words = (Array.isArray(rest) ? rest : []).map((word) => String(word ?? '').trim()).filter(Boolean)
+  if (words.length === 1 && /^(help|-h|--help)$/i.test(words[0])) {
+    print("[hoai] hooks: writes this folder's agent hooks and starts nothing. Run it in the agent's folder, with nothing after it.")
+    return 0
+  }
   const unknown = words.find((word) => word.toLowerCase() !== 'register') ?? words[1]
   if (unknown !== undefined) {
     printError(`[hoai] hooks: unknown word "${unknown}". Run hoai hooks from the agent's folder, with nothing after it.`)

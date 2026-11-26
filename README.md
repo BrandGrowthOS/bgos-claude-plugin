@@ -1183,10 +1183,12 @@ It writes exactly what a `hoai` launch writes (the full set, the blocking floor
 hook included), starts nothing, changes nothing when the hooks are already
 current, and leaves a marketplace install alone. `hoai hooks register` is the
 same command. It ends with 0 when the hooks hold and with 1 when it could not
-write them, and it says which in one line. The daemon also keeps a clone
-folder's hooks current at every start and after an update, but that reaches the
-NEXT launch, and it never adds the floor hook to a folder that had no hooks at
-all. The command does both now.
+write them, and it says which in one line. It does not ask which agent the
+folder is, so it also works where your script names the agent itself. The
+daemon also keeps a clone folder's hooks current at every start and after an
+update, but that reaches the NEXT launch, and its first registration in a folder
+that had no hooks at all leaves the floor hook out (the one after it adds it).
+The command writes the full set now.
 
 To do it by hand:
 

@@ -103,7 +103,8 @@ function windowsVolume({ withIdentity = true } = {}) {
       try {
         names = readdirSync(at)
       } catch {
-        return null
+        // A folder that may be entered but not listed: only the exact name can be found in it.
+        names = existsSync(join(at, name)) ? [name] : []
       }
       const found = names.find((n) => n === name) ?? names.find((n) => n.toLowerCase() === name.toLowerCase())
       if (found === undefined) return null
@@ -224,6 +225,15 @@ test('one id is not enough: folders with different names are different checkouts
   }
 })
 
+test('a file layer that gives no answer for a path matches nothing: two paths with no answer are not one folder', () => {
+  const ours = checkout()
+  const dir = workspace(checkout())
+  const silent = { ...windowsVolume(), realpath: () => undefined }
+  assert.equal(workspaceNamesThisClone({ workdir: dir, pluginDir: ours, fs: silent as never }), false)
+  assert.deepEqual(outcomes(boot(dir, ours, false, silent)), ['not_clone'])
+  assert.equal(existsSync(settingsPath(dir)), false)
+})
+
 test('a marketplace install is never touched, whatever the workspace names and however it spells it', () => {
   const ours = checkout()
   for (const spelled of [ours, otherCase(ours)]) {
@@ -258,6 +268,17 @@ test('a boot that wrote no hooks because no folder starts this checkout says so,
   assert.match(line, /^hooks: /)
   for (const part of [named, bare, other]) assert.ok(line.includes(part), `${part} is not in: ${line}`)
   assert.match(line, /hoai hooks/)
+  // The checkout's own folder is one of a daemon's folders (it runs there) and is not an agent's folder: it is not
+  // listed, and a checkout with a .mcp.json of its own does not speak for an agent folder that was skipped.
+  const withOwnFolder = registerCloneHooksAtBoot({ folders: [named, ours], pluginDir: ours, installMethod: 'clone', privateHookRegistered: false, fs } as never)
+  assert.deepEqual(outcomes(withOwnFolder), ['not_clone', 'not_clone'])
+  const withoutIt: string = skippedLine(withOwnFolder.results)
+  assert.ok(withoutIt.includes(named) && !withoutIt.includes(`${ours}:`), withoutIt)
+  writeFileSync(join(ours, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: serverEntry(ours, 'server') } }))
+  const withItsOwnEntry = registerCloneHooksAtBoot({ folders: [named, ours], pluginDir: ours, installMethod: 'clone', privateHookRegistered: false, fs } as never)
+  assert.deepEqual(outcomes(withItsOwnEntry), ['not_clone', 'registered'])
+  const stillSaid: string = skippedLine(withItsOwnEntry.results)
+  assert.ok(stillSaid !== null && stillSaid.includes(named) && !stillSaid.includes(`${ours}:`), String(stillSaid))
   // Nothing more to say when a folder was registered or was current, or failed (that has its own line), or on a marketplace install.
   const mixed = registerCloneHooksAtBoot({ folders: [workspace(ours), bare], pluginDir: ours, installMethod: 'clone', privateHookRegistered: false, fs } as never)
   assert.deepEqual(outcomes(mixed), ['registered', 'not_clone'])
