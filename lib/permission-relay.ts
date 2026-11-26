@@ -717,6 +717,25 @@ export function pendingPermissionFastChatIds(
 }
 
 /**
+ * What an install is told about permission cards before one is promised.
+ *
+ * The server takes a card with approval buttons in the owner's own chat only
+ * from the pairing of the agent a tap on it reaches, so a daemon that connects
+ * with an account API key has its card refused there, and the request ends in
+ * a deny. That rule is the server's; this only says it, at boot and on each
+ * request. Null on a paired install.
+ */
+export function permissionCardPairingNotice(authMode: 'pairing' | 'apikey'): string | null {
+  if (authMode === 'pairing') return null
+  return (
+    'a permission card needs a paired agent. This daemon connects with an account API key, ' +
+    "and the server takes an approval card in the owner's own chat only from the agent's " +
+    'pairing, so a permission request that asks the owner is denied. Pair the agent to ' +
+    'answer permission requests on a card.'
+  )
+}
+
+/**
  * The id of the card that was just posted, or null.
  *
  * Null is not cosmetic: it turns OFF both halves of the server-is-the-judge

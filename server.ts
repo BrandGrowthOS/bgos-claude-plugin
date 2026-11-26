@@ -572,6 +572,7 @@ import {
   answeredPermissionChoice,
   buildPermissionRequestBody,
   cardMessageIdFrom,
+  permissionCardPairingNotice,
   choiceToBehavior,
   isApprovalExpired,
   orphanedPermissionCards,
@@ -4339,6 +4340,10 @@ function handlePermissionRequest(params: PermissionRequestParams): Promise<void>
       })
   }
 
+  // Said before the card is promised: on an account key install the server
+  // refuses the card in the owner's own chat, and the request is denied.
+  const pairingNotice = permissionCardPairingNotice(AUTH.mode)
+  if (pairingNotice) log(`Permission request ${tool_name} [${request_id}]: ${pairingNotice}`)
   return relayPermissionToOwner(params)
 }
 
@@ -20830,6 +20835,10 @@ async function main(): Promise<void> {
   // What the declaration REALLY carries, which needs a pairing as well as the
   // hook (lib/floor-hook-presence.ts floorBootLine).
   log(floorBootLine(FLOOR_HOOK, AUTH.mode))
+  // Where requests go to the owner, an account key install is told at boot
+  // that their cards need a paired agent (lib/permission-relay.ts).
+  const permissionCardNotice = AUTO_APPROVE ? null : permissionCardPairingNotice(AUTH.mode)
+  if (permissionCardNotice) log(`permissions: ${permissionCardNotice}`)
   log(privateHookBootLine(PRIVATE_HOOK))
   // Every boot of a clone writes the CURRENT hook set into its workspace, whoever launched
   // it (board row f83db4b7): `hoai run` does this before each launch, and an agent started
