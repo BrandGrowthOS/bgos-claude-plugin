@@ -1,0 +1,11 @@
+[
+  {"home":"E:/Glass//Home/./","namespace":"glass1","canonical":"e:\\glass\\home","id":"cdb2f141","runValueName":"HOAI Helper (glass1) home-cdb2f141"},
+  {"home":"E:\\Glass Users\\Élodie\\","namespace":"","canonical":"e:\\glass users\\élodie","id":"beaef9ea","runValueName":"HOAI Helper home-beaef9ea"},
+  {"home":"E:\\","namespace":"root","canonical":"e:\\","id":"e9f140ed","runValueName":"HOAI Helper (root) home-e9f140ed"},
+  {"home":"E:\\Glass\\One\\..\\Two\\","namespace":"two","canonical":"e:\\glass\\two","id":"6a954fd4","runValueName":"HOAI Helper (two) home-6a954fd4"},
+  {"home":"  E:\\Glass\\Spaced\\  ","namespace":"","canonical":"e:\\glass\\spaced","id":"215a5539","runValueName":"HOAI Helper home-215a5539"},
+  {"home":"\\\\Server\\Share\\Folder\\..\\","namespace":"unc","canonical":"\\\\server\\share","id":"05e24481","runValueName":"HOAI Helper (unc) home-05e24481"},
+  {"home":"\u00a0E:\\Glass\\Nbsp\\\u00a0","namespace":"nbsp","canonical":"e:\\glass\\nbsp","id":"269ef1e2","runValueName":"HOAI Helper (nbsp) home-269ef1e2"},
+  {"home":"\ufeffE:\\Glass\\Bom\\\ufeff","namespace":"bom","canonical":"e:\\glass\\bom","id":"4e4b0efa","runValueName":"HOAI Helper (bom) home-4e4b0efa"},
+  {"home":"e:/GLASS///path//inner/../end","namespace":"","canonical":"e:\\glass\\path\\end","id":"06710699","runValueName":"HOAI Helper home-06710699"}
+]
