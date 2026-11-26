@@ -94,6 +94,8 @@ function relayRig() {
     isPermissionCardOwnerChatOnly: (peerRefusal as any).isPermissionCardOwnerChatOnly,
     refuseHookRailChat: () => false,
     isOwnSendingTool,
+    // A held Bash request is not an email: the email arms are never reached.
+    emailSendFilesGetNoCard: () => false,
     bgosPost: () => {
       const post = deferred<unknown>()
       posts.push(post)
@@ -115,9 +117,10 @@ function relayRig() {
       return gate.promise
     },
   }
-  const relay = (requestId: string, command = 'ls ~') =>
-    execute(`${relaySource}\nreturn relayPermissionToOwner(params, undefined, false);`, {
+  const relay = (requestId: string, command = 'ls ~', floorHeld = false) =>
+    execute(`${relaySource}\nreturn relayPermissionToOwner(params, undefined, floorHeld);`, {
       ...bindings,
+      floorHeld,
       params: { request_id: requestId, tool_name: 'Bash', description: 'Run a command', input_preview: JSON.stringify({ command }) },
     }) as Promise<void>
   return { relay, pending, posts, waits, verdicts, logs, verdictGates }
@@ -213,6 +216,35 @@ test('a click on the earlier card after a later request replaced it settles neit
   r.posts[1]!.reject(new Error('end of fixture'))
   await second
   assert.deepEqual(r.verdicts.map((v) => v.behavior), ['deny', 'deny'])
+})
+
+test('a card post with no id: no click settles the request, and the wait ends it with a denial', async () => {
+  for (const floorHeld of [false, true]) {
+    for (const posted of [{}, { id: null }, { id: 1.5 }, { id: -1 }, { id: '0501' }]) {
+      const r = relayRig()
+      const done = r.relay('abcde', 'rm -rf build', floorHeld)
+      r.posts[0]!.resolve(posted)
+      await tick()
+      const entry = r.pending.get('abcde')
+      assert.equal(entry.cardMessageId, null, `no row is bound for ${JSON.stringify(posted)}`)
+      assert.ok(
+        r.logs.some((line) => line.includes('no click on the card can settle this request')),
+        'the log says a click cannot end it',
+      )
+      for (const clicked of [null, 501, '501']) {
+        const outcome = resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: OWNER, pending: r.pending, cardMessageId: clicked })
+        assert.equal(outcome.kind, 'other_card', `a click on ${String(clicked)} settles nothing (held ${floorHeld})`)
+      }
+      assert.equal(r.pending.get('abcde'), entry, 'the request is still waiting')
+      assert.equal(r.waits.length, 1, 'the wait runs, with no card to read')
+      assert.equal(r.waits[0]!.card, null)
+      // The owner's typed denial, read by the wait.
+      r.verdictGates[0]!.resolve('deny')
+      await done
+      assert.deepEqual(r.verdicts, [{ requestId: 'abcde', behavior: 'deny' }])
+      assert.equal(r.pending.has('abcde'), false)
+    }
+  }
 })
 
 test('the watch is handed an identity check, not an id lookup', () => {

@@ -23,7 +23,7 @@ import {
   type PendingPermissionLike,
   type PermissionChoice,
 } from '../lib/permission-relay.ts'
-import { decideButtonsAnswered, viewStreamMessage, buildStreamClickMeta } from '../lib/stream-apply.ts'
+import { decideButtonsAnswered, viewStreamMessage, buildStreamClickMeta, streamCardRowId } from '../lib/stream-apply.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { LOGIN_METHOD_WINDOW_MS } from '../lib/auth-login.ts'
 
@@ -194,7 +194,7 @@ test('both click intakes hand the resolver the row the click was given on', () =
   const poll = SRC.slice(SRC.indexOf('const permOutcome = resolvePermissionClick({'))
   assert.match(poll.slice(0, poll.indexOf('})')), /cardMessageId: mm\.id,/)
   const stream = SRC.slice(SRC.indexOf('resolvePermissionClick({', SRC.indexOf("  if (decision === 'permission') {")))
-  assert.match(stream.slice(0, stream.indexOf('})')), /cardMessageId: view\.messageId,/)
+  assert.match(stream.slice(0, stream.indexOf('})')), /cardMessageId: streamCardRowId\(update\),/)
   assert.equal((SRC.match(/resolvePermissionClick\(/g) ?? []).length, 2)
 })
 
@@ -225,7 +225,7 @@ function streamRig(pending: Map<string, PendingPermissionLike>) {
     senderUserIdOf: (p: any) => p?.senderUserId ?? OWNER, senderUserIdCandidate: (p: any) => p?.senderUserId ?? null,
     loginController: { button: () => 'not_mine' },
     streamAuthority: null, askTracker: { askIdOf: () => null },
-    decideButtonsAnswered, viewStreamMessage, buildStreamClickMeta,
+    decideButtonsAnswered, viewStreamMessage, buildStreamClickMeta, streamCardRowId,
     PERMISSION_CLICK_RE,
   }
   const js = ts.transpileModule([

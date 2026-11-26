@@ -559,6 +559,7 @@ import {
   decideMessageNew,
   HumanMessageEdits,
   humanEditTime,
+  streamCardRowId,
   viewStreamMessage,
   type StreamMessageView,
 } from './lib/stream-apply.js'
@@ -18022,7 +18023,9 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
       clickerUserId: answer.tapperUserId ?? senderUserIdOf(answer),
       pending: pendingPermissions,
       emailSendApproval: answer.emailSendApproval,
-      cardMessageId: view.messageId,
+      // The raw ids, read by the one row id reading; an envelope and a row
+      // that disagree name no row (lib/stream-apply.ts streamCardRowId).
+      cardMessageId: streamCardRowId(update),
     })
     if (outcome.kind === 'not_permission') {
       // decideButtonsAnswered said 'permission' but the callback will not

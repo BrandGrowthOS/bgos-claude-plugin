@@ -373,9 +373,14 @@ test('the card id is read off the response, or the server expiry arm is off', ()
   // op, so the whole server-is-the-judge arm quietly falls back to the
   // backstop. The daemon has to be able to SAY that, so the id parse is pinned
   // here and the caller logs a warning on null.
+  // The one row id reading every lane uses (parseCardRowId): a positive safe
+  // integer or its decimal digits; test/permission-card-row-id.test.ts has
+  // the whole table.
   assert.equal(cardMessageIdFrom({ id: 91 }), 91)
-  assert.equal(cardMessageIdFrom({ id: 0 }), 0)
-  assert.equal(cardMessageIdFrom({ id: '91' }), null)
+  assert.equal(cardMessageIdFrom({ id: '91' }), 91)
+  assert.equal(cardMessageIdFrom({ id: 0 }), null)
+  assert.equal(cardMessageIdFrom({ id: -91 }), null)
+  assert.equal(cardMessageIdFrom({ id: 9.5 }), null)
   assert.equal(cardMessageIdFrom({ id: Number.NaN }), null)
   assert.equal(cardMessageIdFrom({ id: Number.POSITIVE_INFINITY }), null)
   assert.equal(cardMessageIdFrom({ message: { id: 91 } }), null)

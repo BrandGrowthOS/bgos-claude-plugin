@@ -727,8 +727,9 @@ export function pendingPermissionFastChatIds(
  */
 export function cardMessageIdFrom(posted: unknown): number | null {
   if (posted === null || typeof posted !== 'object') return null
-  const id = (posted as { id?: unknown }).id
-  return typeof id === 'number' && Number.isFinite(id) ? id : null
+  // The same reading a click's row is given (parseCardRowId), so the row a
+  // request binds and the row a click names are read alike.
+  return parseCardRowId((posted as { id?: unknown }).id)
 }
 
 /** True when the server has already declared this request dead. */
@@ -1022,14 +1023,18 @@ export function resolvePermissionClick(opts: {
 }
 
 /**
- * A message row id as a lane carries it: a positive whole number, or the same
- * number written in decimal digits. Anything else is no row, so a click that
- * carries it settles nothing.
+ * A message row id, however a lane carries it (the card post's answer, the
+ * poll's row, the update stream's click): a positive safe integer, or the
+ * same number written in decimal digits with no sign, no leading zero and
+ * nothing around it. Anything else is no row, so a card post that returns it
+ * binds no row and a click that carries it settles nothing. The one reading
+ * every lane uses.
  */
-function cardRowId(value: unknown): number | null {
-  const n = typeof value === 'string' && /^[0-9]+$/.test(value) ? Number(value) : value
+export function parseCardRowId(value: unknown): number | null {
+  const n = typeof value === 'string' && /^[1-9][0-9]*$/.test(value) ? Number(value) : value
   return typeof n === 'number' && Number.isSafeInteger(n) && n > 0 ? n : null
 }
+const cardRowId = parseCardRowId
 
 // ── Waiting for the verdict ──────────────────────────────────────────────────
 
