@@ -64,7 +64,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
-import { dirname, isAbsolute, join, relative } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** Mirrors of lib/watcher-core.mjs EXIT_SELF_REFRESH / EXIT_NO_CREDENTIALS / INTENTS,
@@ -563,33 +563,67 @@ function realpathOr(path) {
   }
 }
 
-/**
- * The module a failed load could not find, as a bundle relative path, when it
- * lies INSIDE the bundle dir (only those are a bundle to repair); else null.
- * @param {unknown} error
- * @param {string} bundleDir
- * @returns {string | null}
- */
-export function missingBundleModule(error, bundleDir) {
-  const e = /** @type {{ code?: unknown, url?: unknown, message?: unknown } | null | undefined} */ (error)
-  const message = String(e?.message ?? error ?? '')
-  if (e?.code !== 'ERR_MODULE_NOT_FOUND' && !/Cannot find module/.test(message)) return null
-  let path = ''
-  try {
-    if (typeof e?.url === 'string' && e.url.startsWith('file:')) path = fileURLToPath(e.url)
-    if (!path) {
-      const quoted = /Cannot find module '([^']+)'/.exec(message)?.[1] ?? ''
-      path = quoted.startsWith('file:') ? fileURLToPath(quoted) : quoted
-    }
-  } catch {
-    path = ''
-  }
+/** A path or a file: URL as a path; '' when it is neither. */
+function pathOf(text) {
+  const value = String(text ?? '')
+  return value.startsWith('file:') ? fileURLToPath(value) : value
+}
+
+/** `path` relative to the bundle dir (or its real path), '/' separated, when it lies inside it; else null. */
+function insideBundle(path, bundleDir) {
   if (!path || !isAbsolute(path) || !bundleDir) return null
   for (const dir of new Set([bundleDir, realpathOr(bundleDir)])) {
     const rel = relative(dir, path)
     if (rel && !rel.startsWith('..') && !isAbsolute(rel)) return rel.split('\\').join('/')
   }
   return null
+}
+
+/**
+ * The module a failed load could not find, as a bundle relative path, when it
+ * lies INSIDE the bundle dir (only those are a bundle to repair); else null.
+ *
+ * Both runtimes' wording counts. node: "Cannot find module '<abs path>'
+ * imported from <file>" (with a file: url) and "Cannot find package 'x'
+ * imported from <file>". bun: "Cannot find module './x.mjs' from '<file>'" and
+ * "Cannot find package 'x' from '<file>'", with the importing file in
+ * `referrer`. A package missing for a bundle file reads "package x (imported
+ * by lib/y.mjs)": the bundle is builtins only, so a bundle file that imports a
+ * package is a stale copy, which the repair replaces with the root's own.
+ * @param {unknown} error
+ * @param {string} bundleDir
+ * @returns {string | null}
+ */
+export function missingBundleModule(error, bundleDir) {
+  const e = /** @type {{ code?: unknown, url?: unknown, message?: unknown, referrer?: unknown } | null | undefined} */ (error)
+  const message = String(e?.message ?? error ?? '')
+  const referrerProp = typeof e?.referrer === 'string' ? e.referrer : ''
+  const pkg = /Cannot find package '([^']+)'(?: from '([^']+)'| imported from (.+?)\s*$)?/m.exec(message)
+  if (pkg) {
+    let importer = ''
+    try {
+      importer = pathOf(referrerProp || pkg[2] || pkg[3] || '')
+    } catch {
+      importer = ''
+    }
+    const rel = insideBundle(importer, bundleDir)
+    return rel ? `package ${pkg[1]} (imported by ${rel})` : null
+  }
+  if (e?.code !== 'ERR_MODULE_NOT_FOUND' && !/Cannot find module/.test(message)) return null
+  let path = ''
+  try {
+    if (typeof e?.url === 'string' && e.url.startsWith('file:')) path = fileURLToPath(e.url)
+    if (!path) {
+      const quoted = /Cannot find module '([^']+)'(?: from '([^']+)')?/.exec(message)
+      path = pathOf(quoted?.[1] ?? '')
+      // bun names the specifier as written, apart from the file that imports it.
+      const referrer = referrerProp || quoted?.[2] || ''
+      if (/^\.\.?[\\/]/.test(path) && referrer) path = resolvePath(dirname(pathOf(referrer)), path)
+    }
+  } catch {
+    path = ''
+  }
+  return insideBundle(path, bundleDir)
 }
 
 /**
