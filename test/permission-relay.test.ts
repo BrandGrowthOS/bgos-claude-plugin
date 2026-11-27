@@ -1653,8 +1653,8 @@ test('server.ts: the typed lane asks typedPermissionVerdict with the request\'s 
   assert.match(verdictFrom, /typedPermissionVerdict\(text, requestId, floorHeld\)/)
   assert.doesNotMatch(verdictFrom, /parsePermissionChoice\(/, 'the typed lane must not bypass the floor check')
   // The hold also hands the hook's record over (an email_send card's binding, server approval 2026-10-13).
-  assert.match(SRC, /case 'hold':[\s\S]{0,400}?return relayPermissionToOwner\(params, match\.evidence, true, plan\.record\)/)
-  assert.match(SRC, /case 'owner':[\s\S]{0,300}?return relayPermissionToOwner\(params, match\.evidence\)\n/)
+  assert.match(SRC, /case 'hold':[\s\S]{0,400}?return relayPermissionToOwner\(params, turn, match\.evidence, true, plan\.record\)/)
+  assert.match(SRC, /case 'owner':[\s\S]{0,300}?return relayPermissionToOwner\(params, turn, match\.evidence\)\n/)
   assert.match(SRC, /permissionBackstopMs\(storedWait\),\n\s*requesterUserId,\n\s*floorHeld,\n/)
 })
 

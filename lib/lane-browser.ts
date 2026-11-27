@@ -288,8 +288,8 @@ export interface LaneBrowserToolsDeps {
   sleep: (ms: number) => Promise<void>
   now: () => number
   log: (line: string) => void
-  /** Tell the person, in their chat, one plain sentence. */
-  tellPerson: (sentence: string) => Promise<void>
+  /** Tell the person, in the chat of the turn that made the call (captured when the call began, never the latest one), one plain sentence. Null: nobody is told. */
+  tellPerson: (sentence: string, chatId: string | null) => Promise<void>
   /** notifications/tools/list_changed to Claude Code. */
   onListChanged: () => void
 }
@@ -380,11 +380,11 @@ export class LaneBrowserTools {
     return (LANE_BROWSER_TOOL_NAMES as readonly string[]).includes(name) || name === 'vault_items' || name === 'vault_fill'
   }
 
-  async call(name: string, args: unknown): Promise<ToolResult> {
+  async call(name: string, args: unknown, ctx: { chatId: string | null } = { chatId: null }): Promise<ToolResult> {
     if (!this.deps.enabled || !this.handles(name)) return text(`Unknown tool: ${name}`, true)
     const a = (args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as Record<string, unknown>
     if (name === 'vault_items') return this.vaultItems()
-    if (name === 'vault_fill') return this.vaultFill(a)
+    if (name === 'vault_fill') return this.vaultFill(a, ctx.chatId)
     if (!this.roster) {
       await this.load()
       if (!this.roster) return text(this.offlineText, name !== 'hoai_browser_status')
@@ -416,7 +416,7 @@ export class LaneBrowserTools {
     }
   }
 
-  private async vaultFill(a: Record<string, unknown>): Promise<ToolResult> {
+  private async vaultFill(a: Record<string, unknown>, turnChatId: string | null): Promise<ToolResult> {
     const allowed = new Set(['itemId', 'sessionId', 'tabId', 'origin', 'requestId'])
     const origin = exactHttpsOrigin(a.origin)
     if (Object.keys(a).some((k) => !allowed.has(k)) || !ID_RE.test(String(a.itemId ?? '')) || !ID_RE.test(String(a.sessionId ?? '')) || !ID_RE.test(String(a.tabId ?? '')) || !origin ||
@@ -448,7 +448,7 @@ export class LaneBrowserTools {
           const until = Math.min(Number.isFinite(parsed) ? parsed : started + LANE_VAULT_WAIT_MAX_MS, started + LANE_VAULT_WAIT_MAX_MS)
           this.waiting.set(requestId, { itemId, ...target, until })
           // The person is told once per request, here, where it was opened.
-          try { await this.deps.tellPerson(LANE_VAULT_WAITING_SENTENCE) } catch { this.deps.log('vault: the person could not be told that the owner was asked') }
+          try { await this.deps.tellPerson(LANE_VAULT_WAITING_SENTENCE, turnChatId) } catch { this.deps.log('vault: the person could not be told that the owner was asked') }
           this.deps.log(`vault: fill ${requestId} waits for the owner`)
         } else return json({ filled: false, reason: 'vault_unavailable', message: 'The vault did not give a fill for this login.' })
       }

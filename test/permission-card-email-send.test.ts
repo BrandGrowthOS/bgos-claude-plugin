@@ -69,7 +69,7 @@ function relayRig(opts: { monitored: string[]; main: string[]; refuse?: string[]
     outboundFileCtx: () => ({}),
     AUTH: { mode: 'pairing', pairingToken: 'fake-pairing-token-for-tests-only-0000' },
     emailSendApprovals: store,
-    privateTurns: { current: () => opts.turn ?? null },
+    privateTurns: { current: () => { throw new Error('the relay read the turn again') } },
     PRIVATE_MARKER_PATHS: [],
     USER_ID: OWNER,
     monitoredChatIds: opts.monitored,
@@ -100,10 +100,11 @@ function relayRig(opts: { monitored: string[]; main: string[]; refuse?: string[]
   }
   const record = buildFloorRecord({ toolName: SEND_TOOL, toolInput: SEND_ARGS, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
   const relay = (requestId: string, inputPreview = previewOf(SEND_ARGS)) => {
-    const js = ts.transpileModule(`${relaySource}\nreturn relayPermissionToOwner(params, 'acts_on_owners_behalf', true, record);`, {
+    const js = ts.transpileModule(`${relaySource}\nreturn relayPermissionToOwner(params, turn, 'acts_on_owners_behalf', true, record);`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
     }).outputText
-    const all = { ...bindings, record, params: { request_id: requestId, tool_name: SEND_TOOL, description: 'email_send', input_preview: inputPreview } }
+    // The handler's snapshot of the turn, taken when the request is created (fix round 377, finding 3).
+    const all = { ...bindings, turn: opts.turn ?? null, record, params: { request_id: requestId, tool_name: SEND_TOOL, description: 'email_send', input_preview: inputPreview } }
     return new Function(...Object.keys(all), js)(...Object.values(all)) as Promise<void>
   }
   return { relay, posts, notes, chatOwnership, permissionCardRefusedChats }

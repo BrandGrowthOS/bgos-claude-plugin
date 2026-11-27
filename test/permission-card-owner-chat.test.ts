@@ -155,23 +155,28 @@ test('a card from anyone else turn never goes to that turn chat: the owner own c
   assert.equal(pickPermissionChat(['20', '10', '11'], [none], o, null), pickPermissionChat(['20', '10', '11'], [none], o))
 })
 
-test('an owner turn chat is used only when it is a known owner main chat, watched and open', () => {
+// AN OWNER TURN'S CARD HAS ONE CHAT (fix round 377, finding 3): when the turn's own chat cannot take the card, there
+// is no card at all and the caller denies. It used to move to the owner's other chat, away from the conversation.
+test('an owner turn card goes to its own chat or nowhere: a chat that cannot take it is a deny, never another chat', () => {
   const o = createChatOwnership(OWNER)
   o.noteAuthor('10', OWNER)
   o.noteAuthor('11', OWNER)
   o.noteRow({ chatId: '40', kind: 'group' })
   const none = createRefusedChats()
   const turnIn = (chatId: string) => ({ ownerUserId: OWNER, actingUserId: OWNER, chatId })
-  // A group, a chat nobody was seen in, or a recipient's chat: never the turn's chat, the owner's own chat instead.
-  assert.equal(pickPermissionChat(['40', '10', '11'], [none], o, turnIn('40')), '11', 'an owner turn in a group')
-  assert.equal(pickPermissionChat(['30', '10', '11'], [none], o, turnIn('30')), '11', 'an owner turn in a chat of unknown owner')
+  // A group, a chat nobody was seen in, or a recipient's chat: never the turn's chat, and never another one.
+  assert.equal(pickPermissionChat(['40', '10', '11'], [none], o, turnIn('40')), undefined, 'an owner turn in a group')
+  assert.equal(pickPermissionChat(['30', '10', '11'], [none], o, turnIn('30')), undefined, 'an owner turn in a chat of unknown owner')
   o.noteAuthor('20', RECIPIENT)
-  assert.equal(pickPermissionChat(['20', '10', '11'], [none], o, turnIn('20')), '11', 'a recipient chat stays out whoever spoke')
-  // The turn's chat refused this agent's cards, or is no longer watched: the owner's next chat.
+  assert.equal(pickPermissionChat(['20', '10', '11'], [none], o, turnIn('20')), undefined, 'a recipient chat stays out whoever spoke')
+  // The turn's chat refused this agent's cards, or is no longer watched: no chat.
   const refused = createRefusedChats()
   refused.add('10')
-  assert.equal(pickPermissionChat(['10', '11'], [refused], o, turnIn('10')), '11')
-  assert.equal(pickPermissionChat(['11'], [none], o, turnIn('10')), '11')
+  assert.equal(pickPermissionChat(['10', '11'], [refused], o, turnIn('10')), undefined)
+  assert.equal(pickPermissionChat(['11'], [none], o, turnIn('10')), undefined)
+  // A request with no originating chat still takes the owner's own chat by the usual order.
+  assert.equal(pickPermissionChat(['10', '11'], [refused], o, { ownerUserId: OWNER, actingUserId: OWNER, chatId: null }), '11')
+  assert.equal(pickPermissionChat(['10', '11'], [refused], o, null), '11')
 })
 
 // ── the relay itself, executed from server.ts ────────────────────────────────
@@ -203,8 +208,8 @@ function relayRig(opts: { monitored: string[]; refuse?: Record<string, number | 
     hookRailRefusedChats: createRefusedChats(), a2aRouteRefusedChats: createRefusedChats(),
     permissionCardRefusedChats: createRefusedChats(),
     chatOwnership,
-    // The verified turn the card's request was raised in (the private turn tracker), and the marker files it reads.
-    privateTurns: { current: () => opts.turn ?? null }, PRIVATE_MARKER_PATHS: [],
+    // The relay never reads the turn tracker (fix round 377, finding 3): it is handed the snapshot taken at creation.
+    privateTurns: { current: () => { throw new Error('the relay read the turn again') } }, PRIVATE_MARKER_PATHS: [],
     lastInboundUserByChat: new Map(Object.entries(opts.lastInbound ?? {})),
     USER_ID: OWNER, pendingPermissions: pending,
     buildPermissionRequestBody, cardMessageIdFrom, storedWaitSeconds, permissionBackstopMs, choiceToBehavior,
@@ -226,7 +231,8 @@ function relayRig(opts: { monitored: string[]; refuse?: Record<string, number | 
       return 'once'
     },
   }
-  const relay = (requestId: string) => execute(`${relaySource}\nreturn relayPermissionToOwner(params, undefined, false);`, {
+  const relay = (requestId: string) => execute(`${relaySource}\nreturn relayPermissionToOwner(params, turn, undefined, false);`, {
+    turn: opts.turn ?? null,
     ...bindings,
     params: { request_id: requestId, tool_name: 'Bash', description: 'Run a command', input_preview: '{"command":"ls ~"}' },
   })
@@ -260,13 +266,32 @@ test('the relay posts an owner turn card into that turn chat, and a recipient tu
   assert.deepEqual(recipients.posts, ['11'], 'a recipient turn card is about the owner machine: the owner own chat, never the recipient chat')
   assert.deepEqual(recipients.waits, [{ chatId: '11', requesterUserId: OWNER }], 'and only the owner can answer it')
 
-  // The turn's chat refuses the card (the backend's 403): this request moves on to the owner's other chat.
+  // The turn's chat refuses the card (the backend's 403): the request is denied there, never moved to chat 11
+  // (fix round 377, finding 3).
   const refusing = relayRig({ monitored: ['10', '11'], turn: { actingUserId: OWNER, chatId: '10' }, refuse: { 10: 403 } })
   refusing.chatOwnership.noteAuthor('10', OWNER)
   refusing.chatOwnership.noteAuthor('11', OWNER)
   await refusing.relay('req-turn-3')
-  assert.deepEqual(refusing.posts, ['10', '11'])
-  assert.deepEqual(refusing.verdicts, ['allow'])
+  assert.deepEqual(refusing.posts, ['10'], 'tried in its own chat only')
+  assert.deepEqual(refusing.verdicts, ['deny'])
+  assert.deepEqual(refusing.waits, [], 'no card anywhere to wait on')
+
+  // An owner turn in a chat that cannot host a card at all (a group): denied with no post.
+  const group = relayRig({ monitored: ['40', '10'], turn: { actingUserId: OWNER, chatId: '40' } })
+  group.chatOwnership.noteRow({ chatId: '40', kind: 'group' })
+  group.chatOwnership.noteAuthor('10', OWNER)
+  await group.relay('req-turn-4')
+  assert.deepEqual(group.posts, [])
+  assert.deepEqual(group.verdicts, ['deny'])
+})
+
+test('a request with no originating chat keeps the owner chat order, and its 403 retry uses the same snapshot', async () => {
+  const r = relayRig({ monitored: ['10', '11'], turn: null, refuse: { 11: 403 } })
+  r.chatOwnership.noteAuthor('10', OWNER)
+  r.chatOwnership.noteAuthor('11', OWNER)
+  await r.relay('req-turn-5')
+  assert.deepEqual(r.posts, ['11', '10'], 'the newest owner chat, then the next, the turn never read again')
+  assert.deepEqual(r.verdicts, ['allow'])
 })
 
 test('the answer is bound to USER_ID, whoever last wrote in the card chat', async () => {
@@ -340,7 +365,8 @@ test('discoverChats marks each inbox row the backend names a user for', async ()
 })
 
 test('every inbound lane notes a person message author from the server stamp, never the owner fallback', () => {
-  const sites = [...source.matchAll(/noteChatAuthor\(([^\n]*)\)\n/g)].map((m) => m[1]!)
+  // ownerSessionRefuses (fix round 377, finding 1) notes the author it was handed, before its admission check.
+  const sites = [...source.matchAll(/noteChatAuthor\(([^\n]*)\)\n/g)].map((m) => m[1]!).filter((s) => s !== 'chatId, human, record')
   assert.equal(sites.length, 3, `poll, stream and socket each note the author: ${JSON.stringify(sites)}`)
   assert.ok(sites.some((s) => s.includes('msg.message') && s.includes("pollSenderType === 'user'") && s.includes('!pollAgentOrigin') && s.includes('!pollIsEmail')), 'poll')
   assert.ok(sites.some((s) => s.includes('view.raw') && s.includes('!isSystem') && s.includes("view.senderKind === 'user'") && s.includes('!view.agentOrigin') && s.includes('!streamIsEmail')), 'stream')
@@ -349,8 +375,9 @@ test('every inbound lane notes a person message author from the server stamp, ne
   assert.match(helper, /chatOwnership\.noteAuthor\(chatId, privateSenderUserId\(record\)\)/, 'the author stamp only: privateSenderUserId never falls back to the owner')
   assert.match(helper, /meetingChatIds\.has\(chatId\)/, 'a meeting chat is never the owner own chat')
   assert.match(relaySource, /pickPermissionChat\(monitoredChatIds, \[hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats\], chatOwnership, \{/)
-  // ...with the verified turn's person and chat, and the owner it is compared with.
-  assert.match(relaySource, /const cardTurn = emailCard \? null : privateTurns\.current\(\{ markerPaths: PRIVATE_MARKER_PATHS \}\)/)
+  // ...with the verified turn's person and chat as snapshotted when the request was created, never read again here.
+  assert.match(relaySource, /const cardTurn = turn\n/)
+  assert.doesNotMatch(relaySource, /privateTurns\.current\(/)
   assert.match(relaySource, /ownerUserId: USER_ID,\s*actingUserId: cardTurn\?\.actingUserId \?\? null,\s*chatId: cardTurn\?\.chatId \?\? null,/)
 })
 

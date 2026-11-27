@@ -46,6 +46,15 @@ export interface ChatOwnership {
   isOwners(chatId: string): boolean
   /** Known to be somebody else's (a share recipient's) chat. */
   isOthers(chatId: string): boolean
+  /**
+   * Known to be somebody else's chat and not known to be a multi party one: a
+   * share recipient's private chat with the agent. A chat whose kind was never
+   * read counts as private here, so a foreign author there is refused, not let
+   * through (fix round 377, finding 1).
+   */
+  isOthersPrivate(chatId: string): boolean
+  /** Known from an inbox row to be a chat that is not a main chat (a group, a room, a meeting, a side thread). */
+  isMultiParty(chatId: string): boolean
   /** The owner's own chats, the most recently confirmed first. */
   ownerChats(): string[]
 }
@@ -122,6 +131,8 @@ export function createChatOwnership(ownerUserId: string, limit: number = CHAT_OW
     },
     isOwners: (chatId) => owners.has(id(chatId)),
     isOthers: (chatId) => others.has(id(chatId)),
+    isOthersPrivate: (chatId) => others.has(id(chatId)) && !notMain.has(id(chatId)),
+    isMultiParty: (chatId) => notMain.has(id(chatId)),
     ownerChats: () => [...owners].reverse(),
   }
 }

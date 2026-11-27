@@ -156,7 +156,7 @@ import {
 } from './lib/process-lifecycle.js'
 import { ensureMarketplaceAutoUpdate, readMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
 import { recordKnownGood } from './lib/known-good-store.mjs'
-import { LANE_MEMORY_RPC_TOKEN, ownerAnnounceRefused, ownerLaneVerdict } from './lib/lane-core.mjs'
+import { LANE_MEMORY_RPC_TOKEN, ownerAnnounceRefused, ownerLaneVerdict, ownerToolRefused, ownerTurnRefused } from './lib/lane-core.mjs'
 import { classifyMemoryFrame, laneMemoryAnswer, LaneMemoryRpcHandler } from './lib/lane-memory-rpc.ts'
 import { laneCliSupport } from './lib/lane-cli-probe.mjs'
 import { drainLaneEvents, handleLaneRevoked, handleLaneWake, lanesOnFor, supervisorEnv, sweepUnsafePersonLanes } from './lib/lane-owner.js'
@@ -1286,6 +1286,8 @@ import {
   peerNotParticipantResult,
   peerRefusalOf,
   pickPermissionChat,
+  snapshotPermissionTurn,
+  type PermissionTurn,
   peerRefusalStatus,
   type PeerRefusal,
 } from './lib/peer-refusal.js'
@@ -3504,6 +3506,47 @@ function noteChatAuthor(chatId: string, human: boolean, record: unknown): void {
   chatOwnership.noteAuthor(chatId, privateSenderUserId(record))
 }
 
+/** A recipient's private chat, by what this daemon has read: never a meeting. */
+function chatIsOthersPrivate(chatId: string): boolean {
+  return !!chatId && chatOwnership.isOthersPrivate(chatId) && !meetingChatIds.has(chatId)
+}
+
+/**
+ * ADMISSION TO THE OWNER'S SESSION (lib/lane-core.mjs ownerTurnRefused, fix
+ * round 377, finding 1), at each inbound site, BEFORE the sign-in code gate,
+ * the verdict parse, the slash commands and the handoff: a person's turn that
+ * is not shown to be the owner's, in a chat that is not multi party, is not
+ * delivered here, whatever the lane stamp and the lanes switch say. The row's
+ * author is noted first, so its own stamp is evidence. `human` is the site's
+ * own reading (a user row, no peer origin, not an email); a machine event row
+ * is nobody speaking, as in noteChatAuthor. The id stays claimed, so no other
+ * transport delivers it either.
+ */
+function ownerSessionRefuses(chatId: string, human: boolean, record: unknown, transport: string, messageId: unknown): boolean {
+  if (!chatId || !human) return false
+  const row = (record ?? {}) as Record<string, unknown>
+  if ((row.messageType ?? row.message_type) === 'event' || row.eventMeta != null || row.event_meta != null) return false
+  noteChatAuthor(chatId, human, record)
+  const refused = ownerTurnRefused({
+    human: true,
+    authorUserId: privateSenderUserId(record),
+    ownerUserId: USER_ID,
+    chatIsOthersPrivate: chatIsOthersPrivate(chatId),
+    chatIsMultiParty: chatOwnership.isMultiParty(chatId) || meetingChatIds.has(chatId),
+  })
+  if (refused) log(`lane_refused ${transport} message ${String(messageId)} in chat ${chatId}: a person's turn that is not the owner's, with no lane of their own here, not delivered to the owner's session`)
+  return refused
+}
+
+/** A tap, an ask's answer, a card answer or a reaction in `chatId` the owner's session must not announce (lib/lane-core.mjs ownerAnnounceRefused). */
+function announceRefusedIn(chatId: string): boolean {
+  return ownerAnnounceRefused({
+    lanesOn: lanesOnForThisAgent,
+    chatIsOthers: chatOwnership.isOthers(chatId),
+    chatIsOthersPrivate: chatIsOthersPrivate(chatId),
+  })
+}
+
 /** Pending permission requests waiting for user verdict from BGOS chat. */
 const pendingPermissions = new Map<string, PendingPermission>()
 
@@ -4235,6 +4278,26 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
       })
   }
 
+  // THE TURN THAT RAISED IT, read ONCE, here, when the request is created
+  // (fix round 377, findings 1 and 3): its actor decides whether the owner's
+  // tool authority applies at all, and its chat is where a card for it may go.
+  // Every later step (the floor, a card, a refused card) uses this snapshot and
+  // never reads the turn again, so a turn that moved on cannot move the card.
+  // A group lane's prompt (approveGroupTool) is no turn of this session: its turn is never read.
+  const requestTurn = groupPermissionVerdicts.has(request_id) ? null : snapshotPermissionTurn(privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS }))
+  if (ownerToolRefused({ actingUserId: requestTurn?.actingUserId, ownerUserId: USER_ID })) {
+    takeOwnFloorRecord(tool_name, input_preview)
+    log(`Permission request ${tool_name} [${request_id}] denied: it was raised in a turn of a person other than the owner, and the owner's tools are the owner's`)
+    return mcp
+      .notification({
+        method: 'notifications/claude/channel/permission',
+        params: { request_id, behavior: 'deny' },
+      })
+      .catch((err) => {
+        log(`Failed to send the other person's turn deny verdict: ${err}`)
+      })
+  }
+
   // THE HARD FLOOR, ABOVE AUTO APPROVE, AND THE ORDER IS THE FEATURE (0.53.0).
   // Under --dangerously-skip-permissions the CLI raises a request for a listed
   // action only because the floor hook asked it to (bin/hoai-floor-hook.mjs),
@@ -4265,10 +4328,10 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
         ? classifyPermissionRequest(tool_name, input_preview)
         : null,
   })
-  if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)
+  if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan, requestTurn)
   if (floorPlan.action === 'ask_elided') {
     log(`Floor asks about ${tool_name} [${request_id}]: ${floorPlan.reason}`)
-    return settleElidedFloorRequest(params)
+    return settleElidedFloorRequest(params, requestTurn)
   }
 
   if (AUTO_APPROVE) {
@@ -4292,7 +4355,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
       })
   }
 
-  return relayPermissionToOwner(params)
+  return relayPermissionToOwner(params, requestTurn)
 })
 
 /**
@@ -4304,6 +4367,10 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
  */
 function relayPermissionToOwner(
   params: PermissionRequestParams,
+  // The turn that raised the request, read once when it was created
+  // (snapshotPermissionTurn), or null for a request no turn of the owner's
+  // session raised (a group lane's prompt). Never read again in here.
+  turn: PermissionTurn | null,
   floorEvidence?: string,
   floorHeld = false,
   // The floor hook's record for this request: for this channel's email_send,
@@ -4423,12 +4490,13 @@ function relayPermissionToOwner(
   // card goes to the chat of the owner's turn: only the agent's own main chat
   // with its owner can carry an Allow. It skips the same chats and reads the
   // same ownership, so a 403 retry never posts it into one chat twice.
-  // The verified turn that raised a card that is not an email's: the owner's own
-  // turn gets the card in its own chat (lib/peer-refusal.ts pickPermissionChat).
-  const cardTurn = emailCard ? null : privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS })
+  // The verified turn that raised the request, as it was when the request was
+  // created (`turn`, never read again here): the owner's own turn gets the card
+  // in its own chat and nowhere else (lib/peer-refusal.ts pickPermissionChat).
+  const cardTurn = turn
   const chatId = emailCard
     ? emailSendCardChat({
-        turn: privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS }),
+        turn,
         ownerUserId: USER_ID,
         monitored: monitoredChatIds,
         main: mainChatIds,
@@ -4622,11 +4690,13 @@ function relayPermissionToOwner(
     // skipped from now on, and THIS request moves on to the next chat rather
     // than being denied. Each chat is tried once: the set grows on every pass,
     // so when none is left the no chat exit above denies. Any other 403 is a
-    // deny as before and drops nothing.
+    // deny as before and drops nothing. An owner turn's request has exactly one
+    // chat, its own (pickPermissionChat), so the next pass finds none and
+    // denies: it is never moved to another chat (fix round 377, finding 3).
     if (!cardPosted && isPermissionCardOwnerChatOnly(err)) {
       permissionCardRefusedChats.add(chatId)
       log(`Permission card refused in chat ${chatId} (403) for ${tool_name} [${request_id}]; no more cards go there, trying the next chat`)
-      return relayPermissionToOwner(params, floorEvidence, floorHeld, floorRecord)
+      return relayPermissionToOwner(params, turn, floorEvidence, floorHeld, floorRecord)
     }
     log(`Permission relay failed for ${tool_name} [${request_id}]: ${err}`)
     // On failure, deny to be safe
@@ -4648,6 +4718,7 @@ function relayPermissionToOwner(
 function settleFloorRequest(
   params: PermissionRequestParams,
   plan: Extract<FloorPlan, { action: 'consult' }>,
+  turn: PermissionTurn | null,
 ): Promise<void> {
   const { request_id, tool_name, input_preview } = params
   const { match } = plan
@@ -4670,11 +4741,11 @@ function settleFloorRequest(
         // matched command rides along so the card shows it and the server can
         // stamp the floor on it even when the preview lost it. HELD: only a
         // tap may allow it, never a typed yes (typedPermissionVerdict).
-        return relayPermissionToOwner(params, match.evidence, true, plan.record)
+        return relayPermissionToOwner(params, turn, match.evidence, true, plan.record)
       case 'owner':
         // Auto approve off, and the owner's floor does not hold it: the card
         // this install always posts, nothing more.
-        return relayPermissionToOwner(params, match.evidence)
+        return relayPermissionToOwner(params, turn, match.evidence)
       case 'auto_approve':
         log(`Auto-approving: ${tool_name} [${request_id}]`)
         await mcp
@@ -4709,7 +4780,7 @@ function settleFloorRequest(
  * card, held, so only a tap allows it; proceed and an API key connection
  * auto approve as before; an error asks the owner, never a silent allow.
  */
-function settleElidedFloorRequest(params: PermissionRequestParams): Promise<void> {
+function settleElidedFloorRequest(params: PermissionRequestParams, turn: PermissionTurn | null): Promise<void> {
   const { request_id, tool_name, input_preview } = params
   return trackMessageOperation(async () => {
     const decision = await consultElidedFloor({
@@ -4722,7 +4793,7 @@ function settleElidedFloorRequest(params: PermissionRequestParams): Promise<void
     log(decision.line)
     switch (decision.route) {
       case 'hold':
-        return relayPermissionToOwner(params, undefined, true)
+        return relayPermissionToOwner(params, turn, undefined, true)
       case 'auto_approve':
         log(`Auto-approving: ${tool_name} [${request_id}]`)
         await mcp
@@ -4735,7 +4806,7 @@ function settleElidedFloorRequest(params: PermissionRequestParams): Promise<void
           })
         return
       default:
-        return relayPermissionToOwner(params)
+        return relayPermissionToOwner(params, turn)
     }
   })
 }
@@ -12571,7 +12642,7 @@ function deliverLoginMethodAnswer(
   if (!card || card.messageId !== messageId) return
   if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
   const lane = ownerLaneVerdict(raw)
-  if (!lane.deliver || ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+  if (!lane.deliver || announceRefusedIn(chatId)) {
     noteLaneMisroute('sign-in answer', messageId, lane.deliver ? 'a recipient chat' : lane.stamp)
     return
   }
@@ -12746,7 +12817,7 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
   if (!card || card.chatId !== chatId || String(mm.chatId) !== chatId || card.settled || mm.sender !== 'assistant') return
   if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
   const lane = ownerLaneVerdict(mm)
-  if (!lane.deliver || ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+  if (!lane.deliver || announceRefusedIn(chatId)) {
     noteLaneMisroute('card answer', mm.id, lane.deliver ? 'a recipient chat' : lane.stamp)
     return
   }
@@ -13214,7 +13285,7 @@ async function pollChat(chatId: string): Promise<void> {
     // The second lock (person lanes) for taps: once lanes run for this agent,
     // a tap in a share recipient's chat is that person's turn, never the
     // owner's (lib/lane-core.mjs ownerAnnounceRefused).
-    if (announced.size > 0 && ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+    if (announced.size > 0 && announceRefusedIn(chatId)) {
       noteLaneMisroute('poll tap', [...announced].join(','), 'a recipient chat')
       announced.clear()
     }
@@ -13232,7 +13303,7 @@ async function pollChat(chatId: string): Promise<void> {
     // row itself names the option, so it is recorded straight off it, and a
     // group it completes is announced once (announceCompleteAsks). The same
     // second lock as a tap.
-    if (askAnswered.length > 0 && ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+    if (askAnswered.length > 0 && announceRefusedIn(chatId)) {
       noteLaneMisroute('poll ask answer', askAnswered.join(','), 'a recipient chat')
     } else if (askAnswered.length > 0) {
       for (const id of askAnswered) {
@@ -13488,6 +13559,8 @@ async function pollChat(chatId: string): Promise<void> {
       // A person wrote it: the sign-in code gate and the owner only slash
       // commands (routeSlashCommand's speaker) read this one value.
       const pollFromHuman = !isPollAgent && pollSenderType !== 'system'
+      // Admission to the owner's session (ownerSessionRefuses), before the sign-in code gate.
+      if (ownerSessionRefuses(chatId, pollSenderType === 'user' && !pollAgentOrigin && !pollIsEmail, msg.message, 'poll', msg.message.id)) continue
 
       // The owner's sign-in code, when one is awaited (lib/auth-login.ts).
       // Here, before the permission parse, the meeting card and every log
@@ -14164,7 +14237,7 @@ function announceCompleteAsks(via: string): void {
     if (askDelivering.has(ask.askId)) continue
     // The second lock (person lanes), on every door: once lanes run, a card
     // in a share recipient's chat is that person's, never the owner's session.
-    if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
+    if (announceRefusedIn(ask.chatId)) {
       noteLaneMisroute('ask answer', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
       askTracker.withdraw(ask.askId)
       continue
@@ -14315,7 +14388,7 @@ async function retireOrphanedAsks(via: string): Promise<void> {
     refreshAskTracker('retire')
     // This daemon's lane verdict, fresh while it holds the connection, also
     // decides whether the asker is told (fresh review of the follow-up, Important 2).
-    const refused = ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })
+    const refused = announceRefusedIn(ask.chatId)
     // Why, for this session's event, read before the retire forgets the
     // group, from the asker's lease (Data's gaps after #284, gap 2, and its
     // fresh reviews, Important 1).
@@ -14394,7 +14467,7 @@ function askWithdrawnContent(
   withdrawn: number,
   opts: { toAsker: boolean; retiredBecause?: AskRetiredBecause },
 ): { content: string; meta: Record<string, string> } | null {
-  if (ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(ask.chatId) })) {
+  if (announceRefusedIn(ask.chatId)) {
     noteLaneMisroute('ask withdrawn', ask.questions.map((q) => q.messageId).join(','), 'a recipient chat')
     return null
   }
@@ -15769,7 +15842,7 @@ function approveGroupTool(input: { title: string; level: GroupLevel; toolName: s
     const ownHandler = input.level === 'full' ? permissionRequestHandler() : null
     const run = ownHandler
       ? ownHandler({ method: 'notifications/claude/channel/permission_request', params })
-      : relayPermissionToOwner(params)
+      : relayPermissionToOwner(params, null)
     void Promise.resolve(run)
       .catch((err) => log(`groups: a permission prompt could not be asked (${err instanceof Error ? err.name : 'error'})`))
       .finally(() => settle(false))
@@ -17276,6 +17349,8 @@ async function waitForHumanEditCatchup(chatId: string): Promise<boolean> {
 /** Deliver a replacement without executing commands from its quoted words. */
 async function forwardHumanEdit(view: StreamMessageView, transport: 'poll' | 'ws' | 'stream', readGeneration?: number): Promise<boolean> {
   if (!channelArmed || updateDrainMode || humanMessageEdits.isDeleted(view) || !ownerLaneVerdict(view.raw).deliver) return false
+  // An edit is a person's turn too: the same admission as a new message (ownerSessionRefuses).
+  if (ownerSessionRefuses(view.chatId, true, view.raw, `${transport} edit`, view.messageId)) return false
   if (transport !== 'poll' && !await waitForHumanEditCatchup(view.chatId)) return false
   return humanMessageEdits.deliverEdit(view, async (edited, originalMeta) => {
     // The queue may have waited for another handoff while this daemon stood down.
@@ -17484,6 +17559,8 @@ async function forwardStreamInbound(
   // same ordering the poll path uses.
   rememberForwarded(view.messageId)
   rememberSessionHandle(chatId, view.sessionHandle)
+  // Admission to the owner's session (ownerSessionRefuses), before the sign-in code gate.
+  if (ownerSessionRefuses(chatId, !isSystem && view.senderKind === 'user' && !view.agentOrigin && !isExternalEmailSenderType(view.senderKind), view.raw, 'stream', view.messageId)) return
 
   // The owner's sign-in code (see the poll site). This rail claimed the id
   // above, so the other two will never offer this message: without this call
@@ -17819,7 +17896,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     return
   }
   const tapLaneVerdict = ownerLaneVerdict(view.raw)
-  if (!tapLaneVerdict.deliver || ownerAnnounceRefused({ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership.isOthers(chatId) })) {
+  if (!tapLaneVerdict.deliver || announceRefusedIn(chatId)) {
     noteLaneMisroute('stream tap', view.messageId, tapLaneVerdict.deliver ? 'a recipient chat' : tapLaneVerdict.stamp)
     return
   }
@@ -19319,6 +19396,8 @@ function connectWebsocket(): void {
       // A person wrote it: the sign-in code gate and the owner only slash
       // commands (routeSlashCommand's speaker) read this one value.
       const wsFromHuman = !wsAgentOrigin && !wsRoomAgent && wsSenderType !== 'agent' && wsSenderType !== 'system'
+      // Admission to the owner's session (ownerSessionRefuses), before the sign-in code gate.
+      if (ownerSessionRefuses(chatId, wsSenderType === 'user' && !wsAgentOrigin && !wsIsEmail, payload, 'socket', messageId)) return
       // The owner's sign-in code (see the poll site), before the sender is
       // noted, the turn is recorded or anything is logged or forwarded.
       if (consumedAsLoginCode({

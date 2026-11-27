@@ -57,7 +57,7 @@ test('Important 2: a timer reads each pending group at its own cadence (askReadI
 
 test('Minor 10: an announce in a share recipient\'s chat is refused and dropped, on every door', () => {
   const body = fnBody('function announceCompleteAsks(via: string): void {')
-  assert.match(body, /ownerAnnounceRefused\(\{ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership\.isOthers\(ask\.chatId\) \}\)/)
+  assert.match(body, /announceRefusedIn\(ask\.chatId\)/)
 })
 
 test('Minor 6: withdraw_ask reads the group first and retires only the questions still open', () => {
@@ -132,7 +132,7 @@ test('fourth review, Important 2: a passive daemon that takes the connection rea
 test('lease follow-up of #282, item 2: the retire keeps a live asker\'s card on file for it, and every daemon\'s ask tick tells its own session of its retired cards', () => {
   const retire = fnBody('async function retireOrphanedAsks(via: string): Promise<void> {', 4000)
   // The connected daemon's own lane verdict decides whether the asker is told (fresh review of the follow-up, Important 2).
-  assert.match(retire, /const refused = ownerAnnounceRefused\(\{ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership\.isOthers\(ask\.chatId\) \}\)/)
+  assert.match(retire, /const refused = announceRefusedIn\(ask\.chatId\)/)
   assert.match(retire, /if \(!askTracker\.retire\(ask\.askId, \{ withdrawn, tellAsker: !refused \}\)\) continue/)
   assert.match(retire, /sendAskWithdrawn\(ask, withdrawn, \{ toAsker: false, via, retiredBecause \}\)/)
   const tick = fnBody('function heartbeatAskTracker(): void {', 600)
@@ -174,7 +174,7 @@ test('gaps after #284, gap 1: every tool result of this daemon carries the ask_w
   assert.match(notes, /askWithdrawnContent\(ask, withdrawn, \{ toAsker: true \}\)/)
   // One builder for the event and the note: the lane check and the private tap wrapping are the event's.
   const content = fnBody('function askWithdrawnContent(', 2000)
-  assert.match(content, /ownerAnnounceRefused\(\{ lanesOn: lanesOnForThisAgent, chatIsOthers: chatOwnership\.isOthers\(ask\.chatId\) \}\)/)
+  assert.match(content, /announceRefusedIn\(ask\.chatId\)/)
   assert.match(content, /privateTapCardNoting\(/)
   assert.match(fnBody('function sendAskWithdrawn(ask: PendingAsk, withdrawn: number, opts: AskWithdrawnOpts): Promise<void> {', 2500), /askWithdrawnContent\(ask, withdrawn, opts\)/)
 })

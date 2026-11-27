@@ -225,6 +225,25 @@ export function a2aRouteRequiredResult(
   }
 }
 
+/** The turn a permission request was raised in, as it was when the request was created. */
+export interface PermissionTurn {
+  actingUserId: string | null
+  chatId: string | null
+}
+
+/**
+ * A copy of the private turn tracker's current() taken when a permission
+ * request is created (fix round 377, finding 3): the relay, the floor and a
+ * refused card's retry all read this copy, so a turn that moves on while the
+ * request waits cannot move its card or change whose request it is.
+ */
+export function snapshotPermissionTurn(turn: { actingUserId?: unknown; chatId?: unknown } | null | undefined): PermissionTurn | null {
+  if (!turn || typeof turn !== 'object') return null
+  const actor = typeof turn.actingUserId === 'string' && turn.actingUserId.trim() !== '' ? turn.actingUserId.trim() : null
+  const chat = turn.chatId === undefined || turn.chatId === null ? '' : String(turn.chatId).trim()
+  return Object.freeze({ actingUserId: actor, chatId: chat === '' ? null : chat })
+}
+
 /**
  * The chat a permission approval card goes to: the first monitored chat that
  * has not refused this agent's posts for good. The card used to go to
@@ -250,8 +269,16 @@ export function a2aRouteRequiredResult(
  * other chat the most recently confirmed one, so the card used to land where
  * the turn was not. Anyone else's turn (a share recipient's, a turn that names
  * no person) never chooses the chat: the card is about the owner's machine and
- * goes to the owner's own chat exactly as above. A turn whose chat is not a
- * known owner main chat (a group, a chat nobody was seen in) changes nothing.
+ * goes to the owner's own chat exactly as above.
+ *
+ * AN OWNER TURN'S CARD HAS ONE CHAT (fix round 377, finding 3). When that turn
+ * named a chat and the chat cannot take the card (a group, a chat not known to
+ * be the owner's, one no longer watched, one that refused this agent's cards),
+ * the answer is undefined and the caller denies: the request is never moved
+ * into another chat, where the owner would be approving it apart from the
+ * conversation that asked for it. Only a request with no originating chat (no
+ * turn, or a turn that names no person) takes the owner's own chat by the
+ * order above.
  */
 export function pickPermissionChat(
   monitored: readonly string[],
@@ -265,7 +292,7 @@ export function pickPermissionChat(
   const ownerChats = ownership.ownerChats()
   const ownersTurn = !!turn && typeof turn.ownerUserId === 'string' && turn.ownerUserId !== '' && turn.actingUserId === turn.ownerUserId
   const turnChat = ownersTurn ? String(turn.chatId ?? '').trim() : ''
-  if (turnChat !== '' && ownerChats.includes(turnChat) && watched.has(turnChat) && open(turnChat)) return turnChat
+  if (turnChat !== '') return ownerChats.includes(turnChat) && watched.has(turnChat) && open(turnChat) ? turnChat : undefined
   const owners = ownerChats.find((chatId) => watched.has(chatId) && open(chatId))
   if (owners !== undefined) return owners
   return monitored.find((chatId) => open(chatId) && !ownership.isOthers(chatId))

@@ -197,6 +197,8 @@ function rig(opts: { lockHeld?: boolean; live?: number[]; handedOn?: number[]; c
     pairingLockNamesThisDaemon: () => lockFileNamesUs,
     updateDrainMode: false,
     ownerAnnounceRefused: () => false,
+    // Every announce check goes through announceRefusedIn (fix round 377, finding 1).
+    announceRefusedIn: () => false,
     lanesOnForThisAgent: false,
     chatOwnership: { isOthers: () => false },
     noteLaneMisroute: () => {},
@@ -993,6 +995,7 @@ test('lease follow-up review, Important 2: a card in a share recipient\'s chat i
     r.answer(795)
     // Lanes are on and the chat is a share recipient's: the connected daemon tells no owner session.
     r.known.ownerAnnounceRefused = () => true
+    r.known.announceRefusedIn = () => true
     for (let i = 0; i < 3; i++) {
       await r.retireOrphanedAsks?.('timer')
       r.advance(15_000)

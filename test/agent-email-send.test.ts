@@ -1670,7 +1670,7 @@ test('server.ts reads the tap\'s approval on every lane it learns of a tap, thro
   assert.match(wait, /if \(choice === 'once'\) onTapApproval\?\.\(answeredEmailSendApproval\(msg\.message\)\)/)
   assert.equal(/realtimeSocket\.on\(\s*['"]inbound_click['"]/.test(SRC), false)
   const settle = serverSlice('function settleFloorRequest(', '\n}\n')
-  assert.ok(settle.includes('return relayPermissionToOwner(params, match.evidence, true, plan.record)'), 'the hold hands the hook record to the card')
+  assert.ok(settle.includes('return relayPermissionToOwner(params, turn, match.evidence, true, plan.record)'), 'the hold hands the hook record to the card')
 })
 
 /** relayPermissionToOwner, run out of server.ts with a fake card post and the real click resolver. */
@@ -1688,7 +1688,8 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>, over: Record<stri
   const posts: Array<{ path: string; body: Record<string, any> }> = []
   const notes: Array<{ params: unknown; claimed: unknown }> = []
   const logs: string[] = []
-  const relay = compileServer(serverSlice('function relayPermissionToOwner(', '\n}\n'), 'relayPermissionToOwner', {
+  const { snapshotPermissionTurn } = await import('../lib/peer-refusal.ts')
+  const relayAt = compileServer(serverSlice('function relayPermissionToOwner(', '\n}\n'), 'relayPermissionToOwner', {
     ...relayNs,
     ...m,
     ...a,
@@ -1711,7 +1712,8 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>, over: Record<stri
     a2aRouteRefusedChats: new Set(),
     // Release 0.69.0: the relay also reads #233's chat ownership and its 403 refused set.
     permissionCardRefusedChats: createRefusedChats(),
-    chatOwnership: createChatOwnership(OWNER),
+    // The owner spoke in their own chat, as the turn fixtures say: the daemon notes it (noteChatAuthor) before any card.
+    chatOwnership: (() => { const o = createChatOwnership(OWNER); o.noteAuthor(OWN_CHAT, OWNER); return o })(),
     privateTurns: f.tracker,
     PRIVATE_MARKER_PATHS: f.markerPaths,
     USER_ID: OWNER,
@@ -1723,6 +1725,9 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>, over: Record<stri
     log: (line: string) => logs.push(String(line)),
     ...over,
   }) as (...args: unknown[]) => Promise<void>
+  // The handler snapshots the turn when the request is created and hands it to the relay (fix round 377, finding 3).
+  const relay = (params: unknown, ...rest: unknown[]) =>
+    relayAt(params, snapshotPermissionTurn(f.tracker.current({ markerPaths: f.markerPaths })), ...rest)
   const tap = async (callbackData: string, emailSendApproval: unknown) => {
     for (let i = 0; i < 50 && posts.length === 0; i++) await new Promise((r) => setImmediate(r))
     relayNs.resolvePermissionClick({ callbackData, clickerUserId: OWNER, pending, emailSendApproval } as never)

@@ -518,10 +518,12 @@ const laneBrowser = new LaneBrowserTools({
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   now: () => Date.now(),
   log,
-  tellPerson: async (sentence) => {
-    if (!lastTurnChatId) return
+  // The chat the call's own turn was in, captured when the call began (fix
+  // round 377, finding 3): a later turn in another chat never receives it.
+  tellPerson: async (sentence, chatId) => {
+    if (!chatId) return
     await laneFetch('POST', 'send-message', {
-      chatId: Number(lastTurnChatId),
+      chatId: Number(chatId),
       assistantId: Number(LANE.assistantId),
       text: sentence,
       sender: 'assistant',
@@ -548,10 +550,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => {
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (laneBrowser.handles(req.params.name)) {
+    // Whose chat this call belongs to, read once, now, before anything awaits.
+    const callChatId = lastTurnChatId
     lastActivityAtMs = Date.now()
     writeLaneState()
     try {
-      return await laneBrowser.call(req.params.name, req.params.arguments)
+      return await laneBrowser.call(req.params.name, req.params.arguments, { chatId: callChatId })
     } finally {
       lastActivityAtMs = Date.now()
       writeLaneState()

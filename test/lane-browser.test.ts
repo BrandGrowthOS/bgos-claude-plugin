@@ -330,6 +330,28 @@ test('a call waits at most about 50 s, then says to call again with the requestI
   assert.deepEqual(relayed.body.message.params.arguments, { ticket: TICKET, itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })
 })
 
+// Fix round 377, finding 3: the waiting notice goes to the chat of the turn that made the call, captured when the
+// call began; it used to go to the latest chat a turn was delivered in, which a later turn may have moved.
+test('the waiting notice goes to the chat the call was made in, never a later one, and nowhere with no chat', async () => {
+  const b = backend({ fill: { status: 'waiting', requestId: 'req-1', expiresAt: '2026-11-13T10:10:00Z' }, polls: Array.from({ length: 40 }, () => ({ status: 'waiting' })) })
+  const toldIn: Array<string | null> = []
+  const { t } = tools(b, { tellPerson: async (_s: string, chatId: string | null) => { toldIn.push(chatId) } })
+  await t.call('vault_fill', { itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN }, { chatId: '20' })
+  assert.deepEqual(toldIn, ['20'])
+  const b2 = backend({ fill: { status: 'waiting', requestId: 'req-1', expiresAt: '2026-11-13T10:10:00Z' }, polls: Array.from({ length: 40 }, () => ({ status: 'waiting' })) })
+  const quiet: Array<string | null> = []
+  await tools(b2, { tellPerson: async (_s: string, chatId: string | null) => { quiet.push(chatId) } }).t.call('vault_fill', { itemId: ITEM, sessionId: 'vs_1', tabId: 'tab_1', origin: ORIGIN })
+  assert.deepEqual(quiet, [null], 'no chat captured: the server posts nowhere')
+  // lane-server.ts captures the chat before anything awaits, and posts only to the chat it was handed.
+  const lane = readFileSync(join(import.meta.dirname, '..', 'lane-server.ts'), 'utf8')
+  const handler = lane.slice(lane.indexOf('if (laneBrowser.handles(req.params.name)) {'), lane.indexOf("if (req.params.name !== 'reply') {"))
+  assert.match(handler, /const callChatId = lastTurnChatId\n[\s\S]*laneBrowser\.call\(req\.params\.name, req\.params\.arguments, \{ chatId: callChatId \}\)/)
+  assert.ok(handler.indexOf('const callChatId = lastTurnChatId') < handler.indexOf('await '), 'read before any await')
+  const tell = lane.slice(lane.indexOf('tellPerson: async ('), lane.indexOf('onListChanged:', lane.indexOf('tellPerson: async (')))
+  assert.match(tell, /tellPerson: async \(sentence, chatId\) => \{\n\s*if \(!chatId\) return\n[\s\S]*chatId: Number\(chatId\),/)
+  assert.doesNotMatch(tell, /lastTurnChatId/)
+})
+
 test('a resumed call must name the same login, session, tab and origin as the request it resumes, and a usable requestId', async () => {
   const b = backend({ fill: { status: 'waiting', requestId: 'req-1', expiresAt: '2026-11-13T10:10:00Z' }, polls: Array.from({ length: 40 }, () => ({ status: 'waiting' })) })
   const { t } = tools(b)
