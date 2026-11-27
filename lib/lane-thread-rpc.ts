@@ -71,6 +71,7 @@ import {
   laneSettingsBody,
   personLaneStamp,
   readLaneStamp,
+  threadIdentityVerdict,
 } from './lane-core.mjs'
 import { laneAllowAdditions, laneToolsFor, readToolPolicy } from './lane-policy.mjs'
 import type { SpawnStreamJson } from './stream-json-child.ts'
@@ -115,13 +116,16 @@ export function classifyLaneThreadFrame(
   if (rpcId === '') return { kind: 'drop', why: 'no_rpc_id' }
   if (r.op !== THREAD_TURN && r.op !== THREAD_CLOSE) return { kind: 'drop', why: 'op' }
   if (!isSafeLaneUserId(lane?.userId)) return { kind: 'drop', why: 'lane_unknown' }
-  const stamp = readLaneStamp(r)
-  if (r.actorUserId !== lane.userId || stamp !== personLaneStamp(lane.userId)) {
-    return { kind: 'drop', why: stamp === null ? 'not stamped for a person' : 'stamped for another lane' }
-  }
-  const target = r.assistantId
-  if ((typeof target !== 'string' && typeof target !== 'number') || String(target) !== String(lane.assistantId)) {
-    return { kind: 'drop', why: 'another agent' }
+  // The one identity rule a replayed row is read by too (lib/lane-core.mjs threadIdentityVerdict).
+  const verdict = threadIdentityVerdict(r, { lane: personLaneStamp(lane.userId), assistantIds: [lane.assistantId] })
+  if (!verdict.ok) {
+    const stamp = readLaneStamp(r)
+    const why = verdict.why === 'agent'
+      ? 'another agent'
+      : verdict.why === 'conflict'
+        ? 'two spellings that disagree'
+        : stamp === null ? 'not stamped for a person' : 'stamped for another lane'
+    return { kind: 'drop', why }
   }
   return {
     kind: 'thread',

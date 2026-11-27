@@ -83,7 +83,7 @@ import {
 } from './thread-lane-args.ts'
 import { lineSplitter, userMessageLine, type SpawnStreamJson, type StreamJsonChild } from './stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
-import { OWNER_LANE_STAMP, personLaneStamp, readLaneStamp } from './lane-core.mjs'
+import { OWNER_LANE_STAMP, threadIdentityVerdict } from './lane-core.mjs'
 import { readSenderGuardrailField } from './inbound-channel.ts'
 
 export const THREAD_LANE_MAX_RUNNING = 2
@@ -103,17 +103,10 @@ export const THREAD_LANE_IDLE_MS = 20 * 60_000
  *    classifyLaneThreadFrame), as the server writes every lane's row (BGOS
  *    laneFrameStamp). No stamp, another person, or no person named: not ours.
  */
-export function pendingRowIsThisLane(row: Record<string, unknown>, lane: string): boolean {
-  const stamp = readLaneStamp(row)
-  const named = (v: unknown): boolean => v !== undefined && v !== null
-  if (lane === OWNER_LANE_STAMP) {
-    if (stamp !== null && stamp !== OWNER_LANE_STAMP) return false
-    return !named(row.actorUserId) && !named(row.actor_user_id)
-  }
-  if (stamp !== lane) return false
-  const actor = row.actorUserId
-  if (typeof actor !== 'string' || actor === '' || personLaneStamp(actor) !== lane) return false
-  return !named(row.actor_user_id) || row.actor_user_id === actor
+export function pendingRowIsThisLane(row: Record<string, unknown>, lane: string, assistantIds?: readonly string[]): boolean {
+  // The live frame's own function (fix round 377, finding 6): a person's row
+  // must name this lane's agent, and two spellings that disagree are refused.
+  return threadIdentityVerdict(row, { lane, ...(assistantIds ? { assistantIds } : {}) }).ok
 }
 export const THREAD_LANE_KILL_GRACE_MS = 10_000
 export const THREAD_LANE_KEEP_CLOSED_MS = 7 * 24 * 60 * 60_000
@@ -578,7 +571,7 @@ export class ThreadLaneManager {
       // The second lock (shared agents): a row runs only in its own lane, by
       // the live frame's rule (pendingRowIsThisLane). This manager's lane is
       // `opts.lane` (a person's lane daemon names its own) or the owner's.
-      if (!pendingRowIsThisLane(r, opts.lane ?? OWNER_LANE_STAMP)) {
+      if (!pendingRowIsThisLane(r, opts.lane ?? OWNER_LANE_STAMP, opts.assistantIds?.map(String))) {
         this.deps.log('threads: a pending thread for another lane was skipped')
         continue
       }

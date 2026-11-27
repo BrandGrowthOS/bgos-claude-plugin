@@ -19147,6 +19147,12 @@ function connectWebsocket(): void {
       key: groupReactionKey(String(frame.reactionId), card), messageId: frame.messageId, text: groupReactionText(card),
     }, 'socket reaction')) return
     if (!ownerLaneVerdict(frame).deliver) return
+    // A reaction in a chat known to be a share recipient's is that person's,
+    // exactly as a button tap there is (fix round 377, finding 6).
+    if (announceRefusedIn(String(frame.chatId))) {
+      noteLaneMisroute('reaction', frame.messageId, 'a recipient chat')
+      return
+    }
     void trackMessageOperation(() => channelNotify(() => {
       const marker = card.meta.user_id === USER_ID ? '' : ' ' + PRIVATE_UNTRACKED_TAG
       // Keep the transport's provenance tags on the same line as this short answer.

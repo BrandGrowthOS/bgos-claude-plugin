@@ -21,7 +21,7 @@ import { AsideError, type AsideInput } from './aside-fork.ts'
 import { ThreadLaneError, type ThreadTurnInput } from './thread-lanes.ts'
 import { GroupLaneError } from './group-lanes.ts'
 import type { AsideExchange, ThreadTurnMode } from './thread-lane-args.ts'
-import { ownerLaneVerdict } from './lane-core.mjs'
+import { OWNER_LANE_STAMP, threadIdentityVerdict } from './lane-core.mjs'
 
 export const THREAD_TURN = 'thread_turn'
 export const THREAD_CLOSE = 'thread_close'
@@ -48,8 +48,10 @@ export function isThreadOp(op: unknown): op is ThreadOp {
  */
 export function isPersonThreadFrame(raw: Record<string, unknown>): boolean {
   if (raw.op !== THREAD_TURN && raw.op !== THREAD_CLOSE) return false
-  if (!ownerLaneVerdict(raw).deliver) return true
-  return raw.actorUserId !== undefined && raw.actorUserId !== null
+  // The one identity rule a replayed row is read by too (lib/lane-core.mjs
+  // threadIdentityVerdict, fix round 377 finding 6): a person named under
+  // either spelling, or two spellings that disagree, is not the owner's.
+  return !threadIdentityVerdict(raw, { lane: OWNER_LANE_STAMP }).ok
 }
 
 /** What the voice_rpc handler needs from the lanes and the aside runner. */
