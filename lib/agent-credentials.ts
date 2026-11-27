@@ -16,7 +16,8 @@
  * existing paired agents (Echo) keep working through the deprecation window.
  * Pairing tokens ride in X-BGOS-Pairing on HTTP and in the socket.io handshake
  * query (the backend gateway reads pairing tokens only from query.pairingToken),
- * while the api-key path keeps its auth.apiKey handshake.
+ * while the api-key path keeps its auth.apiKey handshake. A pairing handshake
+ * also names the agent the daemon serves (auth.servesAgent), when it knows it.
  *
  * Pure and side effect free (loadCredentialsFile and resolveCredentialsPath's
  * default exists() probe are the only small IO helpers, both injectable);
@@ -323,6 +324,22 @@ export function authHeaders(auth: ResolvedAuth): Record<string, string> {
     : { 'X-API-Key': auth.apiKey }
 }
 
+/** A positive whole agent id written plainly: no sign, space, leading zero, fraction or exponent. */
+const PLAIN_AGENT_ID = /^[1-9][0-9]{0,15}$/
+
+/**
+ * The agent this daemon serves, as the whole number its pairing handshake
+ * carries, or null when the daemon does not know its agent or holds anything
+ * there that is not a positive whole number a number can hold exactly.
+ */
+export function servedAgentId(auth: Pick<ResolvedAuth, 'assistantId'>): number | null {
+  const held: unknown = auth.assistantId
+  const text = typeof held === 'string' ? held : typeof held === 'number' ? String(held) : ''
+  if (!PLAIN_AGENT_ID.test(text)) return null
+  const id = Number(text)
+  return Number.isSafeInteger(id) ? id : null
+}
+
 /**
  * The socket.io handshake options for the resolved mode. The backend gateway
  * reads a pairing token ONLY from the handshake query, and the legacy path from
@@ -331,21 +348,46 @@ export function authHeaders(auth: ResolvedAuth): Record<string, string> {
  * `capabilities` (person lanes P5): what THIS socket declares in its own
  * handshake (`auth.capabilities`), which the server reads per socket. Omit
  * the field when the caller declares no capabilities.
+ *
+ * `servesAgent` (pairing only): the one agent this daemon serves, a whole
+ * number beside `capabilities`. Left out when the daemon does not know its
+ * agent, or holds anything there that is not a positive whole number
+ * (servedAgentId). The API key path says its agent in `assistantId` and never
+ * carries this field.
  */
 export function wsAuthOptions(
   auth: ResolvedAuth,
   capabilities: readonly string[] = [],
-): { query?: { pairingToken: string }; auth?: { apiKey: string; assistantId: string; capabilities?: string[] } | { capabilities: string[] } } {
+): { query?: { pairingToken: string }; auth?: { apiKey: string; assistantId: string; capabilities?: string[] } | { capabilities?: string[]; servesAgent?: number } } {
   if (auth.mode === 'pairing') {
+    const servesAgent = servedAgentId(auth)
+    const declared = {
+      ...(capabilities.length > 0 ? { capabilities: [...capabilities] } : {}),
+      ...(servesAgent !== null ? { servesAgent } : {}),
+    }
     return {
       query: { pairingToken: auth.pairingToken },
-      ...(capabilities.length > 0 ? { auth: { capabilities: [...capabilities] } } : {}),
+      ...(Object.keys(declared).length > 0 ? { auth: declared } : {}),
     }
   }
   return { auth: {
     apiKey: auth.apiKey, assistantId: auth.assistantId,
     ...(capabilities.includes(HEARD_REACTIONS_CAPABILITY) ? { capabilities: [HEARD_REACTIONS_CAPABILITY] } : {}),
   } }
+}
+
+/**
+ * The connect log line that says whether the pairing handshake named an
+ * agent: its id and nothing else, or that none was named (the daemon does not
+ * know its agent, or holds something there that is not a positive whole
+ * number, such as a padded or unfilled setting; the value itself is not
+ * repeated). Null on the API key path, whose handshake never carries the
+ * field. Pure: the caller (server.ts) does the logging.
+ */
+export function formatHandshakeAgent(auth: ResolvedAuth): string | null {
+  if (auth.mode !== 'pairing') return null
+  const servesAgent = servedAgentId(auth)
+  return servesAgent !== null ? `WS handshake names agent ${servesAgent}` : 'WS handshake: no agent named'
 }
 
 /** A friendly, secret free message when creds are incomplete. */
