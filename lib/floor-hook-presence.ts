@@ -36,7 +36,7 @@
  * Pure: every file read is injected, so the tests hold each case in place.
  */
 
-import { ownedHookOf } from './claude-preseed.mjs'
+import { isOwnHookScript, ownedHookOf, switchesHooksOff } from './claude-preseed.mjs'
 import { declaredCapabilities } from './declared-capabilities.js'
 import { HARD_FLOOR_TOKEN } from './claude-capability-tokens.js'
 
@@ -55,6 +55,8 @@ export interface FloorHookPresenceInput {
   /** Answers the file's text, or throws. */
   readFile: (path: string) => string
   exists: (path: string) => boolean
+  /** The real path of a file, or null; given, a hook that names this install's script in another spelling counts. */
+  realpath?: (path: string) => string | null
   join: (...parts: string[]) => string
 }
 
@@ -62,9 +64,47 @@ export interface FloorHookPresence {
   registered: boolean
   /** Where it was found, or why it was not, for the daemon's one boot line. */
   where: string
+  /** The settings file that switches every hook off ("disableAllHooks"), when one does. */
+  hooksOff?: string
+}
+
+/**
+ * The settings files the CLI reads for a session in these folders: each folder's local and project settings, then
+ * the user's. Shared by both hook readers.
+ */
+export function sessionSettingsFiles(input: Pick<FloorHookPresenceInput, 'folders' | 'configDir' | 'join'>): string[] {
+  const files: string[] = []
+  for (const folder of input.folders) {
+    if (!folder) continue
+    files.push(input.join(folder, '.claude', 'settings.local.json'))
+    files.push(input.join(folder, '.claude', 'settings.json'))
+  }
+  if (input.configDir) files.push(input.join(input.configDir, 'settings.json'))
+  return files
+}
+
+/**
+ * The first of these settings files that switches every hook off, or undefined. On at any level, no hook runs,
+ * the plugin's own hooks file included (measured on 2.1.332), so neither hook is registered, whatever the files
+ * hold.
+ */
+export function hooksOffIn(files: readonly string[], readFile: (path: string) => string): string | undefined {
+  for (const file of files) {
+    try {
+      const text = readFile(file)
+      const parsed: unknown = JSON.parse(typeof text === 'string' && text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)
+      if (switchesHooksOff(parsed)) return file
+    } catch {
+      // Not there, or not JSON: it switches nothing off.
+    }
+  }
+  return undefined
 }
 
 export function floorHookPresence(input: FloorHookPresenceInput): FloorHookPresence {
+  const settingsFiles = sessionSettingsFiles(input)
+  const hooksOff = hooksOffIn(settingsFiles, input.readFile)
+  if (hooksOff) return { registered: false, where: `every hook is switched off by "disableAllHooks" in ${hooksOff}`, hooksOff }
   const hooksFiles: string[] = []
   if (input.installMethod === 'marketplace' && input.pluginRoot) {
     hooksFiles.push(input.join(input.pluginRoot, 'hooks', 'hooks.json'))
@@ -74,13 +114,6 @@ export function floorHookPresence(input: FloorHookPresenceInput): FloorHookPrese
   for (const file of hooksFiles) {
     if (fileRegistersFloorHook(file, input, true)) return { registered: true, where: file }
   }
-  const settingsFiles: string[] = []
-  for (const folder of input.folders) {
-    if (!folder) continue
-    settingsFiles.push(input.join(folder, '.claude', 'settings.local.json'))
-    settingsFiles.push(input.join(folder, '.claude', 'settings.json'))
-  }
-  if (input.configDir) settingsFiles.push(input.join(input.configDir, 'settings.json'))
   for (const file of settingsFiles) {
     if (fileRegistersFloorHook(file, input, false)) return { registered: true, where: file }
   }
@@ -109,6 +142,8 @@ function fileRegistersFloorHook(
     // ${CLAUDE_PLUGIN_ROOT} is expanded by the CLI only in a plugin's own
     // hooks file, so a path spelled with it counts there and nowhere else.
     pluginRootVariable: pluginHooksFile,
+    pluginRoot: input.pluginRoot,
+    ...(input.realpath ? { realpath: input.realpath } : {}),
   })
 }
 
@@ -118,7 +153,13 @@ function fileRegistersFloorHook(
  */
 export function registersFloorHook(
   parsed: unknown,
-  opts: { exists: (path: string) => boolean; pluginRootVariable: boolean },
+  opts: {
+    exists: (path: string) => boolean
+    pluginRootVariable: boolean
+    /** This install's root: an absolute path counts only when it is this install's own bin script. */
+    pluginRoot?: string
+    realpath?: (path: string) => string | null
+  },
 ): boolean {
   const hooks = isRecord(parsed) && isRecord(parsed.hooks) ? parsed.hooks : null
   const matchers = hooks && Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []
@@ -131,7 +172,9 @@ export function registersFloorHook(
       const owned = ownedHookOf('PreToolUse', matcher, hook, { pluginRootVariable: opts.pluginRootVariable })
       if (!owned || owned.script !== FLOOR_HOOK_SCRIPT || !isRecord(hook) || !Array.isArray(hook.args)) continue
       const path = String(hook.args[0])
-      if (path.startsWith('${CLAUDE_PLUGIN_ROOT}/') || opts.exists(path)) return true
+      if (path.startsWith('${CLAUDE_PLUGIN_ROOT}/')) return true
+      // This install's own script, on disk: a file of the same name anywhere else, even an empty one, stops nothing.
+      if (opts.exists(path) && isOwnHookScript(path, FLOOR_HOOK_SCRIPT, opts)) return true
     }
   }
   return false
@@ -164,6 +207,13 @@ export function floorBootLine(presence: FloorHookPresence, authMode: 'pairing' |
     return (
       `floor: the blocking floor hook is registered (${presence.where}); ` +
       `the floor capability (${HARD_FLOOR_TOKEN}) is declared on this pairing`
+    )
+  }
+  if (presence.hooksOff) {
+    return (
+      `floor: the blocking floor hook is NOT registered for this session (${presence.where}); ` +
+      `the floor capability (${HARD_FLOOR_TOKEN}) is NOT declared, and no hook runs. ` +
+      'Take that line out of the file, then start this agent again'
     )
   }
   const hook = presence.registered

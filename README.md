@@ -1177,7 +1177,7 @@ folder, right before the line that starts claude, so the script stops when it
 fails. In a PowerShell script (`.ps1`):
 
 ```
-hoai hooks; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+hoai hooks; if (-not $? -or $LASTEXITCODE -ne 0) { exit 1 }
 ```
 
 In a shell script (`.sh`):
@@ -1186,9 +1186,10 @@ In a shell script (`.sh`):
 hoai hooks || exit 1
 ```
 
-A PowerShell script goes on after a command that failed unless it checks
-`$LASTEXITCODE`, so a plain `hoai hooks` line there would start claude without
-the hooks.
+A PowerShell script goes on after a command that failed unless it checks, so a
+plain `hoai hooks` line there would start claude without the hooks. `$?` is
+there for a `hoai` that is not found at all: then `$LASTEXITCODE` still holds
+the 0 of the command before it.
 
 It writes exactly what a `hoai` launch writes (the full set, the blocking floor
 hook included), starts nothing, and changes nothing when the hooks are already
@@ -1206,6 +1207,10 @@ when it did not:
 - when one of this checkout's four hook scripts in `bin` is missing or is a
   link: the hooks always run this checkout's own scripts, never ones the
   folder names;
+- when `"disableAllHooks": true` is in the folder's `.claude/settings.json` or
+  `.claude/settings.local.json`, or in your user `settings.json`: then the CLI
+  runs no hook at all, the one that asks before a risky action included, so the
+  hooks do not hold. A `hoai` launch does not start claude there either;
 - when the folder's `.claude`, or `.claude/settings.local.json`, is a link to
   somewhere else, or the settings file is larger than any agent's needs (1 MB):
   the write never leaves the agent's folder;

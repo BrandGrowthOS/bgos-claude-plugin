@@ -489,13 +489,15 @@ $preseed | Out-File -FilePath $preseedPath -Encoding utf8
 # fires twice. Idempotent, and best effort: a failure costs the tool detail.
 if ($ResolvedMethod -ne 'marketplace') {
     New-Item -ItemType Directory -Force -Path (Join-Path $Workdir '.claude') | Out-Null
-    $env:HOAI_PRESEED = Join-Path $PluginRoot 'lib\claude-preseed.mjs'
+    # registerTrustedHooks: the four hook scripts must be plain files of this checkout's own bin, and the folder's
+    # settings must not switch every hook off, or nothing is written.
+    $env:HOAI_HOOKS_LIB = Join-Path $PluginRoot 'lib\clone-hooks.mjs'
     $env:HOAI_SETTINGS = Join-Path $Workdir '.claude\settings.local.json'
     $env:HOAI_FORWARDER = Join-Path $PluginRoot 'bin\hoai-hook.mjs'
     $hookJs = @'
 const { pathToFileURL } = require("node:url");
-import(pathToFileURL(process.env.HOAI_PRESEED).href)
-  .then((m) => m.ensureHookEntries({
+import(pathToFileURL(process.env.HOAI_HOOKS_LIB).href)
+  .then((m) => m.registerTrustedHooks({
     settingsPath: process.env.HOAI_SETTINGS,
     forwarderPath: process.env.HOAI_FORWARDER,
   }))

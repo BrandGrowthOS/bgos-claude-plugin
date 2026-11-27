@@ -113,7 +113,14 @@ import {
   ensureMarketplaceAutoUpdate,
   preseedClaudeTrust,
 } from '../lib/claude-preseed.mjs'
-import { registerTrustedHooks, serversStartingCheckout } from '../lib/clone-hooks.mjs'
+import {
+  CONFIG_FILE_MAX_BYTES,
+  hooksSwitchedOffIn,
+  hooksSwitchedOffWords,
+  readTextUpTo,
+  registerTrustedHooks,
+  serversStartingCheckout,
+} from '../lib/clone-hooks.mjs'
 import { ATTACH_SCOPE_DIR_ENV, ATTACH_SCOPE_ENV } from '../lib/attach-scope.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
@@ -309,6 +316,11 @@ export function defaultPidProcess(pid, platform = process.platform, opts = {}) {
   }
   const bootClock = () => readBootClock({ platform, readFile: opts.readFile ?? defaultReadText })
   return readLauncherProcesses({ platform, pids: [pid], execSync, now: opts.now ?? Date.now(), bootClock }).get(pid) ?? null
+}
+
+/** A sentence's first letter in upper case. */
+function upperFirst(text) {
+  return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
 /** Best-effort text read; null when absent or unreadable. */
@@ -847,6 +859,12 @@ export function runHooksCommand(
   const hooks = launchHooksFor({ cwd, scriptDir, resolution: { method: detection.method } })
   if (!hooks) {
     printError('[hoai] hooks: nothing written. hoai could not tell where its own folder is, so it cannot name the hook scripts.')
+    return 1
+  }
+  // Hooks written where every hook is switched off would be there, and none would run.
+  const off = hooksSwitchedOffIn({ folder: cwd, configDir: claudeConfigDir({ env, home }) })
+  if (off) {
+    printError(`[hoai] hooks: nothing written. ${upperFirst(hooksSwitchedOffWords(off))}, then run hoai hooks again.`)
     return 1
   }
   let result
@@ -4705,7 +4723,8 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       env,
       home,
       scriptDir,
-      readFile,
+      // The folder's .mcp.json is the folder's: read only as a plain file of bounded size, never whole.
+      readFile: opts.readFile ?? ((path) => readTextUpTo(path, CONFIG_FILE_MAX_BYTES)),
       register: opts.registerHooks,
       print: opts.print,
       printError: opts.printError,
@@ -4758,6 +4777,26 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   // The attach scope is the one entry an inherited value must NOT win: it says
   // which agent THIS launch is for (lib/attach-scope.mjs).
   applyAttachScope(env, plan.attachScope, plan.attachScopeDir)
+  // Every launch runs claude with full access, and the hook that asks before a risky action is what holds it.
+  // With every hook switched off at any settings level, none runs (measured on 2.1.332), so claude is not started.
+  const hooksOff = hooksSwitchedOffIn({ folder: cwd, configDir: claudeConfigDir({ env, home }) })
+  if (hooksOff) {
+    const reason =
+      `${upperFirst(hooksSwitchedOffWords(hooksOff))}. This launch runs with full access, so claude was not started. ` +
+      'Run hoai again once the line is out.'
+    console.error(`[hoai] ${reason}`)
+    if (isSupervisedLaunch(env) || keepAlive) {
+      const statusId = supervisedServiceId(env) || superviseAssistantId({ cwd, env, home, readFile, listDir })
+      if (statusId) {
+        ;(opts.writeFile ?? defaultWriteFile)(
+          joinDir(joinDir(agentDir(home), statusId), LAUNCH_STATUS_FILE_NAME),
+          `${launchStatusLine({ outcome: 'hooks-switched-off', fields: { detail: reason } })}\n`,
+        )
+      }
+      return EXIT_UNATTENDED_NEEDS_PERSON
+    }
+    return 1
+  }
   if (plan.hooks) {
     // Every launch: a folder scaffolded before the rail existed, or one whose
     // settings file a concurrent claude rewrote, gets it back here or never.

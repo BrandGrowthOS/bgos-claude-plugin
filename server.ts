@@ -372,7 +372,7 @@ import {
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { createPrivateHookLiveness, privateHookBootLine, privateHookMissingRefusal, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
-import { cloneHooksResultLine, cloneHooksSkippedLine, registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
+import { cloneHooksResultLine, cloneHooksSkippedLine, hookPresenceFs, registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
 import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
@@ -16616,9 +16616,8 @@ const FLOOR_HOOK: FloorHookPresence = (() => {
       folders: FLOOR_FOLDERS,
       configDir: CLAUDE_CONFIG_DIR,
       env: process.env,
-      readFile: (path) => readFileSync(path, 'utf8'),
-      exists: (path) => existsSync(path),
-      join: pathJoin,
+      // Plain files of bounded size only (a FIFO or a huge file there would hold the boot), and real paths.
+      ...hookPresenceFs(),
     })
   } catch (err) {
     return { registered: false, where: `could not look (${err})` }
@@ -16640,9 +16639,8 @@ const PRIVATE_HOOK_AT_BOOT: PrivateHookPresence = (() => {
       folders: FLOOR_FOLDERS,
       configDir: CLAUDE_CONFIG_DIR,
       env: process.env,
-      readFile: (path) => readFileSync(path, 'utf8'),
-      exists: (path) => existsSync(path),
-      join: pathJoin,
+      // Plain files of bounded size only (a FIFO or a huge file there would hold the boot), and real paths.
+      ...hookPresenceFs(),
     })
   } catch (err) {
     return { registered: false, where: `could not look (${err})` }

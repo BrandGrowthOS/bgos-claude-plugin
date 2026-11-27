@@ -1510,14 +1510,16 @@ install_hook_entries() { # $1 workdir $2 plugin_dir [$3 "nofloor"]
     warn "node not found, skipping the activity hooks (the agent works, tool detail will not show)"
     return 0
   fi
-  HOAI_PRESEED="$plugin_dir/lib/claude-preseed.mjs" \
+  # registerTrustedHooks: the four hook scripts must be plain files of this checkout's own bin, and the folder's
+  # settings must not switch every hook off, or nothing is written.
+  HOAI_HOOKS_LIB="$plugin_dir/lib/clone-hooks.mjs" \
   HOAI_SETTINGS="$workdir/.claude/settings.local.json" \
   HOAI_FORWARDER="$plugin_dir/bin/hoai-hook.mjs" \
   HOAI_NO_FLOOR="$([ "$floor_mode" = "nofloor" ] && echo 1 || echo 0)" \
   node -e '
     const { pathToFileURL } = require("node:url");
-    import(pathToFileURL(process.env.HOAI_PRESEED).href)
-      .then((m) => m.ensureHookEntries({
+    import(pathToFileURL(process.env.HOAI_HOOKS_LIB).href)
+      .then((m) => m.registerTrustedHooks({
         settingsPath: process.env.HOAI_SETTINGS,
         forwarderPath: process.env.HOAI_FORWARDER,
         // The floor hook only where the file already has the rail or the
