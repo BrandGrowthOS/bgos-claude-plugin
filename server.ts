@@ -559,6 +559,7 @@ import {
   decideMessageNew,
   HumanMessageEdits,
   humanEditTime,
+  streamCardRowId,
   viewStreamMessage,
   type StreamMessageView,
 } from './lib/stream-apply.js'
@@ -571,6 +572,7 @@ import {
   answeredPermissionChoice,
   buildPermissionRequestBody,
   cardMessageIdFrom,
+  permissionCardPairingNotice,
   choiceToBehavior,
   isApprovalExpired,
   orphanedPermissionCards,
@@ -580,12 +582,20 @@ import {
   pendingPermissionFastChatIds,
   permissionBackstopMs,
   permissionRowsReader,
+  isPermissionCardRow,
   resolvePermissionClick,
   senderUserIdCandidate,
   storedWaitSeconds,
   watchPermissionVerdict,
   type PermissionChoice,
 } from './lib/permission-relay.js'
+import {
+  admitPermissionRequest,
+  createPermissionRequestIds,
+  permissionBehaviorToSend,
+  permissionRequestFingerprint,
+  type PermissionReservation,
+} from './lib/permission-request-ids.js'
 import { classifyPermissionRequest, isOwnSendingTool } from './lib/hard-floor.js'
 import {
   consultElidedFloor,
@@ -3460,6 +3470,12 @@ interface PendingPermission {
    */
   floorHeld?: boolean
   /**
+   * The message id of the card posted for this request, once the post has
+   * returned (null when it returned none). A click settles the request only
+   * when it was given on this row (resolvePermissionClick).
+   */
+  cardMessageId?: number | null
+  /**
    * How long this daemon is still listening to this request: the backstop
    * built from the wait the SERVER stored, written once the card comes back.
    * It is what keeps this chat on the scheduler's 2 s fast scope, and it is
@@ -4209,7 +4225,42 @@ const PermissionRequestSchema = z.object({
 
 type PermissionRequestParams = z.infer<typeof PermissionRequestSchema>['params']
 
-mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
+/**
+ * The permission request ids live in this daemon, from the CLI and from the
+ * group lanes alike (lib/permission-request-ids.ts). An id is reserved before
+ * any asynchronous step and released when its request has ended.
+ */
+const permissionRequestIds = createPermissionRequestIds()
+
+// ONE LIVE REQUEST PER ID. The CLI's request is admitted here, before the
+// floor, the card or any other step: a repeat of the same request joins the
+// one already open, and a different request under an id that is open is
+// denied, and so is the open one, because the verdict names only the id. The
+// newcomer's deny goes straight to the CLI, past the group routing, which may
+// hold the same id for a group lane.
+mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) =>
+  admitPermissionRequest({
+    ids: permissionRequestIds,
+    requestId: params.request_id,
+    producer: 'cli',
+    fingerprint: permissionRequestFingerprint(params),
+    run: () => handlePermissionRequest(params),
+    denyNewcomer: () =>
+      sendMcpNotification({
+        method: 'notifications/claude/channel/permission',
+        params: { request_id: params.request_id, behavior: 'deny' },
+      }).catch((err) => log(`Failed to send the deny for a request id another request holds: ${err}`)),
+    endHolder: () => pendingPermissions.get(params.request_id)?.resolve('deny'),
+    log,
+  }),
+)
+
+/**
+ * One permission request, after admission: the email preflight, the hard
+ * floor, auto approve, and otherwise the card. A group lane at Full calls this
+ * directly with the id its own reservation holds.
+ */
+function handlePermissionRequest(params: PermissionRequestParams): Promise<void> {
   const { request_id, tool_name, description, input_preview } = params
 
   log(`Permission request: ${tool_name} [${request_id}], ${description}`)
@@ -4292,7 +4343,14 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
   }
 
   return relayPermissionToOwner(params)
-})
+}
+
+/**
+ * The requests the pairing notice was said for (relayPermissionToOwner). A
+ * chat that refuses a card sends the same request on to the next chat, and
+ * the notice is about the request, so it is said once.
+ */
+const pairingNoticeSaid = new WeakSet<PermissionRequestParams>()
 
 /**
  * The interactive path, whole: the drain exit, the no chat exit, and the real
@@ -4392,17 +4450,26 @@ function relayPermissionToOwner(
   // owner acts. Recorded BEFORE the CLI hears allow, like every Allow.
   const tooLongForCard = emailCard !== null && emailSendCardTooLong(emailCard.block, input_preview)
   if (emailCard && (tooLongForCard || !emailCard.block)) {
-    emailSendApprovals.allow(tool_name, input_preview, {
+    // The mark is recorded only for an allow the reservation still lets this
+    // request send (permissionBehaviorToSend): a request another request
+    // collided with ends in a deny and leaves no mark behind.
+    const behavior = permissionBehaviorToSend({
+      ids: permissionRequestIds,
       requestId: request_id,
-      approval: null,
-      binding: emailCard.block,
-      ...(tooLongForCard ? { tooLongForCard: true } : {}),
-      ...(emailCard.block ? {} : { withoutCard: true }),
+      behavior: 'allow',
+      recordAllow: () =>
+        emailSendApprovals.allow(tool_name, input_preview, {
+          requestId: request_id,
+          approval: null,
+          binding: emailCard.block,
+          ...(tooLongForCard ? { tooLongForCard: true } : {}),
+          ...(emailCard.block ? {} : { withoutCard: true }),
+        }),
     })
     log(`email_send [${request_id}]: ${tooLongForCard ? 'the email is too long to approve on a card' : 'no floor hook record names this email, so no card could approve it'}; none is posted, and it goes to the server, which keeps it as a draft for the owner`)
     await mcp.notification({
       method: 'notifications/claude/channel/permission',
-      params: { request_id, behavior: 'allow' },
+      params: { request_id, behavior },
     }).catch((err) => {
       log(`Failed to send the verdict for an email_send with no card: ${err}`)
     })
@@ -4443,16 +4510,22 @@ function relayPermissionToOwner(
     // CLI hears allow, and emailSendApproval refuses it, posting nothing. A
     // call the mark does not name meets the floor check there instead, which
     // holds it while the owner asks first, so it sends nothing either.
-    emailSendApprovals.allow(tool_name, input_preview, {
+    const behavior = permissionBehaviorToSend({
+      ids: permissionRequestIds,
       requestId: request_id,
-      approval: null,
-      binding: emailCard.block,
-      noOwnerChat: true,
+      behavior: 'allow',
+      recordAllow: () =>
+        emailSendApprovals.allow(tool_name, input_preview, {
+          requestId: request_id,
+          approval: null,
+          binding: emailCard.block,
+          noOwnerChat: true,
+        }),
     })
     log(`email_send [${request_id}]: no main chat of the owner can take its card, so none is posted anywhere; the call is refused and nothing is sent`)
     await mcp.notification({
       method: 'notifications/claude/channel/permission',
-      params: { request_id, behavior: 'allow' },
+      params: { request_id, behavior },
     }).catch((err) => {
       log(`Failed to send the verdict for an email_send no chat of the owner can approve: ${err}`)
     })
@@ -4474,8 +4547,12 @@ function relayPermissionToOwner(
     if (choice === 'once' && approval) tapApproval = approval
   }
   let resolveButtonChoice!: (choice: PermissionChoice, emailSendApproval?: EmailSendApprovalClick | null) => void
+  // Set when the answer came through this operation's own entry (a click
+  // intake takes the entry out of the map before it calls `resolve`).
+  let answeredThroughOwn = false
   const buttonChoice = new Promise<PermissionChoice>((resolve) => {
     resolveButtonChoice = (choice, emailSendApproval) => {
+      answeredThroughOwn = true
       keepTapApproval(choice, emailSendApproval)
       resolve(choice)
     }
@@ -4489,7 +4566,13 @@ function relayPermissionToOwner(
   // Both answer arms (waitForVerdict) and both click intakes compare to this.
   const requesterUserId = USER_ID
 
-  pendingPermissions.set(request_id, {
+  // THIS OPERATION'S OWN ENTRY. Everything below that binds, settles,
+  // deletes, retries or watches checks that the map still holds this very
+  // object, never only that the id is present: one request id is held by one
+  // live request (permissionRequestIds), and this is the second line behind
+  // that, so an operation that has lost its entry can never write its card id
+  // onto another request, delete another request's entry, or allow anything.
+  const own: PendingPermission = {
     chatId,
     toolName: tool_name,
     description,
@@ -4498,7 +4581,9 @@ function relayPermissionToOwner(
     requesterUserId,
     resolve: resolveButtonChoice,
     floorHeld,
-  })
+  }
+  pendingPermissions.set(request_id, own)
+  const holdsOwn = () => pendingPermissions.get(request_id) === own
 
   // Post a REAL approval card: messageType approval_request, two ea: options
   // and an approvalMeta. All three together are what makes the app draw the
@@ -4519,6 +4604,15 @@ function relayPermissionToOwner(
   // the way back. Until the clamp is deployed that smaller number is always
   // the hold itself, which is why the log below prints what came back rather
   // than what was sent.
+  // Said before the card is promised, at the one card post every route
+  // reaches (an ordinary request and a floor consult alike): on an account
+  // key install the server refuses the card in the owner's own chat, and
+  // the request is denied. Once per request, not once per chat tried.
+  if (!pairingNoticeSaid.has(params)) {
+    pairingNoticeSaid.add(params)
+    const pairingNotice = permissionCardPairingNotice(AUTH.mode)
+    if (pairingNotice) log(`Permission request ${tool_name} [${request_id}]: ${pairingNotice}`)
+  }
   // Whether the card is up: a 403 before it is a chat refusing the card, one
   // after it is not, and the card is never posted twice.
   let cardPosted = false
@@ -4545,8 +4639,24 @@ function relayPermissionToOwner(
     // than by a flat ten minutes: the entry stays fast for as long as this
     // daemon is still listening to the request. Until this line runs the entry
     // states no wait, which reads as the longest it could be.
-    const held = pendingPermissions.get(request_id)
-    if (held) held.waitMs = permissionBackstopMs(storedWait)
+    if (!holdsOwn()) {
+      // Another operation took this id while the post was in flight. This
+      // card belongs to no request this daemon still holds: nothing is bound
+      // to it, nothing is watched, and this operation ends in a deny.
+      log(
+        `Permission [${request_id}]: the request was replaced while its card ` +
+          `${cardMessageId ?? '(no id)'} was being posted; denying, and the card is not watched`,
+      )
+      await mcp.notification({
+        method: 'notifications/claude/channel/permission',
+        params: { request_id, behavior: 'deny' },
+      }).catch(() => {})
+      return
+    }
+    own.waitMs = permissionBackstopMs(storedWait)
+    // The card this request answers to: a click settles it only on this row
+    // (lib/permission-relay.ts resolvePermissionClick).
+    own.cardMessageId = cardMessageId
 
     log(
       `Permission card sent to chat ${chatId} for ${tool_name} [${request_id}] ` +
@@ -4556,12 +4666,15 @@ function relayPermissionToOwner(
     if (cardMessageId === null) {
       // Not cosmetic, and worth a line of its own: with no id there is no row
       // to watch, so nothing can read the server's own verdict and nothing can
-      // strip the buttons afterwards. If this ever shows up in the logs, the
-      // messages route's response shape moved under us.
+      // strip the buttons afterwards, and no click can settle the request,
+      // because a click counts only on the card's own row. If this ever shows
+      // up in the logs, the messages route's response shape moved under us.
       log(
-        `Permission [${request_id}]: the post returned no numeric message id, ` +
-          `so the server expiry arm is off for this request and only a click ` +
-          `or the local backstop can end it`,
+        `Permission [${request_id}]: the post returned no message id, so no ` +
+          `click on the card can settle this request and ` +
+          `the server expiry arm is off for this request; only ` +
+          `${floorHeld ? 'a typed denial' : 'a typed answer'} in the chat or the ` +
+          `local backstop (a deny) can end it`,
       )
     }
 
@@ -4579,24 +4692,43 @@ function relayPermissionToOwner(
         requesterUserId,
         floorHeld,
         (approval) => keepTapApproval('once', approval),
+        holdsOwn,
       ),
     ])
-    const behavior = choiceToBehavior(choice)
-
-    log(`Verdict for ${tool_name} [${request_id}]: ${choice} -> ${behavior}`)
-    pendingPermissions.delete(request_id)
+    // A verdict for a request this operation no longer holds is a deny: the
+    // id now names another open request, and an allow would reach it. An
+    // answer given through this operation's own entry is its own, although
+    // the click intake has already taken the entry out of the map.
+    const stillOwn = answeredThroughOwn || holdsOwn()
     // The owner allowed a card the floor HELD, which only a person's tap can
     // allow: when it is an email_send, that one send may go
     // (emailSendApproval), carrying the approval the tap issued for exactly
     // the email the card named. Recorded BEFORE the CLI hears the verdict,
-    // since the CLI runs the tool the moment it does.
-    if (behavior === 'allow' && floorHeld) {
-      emailSendApprovals.allow(tool_name, input_preview, {
-        requestId: request_id,
-        approval: choice === 'once' ? tapApproval : null,
-        binding: emailCard?.block ?? null,
-      })
-    }
+    // since the CLI runs the tool the moment it does, and only for the
+    // verdict the reservation lets this request send
+    // (permissionBehaviorToSend): a request another request collided with
+    // ends in a deny, so it records no grant a later call could match.
+    const behavior = permissionBehaviorToSend({
+      ids: permissionRequestIds,
+      requestId: request_id,
+      behavior: stillOwn ? choiceToBehavior(choice) : 'deny',
+      recordAllow: () => {
+        if (!floorHeld) return
+        emailSendApprovals.allow(tool_name, input_preview, {
+          requestId: request_id,
+          approval: choice === 'once' ? tapApproval : null,
+          binding: emailCard?.block ?? null,
+        })
+      },
+    })
+
+    log(
+      `Verdict for ${tool_name} [${request_id}]: ${choice} -> ${behavior}` +
+        (stillOwn ? '' : ' (the request was replaced while it waited)') +
+        (stillOwn && behavior !== choiceToBehavior(choice) ? ' (another request claimed this id while it was open)' : ''),
+    )
+    // Only this operation's own entry, never a newer request of the same id.
+    if (holdsOwn()) pendingPermissions.delete(request_id)
     await mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior },
@@ -4604,7 +4736,11 @@ function relayPermissionToOwner(
       log(`Failed to send verdict: ${err}`)
     })
   } catch (err) {
-    pendingPermissions.delete(request_id)
+    // Only this operation's own entry, never a newer request of the same id;
+    // and only an operation that still held its entry moves on to the next
+    // chat below.
+    const stillOwn = holdsOwn()
+    if (holdsOwn()) pendingPermissions.delete(request_id)
     // A permanent refusal is remembered, so the next request picks another
     // chat instead of posting into this one again.
     refuseHookRailChat(chatId, err)
@@ -4615,7 +4751,7 @@ function relayPermissionToOwner(
     // than being denied. Each chat is tried once: the set grows on every pass,
     // so when none is left the no chat exit above denies. Any other 403 is a
     // deny as before and drops nothing.
-    if (!cardPosted && isPermissionCardOwnerChatOnly(err)) {
+    if (stillOwn && !cardPosted && isPermissionCardOwnerChatOnly(err)) {
       permissionCardRefusedChats.add(chatId)
       log(`Permission card refused in chat ${chatId} (403) for ${tool_name} [${request_id}]; no more cards go there, trying the next chat`)
       return relayPermissionToOwner(params, floorEvidence, floorHeld, floorRecord)
@@ -4944,7 +5080,9 @@ async function waitForVerdict(
   floorHeld = false,
   // The email send approval an Allow once tap issued, as this card read finds
   // it on the answer (server approval, section 3c): handed over with the tap.
-  onTapApproval?: (approval: EmailSendApprovalClick | null) => void,
+  onTapApproval: ((approval: EmailSendApprovalClick | null) => void) | undefined,
+  // Does the map still hold the relay's own entry for this request.
+  stillHeld: () => boolean,
 ): Promise<PermissionChoice> {
   const baselineId = chatLastSeen.get(chatId) ?? 0
   // See answeredOn below: the card is re-read every tick, so its mismatch line
@@ -4974,7 +5112,10 @@ async function waitForVerdict(
     // intake heard it at all. Without THIS one the loop polled on for the
     // whole backstop after an answer that took five seconds, then stripped
     // the buttons off the answered card.
-    stillPending: () => pendingPermissions.has(requestId),
+    // Asked of THIS request's own entry (the relay hands in an identity
+    // check), never of the id alone: another request under the same id must
+    // not keep this watch alive.
+    stillPending: stillHeld,
     // The page, plus the card itself once the page stops carrying it. See
     // permissionRowsReader: this read is the NEWEST 50 rows, and a wait that
     // now lasts minutes can outlive the card's place in them.
@@ -5017,7 +5158,9 @@ async function waitForVerdict(
           if (isNotModified(raw)) return null
           const data = raw as ChatHistoryResponse
           const row = data.messages?.[0]
-          return row && row.message.id === cardMessageId ? row : null
+          // The one row id reading (isPermissionCardRow), on every arm of
+          // this watch: a history id in decimal digits is the same row.
+          return row && isPermissionCardRow(row.message.id, cardMessageId) ? row : null
         } catch {
           return null
         }
@@ -5026,8 +5169,7 @@ async function waitForVerdict(
     // The server is the judge. Only OUR card counts: another agent's expired
     // approval sitting in the same chat is none of this request's business.
     expiredOn: (msg) =>
-      cardMessageId !== null &&
-      msg.message.id === cardMessageId &&
+      isPermissionCardRow(msg.message.id, cardMessageId) &&
       isApprovalExpired(msg.message),
     // THE OWNER'S TAP, off the card row, and this loop is the only lane that
     // always carries it. A tap writes no user message, so verdictFrom below
@@ -5042,7 +5184,7 @@ async function waitForVerdict(
     // assistant row the delivery path never forwards, so moving the cursor
     // past it would skip whatever the owner typed alongside the tap.
     answeredOn: (msg) => {
-      const ours = cardMessageId !== null && msg.message.id === cardMessageId
+      const ours = isPermissionCardRow(msg.message.id, cardMessageId)
       if (!ours) return null
       // THE TAP FIRST, THE TAPPER SECOND, and the order is load bearing. Every
       // tick re-reads this card, and on all but one of those reads there is no
@@ -11307,14 +11449,25 @@ const groupSummaries = createGroupSummaryQueue({
   },
   log,
 })
-/** The permission prompts group lanes raised, by request id: their verdict goes to the lane. */
-const groupPermissionVerdicts = new Map<string, (behavior: string) => void>()
+/**
+ * The permission prompts group lanes raised, by request id: their verdict goes
+ * to the lane, and only while the prompt's own reservation still holds the id.
+ */
+const groupPermissionVerdicts = new Map<string, { reservation: PermissionReservation; verdict: (behavior: string) => void }>()
 function groupNotificationStep(notification: { method?: string; params?: unknown } | undefined): { swallow?: true; restore?: () => void } | null {
   const params = notification?.params as { content?: unknown; meta?: unknown; request_id?: unknown; behavior?: unknown } | undefined
   if (notification?.method === 'notifications/claude/channel/permission' && typeof params?.request_id === 'string') {
-    const verdict = groupPermissionVerdicts.get(params.request_id)
-    if (!verdict) return null
+    // An open request another request collided with ends in a deny, on
+    // either side (lib/permission-request-ids.ts): its id no longer says
+    // which request an allow would reach.
+    if (params.behavior === 'allow' && permissionRequestIds.collided(params.request_id)) {
+      log(`Permission [${params.request_id}]: another request claimed this id while it was open; its allow is sent as a deny`)
+      params.behavior = 'deny'
+    }
+    const route = groupPermissionVerdicts.get(params.request_id)
+    if (!route || !permissionRequestIds.holds(route.reservation)) return null
     groupPermissionVerdicts.delete(params.request_id)
+    const verdict = route.verdict
     verdict(String(params.behavior ?? 'deny'))
     return { swallow: true }
   }
@@ -13270,10 +13423,17 @@ async function pollChat(chatId: string): Promise<void> {
         clickerUserId: readTapperUserId(payload) ?? senderUserIdOf(payload),
         pending: pendingPermissions,
         emailSendApproval: payload.emailSendApproval,
+        cardMessageId: mm.id,
       })
       if (permOutcome.kind !== 'not_permission') {
         if (permOutcome.kind === 'resolved') {
           log(`Permission inline-button click: ${permOutcome.choice} [${permOutcome.requestId}]`)
+        } else if (permOutcome.kind === 'other_card') {
+          log(
+            `Ignoring permission button click ${permOutcome.choice} [${permOutcome.requestId}] on message ` +
+              `${permOutcome.cardMessageId ?? 'unknown'}: the request answers only on its own card ` +
+              `${permOutcome.expectedCardMessageId ?? 'unknown'}`,
+          )
         } else if (permOutcome.kind === 'foreign') {
           log(
             `Ignoring permission button click ${permOutcome.choice} [${permOutcome.requestId}] from ` +
@@ -15725,13 +15885,20 @@ function groupLanesOn(): boolean {
   return AUTH.mode === 'pairing' && threadsDeclared()
 }
 
-/** A request id in the shape the approval card's buttons carry (lib/permission-relay.ts REQUEST_ID_PATTERN). */
-function mintGroupPermissionRequestId(): string {
+/**
+ * A request id in the shape the approval card's buttons carry
+ * (lib/permission-relay.ts REQUEST_ID_PATTERN), reserved for this prompt in
+ * the one registry every producer claims from (lib/permission-request-ids.ts),
+ * so a group prompt and a CLI request never hold one id at once.
+ */
+function reserveGroupPermissionRequestId(fingerprint: string): PermissionReservation {
   const letters = 'abcdefghijkmnopqrstuvwxyz'
   for (;;) {
     let id = ''
     for (let i = 0; i < 5; i++) id += letters[randomInt(letters.length)]
-    if (!pendingPermissions.has(id)) return id
+    if (permissionRequestIds.has(id) || pendingPermissions.has(id)) continue
+    const claim = permissionRequestIds.claim(id, 'group', fingerprint)
+    if (claim.kind === 'reserved') return claim.reservation
   }
 }
 
@@ -15742,10 +15909,13 @@ function mintGroupPermissionRequestId(): string {
  * with the same request (auto approve, the hard floor, the card).
  */
 function approveGroupTool(input: { title: string; level: GroupLevel; toolName: string; inputPreview: string; description: string }): Promise<GroupApproval> {
+  const description = `In the group "${input.title || 'a group'}": ${input.description}`
+  const fingerprint = permissionRequestFingerprint({ tool_name: input.toolName, description, input_preview: input.inputPreview })
+  const reservation = reserveGroupPermissionRequestId(fingerprint)
   const params: PermissionRequestParams = {
-    request_id: mintGroupPermissionRequestId(),
+    request_id: reservation.requestId,
     tool_name: input.toolName,
-    description: `In the group "${input.title || 'a group'}": ${input.description}`,
+    description,
     input_preview: input.inputPreview,
   }
   return new Promise<GroupApproval>((resolve) => {
@@ -15753,27 +15923,26 @@ function approveGroupTool(input: { title: string; level: GroupLevel; toolName: s
     const settle = (allow: boolean): void => {
       if (settled) return
       settled = true
-      groupPermissionVerdicts.delete(params.request_id)
+      // Only this prompt's own route, never a later prompt of the same id.
+      if (groupPermissionVerdicts.get(params.request_id)?.reservation === reservation) {
+        groupPermissionVerdicts.delete(params.request_id)
+      }
       resolve({ allow })
     }
-    groupPermissionVerdicts.set(params.request_id, (behavior) => settle(behavior === 'allow'))
-    // full: the very handler the owner's own chat's prompts go through.
-    const ownHandler = input.level === 'full' ? permissionRequestHandler() : null
+    groupPermissionVerdicts.set(params.request_id, { reservation, verdict: (behavior) => settle(behavior === 'allow') })
+    // full: the very handler the owner's own chat's prompts go through, under
+    // the id this prompt already holds (admission is for the CLI's requests).
+    const ownHandler = input.level === 'full' ? handlePermissionRequest : null
     const run = ownHandler
-      ? ownHandler({ method: 'notifications/claude/channel/permission_request', params })
+      ? ownHandler(params)
       : relayPermissionToOwner(params)
     void Promise.resolve(run)
       .catch((err) => log(`groups: a permission prompt could not be asked (${err instanceof Error ? err.name : 'error'})`))
-      .finally(() => settle(false))
+      .finally(() => {
+        settle(false)
+        permissionRequestIds.release(reservation)
+      })
   })
-}
-
-/** The channel's permission request handler as the SDK keeps it, or null (then the card is asked, fail closed). */
-function permissionRequestHandler(): ((notification: unknown) => unknown) | null {
-  const handlers = (mcp as unknown as { _notificationHandlers?: unknown })._notificationHandlers
-  if (!(handlers instanceof Map)) return null
-  const handler = handlers.get('notifications/claude/channel/permission_request')
-  return typeof handler === 'function' ? (handler as (notification: unknown) => unknown) : null
 }
 
 const groupLanes = new GroupLaneManager({
@@ -17898,6 +18067,9 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
       clickerUserId: answer.tapperUserId ?? senderUserIdOf(answer),
       pending: pendingPermissions,
       emailSendApproval: answer.emailSendApproval,
+      // The raw ids, read by the one row id reading; an envelope and a row
+      // that disagree name no row (lib/stream-apply.ts streamCardRowId).
+      cardMessageId: streamCardRowId(update),
     })
     if (outcome.kind === 'not_permission') {
       // decideButtonsAnswered said 'permission' but the callback will not
@@ -17913,6 +18085,14 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     if (outcome.kind === 'stale') {
       log(
         `Stale permission click ${outcome.choice} [${outcome.requestId}] via stream, no pending entry`,
+      )
+      return
+    }
+    if (outcome.kind === 'other_card') {
+      log(
+        `Ignoring stream permission click ${outcome.choice} [${outcome.requestId}] on message ` +
+          `${outcome.cardMessageId ?? 'unknown'}: the request answers only on its own card ` +
+          `${outcome.expectedCardMessageId ?? 'unknown'}`,
       )
       return
     }
@@ -20694,6 +20874,10 @@ async function main(): Promise<void> {
   // What the declaration REALLY carries, which needs a pairing as well as the
   // hook (lib/floor-hook-presence.ts floorBootLine).
   log(floorBootLine(FLOOR_HOOK, AUTH.mode))
+  // Where requests go to the owner, an account key install is told at boot
+  // that their cards need a paired agent (lib/permission-relay.ts).
+  const permissionCardNotice = AUTO_APPROVE ? null : permissionCardPairingNotice(AUTH.mode)
+  if (permissionCardNotice) log(`permissions: ${permissionCardNotice}`)
   log(privateHookBootLine(PRIVATE_HOOK))
   // Every boot of a clone writes the CURRENT hook set into its workspace, whoever launched
   // it (board row f83db4b7): `hoai run` does this before each launch, and an agent started

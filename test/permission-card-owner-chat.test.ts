@@ -40,8 +40,10 @@ import {
   cardMessageIdFrom,
   choiceToBehavior,
   permissionBackstopMs,
+  permissionCardPairingNotice,
   storedWaitSeconds,
 } from '../lib/permission-relay.ts'
+import { createPermissionRequestIds, permissionBehaviorToSend } from '../lib/permission-request-ids.ts'
 
 const ownershipModule = (await import('../lib/chat-ownership.ts').catch(() => null)) as any
 const createChatOwnership = (owner: string) => {
@@ -53,6 +55,7 @@ const OWNER = 'user_owner'
 const RECIPIENT = 'user_recipient'
 const source = readFileSync('server.ts', 'utf8')
 const relaySource = source.slice(source.indexOf('function relayPermissionToOwner('), source.indexOf('\n/**\n * A request the hard floor matched'))
+const floorSource = source.slice(source.indexOf('function settleFloorRequest('), source.indexOf('\n/**', source.indexOf('function settleFloorRequest(')))
 const discoverSource = source.slice(source.indexOf('async function discoverChats('), source.indexOf('\n}\n', source.indexOf('async function discoverChats(')) + 3)
 
 function execute(body: string, bindings: Record<string, unknown>) {
@@ -138,7 +141,7 @@ class FakeHttpError extends Error {
   }
 }
 
-function relayRig(opts: { monitored: string[]; refuse?: Record<string, number | [number, string]>; verdictThrows?: [number, string]; lastInbound?: Record<string, string> }) {
+function relayRig(opts: { monitored: string[]; refuse?: Record<string, number | [number, string]>; verdictThrows?: [number, string]; lastInbound?: Record<string, string>; auth?: 'pairing' | 'apikey' }) {
   const posts: string[] = []
   const waits: Array<{ chatId: string; requesterUserId: string }> = []
   const verdicts: string[] = []
@@ -156,6 +159,9 @@ function relayRig(opts: { monitored: string[]; refuse?: Record<string, number | 
     lastInboundUserByChat: new Map(Object.entries(opts.lastInbound ?? {})),
     USER_ID: OWNER, pendingPermissions: pending,
     buildPermissionRequestBody, cardMessageIdFrom, storedWaitSeconds, permissionBackstopMs, choiceToBehavior,
+    // The reservation asked before a grant is recorded, and the once per request pairing notice.
+    permissionBehaviorToSend, permissionRequestIds: createPermissionRequestIds(),
+    permissionCardPairingNotice, pairingNoticeSaid: new WeakSet(), AUTH: { mode: opts.auth ?? 'pairing' },
     httpStatusOf: (err: unknown) => (err instanceof FakeHttpError ? err.status : null),
     isPermissionCardOwnerChatOnly: (peerRefusal as any).isPermissionCardOwnerChatOnly,
     refuseHookRailChat: () => false,
@@ -178,7 +184,18 @@ function relayRig(opts: { monitored: string[]; refuse?: Record<string, number | 
     ...bindings,
     params: { request_id: requestId, tool_name: 'Bash', description: 'Run a command', input_preview: '{"command":"ls ~"}' },
   })
-  return { relay, posts, waits, verdicts, logs, chatOwnership, refusedCards: bindings.permissionCardRefusedChats as ReturnType<typeof createRefusedChats> }
+  // The floor consult, run from server.ts too, with the server's answer stubbed: its hold and owner routes
+  // reach the same relay, compiled beside it.
+  const floor = (requestId: string, route: 'hold' | 'owner') => execute(`${relaySource}\n${floorSource}\nreturn settleFloorRequest(params, plan);`, {
+    ...bindings,
+    consultFloor: async () => ({ route, line: `Floor answered ${route}` }),
+    // A held Bash request is not an email: the email arms are never reached.
+    emailSendFilesGetNoCard: () => false,
+    floorCheckPath: () => '/floor-check', postFloorCheck: async () => null, ASSISTANT_ID: 77, AUTO_APPROVE: false,
+    params: { request_id: requestId, tool_name: 'Bash', description: 'Run a command', input_preview: '{"command":"rm -rf build"}' },
+    plan: { action: 'consult', match: { evidence: 'rm -rf build' }, source: 'record', record: null },
+  })
+  return { relay, floor, posts, waits, verdicts, logs, chatOwnership, refusedCards: bindings.permissionCardRefusedChats as ReturnType<typeof createRefusedChats> }
 }
 
 test('the card goes to the owner own chat, not the recipient chat listed first', async () => {
@@ -225,6 +242,36 @@ test('only the backend refusal moves on: another 403 is a deny as before, and th
   assert.equal(r.refusedCards.has('10'), false, 'nor drop the chat from permission cards for good')
   await r.relay('req-9')
   assert.deepEqual(r.posts, ['10', '10'])
+})
+
+// The pairing notice, run: said at the card post on an account key install, once per request whichever
+// route reached it, and never on a paired one.
+const noticeLines = (logs: string[]) => logs.filter((line) => line.includes(String(permissionCardPairingNotice('apikey'))))
+
+test('an account key install hears the pairing notice once per request at the card post, across a 403 retry', async () => {
+  const r = relayRig({ monitored: ['20', '10'], refuse: { 20: 403 }, auth: 'apikey' })
+  await r.relay('req-n1')
+  assert.deepEqual(r.posts, ['20', '10'], 'the card went to the next chat after the 403')
+  assert.equal(noticeLines(r.logs).length, 1, 'said once for the request, not once per chat tried')
+  await r.relay('req-n2')
+  assert.equal(noticeLines(r.logs).length, 2, 'and once for the next request')
+})
+
+test('a floor consult that asks the owner hears the pairing notice too, on the hold and the owner route', async () => {
+  for (const route of ['hold', 'owner'] as const) {
+    const r = relayRig({ monitored: ['10'], auth: 'apikey' })
+    await r.floor(`req-f-${route}`, route)
+    assert.deepEqual(r.posts, ['10'], `${route}: the card was posted`)
+    assert.equal(noticeLines(r.logs).length, 1, `${route}: the notice was said once`)
+  }
+})
+
+test('control: a paired install hears no pairing notice on either route', async () => {
+  const r = relayRig({ monitored: ['10'] })
+  await r.relay('req-p1')
+  await r.floor('req-p2', 'hold')
+  assert.deepEqual(r.posts, ['10', '10'])
+  assert.equal(noticeLines(r.logs).length, 0)
 })
 
 test('any other failure is a deny as before, and a 403 after the card was posted never posts it twice', async () => {
@@ -285,7 +332,7 @@ function answeredOnOf(requesterUserId: string) {
     watchPermissionVerdict: (opts: any) => { captured = opts; return new Promise(() => {}) },
     permissionRowsReader: () => ({}), bgosGet: async () => null, isNotModified: () => false, isApprovalExpired: () => false,
     answeredPermissionChoice: permissionRelay.answeredPermissionChoice, senderUserIdCandidate: permissionRelay.senderUserIdCandidate,
-    readTapperUserId,
+    readTapperUserId, isPermissionCardRow: permissionRelay.isPermissionCardRow,
   })
   assert.ok(captured?.answeredOn, 'waitForVerdict hands answeredOn to the watch')
   return (answerPayload: Record<string, unknown>) =>
@@ -321,8 +368,8 @@ test('both click intakes read the server tapper first, so a recipient click is f
     assert.equal(tapper({ answeredByUserId: RECIPIENT }), RECIPIENT, lane)
     assert.equal(tapper({ answeredByUserId: OWNER }), OWNER, lane)
     assert.equal(tapper({}), OWNER, `${lane}: unstamped keeps the old owner fallback`)
-    const pending = new Map([['abcde', { requesterUserId: OWNER, resolve: () => {} } as any]])
-    assert.equal(permissionRelay.resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: tapper({ answeredByUserId: RECIPIENT }), pending }).kind, 'foreign', lane)
+    const pending = new Map([['abcde', { requesterUserId: OWNER, resolve: () => {}, cardMessageId: 100 } as any]])
+    assert.equal(permissionRelay.resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: tapper({ answeredByUserId: RECIPIENT }), pending, cardMessageId: 100 }).kind, 'foreign', lane)
   }
 })
 

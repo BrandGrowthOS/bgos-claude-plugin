@@ -1270,10 +1270,12 @@ test('Always ask: what each floor answer means for a send no card allowed, and a
 
 test('the relay records the owner\'s Allow of a card before it answers the CLI, so that one send may go', () => {
   const relay = serverSlice('function relayPermissionToOwner(', '\n}\n')
-  const verdict = relay.indexOf('const behavior = choiceToBehavior(choice)')
+  // The verdict is asked of the reservation (permissionBehaviorToSend), which records the grant only for
+  // an allow it lets this request send (test/permission-collision-grant.test.ts).
+  const verdict = relay.indexOf("behavior: stillOwn ? choiceToBehavior(choice) : 'deny',")
   // Only a card the floor HELD, which only a person's tap can allow (a typed yes never answers one), with
   // what the tap issued and the card named (server approval, Data 2026-10-13).
-  const allow = relay.search(/if \(behavior === 'allow' && floorHeld\) \{\n\s*emailSendApprovals\.allow\(tool_name, input_preview, \{\n\s*requestId: request_id,\n\s*approval: choice === 'once' \? tapApproval : null,\n\s*binding: emailCard\?\.block \?\? null,/)
+  const allow = relay.search(/recordAllow: \(\) => \{\n\s*if \(!floorHeld\) return\n\s*emailSendApprovals\.allow\(tool_name, input_preview, \{\n\s*requestId: request_id,\n\s*approval: choice === 'once' \? tapApproval : null,\n\s*binding: emailCard\?\.block \?\? null,/)
   const answer = relay.indexOf('params: { request_id, behavior },', verdict)
   assert.ok(verdict > 0 && allow > verdict && answer > allow, 'recorded after the verdict and before the CLI hears it')
   assert.match(SRC, /\nconst emailSendApprovals = createEmailSendApprovals\(\)\n/)
@@ -1414,9 +1416,9 @@ test('Always ask: an email_send the tool would refuse is refused on its preview,
 test('server.ts, run: a held email_send carrying a secret is denied before any card is posted, and the log never repeats it', async () => {
   const m = await tools()
   const a = await approval()
-  const handler = serverSlice('mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {', '\n})\n')
-    .replace('mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {', 'const onPermission = ({ params }) => {')
-    .replace(/\n\}\)\n$/, '\n}\n')
+  // The steps behind the handler's admission (lib/permission-request-ids.ts).
+  const handler = serverSlice('function handlePermissionRequest(params: PermissionRequestParams): Promise<void> {', '\n}\n')
+    .replace('function handlePermissionRequest(params: PermissionRequestParams): Promise<void> {', 'const onPermission = ({ params }) => {')
   const notes: Array<{ params: unknown }> = []
   const posts: unknown[] = []
   const logs: string[] = []
@@ -1643,14 +1645,14 @@ test('the owner\'s tap hands its approval on: only an Allow once of a pending ca
   }
   const { resolvePermissionClick } = await import('../lib/permission-relay.ts')
   const seen: unknown[] = []
-  const pending = () => new Map([['abcde', { requesterUserId: OWNER, resolve: (choice: unknown, approval?: unknown) => seen.push([choice, approval ?? null]) }]])
-  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: { ...APPROVAL_CLICK, extra: 1 } } as never)
-  resolvePermissionClick({ callbackData: 'ea:deny:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: APPROVAL_CLICK } as never)
-  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: { id: 'forged' } } as never)
+  const pending = () => new Map([['abcde', { requesterUserId: OWNER, cardMessageId: 501, resolve: (choice: unknown, approval?: unknown) => seen.push([choice, approval ?? null]) }]])
+  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: { ...APPROVAL_CLICK, extra: 1 }, cardMessageId: 501 } as never)
+  resolvePermissionClick({ callbackData: 'ea:deny:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: APPROVAL_CLICK, cardMessageId: 501 } as never)
+  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: OWNER, pending: pending(), emailSendApproval: { id: 'forged' }, cardMessageId: 501 } as never)
   assert.deepEqual(seen, [['once', APPROVAL_CLICK], ['deny', null], ['once', null]])
   // A stranger's tap resolves nothing, approval or not.
   const foreign = pending()
-  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: 'user_other', pending: foreign, emailSendApproval: APPROVAL_CLICK } as never)
+  resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: 'user_other', pending: foreign, emailSendApproval: APPROVAL_CLICK, cardMessageId: 501 } as never)
   assert.equal(foreign.size, 1)
   // The stream lane keeps the field; the card read finds it on an answered Allow once only.
   const { viewStreamMessage } = await import('../lib/stream-apply.ts')
@@ -1663,8 +1665,8 @@ test('the owner\'s tap hands its approval on: only an Allow once of a pending ca
 
 test('server.ts reads the tap\'s approval on every lane it learns of a tap, through the one shared resolver, and adds no inbound_click listener', () => {
   // Release 0.69.0: both intakes read the server's tapper first (#233, shared agents Phase 0, item 0.8).
-  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData,\n\s*clickerUserId: readTapperUserId\(payload\) \?\? senderUserIdOf\(payload\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: payload\.emailSendApproval,\n\s*\}\)/)
-  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData: answer\.callbackData,\n\s*clickerUserId: answer\.tapperUserId \?\? senderUserIdOf\(answer\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: answer\.emailSendApproval,\n\s*\}\)/)
+  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData,\n\s*clickerUserId: readTapperUserId\(payload\) \?\? senderUserIdOf\(payload\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: payload\.emailSendApproval,\n\s*cardMessageId: mm\.id,\n\s*\}\)/)
+  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData: answer\.callbackData,\n\s*clickerUserId: answer\.tapperUserId \?\? senderUserIdOf\(answer\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: answer\.emailSendApproval,\n(?:\s*\/\/[^\n]*\n)*\s*cardMessageId: streamCardRowId\(update\),\n\s*\}\)/)
   assert.equal((SRC.match(/resolvePermissionClick\(/g) ?? []).length, 2)
   const wait = serverSlice('async function waitForVerdict(', '\n}\n')
   assert.match(wait, /if \(choice === 'once'\) onTapApproval\?\.\(answeredEmailSendApproval\(msg\.message\)\)/)
@@ -1682,6 +1684,7 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>, over: Record<stri
   const { createRefusedChats, pickPermissionChat } = await import('../lib/peer-refusal.ts')
   const { isOwnSendingTool } = await import('../lib/hard-floor.ts')
   const { createChatOwnership } = await import('../lib/chat-ownership.ts')
+  const idsNs = await import('../lib/permission-request-ids.ts')
   assert.equal(typeof a.createEmailSendApprovals, 'function')
   const store = a.createEmailSendApprovals()
   const pending = new Map<string, any>()
@@ -1697,6 +1700,11 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>, over: Record<stri
     pickPermissionChat,
     pendingPermissions: pending,
     emailSendApprovals: store,
+    // The reservation the relay asks before it records a grant, and the
+    // once per request pairing notice (lib/permission-request-ids.ts).
+    permissionBehaviorToSend: idsNs.permissionBehaviorToSend,
+    permissionRequestIds: idsNs.createPermissionRequestIds(),
+    pairingNoticeSaid: new WeakSet(),
     bgosPost: async (path: string, body: Record<string, any>) => {
       posts.push({ path, body })
       return { id: 501, approvalMeta: { wait_seconds: 600 } }
@@ -1723,9 +1731,13 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>, over: Record<stri
     log: (line: string) => logs.push(String(line)),
     ...over,
   }) as (...args: unknown[]) => Promise<void>
-  const tap = async (callbackData: string, emailSendApproval: unknown) => {
+  // A tap on the card the fake post created (id 501) unless another row is named.
+  const tap = async (callbackData: string, emailSendApproval: unknown, cardMessageId: number = 501) => {
     for (let i = 0; i < 50 && posts.length === 0; i++) await new Promise((r) => setImmediate(r))
-    relayNs.resolvePermissionClick({ callbackData, clickerUserId: OWNER, pending, emailSendApproval } as never)
+    // The tap comes after the post has RETURNED, as a person's tap does: the
+    // request learns its card id there, and a click settles it only on that row.
+    await new Promise((r) => setImmediate(r))
+    return relayNs.resolvePermissionClick({ callbackData, clickerUserId: OWNER, pending, emailSendApproval, cardMessageId } as never)
   }
   return { relay, tap, posts, notes, logs, store }
 }
@@ -1747,6 +1759,24 @@ test('server.ts, run: a held email_send card goes to the owner\'s chat with the 
   // Recorded BEFORE the CLI heard allow, with the tap's approval and the binding the card showed.
   assert.deepEqual(run.notes[0]!.claimed, { requestId: 'abcde', approval: APPROVAL_CLICK, binding: SEND_BLOCK })
   assert.equal(run.logs.some((line) => line.includes(APPROVAL_ID)), false, 'the approval id is never logged')
+})
+
+test('server.ts, run: an Allow given on another card that names the same request id sends no verdict; the posted card\'s Allow does', async (t) => {
+  const f = fixture(t)
+  const fs = await import('../lib/floor-state.mjs')
+  const run = await relayRun(t, f)
+  f.start(TURNS.ownerMessage)
+  const record = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: SEND_ARGS, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
+  const params = { request_id: 'abcde', tool_name: SEND_TOOL, description: 'email_send', input_preview: previewOf(SEND_ARGS) }
+  const done = run.relay(params, SEND_TOOL, true, record)
+  const other = await run.tap('ea:once:abcde', APPROVAL_CLICK, 999)
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
+  assert.equal((other as { kind: string }).kind, 'other_card')
+  assert.equal(run.notes.length, 0, 'no verdict reaches the CLI from another card')
+  assert.equal(run.store.claim?.(SEND_ARGS) ?? null, null, 'and no Allow is recorded')
+  await run.tap('ea:once:abcde', APPROVAL_CLICK)
+  await done
+  assert.deepEqual(run.notes.map((n) => n.params), [{ request_id: 'abcde', behavior: 'allow' }])
 })
 
 test('server.ts, run: a card the floor did not hold records nothing, and a deny records nothing', async (t) => {
@@ -1957,9 +1987,9 @@ test('review: a long email in any script pairs with its own record, and an email
 test('review: a denied email_send leaves no floor record behind for a later request to pair with', async () => {
   const m = await tools()
   const a = await approval()
-  const handler = serverSlice('mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {', '\n})\n')
-    .replace('mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {', 'const onPermission = ({ params }) => {')
-    .replace(/\n\}\)\n$/, '\n}\n')
+  // The steps behind the handler's admission (lib/permission-request-ids.ts).
+  const handler = serverSlice('function handlePermissionRequest(params: PermissionRequestParams): Promise<void> {', '\n}\n')
+    .replace('function handlePermissionRequest(params: PermissionRequestParams): Promise<void> {', 'const onPermission = ({ params }) => {')
   const taken: unknown[] = []
   const onPermission = compileServer(handler, 'onPermission', {
     ...m,
@@ -2240,6 +2270,49 @@ test('server.ts, run, v7: a held email_send too long for a card gets no card; it
   const grant = run.store.claim(input)
   assert.equal(grant?.tooLongForCard, true)
   assert.equal(grant?.approval, null)
+})
+
+// A request another request collided with (lib/permission-request-ids.ts) ends in a deny, and the relay asks
+// the reservation before it records a grant, so the denied request leaves none behind.
+test('server.ts, run: a held email_send whose id another request claims while its card waits hears deny for the owner\'s Allow once, and no grant is kept', async (t) => {
+  const f = fixture(t)
+  const fs = await import('../lib/floor-state.mjs')
+  const ids = await import('../lib/permission-request-ids.ts')
+  const registry = ids.createPermissionRequestIds()
+  const run = await relayRun(t, f, { permissionRequestIds: registry })
+  f.start(TURNS.ownerMessage)
+  const record = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: SEND_ARGS, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
+  const params = { request_id: 'abcde', tool_name: SEND_TOOL, description: 'email_send', input_preview: previewOf(SEND_ARGS) }
+  // Admitted, as the handler admits it, then another request claims the same id.
+  assert.equal(registry.claim('abcde', 'cli', ids.permissionRequestFingerprint(params)).kind, 'reserved')
+  const done = run.relay(params, SEND_TOOL, true, record)
+  for (let i = 0; i < 50 && run.posts.length === 0; i++) await new Promise((r) => setImmediate(r))
+  assert.equal(registry.claim('abcde', 'cli', 'another request').kind, 'collision')
+  await run.tap('ea:once:abcde', APPROVAL_CLICK)
+  await done
+  assert.deepEqual(run.notes.map((n) => n.params), [{ request_id: 'abcde', behavior: 'deny' }])
+  assert.equal(run.notes[0]!.claimed, null, 'nothing was recorded before the CLI heard the deny')
+  assert.equal(run.store.claim(SEND_ARGS), null, 'and no grant waits for a later matching call')
+})
+
+test('server.ts, run: a held email_send too long for a card whose id another request claimed records no mark and hears deny', async (t) => {
+  const f = fixture(t)
+  const fs = await import('../lib/floor-state.mjs')
+  const ids = await import('../lib/permission-request-ids.ts')
+  const registry = ids.createPermissionRequestIds()
+  const run = await relayRun(t, f, { permissionRequestIds: registry })
+  f.start(TURNS.ownerMessage)
+  const input = { ...SEND_ARGS, text: LONG_BODY }
+  const record = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: input, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
+  registry.claim('abcde', 'cli', 'the email request')
+  registry.claim('abcde', 'cli', 'another request')
+  await Promise.race([
+    run.relay({ request_id: 'abcde', tool_name: SEND_TOOL, description: 'email_send', input_preview: previewOf(input) }, SEND_TOOL, true, record),
+    new Promise((done) => setTimeout(done, 2000)),
+  ])
+  assert.equal(run.posts.length, 0)
+  assert.deepEqual(run.notes.map((n) => n.params), [{ request_id: 'abcde', behavior: 'deny' }])
+  assert.equal(run.store.claim(input), null, 'no mark for a later matching call')
 })
 
 test('server.ts, run, v7: the agent hears plainly the email was kept as a draft because it is too long to approve on a card, and nothing retries', async (t) => {

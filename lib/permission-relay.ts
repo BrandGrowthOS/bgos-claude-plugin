@@ -717,6 +717,25 @@ export function pendingPermissionFastChatIds(
 }
 
 /**
+ * What an install is told about permission cards before one is promised.
+ *
+ * The server takes a card with approval buttons in the owner's own chat only
+ * from the pairing of the agent a tap on it reaches, so a daemon that connects
+ * with an account API key has its card refused there, and the request ends in
+ * a deny. That rule is the server's; this only says it, at boot and on each
+ * request. Null on a paired install.
+ */
+export function permissionCardPairingNotice(authMode: 'pairing' | 'apikey'): string | null {
+  if (authMode === 'pairing') return null
+  return (
+    'a permission card needs a paired agent. This daemon connects with an account API key, ' +
+    "and the server takes an approval card in the owner's own chat only from the agent's " +
+    'pairing, so a permission request that asks the owner is denied. Pair the agent to ' +
+    'answer permission requests on a card.'
+  )
+}
+
+/**
  * The id of the card that was just posted, or null.
  *
  * Null is not cosmetic: it turns OFF both halves of the server-is-the-judge
@@ -727,8 +746,9 @@ export function pendingPermissionFastChatIds(
  */
 export function cardMessageIdFrom(posted: unknown): number | null {
   if (posted === null || typeof posted !== 'object') return null
-  const id = (posted as { id?: unknown }).id
-  return typeof id === 'number' && Number.isFinite(id) ? id : null
+  // The same reading a click's row is given (parseCardRowId), so the row a
+  // request binds and the row a click names are read alike.
+  return parseCardRowId((posted as { id?: unknown }).id)
 }
 
 /** True when the server has already declared this request dead. */
@@ -880,7 +900,8 @@ export function orphanedPermissionCards(
 export function permissionRowsReader<T>(opts: {
   /** Null turns this off entirely: with no card id there is nothing to anchor. */
   cardMessageId: number | null
-  idOf: (row: T) => number | null
+  /** The row's id as the history carries it; read with isPermissionCardRow. */
+  idOf: (row: T) => unknown
   /** The page: rows, or null for a 304 or a failed look. */
   page: () => Promise<readonly T[] | null>
   /** The anchored read of the card row, or null for a 304 or a failed look. */
@@ -892,7 +913,7 @@ export function permissionRowsReader<T>(opts: {
     if (opts.cardMessageId === null) return rows
     if (!offPage) {
       if (rows === null) return rows
-      if (rows.some((row) => opts.idOf(row) === opts.cardMessageId)) return rows
+      if (rows.some((row) => isPermissionCardRow(opts.idOf(row), opts.cardMessageId))) return rows
       offPage = true
     }
     const card = await opts.card()
@@ -905,6 +926,13 @@ export function permissionRowsReader<T>(opts: {
 
 export interface PendingPermissionLike {
   requesterUserId: string
+  /**
+   * The message id of the card this daemon posted for the request, written
+   * once the post returns. Absent before then, and null when the post came
+   * back with no numeric id: either way no click can settle the request (see
+   * resolvePermissionClick).
+   */
+  cardMessageId?: number | null
   /** The choice, and for an Allow once tap the email send approval the server issued for it (or null). */
   resolve: (choice: PermissionChoice, emailSendApproval?: EmailSendApprovalClick | null) => void
 }
@@ -912,6 +940,16 @@ export interface PendingPermissionLike {
 export type PermissionClickOutcome =
   | { kind: 'not_permission' }
   | { kind: 'stale'; choice: PermissionChoice; requestId: string }
+  | {
+      /** The click was given on a row other than the card this daemon posted. */
+      kind: 'other_card'
+      choice: PermissionChoice
+      requestId: string
+      /** The row the click was given on, or null when it named none. */
+      cardMessageId: number | null
+      /** The card this daemon posted, or null when its id is not known. */
+      expectedCardMessageId: number | null
+    }
   | {
       kind: 'foreign'
       choice: PermissionChoice
@@ -950,6 +988,8 @@ export function resolvePermissionClick(opts: {
   pending: Map<string, PendingPermissionLike>
   /** The answer's emailSendApproval as the lane received it (unvalidated). */
   emailSendApproval?: unknown
+  /** The message id of the row the click was given on, as the lane read it. */
+  cardMessageId: unknown
 }): PermissionClickOutcome {
   const click = parsePermissionClick(opts.callbackData)
   if (!click) return { kind: 'not_permission' }
@@ -957,6 +997,26 @@ export function resolvePermissionClick(opts: {
   const entry = opts.pending.get(click.requestId)
   if (!entry) {
     return { kind: 'stale', choice: click.choice, requestId: click.requestId }
+  }
+  // THE ANSWER BELONGS TO THE CARD IT WAS GIVEN ON. A request id is five
+  // letters, and nothing makes it unique to one card: any approval card in a
+  // chat this daemon reads may carry buttons that name it. The owner reads the
+  // card they press, so only a click on the card this daemon posted for the
+  // request settles it, and a click on any other row, one that names no row,
+  // or one that arrives before the post has returned an id settles nothing
+  // and leaves the request waiting. Nothing is lost by that: the card read in
+  // waitForVerdict (`answeredOn`) is bound to the same row and takes the
+  // owner's tap on it a tick later.
+  const clickedCard = cardRowId(opts.cardMessageId)
+  const ownCard = entry.cardMessageId ?? null
+  if (ownCard === null || clickedCard === null || clickedCard !== ownCard) {
+    return {
+      kind: 'other_card',
+      choice: click.choice,
+      requestId: click.requestId,
+      cardMessageId: clickedCard,
+      expectedCardMessageId: ownCard,
+    }
   }
   if (opts.clickerUserId !== entry.requesterUserId) {
     return {
@@ -980,6 +1040,31 @@ export function resolvePermissionClick(opts: {
     requestId: click.requestId,
     vocabulary: click.vocabulary,
   }
+}
+
+/**
+ * A message row id, however a lane carries it (the card post's answer, the
+ * poll's row, the update stream's click): a positive safe integer, or the
+ * same number written in decimal digits with no sign, no leading zero and
+ * nothing around it. Anything else is no row, so a card post that returns it
+ * binds no row and a click that carries it settles nothing. The one reading
+ * every lane uses.
+ */
+export function parseCardRowId(value: unknown): number | null {
+  const n = typeof value === 'string' && /^[1-9][0-9]*$/.test(value) ? Number(value) : value
+  return typeof n === 'number' && Number.isSafeInteger(n) && n > 0 ? n : null
+}
+const cardRowId = parseCardRowId
+
+/**
+ * Is this row the request's own card: its id, read with parseCardRowId,
+ * is the number the card post bound. The fallback watch asks it for page
+ * membership, the anchored read, the expiry and the answer, so a history
+ * that carries ids as decimal strings is read like one that carries
+ * numbers. With no bound card it is no row.
+ */
+export function isPermissionCardRow(rowId: unknown, cardMessageId: number | null): boolean {
+  return cardMessageId !== null && parseCardRowId(rowId) === cardMessageId
 }
 
 // ── Waiting for the verdict ──────────────────────────────────────────────────
