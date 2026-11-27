@@ -55,11 +55,13 @@ function memoryTrust(anchor: { ownerId: string; accountPublic: string } | null =
     pins, floors, used,
     ownerAnchor: async () => anchor,
     read: async (userId: string) => ({ accountPublic: pins.get(userId) ?? null, revisionFloor: floors.get(userId) ?? 0, approvalUsed: (id: string) => used.has(id) }),
-    commit: async (c: { userId: string; accountPublic: string; revision: number; requestId?: string; approvalUntil?: number }) => {
+    commit: async (entry: any) => {
+      for (const c of (Array.isArray(entry) ? entry : [entry]) as Array<{ userId: string; accountPublic: string; revision: number; requestId?: string; approvalUntil?: number }>) {
       if (pins.has(c.userId) && pins.get(c.userId) !== c.accountPublic) throw Object.assign(new Error('x'), { code: 'vault_account_key_changed' })
       pins.set(c.userId, c.accountPublic)
       floors.set(c.userId, Math.max(floors.get(c.userId) ?? 0, c.revision))
       if (c.requestId) used.add(c.requestId)
+      }
     },
   }
 }
@@ -261,14 +263,17 @@ test('the fill trust file: first use pins, the same key passes, another key is r
     assert.deepEqual(await readFillTrustPlain(dir, OWNER), { accountPublic: null, revisionFloor: 0, used: false })
     await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 7, requestId: 'req-1', approvalUntil: Date.now() + 60_000 }, undefined, testSecurity)
     assert.deepEqual(await readFillTrustPlain(dir, OWNER), { accountPublic: A, revisionFloor: 7, used: true })
-    await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 5 }, undefined, testSecurity)
+    // A state older than one already used is refused at commit, not just left below the floor (fix round 377, finding 5).
+    await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 5 }, undefined, testSecurity), (e: any) => e.code === 'vault_state_rolled_back')
     assert.equal((await readFillTrustPlain(dir, OWNER)).revisionFloor, 7, 'never lowered')
+    await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 7 }, undefined, testSecurity)
     await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: 'B'.repeat(43), revision: 8 }, undefined, testSecurity), (e: any) => e.code === 'vault_account_key_changed')
     await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 8, requestId: 'req-1', approvalUntil: Date.now() + 60_000 }, undefined, testSecurity), (e: any) => e.code === 'vault_approval_used')
-    // A used approval is kept until it could no longer be accepted anyway, then let go.
-    await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 8, requestId: 'req-old', approvalUntil: Date.now() - 1 }, undefined, testSecurity)
+    // An approval no longer acceptable when the commit runs is refused, and nothing is written.
+    await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 8, requestId: 'req-old', approvalUntil: Date.now() - 1 }, undefined, testSecurity), (e: any) => e.code === 'vault_approval_expired')
+    assert.equal((await readFillTrustPlain(dir, OWNER)).revisionFloor, 7, 'the refused commit wrote nothing')
     const kept = JSON.parse(readFileSync(join(dir, 'vault-host.json'), 'utf8')).fillTrust[OWNER].usedApprovals.map((u: any) => u.requestId)
-    assert.deepEqual(kept, ['req-1'], 'the expired one is not kept')
+    assert.deepEqual(kept, ['req-1'])
     await commitFillTrust(dir, { userId: LEO, accountPublic: 'C'.repeat(43), revision: 1 }, undefined, testSecurity)
     await assert.rejects(commitFillTrust(dir, { userId: 'bad id', accountPublic: A, revision: 1 }, undefined, testSecurity))
     await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: 'not a key!', revision: 1 }, undefined, testSecurity))
@@ -381,6 +386,58 @@ test('M5: commits to the fill trust at the same moment are not lost', async () =
     const both = await Promise.allSettled([0, 1].map(() => commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 1, requestId: 'req-twice', approvalUntil: until }, undefined, testSecurity)))
     assert.deepEqual(both.map((x) => x.status).sort(), ['fulfilled', 'rejected'])
   } finally { rmSync(join(dir, '..'), { recursive: true, force: true }) }
+})
+
+// Fix round 377, finding 5: every check runs again under the lock, at the moment of the commit.
+test('an approval that expires between the fill check and the commit is refused at the commit, by the commit clock', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'trust-expiry-')), 'vault')
+  try {
+    await loadOrCreateHostKey(dir, AGENT)
+    const A = 'A'.repeat(43)
+    const until = 1_000_000
+    // Acceptable when the fill checked it (its clock before `until`), expired by the commit's clock.
+    await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 1, requestId: 'req-late', approvalUntil: until }, undefined, testSecurity, () => until), (e: any) => e.code === 'vault_approval_expired')
+    assert.deepEqual(await readFillTrustPlain(dir, OWNER), { accountPublic: null, revisionFloor: 0, used: false }, 'nothing written')
+    await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 1, requestId: 'req-late', approvalUntil: until }, undefined, testSecurity, () => until - 1)
+    assert.equal((await readFillTrust(dir, OWNER, undefined, testSecurity)).approvalUsed('req-late'), true)
+  } finally { rmSync(join(dir, '..'), { recursive: true, force: true }) }
+})
+
+test('a full list of live used approvals refuses a new one instead of forgetting a live one', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'trust-full-')), 'vault')
+  try {
+    await loadOrCreateHostKey(dir, AGENT)
+    const A = 'A'.repeat(43)
+    const until = Date.now() + 600_000
+    for (let i = 0; i < 200; i++) await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 1, requestId: `live-${i}`, approvalUntil: until }, undefined, testSecurity)
+    await assert.rejects(commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 1, requestId: 'one-more', approvalUntil: until }, undefined, testSecurity), (e: any) => e.code === 'vault_approvals_full')
+    const t = await readFillTrust(dir, OWNER, undefined, testSecurity)
+    assert.equal(t.approvalUsed('live-0'), true, 'the oldest live id is still known, so it cannot be used twice')
+    assert.equal(t.approvalUsed('one-more'), false)
+    // Once they expire, room comes back.
+    await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 1, requestId: 'one-more', approvalUntil: until + 1 }, undefined, testSecurity, () => until)
+  } finally { rmSync(join(dir, '..'), { recursive: true, force: true }) }
+})
+
+test('a person\'s own vault and the owner vault it was checked against are committed together, or neither', async () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'trust-both-')), 'vault')
+  try {
+    await loadOrCreateHostKey(dir, AGENT)
+    const A = 'A'.repeat(43)
+    const C = 'C'.repeat(43)
+    // The owner's floor rose to 9 meanwhile: the owner vault checked at 8 is now stale, so the person's entry is not written either.
+    await commitFillTrust(dir, { userId: OWNER, accountPublic: A, revision: 9 }, undefined, testSecurity)
+    await assert.rejects(commitFillTrust(dir, [{ userId: LEO, accountPublic: C, revision: 3 }, { userId: OWNER, accountPublic: A, revision: 8 }], undefined, testSecurity), (e: any) => e.code === 'vault_state_rolled_back')
+    assert.deepEqual(await readFillTrustPlain(dir, LEO), { accountPublic: null, revisionFloor: 0, used: false })
+    await commitFillTrust(dir, [{ userId: LEO, accountPublic: C, revision: 3 }, { userId: OWNER, accountPublic: A, revision: 9 }], undefined, testSecurity)
+    assert.equal((await readFillTrustPlain(dir, LEO)).revisionFloor, 3)
+  } finally { rmSync(join(dir, '..'), { recursive: true, force: true }) }
+})
+
+test('openPersonFill hands its entries to one commit', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', 'lib', 'agent-host-vault-fill.mjs'), 'utf8')
+  assert.match(src, /await ctx\.trust\.commit\(ownerVerified \? \[entry, ownerVerified\] : entry\)/)
+  assert.equal((src.match(/ctx\.trust\.commit\(/g) ?? []).length, 1)
 })
 
 /**
