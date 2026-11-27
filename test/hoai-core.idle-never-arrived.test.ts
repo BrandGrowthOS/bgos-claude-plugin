@@ -23,6 +23,11 @@ const { FOLDER_PIN_FILE, LAUNCH_STATUS_FILE_NAME, superviseClaude } = core
 const HOME = 'C:\\Users\\mark'
 const CWD = 'C:\\agents\\888'
 const SCRIPT_DIR = 'C:\\Users\\mark\\.claude\\plugins\\cache\\hoai\\hoai\\0.69.6\\bin'
+/**
+ * The script folder here is made up, so its hook scripts are not on disk. A launch's own hook write checks all
+ * four and stops the launch without them; these launches stand that write in with one that holds.
+ */
+const hooksHold = () => ({ changed: false, reason: 'already' })
 const STATE_DIR = `${HOME}\\.bgos-agent\\888`
 const STATUS_PATH = `${STATE_DIR}\\${LAUNCH_STATUS_FILE_NAME}`
 const BEACON_PATH = `${HOME}\\.bgos-plugin-state\\888\\channel-beacon.json`
@@ -338,6 +343,7 @@ async function underMain(o: { idleRollback?: any; record?: (cache: string) => un
     home,
     cwd,
     scriptDir: SCRIPT_DIR.replace(/\\/g, '/'),
+    registerHooks: hooksHold,
     listProcesses: () => [],
     sleep: async () => {},
     signal: stop.signal,

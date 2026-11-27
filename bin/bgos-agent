@@ -1510,19 +1510,23 @@ install_hook_entries() { # $1 workdir $2 plugin_dir [$3 "nofloor"]
     warn "node not found, skipping the activity hooks (the agent works, tool detail will not show)"
     return 0
   fi
-  HOAI_PRESEED="$plugin_dir/lib/claude-preseed.mjs" \
+  # registerTrustedHooks: the four hook scripts must be plain files of this checkout's own bin, and the folder's
+  # settings must not switch every hook off, or nothing is written.
+  HOAI_HOOKS_LIB="$plugin_dir/lib/clone-hooks.mjs" \
   HOAI_SETTINGS="$workdir/.claude/settings.local.json" \
   HOAI_FORWARDER="$plugin_dir/bin/hoai-hook.mjs" \
   HOAI_NO_FLOOR="$([ "$floor_mode" = "nofloor" ] && echo 1 || echo 0)" \
   node -e '
     const { pathToFileURL } = require("node:url");
-    import(pathToFileURL(process.env.HOAI_PRESEED).href)
-      .then((m) => m.ensureHookEntries({
+    import(pathToFileURL(process.env.HOAI_HOOKS_LIB).href)
+      .then((m) => m.registerTrustedHooks({
         settingsPath: process.env.HOAI_SETTINGS,
         forwarderPath: process.env.HOAI_FORWARDER,
-        // A workspace that never carried the hooks gets the rail and the
-        // private turn hook, not a floor it never had (a held action on an
-        // unattended agent is a decision for the owner, not for an update).
+        // The floor hook only where the file already has the rail or the
+        // floor hook, read from its entries: a workspace that never carried
+        // the hooks gets the rail and the private turn hook, not a floor it
+        // never had (a held action on an unattended agent is a decision for
+        // the owner, not for an update), and a floor that is there stays.
         ...(process.env.HOAI_NO_FLOOR === "1" ? { floorHookPath: null } : {}),
       }))
       .catch((err) => { process.stderr.write(String(err) + "\n"); process.exitCode = 1; });
@@ -1789,10 +1793,10 @@ register_hooks_for_clone_workdir() { # $1 workdir
   local workdir="$1"
   [ -n "$(plugin_cache_key "$PLUGIN_DIR")" ] && return 0
   workdir_names_this_clone "$workdir" "$PLUGIN_DIR" || return 0
-  local settings="$workdir/.claude/settings.local.json" floor_mode="nofloor"
-  # A folder that already carries the rail keeps its full set, floor included.
-  if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then floor_mode=""; fi
-  install_hook_entries "$workdir" "$PLUGIN_DIR" "$floor_mode"
+  # The floor hook is decided by the writer from the file's own entries: kept or written where the folder has the
+  # rail or the floor hook, left out where it has neither, never removed. A mention of a script name in the
+  # file's text decides nothing.
+  install_hook_entries "$workdir" "$PLUGIN_DIR" nofloor
 }
 
 refresh_hook_entries() { # $1 assistant id
@@ -1820,7 +1824,7 @@ refresh_hook_entries() { # $1 assistant id
     install_denied_tools "$workdir" "$PLUGIN_DIR"
   fi
   if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then
-    install_hook_entries "$workdir" "$PLUGIN_DIR"
+    install_hook_entries "$workdir" "$PLUGIN_DIR" nofloor
   else
     # No hoai-hook entry yet: a clone workspace still needs the private turn
     # hook, or every boards, schedule and browser call refuses.

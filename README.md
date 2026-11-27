@@ -1168,6 +1168,77 @@ launch, so an existing agent folder gains the rail the next time it starts. A
 release that registers a NEW event therefore reaches a clone install on its
 next launch and not at the moment it updates: the whole block is rewritten from
 one list, so the folder heals itself, but it heals when it next starts.
+
+**If your own script starts `claude`, run `hoai hooks` first.** `hoai` writes
+these entries right before every launch. A script that starts `claude` itself
+skips that step, so its folder can run with old hooks, or without the hook that
+asks before a risky action. Put this line in the script, run in the agent's
+folder, right before the line that starts claude, so the script stops when it
+fails. In a PowerShell script (`.ps1`):
+
+```
+hoai hooks; if (-not $? -or $LASTEXITCODE -ne 0) { exit 1 }
+```
+
+In a shell script (`.sh`):
+
+```
+hoai hooks || exit 1
+```
+
+A PowerShell script goes on after a command that failed unless it checks, so a
+plain `hoai hooks` line there would start claude without the hooks. `$?` is
+there for a `hoai` that is not found at all: then `$LASTEXITCODE` still holds
+the 0 of the command before it.
+
+It writes exactly what a `hoai` launch writes (the full set, the blocking floor
+hook included), starts nothing, and changes nothing when the hooks are already
+current. `hoai hooks register` is the same command. It does not ask which agent
+the folder is, so it also works where your script names the agent itself.
+
+It ends with 0 only when the hooks hold. Whenever it wrote nothing it ends with
+1 and says why in one line, so a line in a script never looks like it worked
+when it did not:
+
+- in your home folder, or in a folder whose `.mcp.json` does not start this
+  checkout's `server.ts` from exactly one entry: that is not an agent's folder
+  of this checkout (an entry's name, or a `BGOS_` key in its settings, does not
+  make it one);
+- when one of this checkout's four hook scripts in `bin` is missing or is a
+  link: the hooks always run this checkout's own scripts, never ones the
+  folder names;
+- when `"disableAllHooks"` is on (any value but `false`) in the folder's
+  `.claude/settings.json` or `.claude/settings.local.json`, in your user
+  `settings.json`, or in this computer's managed settings: then the CLI runs no
+  hook at all, the one that asks before a risky action included, so the hooks
+  do not hold. The same when the managed settings allow only managed hooks
+  (`allowManagedHooksOnly`) or only an installed plugin's
+  (`strictPluginOnlyCustomization`). A `hoai` launch does not start claude
+  there either, and `hoai --keep-alive` asks again before every relaunch;
+- when one of those settings files is there and hoai cannot read it (over 1 MB,
+  not a plain file, not JSON): it may hold that switch, so it counts as on.
+  Mend or remove it. Only a file that is not there is no file;
+- when the folder's `.claude`, or `.claude/settings.local.json`, is a link to
+  somewhere else, or the settings file is larger than any agent's needs (1 MB):
+  the write never leaves the agent's folder;
+- when `.claude/settings.local.json` is not JSON (a comment in it, a stray
+  comma): the file is left exactly as it is, because it may hold your own hooks
+  and permissions. The folder then has no HOAI hook at all, the one that asks
+  before a risky action included, until you fix or remove the file; a refused
+  boards, schedule or browser call says so and names the file by its place in
+  the agent's folder (its full path is in the log only). A byte order
+  mark, which Windows PowerShell writes, is read past, and the file is written
+  again without it;
+- when this `hoai` is the installed plugin's own: a marketplace install is
+  never touched (the plugin registers its hooks itself, and a second set would
+  run each of them twice). The line says what to run instead: the
+  `bin/hoai-core.mjs` of the checkout the folder starts, with the word `hooks`.
+
+The daemon also keeps a clone folder's hooks current at every start and after an
+update, but that reaches the NEXT launch, and its first registration in a folder
+that had no hooks at all leaves the floor hook out (the one after it adds it).
+The command writes the full set now.
+
 To do it by hand:
 
 ```jsonc
@@ -1334,7 +1405,7 @@ Permission requests need the matching BGOS backend (the per agent wait clamp and
 
 A per agent switch in the app, **OFF by default**, stored on the server and nowhere else. With it on, a short fixed list of actions stops and asks the owner on the request card even though the agent runs with full access: deleting a folder and everything in it (`rm -r`, `rm --rec`, `Remove-Item -Recurse`, `rd /s`, `find ... -delete`, `git clean -fd` or `-fx`, `rsync --delete`), force pushing (`--force`, `-f`, `--force-with-lease`, a `+` refspec, `--mirror`, `--delete`, `git push origin :branch`), changing a file inside `.git`, changing an `.env` file, changing a settings file in the home folder (a dot file directly in it, or a file directly in one of its dot folders: `~/.bashrc`, `~/.ssh/config`), whether an edit tool writes that file or the shell does (a redirect `>` or `>>`, `tee`, `sed -i`, `cp` or `mv` onto it; reading it is not a change), and an MCP tool whose name sends, posts, pays or deletes (this channel's own server, by its exact names, excepted). A command that only MENTIONS a listed action (a commit message, a PR body, a grep, `echo "rm -rf x" >> Makefile`), a `# comment`, and a heredoc body written to a file are not that action; the text is read as a command only when it is handed to a shell (`bash -c`, `eval`, a heredoc or pipe into a shell). The list is `lib/hard-floor-core.mjs`, a port of the server's reader, held to it by a shared fixture copied byte for byte from the server's (each repo pins the sha256 of the file's bytes and of its data, and the reconciliation step compares the two files); its header says what it deliberately does not catch.
 
-**How it stops a call.** `bin/hoai-floor-hook.mjs` is the one BLOCKING hook this plugin registers (`hooks/hooks.json`, a second `PreToolUse` entry, `async: false`, 3 s timeout; a clone install gets the same entry in `.claude/settings.local.json`, from a launcher, `bgos-agent install`, or `bgos-agent update` before it restarts the service; the daemon declares `hard_floor` only when it finds that blocking entry in a file the CLI reads for its session, `lib/floor-hook-presence.ts`). It asks only in a session a HOAI daemon is attached to: the daemon, while it holds its pairing lock, marks its project folder under the plugin state folder, and the hook looks for that mark with a live pid; anywhere else it prints nothing, as before. For a listed action it writes a floor record (the rule, the matched command, the session's permission mode) and answers `ask`, which Claude Code honours even under `--dangerously-skip-permissions`, and the request reaches the relay. The relay takes that record, synchronously, before its auto approve branch (the request's own preview is a copy the CLI cuts in the middle when a value is long, so a listed action in a long command is not in it), and asks the server whether this agent's owner holds it (`POST /api/v1/integrations/assistants/:id/floor-check`, sent the matched command): **hold** posts the Allow once / Deny card, leading with the matched command (or an edit's path) when the preview lost it, and waits for the owner, and only a TAP on that card allows it (a typed `yes <id>` or the button's label as text is taken only when it is a no, because the server cannot tell a person from the agent's own credential on a typed message); **proceed** auto approves as before; a check that fails or times out **refuses** the action. A shell command the CLI cut in the middle that no floor record names is asked about with `elided: true`: the server holds it only when the owner's switch is on, so with the switch off it auto approves as before instead of posting a card the owner never asked for. A long command is fitted to the check's 4000 characters and to the card's lead by dropping arguments, never the operator (`lib/floor-evidence.mjs`), and a proceed about a body in which the list no longer reads the action (the listed part could not fit) goes to the owner rather than auto approving. With auto approve off, a proceed in a full access session allows the call (it exists only because the hook asked), and anything else is the card that install always posts. The hook only ever asks (never deny), prints nothing for anything else, and fails open inside 1.5 s, so a broken hook can never stop an unlisted call. With the switch off a listed action costs one round trip and runs as before.
+**How it stops a call.** `bin/hoai-floor-hook.mjs` is the one BLOCKING hook this plugin registers (`hooks/hooks.json`, a second `PreToolUse` entry, `async: false`, 3 s timeout; a clone install gets the same entry in `.claude/settings.local.json`, from a launcher, `hoai hooks`, `bgos-agent install`, or `bgos-agent update` before it restarts the service; the daemon declares `hard_floor` only when it finds that blocking entry in a file the CLI reads for its session, `lib/floor-hook-presence.ts`). It asks only in a session a HOAI daemon is attached to: the daemon, while it holds its pairing lock, marks its project folder under the plugin state folder, and the hook looks for that mark with a live pid; anywhere else it prints nothing, as before. For a listed action it writes a floor record (the rule, the matched command, the session's permission mode) and answers `ask`, which Claude Code honours even under `--dangerously-skip-permissions`, and the request reaches the relay. The relay takes that record, synchronously, before its auto approve branch (the request's own preview is a copy the CLI cuts in the middle when a value is long, so a listed action in a long command is not in it), and asks the server whether this agent's owner holds it (`POST /api/v1/integrations/assistants/:id/floor-check`, sent the matched command): **hold** posts the Allow once / Deny card, leading with the matched command (or an edit's path) when the preview lost it, and waits for the owner, and only a TAP on that card allows it (a typed `yes <id>` or the button's label as text is taken only when it is a no, because the server cannot tell a person from the agent's own credential on a typed message); **proceed** auto approves as before; a check that fails or times out **refuses** the action. A shell command the CLI cut in the middle that no floor record names is asked about with `elided: true`: the server holds it only when the owner's switch is on, so with the switch off it auto approves as before instead of posting a card the owner never asked for. A long command is fitted to the check's 4000 characters and to the card's lead by dropping arguments, never the operator (`lib/floor-evidence.mjs`), and a proceed about a body in which the list no longer reads the action (the listed part could not fit) goes to the owner rather than auto approving. With auto approve off, a proceed in a full access session allows the call (it exists only because the hook asked), and anything else is the card that install always posts. The hook only ever asks (never deny), prints nothing for anything else, and fails open inside 1.5 s, so a broken hook can never stop an unlisted call. With the switch off a listed action costs one round trip and runs as before.
 
 **Where it does not reach, said plainly.** A legacy API key connection has no pairing scoped route to ask, and a backend without the route cannot have the switch on, so both auto approve a listed action as before (logged); for an API key agent the owner's switch therefore does nothing yet, which is an open product call on the app side. A person's own `claude` opened in the agent's folder while the agent runs sees Claude Code's own Yes / No for a listed action, because the mark is per folder. And the list reads text: a delete done by a script, an alias, a variable or `python -c` is not on it, nor are writers it does not name (`dd`, `touch`, `install`, PowerShell's `Set-Content`).
 

@@ -19,6 +19,9 @@
  * Pure: every file read is injected, like lib/floor-hook-presence.ts.
  */
 
+import { exactOwnedHookOf, isOwnHookScript } from './claude-preseed.mjs'
+import { hookSwitchVerdict, switchedOffPresence } from './floor-hook-presence.js'
+
 /** The private turn hook's script name, the one thing every registration shares. */
 export const PRIVATE_HOOK_SCRIPT = 'hoai-private-turn-hook.mjs'
 
@@ -28,11 +31,17 @@ export interface PrivateHookPresenceInput {
   pluginRoot: string
   /** The session's folders, most specific first. */
   folders: readonly string[]
-  /** The CLI's config folder (CLAUDE_CONFIG_DIR or ~/.claude). */
+  /** The CLI's config folder (CLAUDE_CONFIG_DIR or ~/.claude), its settings counted; '' for none. */
   configDir: string
+  /** Config folders read for the hook switch only, never counted (lib/floor-hook-presence.ts). */
+  otherConfigDirs?: readonly string[]
+  /** The machine's managed settings files, read for the hook switches. */
+  managedFiles?: readonly string[]
   env: Record<string, string | undefined>
   readFile: (path: string) => string
   exists: (path: string) => boolean
+  /** The real path of a file, or null; given, a hook that names this install's script in another spelling counts. */
+  realpath?: (path: string) => string | null
   join: (...parts: string[]) => string
 }
 
@@ -40,9 +49,36 @@ export interface PrivateHookPresence {
   registered: boolean
   /** Where it was found, or why it was not, for the daemon's one boot line. */
   where: string
+  /** The settings file that switches every hook off ("disableAllHooks"), or may (one that cannot be read). */
+  hooksOff?: string
+  /** True when that file is there and cannot be read, so it may switch them off. */
+  hooksOffUnknown?: boolean
+  /** True when that file is the machine's managed settings, which only its administrator changes. */
+  hooksOffManaged?: boolean
+  /**
+   * A session folder's `.claude/settings.local.json` that is there and is not a JSON object, while the hook is not
+   * registered. The hook writer leaves such a file exactly as it is (it holds the owner's own hooks and
+   * permissions, lib/claude-preseed.mjs loadSettingsOrRefuse), so no hook is written until the owner mends or
+   * removes it, and a restart cannot help.
+   */
+  unreadableSettings?: string
 }
 
 export function privateHookPresence(input: PrivateHookPresenceInput): PrivateHookPresence {
+  // Every hook switched off at any level, or a file there that cannot be read and may say so: none runs.
+  const switchedOff = (settingsHooks: boolean): PrivateHookPresence | null => {
+    const off = hookSwitchVerdict(input, { settingsHooks })
+    if (!off) return null
+    // A folder's own settings file that is not JSON: the hook writer leaves it as it is, so it is named as the file
+    // in the way, and the advice is to mend or remove it.
+    const writerFile = input.folders.some((folder) => folder && input.join(folder, '.claude', 'settings.local.json') === off.file)
+    if (off.cause === 'not-json' && writerFile) {
+      return { registered: false, where: `${off.file} is there and ${off.why}`, unreadableSettings: off.file }
+    }
+    return switchedOffPresence(off)
+  }
+  const off = switchedOff(false)
+  if (off) return off
   const hooksFiles: string[] = []
   if (input.installMethod === 'marketplace' && input.pluginRoot) {
     hooksFiles.push(input.join(input.pluginRoot, 'hooks', 'hooks.json'))
@@ -52,30 +88,69 @@ export function privateHookPresence(input: PrivateHookPresenceInput): PrivateHoo
   for (const file of hooksFiles) {
     if (fileRegisters(file, input, true)) return { registered: true, where: file }
   }
+  // Only an installed plugin's hooks on (managed): an entry in a settings file does not run.
+  const settingsOff = switchedOff(true)
+  if (settingsOff) return settingsOff
   const settingsFiles: string[] = []
+  // The files the hook writer writes: the only ones whose state decides whether a hook CAN be written.
+  const writerFiles = new Set<string>()
   for (const folder of input.folders) {
     if (!folder) continue
-    settingsFiles.push(input.join(folder, '.claude', 'settings.local.json'))
+    const local = input.join(folder, '.claude', 'settings.local.json')
+    writerFiles.add(local)
+    settingsFiles.push(local)
     settingsFiles.push(input.join(folder, '.claude', 'settings.json'))
   }
   if (input.configDir) settingsFiles.push(input.join(input.configDir, 'settings.json'))
+  let unreadableSettings: string | undefined
   for (const file of settingsFiles) {
-    if (fileRegisters(file, input, false)) return { registered: true, where: file }
+    const read = readJsonObject(file, input)
+    if (read.state === 'ok' && registersPrivateHook(read.parsed, readerOpts(input, false))) {
+      return { registered: true, where: file }
+    }
+    if (read.state === 'unreadable' && unreadableSettings === undefined && writerFiles.has(file)) unreadableSettings = file
   }
   return {
     registered: false,
     where: `no ${PRIVATE_HOOK_SCRIPT} UserPromptSubmit entry in ${[...hooksFiles, ...settingsFiles].join(', ') || 'any file'}`,
+    ...(unreadableSettings === undefined ? {} : { unreadableSettings }),
+  }
+}
+
+/**
+ * One settings or hooks file as the hook writer would read it: not there, a JSON object, or there and not one. A
+ * byte order mark is read past (Windows PowerShell writes one, and JSON.parse refuses it), and an empty file is an
+ * empty object, exactly as lib/claude-preseed.mjs loadSettingsOrRefuse has it.
+ */
+function readJsonObject(
+  file: string,
+  input: PrivateHookPresenceInput,
+): { state: 'missing' } | { state: 'unreadable' } | { state: 'ok'; parsed: Record<string, unknown> } {
+  let text: unknown
+  try {
+    text = input.readFile(file)
+  } catch {
+    return { state: 'missing' }
+  }
+  if (typeof text !== 'string') return { state: 'missing' }
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+  if (body.trim() === '') return { state: 'ok', parsed: {} }
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return isRecord(parsed) ? { state: 'ok', parsed } : { state: 'unreadable' }
+  } catch {
+    return { state: 'unreadable' }
   }
 }
 
 function fileRegisters(file: string, input: PrivateHookPresenceInput, pluginHooksFile: boolean): boolean {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(input.readFile(file))
-  } catch {
-    return false
-  }
-  return registersPrivateHook(parsed, { exists: input.exists, pluginRootVariable: pluginHooksFile })
+  const read = readJsonObject(file, input)
+  return read.state === 'ok' && registersPrivateHook(read.parsed, readerOpts(input, pluginHooksFile))
+}
+
+/** What registersPrivateHook is told about this install: its root, and how to ask a file's real path. */
+function readerOpts(input: PrivateHookPresenceInput, pluginRootVariable: boolean) {
+  return { exists: input.exists, pluginRootVariable, pluginRoot: input.pluginRoot, ...(input.realpath ? { realpath: input.realpath } : {}) }
 }
 
 /**
@@ -85,25 +160,28 @@ function fileRegisters(file: string, input: PrivateHookPresenceInput, pluginHook
  */
 export function registersPrivateHook(
   parsed: unknown,
-  opts: { exists: (path: string) => boolean; pluginRootVariable: boolean },
+  opts: {
+    exists: (path: string) => boolean
+    pluginRootVariable: boolean
+    /** This install's root: an absolute path counts only when it is this install's own bin script. */
+    pluginRoot?: string
+    realpath?: (path: string) => string | null
+  },
 ): boolean {
   const hooks = isRecord(parsed) && isRecord(parsed.hooks) ? parsed.hooks : null
   const matchers = hooks && Array.isArray(hooks.UserPromptSubmit) ? hooks.UserPromptSubmit : []
   for (const matcher of matchers) {
     if (!isRecord(matcher) || !Array.isArray(matcher.hooks)) continue
     for (const hook of matcher.hooks) {
-      if (!isRecord(hook) || hook.type !== 'command' || hook.async === true) continue
-      const args = Array.isArray(hook.args) ? hook.args : []
-      const values = [hook.command, ...args].filter((v): v is string => typeof v === 'string')
-      const script = values.find((v) => v.includes(PRIVATE_HOOK_SCRIPT))
-      if (!script) continue
-      if (script.includes('${CLAUDE_PLUGIN_ROOT}')) {
-        if (opts.pluginRootVariable) return true
-        continue
-      }
-      const path = script.trim().replace(/^["']|["']$/g, '')
-      const absolute = path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)
-      if (!absolute || opts.exists(path)) return true
+      // Only the plugin's own entry counts, exactly as the writer writes it (lib/claude-preseed.mjs
+      // exactOwnedHookOf): `node` running the script by an absolute path, on this event, under its matcher, with
+      // its own timeout, blocking, and no other key. Anything else may not run, or not every time.
+      const owned = exactOwnedHookOf('UserPromptSubmit', matcher, hook, { pluginRootVariable: opts.pluginRootVariable })
+      if (!owned || owned.script !== PRIVATE_HOOK_SCRIPT || !isRecord(hook) || !Array.isArray(hook.args)) continue
+      const path = String(hook.args[0])
+      if (path.startsWith('${CLAUDE_PLUGIN_ROOT}/')) return true
+      // This install's own script, on disk: a file of the same name anywhere else writes no turn marker of ours.
+      if (opts.exists(path) && isOwnHookScript(path, PRIVATE_HOOK_SCRIPT, opts)) return true
     }
   }
   return false
@@ -118,6 +196,23 @@ export function privateHookBootLine(presence: PrivateHookPresence): string {
   if (presence.registered) {
     return `private turn: the private turn hook is registered (${presence.where})`
   }
+  if (presence.hooksOff) {
+    return (
+      `private turn: the private turn hook is NOT registered for this session (${presence.where}). ` +
+      'Boards, schedule and browser tools will refuse every call while it is: ' +
+      (presence.hooksOffManaged
+        ? 'that file is this computer\'s managed settings, so ask whoever manages it'
+        : `${presence.hooksOffUnknown ? 'mend or remove that file' : 'take that line out of the file'}, then start this agent again`)
+    )
+  }
+  if (presence.unreadableSettings) {
+    return (
+      `private turn: the private turn hook is NOT registered for this session (${presence.where}). ` +
+      'Boards, schedule and browser tools will refuse every call until it is, and this daemon cannot write it: the ' +
+      `settings file ${presence.unreadableSettings} is not valid JSON, so it was left untouched. ` +
+      'Fix or remove that file, then start this agent again'
+    )
+  }
   return (
     `private turn: the private turn hook is NOT registered for this session (${presence.where}). ` +
     // Not "run bgos-agent update": that resets a clone to the head of origin/main, released or not (board row
@@ -131,6 +226,27 @@ export function privateHookBootLine(presence: PrivateHookPresence): string {
 export const PRIVATE_HOOK_MISSING_REFUSAL =
   'This private action did not start because the HOAI private turn hook is not registered for this session, so no sender can be verified. ' +
   'Ask the owner to restart this agent, so it loads the hook its daemon writes at boot.'
+
+/** The hook writer's file, named by its place in an agent folder: the only name for it a chat may carry. */
+const SETTINGS_FILE_IN_AGENT_FOLDER = '.claude/settings.local.json'
+
+/**
+ * What a refused private call says when the cause is the missing hook. Which advice is right depends on why it is
+ * missing: a daemon writes the hook at boot and a restart loads it, unless the folder's settings file is not JSON.
+ * Then nothing can be written until the owner mends or removes that file, so the refusal names it.
+ *
+ * BY ITS PLACE IN THE AGENT FOLDER, NEVER BY ITS FULL PATH. This text is read in a chat, and an agent answers in
+ * groups too: a folder name on the owner's computer is not for them. The full path is in the log, in the boot
+ * line (privateHookBootLine).
+ */
+export function privateHookMissingRefusal(presence: Pick<PrivateHookPresence, 'unreadableSettings'> | null | undefined): string {
+  if (!presence?.unreadableSettings) return PRIVATE_HOOK_MISSING_REFUSAL
+  return (
+    'This private action did not start because the HOAI private turn hook is not registered for this session, so no sender can be verified. ' +
+    `The hook cannot be written because the settings file ${SETTINGS_FILE_IN_AGENT_FOLDER} in this agent's folder is not valid JSON. ` +
+    'Ask the owner to fix or remove it, and then start this agent again: a restart alone will not help.'
+  )
+}
 
 /**
  * Is the private turn hook live in the session this daemon serves, NOW (QUIETTURN4, the two account test,
@@ -167,6 +283,7 @@ export function createPrivateHookLiveness({ atBoot, log = () => {} }: {
   const presence: PrivateHookPresence = {
     get registered() { return live() },
     get where() { return atBoot.registered || !proven ? atBoot.where : 'its marker was read for a turn in this daemon life' },
+    get unreadableSettings() { return live() ? undefined : atBoot.unreadableSettings },
   }
   return {
     live,

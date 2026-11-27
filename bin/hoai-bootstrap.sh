@@ -623,13 +623,15 @@ node "$PRESEED_JS" "$CONFIG_DIR" "$WORKDIR" \
 # fires twice. Idempotent, and best effort: a failure costs the tool detail.
 if [ "$RESOLVED_METHOD" != "marketplace" ]; then
     mkdir -p "$WORKDIR/.claude"
-    HOAI_PRESEED="$PLUGIN_ROOT/lib/claude-preseed.mjs" \
+    # registerTrustedHooks: the four hook scripts must be plain files of this checkout's own bin, and the folder's
+    # settings must not switch every hook off, or nothing is written.
+    HOAI_HOOKS_LIB="$PLUGIN_ROOT/lib/clone-hooks.mjs" \
     HOAI_SETTINGS="$WORKDIR/.claude/settings.local.json" \
     HOAI_FORWARDER="$PLUGIN_ROOT/bin/hoai-hook.mjs" \
     node -e '
         const { pathToFileURL } = require("node:url");
-        import(pathToFileURL(process.env.HOAI_PRESEED).href)
-          .then((m) => m.ensureHookEntries({
+        import(pathToFileURL(process.env.HOAI_HOOKS_LIB).href)
+          .then((m) => m.registerTrustedHooks({
             settingsPath: process.env.HOAI_SETTINGS,
             forwarderPath: process.env.HOAI_FORWARDER,
           }))

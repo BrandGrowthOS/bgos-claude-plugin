@@ -36,6 +36,7 @@
  * Pure: every file read is injected, so the tests hold each case in place.
  */
 
+import { exactOwnedHookOf, hooksOffVerdict, isOwnHookScript } from './claude-preseed.mjs'
 import { declaredCapabilities } from './declared-capabilities.js'
 import { HARD_FLOOR_TOKEN } from './claude-capability-tokens.js'
 
@@ -48,12 +49,21 @@ export interface FloorHookPresenceInput {
   pluginRoot: string
   /** The session's folders, most specific first. */
   folders: readonly string[]
-  /** The CLI's config folder (CLAUDE_CONFIG_DIR or ~/.claude). */
+  /** The CLI's config folder (CLAUDE_CONFIG_DIR or ~/.claude), its settings counted; '' for none. */
   configDir: string
+  /**
+   * Config folders the CLI may be using that the caller cannot vouch for (the daemon's own environment names them,
+   * and the folder's .mcp.json can set that environment): read for the hook switch only, never counted.
+   */
+  otherConfigDirs?: readonly string[]
+  /** The machine's managed settings files (lib/clone-hooks.mjs managedSettingsFiles), read for the hook switches. */
+  managedFiles?: readonly string[]
   env: Record<string, string | undefined>
   /** Answers the file's text, or throws. */
   readFile: (path: string) => string
   exists: (path: string) => boolean
+  /** The real path of a file, or null; given, a hook that names this install's script in another spelling counts. */
+  realpath?: (path: string) => string | null
   join: (...parts: string[]) => string
 }
 
@@ -61,9 +71,100 @@ export interface FloorHookPresence {
   registered: boolean
   /** Where it was found, or why it was not, for the daemon's one boot line. */
   where: string
+  /** The settings file that switches every hook off ("disableAllHooks"), or may (one that cannot be read). */
+  hooksOff?: string
+  /** True when that file is there and cannot be read, so it may switch them off. */
+  hooksOffUnknown?: boolean
+  /** True when that file is the machine's managed settings, which only its administrator changes. */
+  hooksOffManaged?: boolean
+}
+
+/** What one hook switch verdict says (lib/claude-preseed.mjs hooksOffVerdict). */
+export interface HookSwitchVerdict {
+  file: string
+  key: string
+  cause: 'on' | 'not-json' | 'unreadable'
+  why: string
+  managed: boolean
+}
+
+/**
+ * The settings files the CLI reads for a session in these folders: each folder's local and project settings, then
+ * the user's. Shared by both hook readers.
+ */
+export function sessionSettingsFiles(input: Pick<FloorHookPresenceInput, 'folders' | 'configDir' | 'join'>): string[] {
+  const files: string[] = []
+  for (const folder of input.folders) {
+    if (!folder) continue
+    files.push(input.join(folder, '.claude', 'settings.local.json'))
+    files.push(input.join(folder, '.claude', 'settings.json'))
+  }
+  if (input.configDir) files.push(input.join(input.configDir, 'settings.json'))
+  return files
+}
+
+/** Is this error the reader's word that a file is not there? */
+function isMissingFile(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code
+  if (code === 'ENOENT' || code === 'ENOTDIR') return true
+  return /^ENOENT\b/.test(String((err as { message?: unknown } | null)?.message ?? ''))
+}
+
+/**
+ * Does a settings file this session's CLI reads switch every hook off, or may it? The first one that does, or null.
+ * On at any level, no hook runs (measured on 2.1.332), so neither hook is registered, whatever the files hold. FAIL
+ * CLOSED: only a file that is not there (readFile throws ENOENT) is no file; one that is there and cannot be read
+ * may hold the switch.
+ */
+export function hookSwitchVerdict(
+  input: Pick<FloorHookPresenceInput, 'folders' | 'configDir' | 'otherConfigDirs' | 'managedFiles' | 'join' | 'readFile'>,
+  { settingsHooks = true }: { settingsHooks?: boolean } = {},
+): HookSwitchVerdict | null {
+  const files = sessionSettingsFiles(input)
+  for (const dir of input.otherConfigDirs ?? []) {
+    const file = dir ? input.join(dir, 'settings.json') : ''
+    if (file && !files.includes(file)) files.push(file)
+  }
+  const readOf = (file: string) => {
+    try {
+      const text = input.readFile(file)
+      return typeof text === 'string' ? { state: 'ok' as const, text } : { state: 'missing' as const }
+    } catch (err) {
+      if (isMissingFile(err)) return { state: 'missing' as const }
+      return { state: 'unreadable' as const, why: `it could not be read (${String((err as Error)?.message ?? err)})` }
+    }
+  }
+  const sources = [
+    ...(input.managedFiles ?? []).filter(Boolean).map((file) => ({ file, read: readOf(file), managed: true })),
+    ...files.map((file) => ({ file, read: readOf(file) })),
+  ]
+  return hooksOffVerdict(sources, { settingsHooks }) as HookSwitchVerdict | null
+}
+
+/** A presence that a verdict switched off. */
+export function switchedOffPresence(off: HookSwitchVerdict): FloorHookPresence {
+  return {
+    registered: false,
+    where: hookSwitchWhere(off),
+    hooksOff: off.file,
+    ...(off.cause === 'on' ? {} : { hooksOffUnknown: true }),
+    ...(off.managed ? { hooksOffManaged: true } : {}),
+  }
+}
+
+/** The boot line's account of a verdict. */
+export function hookSwitchWhere(off: HookSwitchVerdict): string {
+  if (off.cause !== 'on') return `hoai cannot tell whether every hook is switched off: ${off.file} is there and ${off.why}`
+  if (off.key === 'allowManagedHooksOnly') return `only managed hooks run ("${off.key}" in ${off.file})`
+  if (off.key === 'strictPluginOnlyCustomization') return `only an installed plugin's hooks run ("${off.key}" in ${off.file})`
+  return `every hook is switched off by "${off.key}" in ${off.file}`
 }
 
 export function floorHookPresence(input: FloorHookPresenceInput): FloorHookPresence {
+  const settingsFiles = sessionSettingsFiles(input)
+  // Every hook off, or only managed ones on, or a file that cannot be read: nothing of the plugin's runs.
+  const off = hookSwitchVerdict(input, { settingsHooks: false })
+  if (off) return switchedOffPresence(off)
   const hooksFiles: string[] = []
   if (input.installMethod === 'marketplace' && input.pluginRoot) {
     hooksFiles.push(input.join(input.pluginRoot, 'hooks', 'hooks.json'))
@@ -73,13 +174,9 @@ export function floorHookPresence(input: FloorHookPresenceInput): FloorHookPrese
   for (const file of hooksFiles) {
     if (fileRegistersFloorHook(file, input, true)) return { registered: true, where: file }
   }
-  const settingsFiles: string[] = []
-  for (const folder of input.folders) {
-    if (!folder) continue
-    settingsFiles.push(input.join(folder, '.claude', 'settings.local.json'))
-    settingsFiles.push(input.join(folder, '.claude', 'settings.json'))
-  }
-  if (input.configDir) settingsFiles.push(input.join(input.configDir, 'settings.json'))
+  // Only an installed plugin's hooks on (managed): an entry in a settings file does not run.
+  const settingsOff = hookSwitchVerdict(input, { settingsHooks: true })
+  if (settingsOff) return switchedOffPresence(settingsOff)
   for (const file of settingsFiles) {
     if (fileRegistersFloorHook(file, input, false)) return { registered: true, where: file }
   }
@@ -96,7 +193,10 @@ function fileRegistersFloorHook(
 ): boolean {
   let parsed: unknown
   try {
-    parsed = JSON.parse(input.readFile(file))
+    // Windows PowerShell writes a byte order mark, which JSON.parse refuses: read past it, or hooks that are in
+    // the file count as missing.
+    const text = input.readFile(file)
+    parsed = JSON.parse(typeof text === 'string' && text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)
   } catch {
     return false
   }
@@ -105,6 +205,8 @@ function fileRegistersFloorHook(
     // ${CLAUDE_PLUGIN_ROOT} is expanded by the CLI only in a plugin's own
     // hooks file, so a path spelled with it counts there and nowhere else.
     pluginRootVariable: pluginHooksFile,
+    pluginRoot: input.pluginRoot,
+    ...(input.realpath ? { realpath: input.realpath } : {}),
   })
 }
 
@@ -114,25 +216,28 @@ function fileRegistersFloorHook(
  */
 export function registersFloorHook(
   parsed: unknown,
-  opts: { exists: (path: string) => boolean; pluginRootVariable: boolean },
+  opts: {
+    exists: (path: string) => boolean
+    pluginRootVariable: boolean
+    /** This install's root: an absolute path counts only when it is this install's own bin script. */
+    pluginRoot?: string
+    realpath?: (path: string) => string | null
+  },
 ): boolean {
   const hooks = isRecord(parsed) && isRecord(parsed.hooks) ? parsed.hooks : null
   const matchers = hooks && Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []
   for (const matcher of matchers) {
     if (!isRecord(matcher) || !Array.isArray(matcher.hooks)) continue
     for (const hook of matcher.hooks) {
-      if (!isRecord(hook) || hook.type !== 'command' || hook.async === true) continue
-      const args = Array.isArray(hook.args) ? hook.args : []
-      const values = [hook.command, ...args].filter((v): v is string => typeof v === 'string')
-      const script = values.find((v) => v.includes(FLOOR_HOOK_SCRIPT))
-      if (!script) continue
-      if (script.includes('${CLAUDE_PLUGIN_ROOT}')) {
-        if (opts.pluginRootVariable) return true
-        continue
-      }
-      const path = script.trim().replace(/^["']|["']$/g, '')
-      const absolute = path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)
-      if (!absolute || opts.exists(path)) return true
+      // Only the plugin's own entry counts, exactly as the writer writes it (lib/claude-preseed.mjs
+      // exactOwnedHookOf): `node` running the script by an absolute path, on this event, under its matcher, with
+      // its own timeout, blocking, and no other key. Anything else may not run, or not every time.
+      const owned = exactOwnedHookOf('PreToolUse', matcher, hook, { pluginRootVariable: opts.pluginRootVariable })
+      if (!owned || owned.script !== FLOOR_HOOK_SCRIPT || !isRecord(hook) || !Array.isArray(hook.args)) continue
+      const path = String(hook.args[0])
+      if (path.startsWith('${CLAUDE_PLUGIN_ROOT}/')) return true
+      // This install's own script, on disk: a file of the same name anywhere else, even an empty one, stops nothing.
+      if (opts.exists(path) && isOwnHookScript(path, FLOOR_HOOK_SCRIPT, opts)) return true
     }
   }
   return false
@@ -165,6 +270,15 @@ export function floorBootLine(presence: FloorHookPresence, authMode: 'pairing' |
     return (
       `floor: the blocking floor hook is registered (${presence.where}); ` +
       `the floor capability (${HARD_FLOOR_TOKEN}) is declared on this pairing`
+    )
+  }
+  if (presence.hooksOff) {
+    return (
+      `floor: the blocking floor hook is NOT registered for this session (${presence.where}); ` +
+      `the floor capability (${HARD_FLOOR_TOKEN}) is NOT declared, and no hook may run. ` +
+      (presence.hooksOffManaged
+        ? 'That file is this computer\'s managed settings: ask whoever manages it'
+        : `${presence.hooksOffUnknown ? 'Mend or remove that file' : 'Take that line out of the file'}, then start this agent again`)
     )
   }
   const hook = presence.registered

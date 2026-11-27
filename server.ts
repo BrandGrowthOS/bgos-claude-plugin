@@ -371,8 +371,8 @@ import {
   type StopGoalView,
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
-import { PRIVATE_HOOK_MISSING_REFUSAL, createPrivateHookLiveness, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
-import { registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
+import { createPrivateHookLiveness, privateHookBootLine, privateHookMissingRefusal, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
+import { cloneHooksResultLine, cloneHooksSkippedLine, hookPresenceFs, managedSettingsDir, managedSettingsFiles, registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
 import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
@@ -16771,6 +16771,41 @@ function lockYieldReason(
 }
 
 /**
+ * The user config folders the CLI may be reading for this session, for the hook switch alone (fail closed): the one
+ * this daemon's environment names (CLAUDE_CONFIG_DIR), and ~/.claude by the environment's home and by the
+ * account's. The environment is the folder's to set as well (an .mcp.json "env"), so none of them is trusted to hold
+ * a hook that counts; any of them that switches every hook off, or cannot be read, means no hook is registered.
+ */
+const HOOK_SWITCH_CONFIG_DIRS = [
+  ...new Set(
+    [
+      CLAUDE_CONFIG_DIR,
+      pathJoin(homedir(), '.claude'),
+      (() => {
+        try {
+          return pathJoin(osUserInfo().homedir, '.claude')
+        } catch {
+          return ''
+        }
+      })(),
+    ].filter(Boolean),
+  ),
+]
+
+/**
+ * The machine's managed settings files the CLI reads (lib/clone-hooks.mjs managedSettingsFiles): a managed
+ * "disableAllHooks", "allowManagedHooksOnly" or plugin-only rule leaves this plugin's hooks unrun.
+ */
+const MANAGED_SETTINGS_FILES: string[] = (() => {
+  try {
+    return managedSettingsFiles(managedSettingsDir())
+  } catch {
+    // Fail closed: the folder itself, which reads as a file that cannot be read.
+    return [managedSettingsDir()]
+  }
+})()
+
+/**
  * Is the blocking floor hook registered for this session? Looked up ONCE, at
  * boot, because the CLI reads its hooks when it launches, and hard_floor is
  * declared only when it is (lib/floor-hook-presence.ts): a clone updated in
@@ -16783,11 +16818,14 @@ const FLOOR_HOOK: FloorHookPresence = (() => {
       installMethod: INSTALL_METHOD,
       pluginRoot: PLUGIN_ROOT,
       folders: FLOOR_FOLDERS,
-      configDir: CLAUDE_CONFIG_DIR,
+      // No user config folder to count entries in: this one is named by this daemon's environment, which the
+      // folder's .mcp.json can set, and the plugin writes no hook there. Each is read for the hook switch only.
+      configDir: '',
+      otherConfigDirs: HOOK_SWITCH_CONFIG_DIRS,
+      managedFiles: MANAGED_SETTINGS_FILES,
       env: process.env,
-      readFile: (path) => readFileSync(path, 'utf8'),
-      exists: (path) => existsSync(path),
-      join: pathJoin,
+      // Plain files of bounded size only (a FIFO or a huge file there would hold the boot), and real paths.
+      ...hookPresenceFs(),
     })
   } catch (err) {
     return { registered: false, where: `could not look (${err})` }
@@ -16807,11 +16845,14 @@ const PRIVATE_HOOK_AT_BOOT: PrivateHookPresence = (() => {
       installMethod: INSTALL_METHOD,
       pluginRoot: PLUGIN_ROOT,
       folders: FLOOR_FOLDERS,
-      configDir: CLAUDE_CONFIG_DIR,
+      // No user config folder to count entries in: this one is named by this daemon's environment, which the
+      // folder's .mcp.json can set, and the plugin writes no hook there. Each is read for the hook switch only.
+      configDir: '',
+      otherConfigDirs: HOOK_SWITCH_CONFIG_DIRS,
+      managedFiles: MANAGED_SETTINGS_FILES,
       env: process.env,
-      readFile: (path) => readFileSync(path, 'utf8'),
-      exists: (path) => existsSync(path),
-      join: pathJoin,
+      // Plain files of bounded size only (a FIFO or a huge file there would hold the boot), and real paths.
+      ...hookPresenceFs(),
     })
   } catch (err) {
     return { registered: false, where: `could not look (${err})` }
@@ -16825,6 +16866,9 @@ const PRIVATE_HOOK_AT_BOOT: PrivateHookPresence = (() => {
 // boot hook registration below read what they always did.
 const privateHook = createPrivateHookLiveness({ atBoot: PRIVATE_HOOK_AT_BOOT, log })
 const PRIVATE_HOOK: PrivateHookPresence = privateHook.presence
+// What a refused private call says while the hook is missing, worded once from the boot read. A settings file that
+// is not JSON is named in it: nothing can be written there, so "restart" would be advice that cannot work.
+const PRIVATE_HOOK_MISSING_REFUSAL = privateHookMissingRefusal(PRIVATE_HOOK)
 
 function safeUsername(): string {
   try {
@@ -20894,9 +20938,13 @@ async function main(): Promise<void> {
     privateHookRegistered: PRIVATE_HOOK.registered,
   })
   for (const result of bootHooks.results) {
-    if (result.outcome === 'registered') log(`hooks: registered the current agent hooks in ${result.folder}; they load at this agent's next launch`)
-    else if (result.outcome === 'failed') log(`hooks: could not register the agent hooks in ${result.folder}: ${result.detail ?? 'unknown'}`)
+    // A folder's name is the folder's to choose: the line shows a break or a control character in it, escaped.
+    const line = cloneHooksResultLine(result)
+    if (line) log(line)
   }
+  // A boot that took every folder for another checkout's wrote nothing, and used to say nothing.
+  const hooksSkipped = cloneHooksSkippedLine(bootHooks.results)
+  if (hooksSkipped) log(hooksSkipped)
   const hookOutcomes: string[] = bootHooks.restartOutcomes
   void phase('capability-canon warm-up', () => loadServedCapabilities()).catch(
     // loadServedCapabilities does not throw (it falls back), but a background

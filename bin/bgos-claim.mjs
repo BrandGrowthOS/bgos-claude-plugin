@@ -47,7 +47,7 @@ import {
 } from './bgos-daemon-wrapper.mjs'
 import { launchCommand } from './bgos-install-method.mjs'
 import { describeFileProtection, lockFileToWindowsUser } from './bgos-pair.mjs'
-import { ensureHookEntries } from '../lib/claude-preseed.mjs'
+import { registerTrustedHooks } from '../lib/clone-hooks.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -664,7 +664,8 @@ export async function scaffoldWorkspace(dir, entries, log = console.error, opts 
   // workspace without it still chats perfectly, it just shows no tool detail.
   if (opts.forwarderPath) {
     try {
-      ensureHookEntries({ settingsPath: settingsLocalPath, forwarderPath: opts.forwarderPath })
+      // The four hook scripts must be plain files of this checkout's own bin, or nothing is written.
+      registerTrustedHooks({ settingsPath: settingsLocalPath, forwarderPath: opts.forwarderPath })
     } catch (err) {
       log(`[bgos-claim] could not register the activity hooks: ${err}`)
     }

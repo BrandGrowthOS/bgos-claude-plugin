@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { buildRunPlan } from '../bin/hoai-core.mjs'
+import { buildRunPlan, main } from '../bin/hoai-core.mjs'
 import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 import * as cloneHooks from '../lib/clone-hooks.mjs'
 import { privateHookPresence } from '../lib/private-hook-presence'
@@ -92,12 +92,14 @@ test('a folder whose private turn hook is already registered gets the CURRENT ho
   assert.equal(typeof atBoot, 'function', NO_BOOT)
   const stale = staleSettings()
   const dir = workspace(stale)
-  // This is the folder the old gate skipped: the daemon counted the hook as registered.
-  assert.equal(presenceOf(dir).registered, true)
+  // The old gate skipped this folder: the daemon counted the hook as registered. Its entry is not the writer's (a
+  // 3 s timeout), so the daemon no longer counts it as it stands; the boot rewrites it, and then it counts.
+  assert.equal(presenceOf(dir).registered, false)
 
   const boot = atBoot({ folders: [dir], pluginDir: repoRoot, installMethod: 'clone', privateHookRegistered: true })
   assert.deepEqual(boot.results.map((r: { outcome: string }) => r.outcome), ['registered'])
   assert.deepEqual(hooksOf(dir), whatHoaiRunWrites(stale))
+  assert.equal(presenceOf(dir).registered, true)
   assert.match(JSON.stringify(hooksOf(dir).PreToolUse), /hoai-floor-hook\.mjs/, 'a folder that carries the rail keeps its full set')
   // The hook was already there, so this refresh serves the next launch and asks for no restart.
   assert.deepEqual(boot.restartOutcomes, [])
@@ -179,19 +181,34 @@ test('it never throws: no folders, junk folders, an unreadable disk, a write tha
   assert.match(unwritable.results[0].detail, /EACCES/)
 })
 
-test('a folder `hoai run` wrote through another spelling of this checkout is already current: a boot does not rewrite it', () => {
-  // `hoai run` writes its own path to the forwarder (bin/hoai-core.mjs hookRegistrationFor, from its scriptDir); the
-  // daemon knows the checkout by import.meta.dir. Through an aliased home those are two spellings of one file, and
-  // ensureHookEntries compares strings: before this, every boot rewrote the block and every `hoai run` wrote it back.
+test('a launch through another spelling of this checkout writes the checkout\'s own paths, so a boot finds them current', async () => {
+  // `hoai` knows its checkout by its own folder (scriptDir), the daemon by import.meta.dir. Through an aliased home
+  // those are two spellings of one checkout. Both now write the checkout's real paths, so neither rewrites the
+  // other's block, and no spelling is ever taken over from the settings file.
   const scratch = realpathSync(scratchDir('clone-hooks-boot-alias-'))
   const alias = join(scratch, 'checkout')
   linkFolder(repoRoot, alias)
   const dir = workspace()
-  mkdirSync(join(dir, '.claude'), { recursive: true })
-  ensureHookEntries({ settingsPath: settingsPath(dir), forwarderPath: join(alias, 'bin', 'hoai-hook.mjs') })
+  const code = await main(['hooks'], {
+    env: {},
+    home: realpathSync(scratchDir('clone-hooks-boot-alias-home-')),
+    cwd: dir,
+    scriptDir: join(alias, 'bin'),
+    print: () => {},
+    printError: (line: string) => assert.fail(line),
+  } as never)
+  assert.equal(code, 0)
   const written = settingsText(dir)
+  assert.equal(JSON.stringify(hooksOf(dir)).includes(alias.replace(/\\/g, '\\\\')), false, 'a hook path runs through the alias')
   assert.equal(cloneHooks.registerCloneHooks({ workdir: dir, pluginDir: repoRoot }).outcome, 'already')
   assert.equal(settingsText(dir), written)
+  // Settings that name the forwarder through the alias are written once more with the checkout's own paths.
+  const old = workspace()
+  mkdirSync(join(old, '.claude'), { recursive: true })
+  ensureHookEntries({ settingsPath: settingsPath(old), forwarderPath: join(alias, 'bin', 'hoai-hook.mjs') })
+  assert.equal(cloneHooks.registerCloneHooks({ workdir: old, pluginDir: repoRoot }).outcome, 'registered')
+  assert.ok(forwardersOf(old).every((arg) => arg === FORWARDER), forwardersOf(old).join(', '))
+  assert.equal(cloneHooks.registerCloneHooks({ workdir: old, pluginDir: repoRoot }).outcome, 'already')
   // A forwarder of ANOTHER checkout is still replaced with this one.
   const other = realpathSync(scratchDir('clone-hooks-boot-othercheckout-'))
   mkdirSync(join(other, 'bin'))
@@ -200,13 +217,18 @@ test('a folder `hoai run` wrote through another spelling of this checkout is alr
   mkdirSync(join(elsewhere, '.claude'), { recursive: true })
   ensureHookEntries({ settingsPath: settingsPath(elsewhere), forwarderPath: join(other, 'bin', 'hoai-hook.mjs') })
   assert.equal(cloneHooks.registerCloneHooks({ workdir: elsewhere, pluginDir: repoRoot }).outcome, 'registered')
-  const forwarders = (Object.values(hooksOf(elsewhere)) as Array<Array<{ hooks: Array<{ args?: string[] }> }>>)
+  const forwarders = forwardersOf(elsewhere)
+  assert.ok(forwarders.length > 0 && forwarders.every((arg) => arg === FORWARDER), forwarders.join(', '))
+})
+
+/** Every forwarder path a folder's hooks run. */
+function forwardersOf(dir: string): string[] {
+  return (Object.values(hooksOf(dir)) as Array<Array<{ hooks: Array<{ args?: string[] }> }>>)
     .flat()
     .flatMap((matcher) => matcher.hooks)
     .map((hook) => hook.args?.[0] ?? '')
     .filter((arg) => arg.endsWith('hoai-hook.mjs'))
-  assert.ok(forwarders.length > 0 && forwarders.every((arg) => arg === FORWARDER), forwarders.join(', '))
-})
+}
 
 test('a workspace that starts the daemon through the stable wrapper (bgos-claim, bgos-agent) is this checkout\'s clone too', () => {
   assert.equal(typeof atBoot, 'function', NO_BOOT)
@@ -224,21 +246,24 @@ test('a workspace that starts the daemon through the stable wrapper (bgos-claim,
   assert.equal(cloneHooks.workspaceNamesThisClone({ workdir: other, pluginDir: repoRoot }), false)
 })
 
-test('`hoai run` from ANOTHER checkout registers the hooks of the checkout the folder serves, so a boot finds them current', () => {
+test('`hoai run` from ANOTHER checkout writes the hooks of its own checkout, never those of the checkout the folder names', () => {
   assert.equal(typeof atBoot, 'function', NO_BOOT)
-  // hoai's own checkout (its bin, with a forwarder) differs from the one the folder's .mcp.json starts (this repo).
+  // hoai's own checkout (its bin, with every hook script) differs from the one the folder's .mcp.json starts (this
+  // repo). What the folder names chooses no script: the launch writes its own, and the daemon the folder starts
+  // writes its own at its boot.
   const elsewhere = realpathSync(scratchDir('clone-hooks-boot-hoai-elsewhere-'))
   mkdirSync(join(elsewhere, 'bin'))
-  copyFileSync(FORWARDER, join(elsewhere, 'bin', 'hoai-hook.mjs'))
+  for (const name of ['hoai-hook.mjs', 'hoai-floor-hook.mjs', 'hoai-private-turn-hook.mjs', 'hoai-mission-turn-hook.mjs']) {
+    copyFileSync(join(repoRoot, 'bin', name), join(elsewhere, 'bin', name))
+  }
   const dir = workspace()
   // The folder publishes its channel and identity, as a real agent folder does.
   writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')], env: { BGOS_ASSISTANT_ID: '7' } } } }))
   const plan = buildRunPlan({ cwd: dir, env: {}, home: realpathSync(scratchDir('clone-hooks-boot-home-')), scriptDir: join(elsewhere, 'bin') })
   assert.ok(plan.ok, JSON.stringify(plan))
-  assert.equal(plan.hooks?.forwarderPath, FORWARDER, 'the forwarder of the checkout this folder serves, not hoai\'s own')
+  assert.equal(plan.hooks?.forwarderPath, join(elsewhere, 'bin', 'hoai-hook.mjs'), 'the launch took its hook scripts from what the folder names')
   ensureHookEntries(plan.hooks!)
-  const launched = settingsText(dir)
   const boot = atBoot({ folders: [dir], pluginDir: repoRoot, installMethod: 'clone', privateHookRegistered: true })
-  assert.deepEqual(boot.results.map((r: { outcome: string }) => r.outcome), ['already'])
-  assert.equal(settingsText(dir), launched)
+  assert.deepEqual(boot.results.map((r: { outcome: string }) => r.outcome), ['registered'])
+  assert.ok(forwardersOf(dir).every((arg) => arg === FORWARDER), forwardersOf(dir).join(', '))
 })

@@ -142,11 +142,12 @@ test('presence: a synchronous UserPromptSubmit entry counts, an async one or ano
     type: 'command',
     command: 'node',
     args: ['/x/bin/hoai-private-turn-hook.mjs'],
-    timeout: 3,
+    // The writer's own timeout for this hook: an entry with another one is not counted.
+    timeout: 5,
     async: false,
     ...extra,
   })
-  const opts = { exists: () => true, pluginRootVariable: false }
+  const opts = { exists: () => true, pluginRootVariable: false, pluginRoot: '/x' }
   assert.equal(registersPrivateHook({ hooks: { UserPromptSubmit: [{ hooks: [entry()] }] } }, opts), true)
   assert.equal(registersPrivateHook({ hooks: { UserPromptSubmit: [{ hooks: [entry({ async: true })] }] } }, opts), false)
   assert.equal(registersPrivateHook({ hooks: { Stop: [{ hooks: [entry()] }] } }, opts), false)

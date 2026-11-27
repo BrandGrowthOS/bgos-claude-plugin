@@ -90,6 +90,7 @@ import {
   detectInstallMethod,
   installedPluginsPath,
   marketplaceNameFromPluginPath,
+  parsePath,
 } from './bgos-install-method.mjs'
 import {
   BEACON_HEARTBEAT_FILE_NAME,
@@ -109,11 +110,18 @@ import {
   observeMarketplaceInstall,
 } from '../lib/plugin-cli.mjs'
 import {
-  ensureHookEntries,
   ensureMarketplaceAutoUpdate,
   preseedClaudeTrust,
 } from '../lib/claude-preseed.mjs'
-import { declaredCheckout } from '../lib/clone-hooks.mjs'
+import {
+  CONFIG_FILE_MAX_BYTES,
+  hooksSwitchedOffIn,
+  hooksSwitchedOffWords,
+  managedSettingsDir,
+  readTextUpTo,
+  registerTrustedHooks,
+  serversStartingCheckout,
+} from '../lib/clone-hooks.mjs'
 import { ATTACH_SCOPE_DIR_ENV, ATTACH_SCOPE_ENV } from '../lib/attach-scope.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
@@ -311,6 +319,11 @@ export function defaultPidProcess(pid, platform = process.platform, opts = {}) {
   return readLauncherProcesses({ platform, pids: [pid], execSync, now: opts.now ?? Date.now(), bootClock }).get(pid) ?? null
 }
 
+/** A sentence's first letter in upper case. */
+function upperFirst(text) {
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
 /** Best-effort text read; null when absent or unreadable. */
 function defaultReadText(path) {
   try {
@@ -503,6 +516,7 @@ function collectRunFlags(tokens) {
  *   (nothing) / run  -> run     doctor -> doctor     pair -> pair
  *   setup -> setup              logs -> logs         help / -h / --help -> help
  *   install-cli -> install-cli (put the hoai command on PATH)
+ *   hooks -> hooks (write this folder's agent hooks, start nothing)
  * A run flag (-c / --continue / --resume, --new, --force and --keep-alive)
  * routes to run, either as the first token or right after `run`; `fresh`,
  * `force` and `keepAlive` say which ones were given, and they combine.
@@ -512,7 +526,7 @@ function collectRunFlags(tokens) {
  * routes to pair with itself prepended, so `hoai BGOS-7F3A-2K` just works.
  * Anything else routes to help (with the tokens kept, so main can name them).
  * @param {readonly string[]} argv
- * @returns {{ action: 'run' | 'doctor' | 'pair' | 'setup' | 'logs' | 'install-cli' | 'help',
+ * @returns {{ action: 'run' | 'doctor' | 'pair' | 'setup' | 'logs' | 'install-cli' | 'hooks' | 'help',
  *             rest: string[], fresh: boolean, force: boolean, keepAlive?: true }}
  */
 export function resolveHoaiAction(argv) {
@@ -532,6 +546,7 @@ export function resolveHoaiAction(argv) {
   if (lowered === 'setup') return route('setup', rest)
   if (lowered === 'logs') return route('logs', rest)
   if (lowered === 'install-cli') return route('install-cli', rest)
+  if (lowered === 'hooks') return route('hooks', rest)
   if (lowered === 'vault-host') return route('vault-host', rest)
   if (lowered === 'help' || lowered === '-h' || lowered === '--help') {
     return route('help', rest)
@@ -702,23 +717,184 @@ export function hookRegistrationFor({ cwd, scriptDir, method }) {
 }
 
 /**
- * The bin folder whose hooks a launch from `cwd` should register: that of the
- * checkout the folder's own .mcp.json starts (lib/clone-hooks.mjs
- * declaredCheckout: its server.ts, or the wrapper's --plugin-dir), when that is
- * an absolute path holding a forwarder; else this launcher's own bin. The hooks
- * talk to the daemon that checkout runs, and the daemon's own boot
- * registration (board row f83db4b7) writes that checkout's hooks too: a launch
- * that wrote its OWN checkout's instead had the two rewriting each other's
- * block on every launch whenever `hoai` came from another checkout.
- * @param {{ cwd: string, scriptDir: string, serverName: string,
- *   readFile: (path: string) => string | null, exists: (path: string) => boolean }} input
+ * The hook entries a launch from `cwd` registers, or null where it registers
+ * none (a marketplace install, whose hooks come from the plugin's own hooks
+ * file). One place, so a `hoai` launch and `hoai hooks` can never write
+ * different entries.
+ *
+ * The scripts are always this launcher's own (`scriptDir`, the real folder of
+ * the running hoai-core.mjs), never a checkout the folder's .mcp.json names:
+ * the folder is not the one to say which scripts run with full access. The
+ * write itself (lib/clone-hooks.mjs registerTrustedHooks, then
+ * lib/claude-preseed.mjs ensureHookEntries) checks that all four are plain
+ * files of that bin folder, and refuses when one is not.
+ * @param {{ cwd: string, scriptDir: string, resolution: { method: string } }} input
+ * @returns {{ settingsPath: string, forwarderPath: string } | null}
  */
-export function hookScriptDirFor({ cwd, scriptDir, serverName, readFile, exists }) {
-  if (!serverName) return scriptDir
-  const served = declaredCheckout(readFile(joinDir(cwd, MCP_CONFIG_FILE_NAME)), serverName)
-  if (!/^([A-Za-z]:[\\/]|[\\/])/.test(served)) return scriptDir
-  const bin = joinDir(served.replace(/[\\/]+$/, ''), 'bin')
-  return exists(joinDir(bin, 'hoai-hook.mjs')) ? bin : scriptDir
+export function launchHooksFor({ cwd, scriptDir, resolution }) {
+  return hookRegistrationFor({ cwd, scriptDir, method: resolution.method })
+}
+
+/**
+ * Is `folder` the home folder itself? Compared as text in the paths' own
+ * style: either slash, a trailing one or none, and any letter case for a
+ * Windows path.
+ * @param {string} folder
+ * @param {string} home
+ */
+export function isHomeFolder(folder, home) {
+  const a = String(folder ?? '').trim()
+  const b = String(home ?? '').trim()
+  if (!a || !b) return false
+  const root = (prefix) => (/^[A-Za-z]:/.test(prefix) ? prefix.slice(0, 2).toLowerCase() : prefix ? '/' : '')
+  const here = parsePath(a)
+  const there = parsePath(b)
+  if (!there.prefix || root(here.prefix) !== root(there.prefix) || here.segments.length !== there.segments.length) return false
+  const windows = [a, b].some((path) => /^[A-Za-z]:[\\/]/.test(path) || path.includes('\\'))
+  const fold = (segment) => (windows ? segment.toLowerCase() : segment)
+  return here.segments.every((segment, i) => fold(segment) === fold(there.segments[i]))
+}
+
+/**
+ * `hoai hooks`: write this folder's agent hooks now, and start nothing.
+ *
+ * A `hoai` launch writes a clone folder's hooks right before it starts claude
+ * (the CLI reads them once, at launch). A launcher that starts claude itself
+ * skipped that step, and nothing else writes them BEFORE a launch: the daemon
+ * registers them after the CLI has read them, and its first registration in a
+ * folder that had no rail leaves the blocking floor hook out
+ * (lib/clone-hooks.mjs). This is that one step as a command, for such a
+ * launcher to run first: the same entries to the same file as a launch
+ * (launchHooksFor), the floor hook included, because the owner's own launcher
+ * asked for them. Idempotent: a folder whose hooks hold is not written. A
+ * marketplace install is left alone, as a launch leaves it. `hoai hooks
+ * register` is the same command.
+ *
+ * It asks one thing a launch asks, which channel this folder is on, because
+ * that decides whether there is anything to write. It does NOT ask which agent
+ * the folder is: a launch refuses a folder that names no agent on a computer
+ * with several, and a launcher of its own names the agent itself, often only
+ * for the claude it starts. Refusing here would leave exactly that folder
+ * without hooks, which is what this command exists to end.
+ *
+ * WHICH FOLDER IS AN AGENT'S. The folder's .mcp.json is read once, and the
+ * folder is this checkout's agent folder only when exactly one of its server
+ * entries starts this checkout (its server.ts, or the wrapper with it as
+ * --plugin-dir). An entry's name, a BGOS_ key in its env, or a checkout it
+ * names that is not this one makes nothing this checkout's, and two entries
+ * that both start it are refused: which one the hooks are for is not said.
+ *
+ * IT NEVER LOOKS LIKE SUCCESS WHEN IT WROTE NOTHING. A launcher runs this line
+ * and goes on, so "nothing to do" with exit 0 is a line that silently does
+ * nothing. Every case in which the hooks do not hold when it returns ends
+ * with 1 and ONE line saying why and what to do: the home folder (not an
+ * agent's folder, and its .claude is the CLI's own), a folder whose .mcp.json
+ * does not start this checkout exactly once, the installed plugin's own `hoai`
+ * (a marketplace install is never touched; the line says in words which
+ * command to run instead and names no path), a hook script of this checkout
+ * that is missing or a link, and a settings file that is not JSON (left
+ * exactly as it is, lib/claude-preseed.mjs loadSettingsOrRefuse).
+ * @param {readonly string[]} rest  the words after `hooks`
+ * @param {{ cwd: string, env: Record<string, string | undefined>, home: string, scriptDir: string,
+ *   readFile: (path: string) => string | null, exists?: (path: string) => boolean,
+ *   register?: typeof registerTrustedHooks, print?: (line: string) => void, printError?: (line: string) => void }} opts
+ * @returns {number} 0 when the hooks hold when it returns, 1 with one line of why whenever they do not
+ */
+export function runHooksCommand(
+  rest,
+  {
+    cwd,
+    env,
+    home,
+    scriptDir,
+    readFile,
+    register = registerTrustedHooks,
+    print = (line) => console.log(line),
+    printError = (line) => console.error(line),
+    managedSettingsDir: managedDir = managedSettingsDir(),
+  },
+) {
+  const words = (Array.isArray(rest) ? rest : []).map((word) => String(word ?? '').trim()).filter(Boolean)
+  if (words.length === 1 && /^(help|-h|--help)$/i.test(words[0])) {
+    print("[hoai] hooks: writes this folder's agent hooks and starts nothing. Run it in the agent's folder, with nothing after it.")
+    return 0
+  }
+  const unknown = words.find((word) => word.toLowerCase() !== 'register') ?? words[1]
+  if (unknown !== undefined) {
+    printError(`[hoai] hooks: unknown word "${unknown}". Run hoai hooks from the agent's folder, with nothing after it.`)
+    return 1
+  }
+  if (isHomeFolder(cwd, home)) {
+    printError("[hoai] hooks: nothing written. This is your home folder, not an agent's folder. Run hoai hooks in the agent's own folder.")
+    return 1
+  }
+  // The install this hoai is, from where its own files are: never from the folder.
+  const detection = detectInstallMethod({ scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'), env, home })
+  if (String(detection.method) === 'marketplace') {
+    // Never touched: the plugin registers its own hooks, and a second set would run each of them twice. The line
+    // says in words what to run instead: a path or a command built from the folder's own file is the folder's text.
+    printError(
+      "[hoai] hooks: nothing written. This hoai is the installed plugin's own (a marketplace install), which never writes a folder's hooks. " +
+        `If this folder starts a checkout of its own from its ${MCP_CONFIG_FILE_NAME}, run that checkout's bin/hoai-core.mjs with the word hooks instead; ` +
+        'if it does not, take this line out, the plugin registers its hooks itself.',
+    )
+    return 1
+  }
+  if (String(detection.method) !== 'clone') {
+    const reason = String(detection.reason ?? '').trim() || 'the install method could not be determined.'
+    printError(`[hoai] hooks: nothing written, because hoai would not launch here either: ${reason}`)
+    return 1
+  }
+  // Read once: the folder is decided from this one answer.
+  const admitted = serversStartingCheckout({ raw: readFile(joinDir(cwd, MCP_CONFIG_FILE_NAME)), workdir: cwd, pluginDir: dirname(scriptDir) })
+  if (admitted.names.length !== 1) {
+    const why =
+      admitted.names.length > 1
+        ? `its ${MCP_CONFIG_FILE_NAME} starts this checkout from ${admitted.names.length} entries, so which one the hooks are for is not said`
+        : admitted.why
+    printError(
+      `[hoai] hooks: nothing written. This folder is not an agent's folder of this checkout: ${why}. ` +
+        `Run hoai hooks in the agent's own folder, whose ${MCP_CONFIG_FILE_NAME} starts this checkout's server.ts once.`,
+    )
+    return 1
+  }
+  const hooks = launchHooksFor({ cwd, scriptDir, resolution: { method: detection.method } })
+  if (!hooks) {
+    printError('[hoai] hooks: nothing written. hoai could not tell where its own folder is, so it cannot name the hook scripts.')
+    return 1
+  }
+  // Hooks written where every hook is switched off would be there, and none would run.
+  const off = hooksSwitchedOffIn({ folder: cwd, configDir: claudeConfigDir({ env, home }), managedDir })
+  if (off) {
+    printError(`[hoai] hooks: nothing written. ${upperFirst(hooksSwitchedOffWords(off))}, then run hoai hooks again.`)
+    return 1
+  }
+  let result
+  try {
+    result = register(hooks)
+  } catch (err) {
+    // A refusal that already names the file (a settings file that is not JSON) is the whole line.
+    const why = String(err?.message ?? err)
+    printError(
+      why.includes(hooks.settingsPath)
+        ? `[hoai] hooks: nothing written. ${why}.`
+        : `[hoai] hooks: could not write ${hooks.settingsPath}: ${why}`,
+    )
+    return 1
+  }
+  if (result?.reason === 'not_persisted') {
+    printError(
+      `[hoai] hooks: could not write ${hooks.settingsPath}: another program rewrote the file at the same moment. ` +
+        'Run hoai hooks again.',
+    )
+    return 1
+  }
+  print(
+    result?.changed
+      ? `[hoai] hooks: wrote this agent's hooks to ${hooks.settingsPath}. They load the next time claude starts in this folder.`
+      : `[hoai] hooks: already current in ${hooks.settingsPath}.`,
+  )
+  return 0
 }
 
 /**
@@ -836,11 +1012,7 @@ export function buildRunPlan({
   // What the launch needs BESIDES the argv: the task tools flag, and (for a
   // clone) the hook entries that carry the activity rail into the session.
   const launchEnv = { ...LAUNCH_ENV }
-  const hooks = hookRegistrationFor({
-    cwd,
-    scriptDir: hookScriptDirFor({ cwd, scriptDir, serverName: resolution.serverName, readFile, exists }),
-    method: resolution.method,
-  })
+  const hooks = launchHooksFor({ cwd, scriptDir, resolution })
 
   const declared = folderIdentity(cwd, readFile)
   if (declared.conflict) {
@@ -2808,6 +2980,37 @@ export async function superviseClaude(args, opts = {}) {
   const probeIdentityFlag = opts.probeIdentityFlag ?? (() => defaultProbeIdentityFlag({ platform, env }))
   const keepAlive = opts.keepAlive === true
   const stopSignal = opts.signal ?? null
+  // Does a settings file switch every hook off now (lib/clone-hooks.mjs hooksSwitchedOffIn)? Through this launch's
+  // own reader: the real one tells a file that is not there from one that cannot be read, an injected one (tests)
+  // answers a text or nothing.
+  const hooksOffNow =
+    opts.hooksOff ??
+    (() =>
+      hooksSwitchedOffIn({
+        folder: cwd,
+        configDir: claudeConfigDir({ env, home }),
+        managedDir: opts.managedSettingsDir ?? managedSettingsDir(platform),
+        join: (...parts) => parts.reduce((dir, name) => joinDir(dir, name)),
+        ...(readFile === defaultReadText
+          ? {}
+          : {
+              readState: (path) => {
+                const text = readFile(path)
+                return typeof text === 'string' ? { state: 'ok', text } : { state: 'missing' }
+              },
+              listDir: (path) => listDir(path) ?? null,
+            }),
+      }))
+  // The words and the exit code for a spawn that a settings file stops; `note` records them where this launch keeps
+  // a status file.
+  const stopForHooksOff = (off, note = () => {}) => {
+    const reason =
+      `${upperFirst(hooksSwitchedOffWords(off))}. This launch runs with full access, so claude was not started. ` +
+      'Run hoai again once that is done.'
+    print(`[hoai] ${reason}`)
+    note(reason)
+    return keepAlive || supervised ? EXIT_UNATTENDED_NEEDS_PERSON : 1
+  }
   // Has the Claude login every agent of this credential store shares failed? Asked only for a launch
   // with no channel heartbeat: the CLI's own records, in the store it signs in through.
   const loginStore = { configDir: claudeConfigDir({ env, home }), listDir, mtimeMs: fileMtimeMs, readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES) }
@@ -2968,6 +3171,9 @@ export async function superviseClaude(args, opts = {}) {
       )
       return EXIT_UNATTENDED_NEEDS_PERSON
     }
+    // Asked again right before this one spawn: the caller asked before the identity read, which can take seconds.
+    const hooksOff = hooksOffNow()
+    if (hooksOff) return stopForHooksOff(hooksOff)
     return spawnSupervised(args)
   }
   const stateDir = joinDir(agentDir(home), id)
@@ -3242,8 +3448,11 @@ export async function superviseClaude(args, opts = {}) {
   // Singleton guard: never start a second session behind a live supervisor,
   // and never stay down behind one that supervises nothing (agent 867).
   const claimed = await claimSupervision()
-  // No state dir to arm in: launch exactly as before, unsupervised.
-  if (claimed === 'unarmed') return spawnSupervised(args)
+  // No state dir to arm in: launch exactly as before, unsupervised, once the hooks are asked about again.
+  if (claimed === 'unarmed') {
+    const hooksOff = hooksOffNow()
+    return hooksOff ? stopForHooksOff(hooksOff) : spawnSupervised(args)
+  }
   if (claimed !== 'armed') return claimed
   // A marker left behind by a dead launcher is moot: this launch already
   // starts the newest installed code.
@@ -3476,6 +3685,10 @@ export async function superviseClaude(args, opts = {}) {
       // A stop that came while this launch was prepared (the identity read
       // waits up to 3 s): nothing to start, and the finally lets go of the claim.
       if (stopSignal?.aborted) return exitCodeForChild(null, 'SIGTERM')
+      // Asked before every launch, a relaunch included: a settings file can switch every hook off while claude
+      // runs, and claude runs with full access, the hook that asks before a risky action being one of those hooks.
+      const hooksOff = hooksOffNow()
+      if (hooksOff) return stopForHooksOff(hooksOff, (reason) => noteStatus('hooks-switched-off', { detail: reason }))
       /** @type {import('node:child_process').ChildProcess | null} */
       let childRef = null
       let restartRequested = false
@@ -4430,6 +4643,11 @@ Usage:
   hoai pair <CODE>     pair this folder with a one time code from the HOAI app
   hoai <CODE>          shorthand for hoai pair <CODE> (BGOS-... / OC-... codes)
   hoai install-cli     put the hoai command on your PATH (or repair it)
+  hoai hooks           write this folder's agent hooks now and start nothing.
+                       hoai does this before every launch. If your own script
+                       starts claude, run this line first. Safe to run every
+                       time: it changes nothing when the hooks are current,
+                       and it ends with 1 and says why when it wrote none.
   hoai logs            show the last 60 lines of this agent's daemon log
   hoai vault-host      set this machine up as the agent's vault host: register
                        its host key and show the fingerprint here, in this
@@ -4483,6 +4701,7 @@ function defaultScriptDir() {
  *   pidAlive?: (pid: number) => boolean,
  *   pidProcess?: (pid: number) => { command: string | null, startedAtMs: number | null } | null,
  *   signals?: { once: (name: string, fn: () => void) => unknown, removeListener: (name: string, fn: () => void) => unknown },
+ *   registerHooks?: (hooks: { settingsPath: string, forwarderPath: string }) => unknown,
  * }} [opts]
  * @returns {Promise<number>}
  */
@@ -4541,6 +4760,21 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     return outcome.ok ? 0 : 1
   }
 
+  if (action === 'hooks') {
+    return runHooksCommand(rest, {
+      cwd,
+      env,
+      home,
+      scriptDir,
+      // The folder's .mcp.json is the folder's: read only as a plain file of bounded size, never whole.
+      readFile: opts.readFile ?? ((path) => readTextUpTo(path, CONFIG_FILE_MAX_BYTES)),
+      register: opts.registerHooks,
+      ...(opts.managedSettingsDir === undefined ? {} : { managedSettingsDir: opts.managedSettingsDir }),
+      print: opts.print,
+      printError: opts.printError,
+    })
+  }
+
   if (action === 'logs') {
     const id = logsAssistantId({ cwd, env, readFile })
     const path = hoaiLogPath({ env, home, assistantId: id })
@@ -4587,15 +4821,70 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   // The attach scope is the one entry an inherited value must NOT win: it says
   // which agent THIS launch is for (lib/attach-scope.mjs).
   applyAttachScope(env, plan.attachScope, plan.attachScopeDir)
+  // Every launch runs claude with full access, and the hook that asks before a risky action is what holds it.
+  // With every hook switched off at any settings level, none runs (measured on 2.1.332), so claude is not started.
+  // The same question before every relaunch of a supervised loop (superviseClaude). A clone's hooks sit in a
+  // settings file; an installed plugin's in its own hooks file, which a managed plugin-only rule leaves running.
+  const checkHooksOff = () =>
+    hooksSwitchedOffIn({
+      folder: cwd,
+      configDir: claudeConfigDir({ env, home }),
+      managedDir: opts.managedSettingsDir ?? managedSettingsDir(platform),
+      settingsHooks: Boolean(plan.hooks),
+    })
+  const hooksOff = checkHooksOff()
+  if (hooksOff) {
+    const reason =
+      `${upperFirst(hooksSwitchedOffWords(hooksOff))}. This launch runs with full access, so claude was not started. ` +
+      'Run hoai again once the line is out.'
+    console.error(`[hoai] ${reason}`)
+    if (isSupervisedLaunch(env) || keepAlive) {
+      const statusId = supervisedServiceId(env) || superviseAssistantId({ cwd, env, home, readFile, listDir })
+      if (statusId) {
+        ;(opts.writeFile ?? defaultWriteFile)(
+          joinDir(joinDir(agentDir(home), statusId), LAUNCH_STATUS_FILE_NAME),
+          `${launchStatusLine({ outcome: 'hooks-switched-off', fields: { detail: reason } })}\n`,
+        )
+      }
+      return EXIT_UNATTENDED_NEEDS_PERSON
+    }
+    return 1
+  }
   if (plan.hooks) {
-    const register = opts.registerHooks ?? ensureHookEntries
+    // Every launch: a folder scaffolded before the rail existed, or one whose
+    // settings file a concurrent claude rewrote, gets it back here or never.
+    //
+    // NOT best effort. A clone launch runs claude with full access
+    // (--dangerously-skip-permissions), and the hook that asks before a risky
+    // action is one of these entries. A launch without them is an agent that
+    // never asks, so a write that was refused or did not hold stops it, with
+    // the line that says why.
+    const register = opts.registerHooks ?? registerTrustedHooks
+    let refused = ''
     try {
-      // Best effort, every launch: a folder scaffolded before the rail existed,
-      // or one whose settings file a concurrent claude rewrote, gets it back
-      // here or never.
-      register(plan.hooks)
+      const result = register(plan.hooks)
+      if (result?.reason === 'not_persisted') refused = 'another program rewrote the file at the same moment, so the hooks did not hold'
+      else if (result?.reason === 'no_path') refused = 'hoai could not name its own hook scripts'
     } catch (err) {
-      console.error(`[hoai] could not register the activity hooks: ${err?.message ?? err}`)
+      refused = String(err?.message ?? err)
+    }
+    if (refused) {
+      const reason =
+        `could not write the agent hooks to ${plan.hooks.settingsPath}: ${refused}. ` +
+        'This launch runs with full access, and one of those hooks asks before a risky action, so claude was not started. ' +
+        'Fix what the line says, then run hoai again.'
+      console.error(`[hoai] ${reason}`)
+      if (isSupervisedLaunch(env) || keepAlive) {
+        const statusId = supervisedServiceId(env) || superviseAssistantId({ cwd, env, home, readFile, listDir })
+        if (statusId) {
+          ;(opts.writeFile ?? defaultWriteFile)(
+            joinDir(joinDir(agentDir(home), statusId), LAUNCH_STATUS_FILE_NAME),
+            `${launchStatusLine({ outcome: 'hooks-not-written', fields: { detail: reason } })}\n`,
+          )
+        }
+        return EXIT_UNATTENDED_NEEDS_PERSON
+      }
+      return 1
     }
   }
   // Pre-seed Claude Code's one-time prompts for THIS launch folder, on EVERY
@@ -4663,6 +4952,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       scriptDir,
       readFile,
       listDir,
+      hooksOff: checkHooksOff,
       spawnImpl,
       freshSession: fresh,
       force,

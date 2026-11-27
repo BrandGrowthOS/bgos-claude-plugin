@@ -20,6 +20,11 @@ import { ATTACH_SCOPE_DIR_ENV, ATTACH_SCOPE_ENV } from '../lib/attach-scope.mjs'
 
 const POSIX_HOME = '/home/kc'
 const CLONE_SCRIPT_DIR = '/home/kc/bgos-claude-plugin/bin'
+/**
+ * The script folder here is made up, so its hook scripts are not on disk. A launch's own hook write checks all
+ * four and stops the launch without them; these launches stand that write in with one that holds.
+ */
+const hooksHold = () => ({ changed: false, reason: 'already' })
 const noDir = () => [] as string[]
 const noFiles = () => null
 
@@ -149,6 +154,7 @@ test('main: a supervised launch hands the daemon its scope, over an inherited on
       home,
       cwd,
       scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: hooksHold,
       listProcesses: () => [],
       print: () => {},
       healthyMs: 60_000,

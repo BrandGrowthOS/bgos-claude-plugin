@@ -32,7 +32,7 @@ import {
   registersFloorHook,
   type FloorHookPresenceInput,
 } from '../lib/floor-hook-presence.ts'
-import { ensureHookEntries } from '../lib/claude-preseed.mjs'
+import { FLOOR_HOOK_MATCHER, ensureHookEntries } from '../lib/claude-preseed.mjs'
 
 /** backend/src/dto/integrations/pair-exchange.dto.ts:25 */
 const CAPABILITY_TOKEN_REGEX = /^[a-z][a-z0-9_]{0,63}$/
@@ -672,7 +672,8 @@ test('a clone counts only the settings entry the launchers write, and only while
 
 test('an async floor entry cannot stop anything and does not count; a user or project settings file does', () => {
   const asyncEntry = JSON.stringify({
-    hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'node', args: ['/p/bin/hoai-floor-hook.mjs'], async: true }] }] },
+    // The writer's entry, timeout included: an entry the writer would not write is not counted.
+    hooks: { PreToolUse: [{ matcher: FLOOR_HOOK_MATCHER, hooks: [{ type: 'command', command: 'node', args: ['/p/bin/hoai-floor-hook.mjs'], timeout: 3, async: true }] }] },
   })
   const syncEntry = asyncEntry.replace('"async":true', '"async":false')
   const script = { '/p/bin/hoai-floor-hook.mjs': '' }

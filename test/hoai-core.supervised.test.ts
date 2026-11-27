@@ -51,6 +51,11 @@ import {
 } from '../bin/hoai-core.mjs'
 
 const CLONE_SCRIPT_DIR = '/home/kc/bgos-claude-plugin/bin'
+/**
+ * The script folder here is made up, so its hook scripts are not on disk. A launch's own hook write checks all
+ * four and stops the launch without them; these launches stand that write in with one that holds.
+ */
+const hooksHold = () => ({ changed: false, reason: 'already' })
 const SUPERVISED = { HOAI_SUPERVISED: '1', HOAI_SUPERVISED_ASSISTANT_ID: '900' }
 
 test('isSupervisedLaunch and supervisedServiceId: exactly "1", and digits only', () => {
@@ -163,6 +168,7 @@ async function runMain(
     home: sb.home,
     cwd: sb.cwd,
     scriptDir,
+    registerHooks: hooksHold,
     listProcesses: () => [],
     print: (l: string) => prints.push(l),
     healthyMs: 60_000,

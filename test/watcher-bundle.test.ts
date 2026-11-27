@@ -71,6 +71,7 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/service-supervision.mjs',
     'lib/agent-verify.mjs',
     'lib/claude-preseed.mjs',
+    'lib/file-identity.mjs',
     // The crash-safe entry (design 8): bin/hoai-watcher.mjs imports it
     // statically and everything else dynamically, inside the guard.
     'lib/watcher-health.mjs',
