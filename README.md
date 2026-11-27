@@ -1194,7 +1194,8 @@ when it did not:
   comma): the file is left exactly as it is, because it may hold your own hooks
   and permissions. The folder then has no HOAI hook at all, the one that asks
   before a risky action included, until you fix or remove the file; a refused
-  boards, schedule or browser call names the file and says so. A byte order
+  boards, schedule or browser call says so and names the file by its place in
+  the agent's folder (its full path is in the log only). A byte order
   mark, which Windows PowerShell writes, is read past, and the file is written
   again without it;
 - when this `hoai` is the installed plugin's own: a marketplace install is

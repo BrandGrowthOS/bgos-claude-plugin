@@ -178,18 +178,24 @@ export const PRIVATE_HOOK_MISSING_REFUSAL =
   'This private action did not start because the HOAI private turn hook is not registered for this session, so no sender can be verified. ' +
   'Ask the owner to restart this agent, so it loads the hook its daemon writes at boot.'
 
+/** The hook writer's file, named by its place in an agent folder: the only name for it a chat may carry. */
+const SETTINGS_FILE_IN_AGENT_FOLDER = '.claude/settings.local.json'
+
 /**
  * What a refused private call says when the cause is the missing hook. Which advice is right depends on why it is
  * missing: a daemon writes the hook at boot and a restart loads it, unless the folder's settings file is not JSON.
  * Then nothing can be written until the owner mends or removes that file, so the refusal names it.
+ *
+ * BY ITS PLACE IN THE AGENT FOLDER, NEVER BY ITS FULL PATH. This text is read in a chat, and an agent answers in
+ * groups too: a folder name on the owner's computer is not for them. The full path is in the log, in the boot
+ * line (privateHookBootLine).
  */
 export function privateHookMissingRefusal(presence: Pick<PrivateHookPresence, 'unreadableSettings'> | null | undefined): string {
-  const file = presence?.unreadableSettings
-  if (!file) return PRIVATE_HOOK_MISSING_REFUSAL
+  if (!presence?.unreadableSettings) return PRIVATE_HOOK_MISSING_REFUSAL
   return (
     'This private action did not start because the HOAI private turn hook is not registered for this session, so no sender can be verified. ' +
-    `The hook cannot be written because the settings file ${file} is not valid JSON. ` +
-    'Ask the owner to fix that file or remove it, and then start this agent again: a restart alone will not help.'
+    `The hook cannot be written because the settings file ${SETTINGS_FILE_IN_AGENT_FOLDER} in this agent's folder is not valid JSON. ` +
+    'Ask the owner to fix or remove it, and then start this agent again: a restart alone will not help.'
   )
 }
 
