@@ -36,6 +36,7 @@
  * Pure: every file read is injected, so the tests hold each case in place.
  */
 
+import { ownedHookOf } from './claude-preseed.mjs'
 import { declaredCapabilities } from './declared-capabilities.js'
 import { HARD_FLOOR_TOKEN } from './claude-capability-tokens.js'
 
@@ -124,18 +125,13 @@ export function registersFloorHook(
   for (const matcher of matchers) {
     if (!isRecord(matcher) || !Array.isArray(matcher.hooks)) continue
     for (const hook of matcher.hooks) {
-      if (!isRecord(hook) || hook.type !== 'command' || hook.async === true) continue
-      const args = Array.isArray(hook.args) ? hook.args : []
-      const values = [hook.command, ...args].filter((v): v is string => typeof v === 'string')
-      const script = values.find((v) => v.includes(FLOOR_HOOK_SCRIPT))
-      if (!script) continue
-      if (script.includes('${CLAUDE_PLUGIN_ROOT}')) {
-        if (opts.pluginRootVariable) return true
-        continue
-      }
-      const path = script.trim().replace(/^["']|["']$/g, '')
-      const absolute = path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)
-      if (!absolute || opts.exists(path)) return true
+      // Only the plugin's own entry counts, by the one definition the writer uses (lib/claude-preseed.mjs
+      // ownedHookOf): node running the script by an absolute path, on this event, under its matcher, blocking.
+      // A hook that only mentions the script's name is the owner's, and it is not this hook.
+      const owned = ownedHookOf('PreToolUse', matcher, hook, { pluginRootVariable: opts.pluginRootVariable })
+      if (!owned || owned.script !== FLOOR_HOOK_SCRIPT || !isRecord(hook) || !Array.isArray(hook.args)) continue
+      const path = String(hook.args[0])
+      if (path.startsWith('${CLAUDE_PLUGIN_ROOT}/') || opts.exists(path)) return true
     }
   }
   return false

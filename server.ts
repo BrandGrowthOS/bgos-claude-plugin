@@ -372,7 +372,7 @@ import {
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { createPrivateHookLiveness, privateHookBootLine, privateHookMissingRefusal, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
-import { cloneHooksSkippedLine, registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
+import { cloneHooksResultLine, cloneHooksSkippedLine, registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
 import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
@@ -20713,8 +20713,9 @@ async function main(): Promise<void> {
     privateHookRegistered: PRIVATE_HOOK.registered,
   })
   for (const result of bootHooks.results) {
-    if (result.outcome === 'registered') log(`hooks: registered the current agent hooks in ${result.folder}; they load at this agent's next launch`)
-    else if (result.outcome === 'failed') log(`hooks: could not register the agent hooks in ${result.folder}: ${result.detail ?? 'unknown'}`)
+    // A folder's name is the folder's to choose: the line shows a break or a control character in it, escaped.
+    const line = cloneHooksResultLine(result)
+    if (line) log(line)
   }
   // A boot that took every folder for another checkout's wrote nothing, and used to say nothing.
   const hooksSkipped = cloneHooksSkippedLine(bootHooks.results)

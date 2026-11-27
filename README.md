@@ -1172,12 +1172,23 @@ one list, so the folder heals itself, but it heals when it next starts.
 **If your own script starts `claude`, run `hoai hooks` first.** `hoai` writes
 these entries right before every launch. A script that starts `claude` itself
 skips that step, so its folder can run with old hooks, or without the hook that
-asks before a risky action. Put this one line in the script, run in the agent's
-folder, right before the line that starts claude:
+asks before a risky action. Put this line in the script, run in the agent's
+folder, right before the line that starts claude, so the script stops when it
+fails. In a PowerShell script (`.ps1`):
 
 ```
-hoai hooks
+hoai hooks; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 ```
+
+In a shell script (`.sh`):
+
+```
+hoai hooks || exit 1
+```
+
+A PowerShell script goes on after a command that failed unless it checks
+`$LASTEXITCODE`, so a plain `hoai hooks` line there would start claude without
+the hooks.
 
 It writes exactly what a `hoai` launch writes (the full set, the blocking floor
 hook included), starts nothing, and changes nothing when the hooks are already
@@ -1188,8 +1199,16 @@ It ends with 0 only when the hooks hold. Whenever it wrote nothing it ends with
 1 and says why in one line, so a line in a script never looks like it worked
 when it did not:
 
-- in your home folder, or in a folder with no `.mcp.json` that starts a HOAI
-  server: that is not an agent's folder;
+- in your home folder, or in a folder whose `.mcp.json` does not start this
+  checkout's `server.ts` from exactly one entry: that is not an agent's folder
+  of this checkout (an entry's name, or a `BGOS_` key in its settings, does not
+  make it one);
+- when one of this checkout's four hook scripts in `bin` is missing or is a
+  link: the hooks always run this checkout's own scripts, never ones the
+  folder names;
+- when the folder's `.claude`, or `.claude/settings.local.json`, is a link to
+  somewhere else, or the settings file is larger than any agent's needs (1 MB):
+  the write never leaves the agent's folder;
 - when `.claude/settings.local.json` is not JSON (a comment in it, a stray
   comma): the file is left exactly as it is, because it may hold your own hooks
   and permissions. The folder then has no HOAI hook at all, the one that asks
@@ -1200,8 +1219,8 @@ when it did not:
   again without it;
 - when this `hoai` is the installed plugin's own: a marketplace install is
   never touched (the plugin registers its hooks itself, and a second set would
-  run each of them twice). In a folder that starts a checkout of its own, the
-  line names that checkout's command to run instead.
+  run each of them twice). The line says what to run instead: the
+  `bin/hoai-core.mjs` of the checkout the folder starts, with the word `hooks`.
 
 The daemon also keeps a clone folder's hooks current at every start and after an
 update, but that reaches the NEXT launch, and its first registration in a folder

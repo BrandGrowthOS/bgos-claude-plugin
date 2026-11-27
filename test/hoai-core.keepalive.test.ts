@@ -44,6 +44,11 @@ import {
 const HOME = '/home/kc'
 const CWD = '/agents/athena'
 const SCRIPT_DIR = '/home/kc/bgos-claude-plugin/bin'
+/**
+ * The script folder here is made up, so its hook scripts are not on disk. A launch's own hook write checks all
+ * four and stops the launch without them; these launches stand that write in with one that holds.
+ */
+const hooksHold = () => ({ changed: false, reason: 'already' })
 const STATE_DIR = `${HOME}/.bgos-agent/871`
 const SUPERVISOR_PATH = `${STATE_DIR}/${SUPERVISOR_FILE_NAME}`
 const SESSION_ID_PATH = `${STATE_DIR}/${SESSION_ID_FILE_NAME}`
@@ -532,6 +537,7 @@ test('main(): --keep-alive reaches the loop (an exit is relaunched), and the sto
       home,
       cwd,
       scriptDir: SCRIPT_DIR,
+      registerHooks: hooksHold,
       listProcesses: () => [],
       sleep: async (ms: number) => {
         sleeps.push(ms)

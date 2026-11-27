@@ -71,6 +71,11 @@ const POSIX_HOME = '/home/kc'
 const MARKETPLACE_SCRIPT_DIR =
   'C:\\Users\\x\\.claude\\plugins\\cache\\hoai\\hoai\\0.37.0\\bin'
 const CLONE_SCRIPT_DIR = '/home/kc/bgos-claude-plugin/bin'
+/**
+ * CLONE_SCRIPT_DIR is a made-up checkout, so its hook scripts are not on disk. A launch's own hook write checks all
+ * four and stops the launch without them; a launch from it stands that write in with one that holds.
+ */
+const hooksHold = () => ({ changed: false, reason: 'already' })
 
 // Both methods use the dev-channels flag (bgos-install-method.mjs
 // launchFlagArgs documents why --channels is a trap); only the spec differs.
@@ -948,6 +953,7 @@ async function runMainCapturingSpawns(argv: string[], home: string, cwd: string)
     home,
     cwd,
     scriptDir: CLONE_SCRIPT_DIR,
+    registerHooks: hooksHold,
     spawnImpl: ((file: string, args: readonly string[]) => {
       spawns.push({ file, args: [...args] })
       return scriptedChild(0)
@@ -1648,6 +1654,7 @@ async function runSupervisedFastFaults(home: string, cwd: string, exitDelaysMs: 
     home,
     cwd,
     scriptDir: CLONE_SCRIPT_DIR,
+    registerHooks: hooksHold,
     healthyMs,
     now: () => clock,
     setTimer: (fn: () => void, ms: number) => {
@@ -1807,6 +1814,7 @@ test('superviseClaude does not spawn while a hand-started claude owns the folder
       home,
       cwd,
       scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: hooksHold,
       pollMs: 5,
       listProcesses: () => {
         polls += 1
@@ -1961,6 +1969,7 @@ test('main(): an incumbent hit at the deadline stops the launch with EXIT_INCUMB
       home,
       cwd,
       scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: hooksHold,
       pollMs: 1_000,
       incumbentTimeoutMs: 90_000,
       now: () => clock,
@@ -2005,6 +2014,7 @@ test('main(): an incumbent whose cwd cannot be read no longer blocks the launch,
       home,
       cwd,
       scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: hooksHold,
       pollMs: 1_000,
       listProcesses: () => [{ pid: 777, uid: process.getuid?.() ?? 0, comm: 'claude', cwd: null }],
       sleep: async () => assert.fail('an unreadable cwd must not cost the user a single poll'),
@@ -2145,6 +2155,7 @@ test('main(): hoai typed inside a claude session in this folder launches at once
       home,
       cwd,
       scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: hooksHold,
       pollMs: 1_000,
       incumbentTimeoutMs: 90_000,
       now: () => 0,
@@ -2197,6 +2208,7 @@ test('main(): an unrelated claude in the folder still stops the launch, and name
       home,
       cwd,
       scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: hooksHold,
       pollMs: 1_000,
       incumbentTimeoutMs: 90_000,
       now: () => clock,
@@ -2380,6 +2392,7 @@ test('main(): --force launches at once and never even asks what is running', asy
       home,
       cwd,
       scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: hooksHold,
       pollMs: 1_000,
       listProcesses: () => {
         consulted += 1
@@ -2465,6 +2478,7 @@ test('main(): EVERY launch form pre-seeds the one-time prompts for the launch fo
         home,
         cwd,
         scriptDir: CLONE_SCRIPT_DIR,
+        registerHooks: hooksHold,
         spawnImpl: (() => scriptedChild(0)) as never,
       } as never)
       assert.equal(code, 0, argv.join(' '))
@@ -2495,6 +2509,7 @@ test('main(): the preseed runs BEFORE claude is spawned, and a preseed that thro
       home,
       cwd,
       scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: hooksHold,
       preseedTrust: () => {
         order.push('preseed')
         // A read-only config dir is the realistic failure, and it must cost the
@@ -2524,6 +2539,7 @@ test('main(): the preseed is handed the LAUNCH folder and this host\'s config di
       home,
       cwd,
       scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: hooksHold,
       preseedTrust: (args: { configDir: string; cwd: string; home: string }) => {
         calls.push(args)
         return { configPath: '', settingsPath: '', seededKeys: [] }

@@ -89,7 +89,6 @@ import {
   claudeConfigDir,
   detectInstallMethod,
   installedPluginsPath,
-  isUnderPluginsDir,
   marketplaceNameFromPluginPath,
   parsePath,
 } from './bgos-install-method.mjs'
@@ -111,11 +110,10 @@ import {
   observeMarketplaceInstall,
 } from '../lib/plugin-cli.mjs'
 import {
-  ensureHookEntries,
   ensureMarketplaceAutoUpdate,
   preseedClaudeTrust,
 } from '../lib/claude-preseed.mjs'
-import { declaredCheckout, namesServer } from '../lib/clone-hooks.mjs'
+import { registerTrustedHooks, serversStartingCheckout } from '../lib/clone-hooks.mjs'
 import { ATTACH_SCOPE_DIR_ENV, ATTACH_SCOPE_ENV } from '../lib/attach-scope.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
@@ -706,44 +704,23 @@ export function hookRegistrationFor({ cwd, scriptDir, method }) {
 }
 
 /**
- * The bin folder whose hooks a launch from `cwd` should register: that of the
- * checkout the folder's own .mcp.json starts (lib/clone-hooks.mjs
- * declaredCheckout: its server.ts, or the wrapper's --plugin-dir), when that is
- * an absolute path holding a forwarder; else this launcher's own bin. The hooks
- * talk to the daemon that checkout runs, and the daemon's own boot
- * registration (board row f83db4b7) writes that checkout's hooks too: a launch
- * that wrote its OWN checkout's instead had the two rewriting each other's
- * block on every launch whenever `hoai` came from another checkout.
- * @param {{ cwd: string, scriptDir: string, serverName: string,
- *   readFile: (path: string) => string | null, exists: (path: string) => boolean }} input
- */
-export function hookScriptDirFor({ cwd, scriptDir, serverName, readFile, exists }) {
-  if (!serverName) return scriptDir
-  const served = declaredCheckout(readFile(joinDir(cwd, MCP_CONFIG_FILE_NAME)), serverName)
-  if (!/^([A-Za-z]:[\\/]|[\\/])/.test(served)) return scriptDir
-  const bin = joinDir(served.replace(/[\\/]+$/, ''), 'bin')
-  return exists(joinDir(bin, 'hoai-hook.mjs')) ? bin : scriptDir
-}
-
-/**
  * The hook entries a launch from `cwd` registers, or null where it registers
  * none (a marketplace install, whose hooks come from the plugin's own hooks
  * file). One place, so a `hoai` launch and `hoai hooks` can never write
  * different entries.
- * @param {{ cwd: string, scriptDir: string, resolution: { method: string, serverName: string },
- *   readFile: (path: string) => string | null, exists: (path: string) => boolean }} input
+ *
+ * The scripts are always this launcher's own (`scriptDir`, the real folder of
+ * the running hoai-core.mjs), never a checkout the folder's .mcp.json names:
+ * the folder is not the one to say which scripts run with full access. The
+ * write itself (lib/clone-hooks.mjs registerTrustedHooks, then
+ * lib/claude-preseed.mjs ensureHookEntries) checks that all four are plain
+ * files of that bin folder, and refuses when one is not.
+ * @param {{ cwd: string, scriptDir: string, resolution: { method: string } }} input
  * @returns {{ settingsPath: string, forwarderPath: string } | null}
  */
-export function launchHooksFor({ cwd, scriptDir, resolution, readFile, exists }) {
-  return hookRegistrationFor({
-    cwd,
-    scriptDir: hookScriptDirFor({ cwd, scriptDir, serverName: resolution.serverName, readFile, exists }),
-    method: resolution.method,
-  })
+export function launchHooksFor({ cwd, scriptDir, resolution }) {
+  return hookRegistrationFor({ cwd, scriptDir, method: resolution.method })
 }
-
-/** The server name a clone folder's .mcp.json uses unless it says another (bin/bgos-install-method.mjs CLONE_CHANNEL_SPEC). */
-const CLONE_SERVER_NAME = 'bgos'
 
 /**
  * Is `folder` the home folder itself? Compared as text in the paths' own
@@ -787,19 +764,27 @@ export function isHomeFolder(folder, home) {
  * for the claude it starts. Refusing here would leave exactly that folder
  * without hooks, which is what this command exists to end.
  *
+ * WHICH FOLDER IS AN AGENT'S. The folder's .mcp.json is read once, and the
+ * folder is this checkout's agent folder only when exactly one of its server
+ * entries starts this checkout (its server.ts, or the wrapper with it as
+ * --plugin-dir). An entry's name, a BGOS_ key in its env, or a checkout it
+ * names that is not this one makes nothing this checkout's, and two entries
+ * that both start it are refused: which one the hooks are for is not said.
+ *
  * IT NEVER LOOKS LIKE SUCCESS WHEN IT WROTE NOTHING. A launcher runs this line
  * and goes on, so "nothing to do" with exit 0 is a line that silently does
  * nothing. Every case in which the hooks do not hold when it returns ends
  * with 1 and ONE line saying why and what to do: the home folder (not an
- * agent's folder, and its .claude is the CLI's own), a folder with no
- * .mcp.json that starts a HOAI server, the installed plugin's own `hoai` (a
- * marketplace install is never touched, so the line names the command of the
- * checkout the folder starts), and a settings file that is not JSON (left
+ * agent's folder, and its .claude is the CLI's own), a folder whose .mcp.json
+ * does not start this checkout exactly once, the installed plugin's own `hoai`
+ * (a marketplace install is never touched; the line says in words which
+ * command to run instead and names no path), a hook script of this checkout
+ * that is missing or a link, and a settings file that is not JSON (left
  * exactly as it is, lib/claude-preseed.mjs loadSettingsOrRefuse).
  * @param {readonly string[]} rest  the words after `hooks`
  * @param {{ cwd: string, env: Record<string, string | undefined>, home: string, scriptDir: string,
  *   readFile: (path: string) => string | null, exists?: (path: string) => boolean,
- *   register?: typeof ensureHookEntries, print?: (line: string) => void, printError?: (line: string) => void }} opts
+ *   register?: typeof registerTrustedHooks, print?: (line: string) => void, printError?: (line: string) => void }} opts
  * @returns {number} 0 when the hooks hold when it returns, 1 with one line of why whenever they do not
  */
 export function runHooksCommand(
@@ -810,8 +795,7 @@ export function runHooksCommand(
     home,
     scriptDir,
     readFile,
-    exists = existsSync,
-    register = ensureHookEntries,
+    register = registerTrustedHooks,
     print = (line) => console.log(line),
     printError = (line) => console.error(line),
   },
@@ -830,40 +814,37 @@ export function runHooksCommand(
     printError("[hoai] hooks: nothing written. This is your home folder, not an agent's folder. Run hoai hooks in the agent's own folder.")
     return 1
   }
-  const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
-  // What this folder's own .mcp.json starts, if it starts a HOAI server at all.
-  const mcpText = readFile(joinDir(cwd, MCP_CONFIG_FILE_NAME))
-  const declaredName = parseMcpChannelServerName(mcpText)
-  const served = declaredCheckout(mcpText, resolution.serverName || CLONE_SERVER_NAME)
-  if (String(resolution.method) === 'marketplace') {
-    // Never touched: the plugin registers its own hooks, and a second set would run each of them twice.
-    // The checkout is text from the folder's own file: only a plain path of ordinary length is printed back.
-    const plain = /^([A-Za-z]:[\\/]|[\\/])/.test(served) && served.length <= 400 && !/[\u0000-\u001f\u007f"]/.test(served)
-    const core = plain ? joinDir(joinDir(served.replace(/[\\/]+$/, ''), 'bin'), 'hoai-core.mjs') : ''
-    const own = core && !isUnderPluginsDir(core, { env, home }) && exists(core)
+  // The install this hoai is, from where its own files are: never from the folder.
+  const detection = detectInstallMethod({ scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'), env, home })
+  if (String(detection.method) === 'marketplace') {
+    // Never touched: the plugin registers its own hooks, and a second set would run each of them twice. The line
+    // says in words what to run instead: a path or a command built from the folder's own file is the folder's text.
     printError(
-      '[hoai] hooks: nothing written. This hoai is the installed plugin\'s own (a marketplace install), which never writes a folder\'s hooks. ' +
-        (own
-          ? `This folder starts the checkout ${served}, so run that checkout's own command instead: node "${core}" hooks`
-          : `If this folder starts a checkout of its own from its ${MCP_CONFIG_FILE_NAME}, run that checkout's bin/hoai-core.mjs with the word hooks instead; if it does not, take this line out, the plugin registers its hooks itself.`),
+      "[hoai] hooks: nothing written. This hoai is the installed plugin's own (a marketplace install), which never writes a folder's hooks. " +
+        `If this folder starts a checkout of its own from its ${MCP_CONFIG_FILE_NAME}, run that checkout's bin/hoai-core.mjs with the word hooks instead; ` +
+        'if it does not, take this line out, the plugin registers its hooks itself.',
     )
     return 1
   }
-  // Any entry named for the clone server makes this an agent's folder, even one whose command cannot be read as
-  // a checkout: the line a boot logs for such a folder sends its owner here.
-  if (!declaredName && !served && !namesServer(mcpText, CLONE_SERVER_NAME)) {
-    printError(
-      `[hoai] hooks: nothing written. This folder has no ${MCP_CONFIG_FILE_NAME} that starts a HOAI server, so it is not an agent's folder. ` +
-        "Run hoai hooks in the agent's own folder.",
-    )
-    return 1
-  }
-  if (!isResolvedChannel(resolution)) {
-    const reason = String(resolution.reason ?? '').trim() || 'the install method could not be determined.'
+  if (String(detection.method) !== 'clone') {
+    const reason = String(detection.reason ?? '').trim() || 'the install method could not be determined.'
     printError(`[hoai] hooks: nothing written, because hoai would not launch here either: ${reason}`)
     return 1
   }
-  const hooks = launchHooksFor({ cwd, scriptDir, resolution, readFile, exists })
+  // Read once: the folder is decided from this one answer.
+  const admitted = serversStartingCheckout({ raw: readFile(joinDir(cwd, MCP_CONFIG_FILE_NAME)), workdir: cwd, pluginDir: dirname(scriptDir) })
+  if (admitted.names.length !== 1) {
+    const why =
+      admitted.names.length > 1
+        ? `its ${MCP_CONFIG_FILE_NAME} starts this checkout from ${admitted.names.length} entries, so which one the hooks are for is not said`
+        : admitted.why
+    printError(
+      `[hoai] hooks: nothing written. This folder is not an agent's folder of this checkout: ${why}. ` +
+        `Run hoai hooks in the agent's own folder, whose ${MCP_CONFIG_FILE_NAME} starts this checkout's server.ts once.`,
+    )
+    return 1
+  }
+  const hooks = launchHooksFor({ cwd, scriptDir, resolution: { method: detection.method } })
   if (!hooks) {
     printError('[hoai] hooks: nothing written. hoai could not tell where its own folder is, so it cannot name the hook scripts.')
     return 1
@@ -1011,7 +992,7 @@ export function buildRunPlan({
   // What the launch needs BESIDES the argv: the task tools flag, and (for a
   // clone) the hook entries that carry the activity rail into the session.
   const launchEnv = { ...LAUNCH_ENV }
-  const hooks = launchHooksFor({ cwd, scriptDir, resolution, readFile, exists })
+  const hooks = launchHooksFor({ cwd, scriptDir, resolution })
 
   const declared = folderIdentity(cwd, readFile)
   if (declared.conflict) {
@@ -4659,6 +4640,7 @@ function defaultScriptDir() {
  *   pidAlive?: (pid: number) => boolean,
  *   pidProcess?: (pid: number) => { command: string | null, startedAtMs: number | null } | null,
  *   signals?: { once: (name: string, fn: () => void) => unknown, removeListener: (name: string, fn: () => void) => unknown },
+ *   registerHooks?: (hooks: { settingsPath: string, forwarderPath: string }) => unknown,
  * }} [opts]
  * @returns {Promise<number>}
  */
@@ -4724,7 +4706,6 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       home,
       scriptDir,
       readFile,
-      exists: opts.exists,
       register: opts.registerHooks,
       print: opts.print,
       printError: opts.printError,
@@ -4778,14 +4759,40 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   // which agent THIS launch is for (lib/attach-scope.mjs).
   applyAttachScope(env, plan.attachScope, plan.attachScopeDir)
   if (plan.hooks) {
-    const register = opts.registerHooks ?? ensureHookEntries
+    // Every launch: a folder scaffolded before the rail existed, or one whose
+    // settings file a concurrent claude rewrote, gets it back here or never.
+    //
+    // NOT best effort. A clone launch runs claude with full access
+    // (--dangerously-skip-permissions), and the hook that asks before a risky
+    // action is one of these entries. A launch without them is an agent that
+    // never asks, so a write that was refused or did not hold stops it, with
+    // the line that says why.
+    const register = opts.registerHooks ?? registerTrustedHooks
+    let refused = ''
     try {
-      // Best effort, every launch: a folder scaffolded before the rail existed,
-      // or one whose settings file a concurrent claude rewrote, gets it back
-      // here or never.
-      register(plan.hooks)
+      const result = register(plan.hooks)
+      if (result?.reason === 'not_persisted') refused = 'another program rewrote the file at the same moment, so the hooks did not hold'
+      else if (result?.reason === 'no_path') refused = 'hoai could not name its own hook scripts'
     } catch (err) {
-      console.error(`[hoai] could not register the activity hooks: ${err?.message ?? err}`)
+      refused = String(err?.message ?? err)
+    }
+    if (refused) {
+      const reason =
+        `could not write the agent hooks to ${plan.hooks.settingsPath}: ${refused}. ` +
+        'This launch runs with full access, and one of those hooks asks before a risky action, so claude was not started. ' +
+        'Fix what the line says, then run hoai again.'
+      console.error(`[hoai] ${reason}`)
+      if (isSupervisedLaunch(env) || keepAlive) {
+        const statusId = supervisedServiceId(env) || superviseAssistantId({ cwd, env, home, readFile, listDir })
+        if (statusId) {
+          ;(opts.writeFile ?? defaultWriteFile)(
+            joinDir(joinDir(agentDir(home), statusId), LAUNCH_STATUS_FILE_NAME),
+            `${launchStatusLine({ outcome: 'hooks-not-written', fields: { detail: reason } })}\n`,
+          )
+        }
+        return EXIT_UNATTENDED_NEEDS_PERSON
+      }
+      return 1
     }
   }
   // Pre-seed Claude Code's one-time prompts for THIS launch folder, on EVERY
