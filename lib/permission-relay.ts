@@ -900,7 +900,8 @@ export function orphanedPermissionCards(
 export function permissionRowsReader<T>(opts: {
   /** Null turns this off entirely: with no card id there is nothing to anchor. */
   cardMessageId: number | null
-  idOf: (row: T) => number | null
+  /** The row's id as the history carries it; read with isPermissionCardRow. */
+  idOf: (row: T) => unknown
   /** The page: rows, or null for a 304 or a failed look. */
   page: () => Promise<readonly T[] | null>
   /** The anchored read of the card row, or null for a 304 or a failed look. */
@@ -912,7 +913,7 @@ export function permissionRowsReader<T>(opts: {
     if (opts.cardMessageId === null) return rows
     if (!offPage) {
       if (rows === null) return rows
-      if (rows.some((row) => opts.idOf(row) === opts.cardMessageId)) return rows
+      if (rows.some((row) => isPermissionCardRow(opts.idOf(row), opts.cardMessageId))) return rows
       offPage = true
     }
     const card = await opts.card()
@@ -1054,6 +1055,17 @@ export function parseCardRowId(value: unknown): number | null {
   return typeof n === 'number' && Number.isSafeInteger(n) && n > 0 ? n : null
 }
 const cardRowId = parseCardRowId
+
+/**
+ * Is this row the request's own card: its id, read with parseCardRowId,
+ * is the number the card post bound. The fallback watch asks it for page
+ * membership, the anchored read, the expiry and the answer, so a history
+ * that carries ids as decimal strings is read like one that carries
+ * numbers. With no bound card it is no row.
+ */
+export function isPermissionCardRow(rowId: unknown, cardMessageId: number | null): boolean {
+  return cardMessageId !== null && parseCardRowId(rowId) === cardMessageId
+}
 
 // ── Waiting for the verdict ──────────────────────────────────────────────────
 

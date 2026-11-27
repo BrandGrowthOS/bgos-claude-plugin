@@ -29,6 +29,7 @@ import {
   cardMessageIdFrom,
   choiceToBehavior,
   permissionBackstopMs,
+  permissionCardPairingNotice,
   resolvePermissionClick,
   storedWaitSeconds,
 } from '../lib/permission-relay.ts'
@@ -91,6 +92,12 @@ function relayRig() {
     storedWaitSeconds,
     permissionBackstopMs,
     choiceToBehavior,
+    // The reservation asked before a grant is recorded, and the once per
+    // request pairing notice.
+    permissionBehaviorToSend: ids?.permissionBehaviorToSend,
+    permissionRequestIds: ids?.createPermissionRequestIds?.(),
+    permissionCardPairingNotice,
+    pairingNoticeSaid: new WeakSet(),
     isPermissionCardOwnerChatOnly: (peerRefusal as any).isPermissionCardOwnerChatOnly,
     refuseHookRailChat: () => false,
     isOwnSendingTool,

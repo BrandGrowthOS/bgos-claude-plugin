@@ -582,6 +582,7 @@ import {
   pendingPermissionFastChatIds,
   permissionBackstopMs,
   permissionRowsReader,
+  isPermissionCardRow,
   resolvePermissionClick,
   senderUserIdCandidate,
   storedWaitSeconds,
@@ -591,6 +592,7 @@ import {
 import {
   admitPermissionRequest,
   createPermissionRequestIds,
+  permissionBehaviorToSend,
   permissionRequestFingerprint,
   type PermissionReservation,
 } from './lib/permission-request-ids.js'
@@ -4340,12 +4342,15 @@ function handlePermissionRequest(params: PermissionRequestParams): Promise<void>
       })
   }
 
-  // Said before the card is promised: on an account key install the server
-  // refuses the card in the owner's own chat, and the request is denied.
-  const pairingNotice = permissionCardPairingNotice(AUTH.mode)
-  if (pairingNotice) log(`Permission request ${tool_name} [${request_id}]: ${pairingNotice}`)
   return relayPermissionToOwner(params)
 }
+
+/**
+ * The requests the pairing notice was said for (relayPermissionToOwner). A
+ * chat that refuses a card sends the same request on to the next chat, and
+ * the notice is about the request, so it is said once.
+ */
+const pairingNoticeSaid = new WeakSet<PermissionRequestParams>()
 
 /**
  * The interactive path, whole: the drain exit, the no chat exit, and the real
@@ -4445,17 +4450,26 @@ function relayPermissionToOwner(
   // owner acts. Recorded BEFORE the CLI hears allow, like every Allow.
   const tooLongForCard = emailCard !== null && emailSendCardTooLong(emailCard.block, input_preview)
   if (emailCard && (tooLongForCard || !emailCard.block)) {
-    emailSendApprovals.allow(tool_name, input_preview, {
+    // The mark is recorded only for an allow the reservation still lets this
+    // request send (permissionBehaviorToSend): a request another request
+    // collided with ends in a deny and leaves no mark behind.
+    const behavior = permissionBehaviorToSend({
+      ids: permissionRequestIds,
       requestId: request_id,
-      approval: null,
-      binding: emailCard.block,
-      ...(tooLongForCard ? { tooLongForCard: true } : {}),
-      ...(emailCard.block ? {} : { withoutCard: true }),
+      behavior: 'allow',
+      recordAllow: () =>
+        emailSendApprovals.allow(tool_name, input_preview, {
+          requestId: request_id,
+          approval: null,
+          binding: emailCard.block,
+          ...(tooLongForCard ? { tooLongForCard: true } : {}),
+          ...(emailCard.block ? {} : { withoutCard: true }),
+        }),
     })
     log(`email_send [${request_id}]: ${tooLongForCard ? 'the email is too long to approve on a card' : 'no floor hook record names this email, so no card could approve it'}; none is posted, and it goes to the server, which keeps it as a draft for the owner`)
     await mcp.notification({
       method: 'notifications/claude/channel/permission',
-      params: { request_id, behavior: 'allow' },
+      params: { request_id, behavior },
     }).catch((err) => {
       log(`Failed to send the verdict for an email_send with no card: ${err}`)
     })
@@ -4496,16 +4510,22 @@ function relayPermissionToOwner(
     // CLI hears allow, and emailSendApproval refuses it, posting nothing. A
     // call the mark does not name meets the floor check there instead, which
     // holds it while the owner asks first, so it sends nothing either.
-    emailSendApprovals.allow(tool_name, input_preview, {
+    const behavior = permissionBehaviorToSend({
+      ids: permissionRequestIds,
       requestId: request_id,
-      approval: null,
-      binding: emailCard.block,
-      noOwnerChat: true,
+      behavior: 'allow',
+      recordAllow: () =>
+        emailSendApprovals.allow(tool_name, input_preview, {
+          requestId: request_id,
+          approval: null,
+          binding: emailCard.block,
+          noOwnerChat: true,
+        }),
     })
     log(`email_send [${request_id}]: no main chat of the owner can take its card, so none is posted anywhere; the call is refused and nothing is sent`)
     await mcp.notification({
       method: 'notifications/claude/channel/permission',
-      params: { request_id, behavior: 'allow' },
+      params: { request_id, behavior },
     }).catch((err) => {
       log(`Failed to send the verdict for an email_send no chat of the owner can approve: ${err}`)
     })
@@ -4584,6 +4604,15 @@ function relayPermissionToOwner(
   // the way back. Until the clamp is deployed that smaller number is always
   // the hold itself, which is why the log below prints what came back rather
   // than what was sent.
+  // Said before the card is promised, at the one card post every route
+  // reaches (an ordinary request and a floor consult alike): on an account
+  // key install the server refuses the card in the owner's own chat, and
+  // the request is denied. Once per request, not once per chat tried.
+  if (!pairingNoticeSaid.has(params)) {
+    pairingNoticeSaid.add(params)
+    const pairingNotice = permissionCardPairingNotice(AUTH.mode)
+    if (pairingNotice) log(`Permission request ${tool_name} [${request_id}]: ${pairingNotice}`)
+  }
   // Whether the card is up: a 403 before it is a chat refusing the card, one
   // after it is not, and the card is never posted twice.
   let cardPosted = false
@@ -4671,26 +4700,35 @@ function relayPermissionToOwner(
     // answer given through this operation's own entry is its own, although
     // the click intake has already taken the entry out of the map.
     const stillOwn = answeredThroughOwn || holdsOwn()
-    const behavior = stillOwn ? choiceToBehavior(choice) : 'deny'
-
-    log(
-      `Verdict for ${tool_name} [${request_id}]: ${choice} -> ${behavior}` +
-        (stillOwn ? '' : ' (the request was replaced while it waited)'),
-    )
-    // Only this operation's own entry, never a newer request of the same id.
-    if (holdsOwn()) pendingPermissions.delete(request_id)
     // The owner allowed a card the floor HELD, which only a person's tap can
     // allow: when it is an email_send, that one send may go
     // (emailSendApproval), carrying the approval the tap issued for exactly
     // the email the card named. Recorded BEFORE the CLI hears the verdict,
-    // since the CLI runs the tool the moment it does.
-    if (behavior === 'allow' && floorHeld) {
-      emailSendApprovals.allow(tool_name, input_preview, {
-        requestId: request_id,
-        approval: choice === 'once' ? tapApproval : null,
-        binding: emailCard?.block ?? null,
-      })
-    }
+    // since the CLI runs the tool the moment it does, and only for the
+    // verdict the reservation lets this request send
+    // (permissionBehaviorToSend): a request another request collided with
+    // ends in a deny, so it records no grant a later call could match.
+    const behavior = permissionBehaviorToSend({
+      ids: permissionRequestIds,
+      requestId: request_id,
+      behavior: stillOwn ? choiceToBehavior(choice) : 'deny',
+      recordAllow: () => {
+        if (!floorHeld) return
+        emailSendApprovals.allow(tool_name, input_preview, {
+          requestId: request_id,
+          approval: choice === 'once' ? tapApproval : null,
+          binding: emailCard?.block ?? null,
+        })
+      },
+    })
+
+    log(
+      `Verdict for ${tool_name} [${request_id}]: ${choice} -> ${behavior}` +
+        (stillOwn ? '' : ' (the request was replaced while it waited)') +
+        (stillOwn && behavior !== choiceToBehavior(choice) ? ' (another request claimed this id while it was open)' : ''),
+    )
+    // Only this operation's own entry, never a newer request of the same id.
+    if (holdsOwn()) pendingPermissions.delete(request_id)
     await mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior },
@@ -5120,7 +5158,9 @@ async function waitForVerdict(
           if (isNotModified(raw)) return null
           const data = raw as ChatHistoryResponse
           const row = data.messages?.[0]
-          return row && row.message.id === cardMessageId ? row : null
+          // The one row id reading (isPermissionCardRow), on every arm of
+          // this watch: a history id in decimal digits is the same row.
+          return row && isPermissionCardRow(row.message.id, cardMessageId) ? row : null
         } catch {
           return null
         }
@@ -5129,8 +5169,7 @@ async function waitForVerdict(
     // The server is the judge. Only OUR card counts: another agent's expired
     // approval sitting in the same chat is none of this request's business.
     expiredOn: (msg) =>
-      cardMessageId !== null &&
-      msg.message.id === cardMessageId &&
+      isPermissionCardRow(msg.message.id, cardMessageId) &&
       isApprovalExpired(msg.message),
     // THE OWNER'S TAP, off the card row, and this loop is the only lane that
     // always carries it. A tap writes no user message, so verdictFrom below
@@ -5145,7 +5184,7 @@ async function waitForVerdict(
     // assistant row the delivery path never forwards, so moving the cursor
     // past it would skip whatever the owner typed alongside the tap.
     answeredOn: (msg) => {
-      const ours = cardMessageId !== null && msg.message.id === cardMessageId
+      const ours = isPermissionCardRow(msg.message.id, cardMessageId)
       if (!ours) return null
       // THE TAP FIRST, THE TAPPER SECOND, and the order is load bearing. Every
       // tick re-reads this card, and on all but one of those reads there is no

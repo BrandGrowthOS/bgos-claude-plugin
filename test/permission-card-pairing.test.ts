@@ -31,12 +31,30 @@ test('an account key install is told a permission card needs a paired agent; a p
   assert.match(line!, /Pair the agent/)
 })
 
-test('server.ts says it at boot, when requests would go to the owner, and on each request before the card', () => {
+test('server.ts says it at boot, when requests would go to the owner', () => {
   assert.match(SRC, /const permissionCardNotice = AUTO_APPROVE \? null : permissionCardPairingNotice\(AUTH\.mode\)\n\s*if \(permissionCardNotice\) log\(`permissions: \$\{permissionCardNotice\}`\)/)
-  const handler = SRC.slice(SRC.indexOf('function handlePermissionRequest('), SRC.indexOf('\n * The interactive path, whole'))
-  const told = handler.indexOf('permissionCardPairingNotice(AUTH.mode)')
-  const card = handler.lastIndexOf('return relayPermissionToOwner(params)')
-  assert.ok(told > 0 && told < card, 'said before the card is posted')
+})
+
+test('server.ts says it on each request at the one card post, whichever route reached it, once', () => {
+  const handler = SRC.slice(SRC.indexOf('function handlePermissionRequest('), SRC.indexOf('function relayPermissionToOwner('))
+  const relay = SRC.slice(SRC.indexOf('function relayPermissionToOwner('), SRC.indexOf('function settleFloorRequest('))
+  const floor = SRC.slice(SRC.indexOf('function settleFloorRequest('), SRC.indexOf('function settleElidedFloorRequest('))
+  assert.ok(handler.length > 0 && relay.length > 0 && floor.length > 0)
+  // Not in a route of its own: the ordinary request and the floor consult
+  // both reach the card post through relayPermissionToOwner.
+  assert.equal(handler.includes('permissionCardPairingNotice('), false, 'the ordinary route does not say it on its own')
+  assert.equal(floor.includes('permissionCardPairingNotice('), false, 'the floor route does not say it on its own')
+  assert.match(handler, /\breturn relayPermissionToOwner\(params\)/, 'the ordinary request reaches the card post')
+  const routes = (route: string) => floor.slice(floor.indexOf(`case '${route}':`), floor.indexOf('case ', floor.indexOf(`case '${route}':`) + 5))
+  assert.match(routes('hold'), /\breturn relayPermissionToOwner\(params, match\.evidence, true, plan\.record\)/, 'a held floor consult reaches it')
+  assert.match(routes('owner'), /\breturn relayPermissionToOwner\(params, match\.evidence\)/, "an owner's floor consult reaches it")
+  // At the card post: after every exit that posts no card, before the post.
+  const told = relay.indexOf('permissionCardPairingNotice(AUTH.mode)')
+  assert.ok(told > relay.indexOf('if (!chatId) {'), 'said only once a card is going to be posted')
+  assert.ok(told < relay.indexOf('buildPermissionRequestBody({'), 'said before the card is posted')
+  // A chat that refuses the card sends the same request to the next chat:
+  // the notice is said once per request, not once per chat.
+  assert.match(relay.slice(told - 200, told + 200), /pairingNoticeSaid/)
 })
 
 test('the README says interactive approval cards need a paired agent', () => {

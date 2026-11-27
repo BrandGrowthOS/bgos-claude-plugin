@@ -1008,7 +1008,9 @@ test('the watch reads the tap off the card, and moves no cursor doing it', () =>
   )
   // Only OUR card, the same rule the expiry arm follows: another agent's
   // answered approval in the same chat is none of this request's business.
-  assert.ok(answeredOn.includes('msg.message.id === cardMessageId'))
+  // Read with the one row id reading, so a history id in digits is the card
+  // too (test/permission-watch-card-row.test.ts).
+  assert.ok(answeredOn.includes('isPermissionCardRow(msg.message.id, cardMessageId)'))
   // And NOT the cursor, unlike verdictFrom: the card is an assistant row the
   // delivery path never forwards, so moving the cursor past it would skip what
   // the owner typed alongside the tap.

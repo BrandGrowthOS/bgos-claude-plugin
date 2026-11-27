@@ -92,6 +92,26 @@ export function createPermissionRequestIds(): PermissionRequestIds {
 }
 
 /**
+ * The verdict a request may send, asked of its reservation BEFORE anything
+ * an allow relies on is recorded. A request another request collided with
+ * ends in a deny (server.ts groupNotificationStep sends its allow as a deny,
+ * the belt), so an allow is recorded and sent only while the open request
+ * under this id is not marked. `recordAllow` is the local bookkeeping the
+ * allow relies on (an email send grant): it runs only for an allow this
+ * returns, so a denied request leaves no grant for a later matching call.
+ */
+export function permissionBehaviorToSend(opts: {
+  ids: PermissionRequestIds
+  requestId: string
+  behavior: 'allow' | 'deny'
+  recordAllow?: () => void
+}): 'allow' | 'deny' {
+  if (opts.behavior !== 'allow' || opts.ids.collided(opts.requestId)) return 'deny'
+  opts.recordAllow?.()
+  return 'allow'
+}
+
+/**
  * Admit one request: reserve its id, run it, and release the id when it has
  * ended, however it ended. A retransmission runs nothing. A collision runs
  * nothing, denies the newcomer and ends the request that holds the id
