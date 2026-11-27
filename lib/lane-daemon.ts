@@ -677,7 +677,7 @@ export const LANE_TOOLS = Object.freeze([LANE_REPLY_TOOL])
  */
 export function checkLaneReply(
   args: unknown,
-  deps: { workDir: string; realpath: (p: string) => string; deliveredChats: ReadonlySet<string>; platform?: string },
+  deps: { workDir: string; realpath: (p: string) => string; deliveredChats: ReadonlySet<string>; platform?: string; probeCase?: boolean },
 ): { ok: true; chatId: string; text: string; paths: string[] } | { ok: false, message: string } {
   const a = (args ?? {}) as Record<string, unknown>
   const chatId = String(a.chat_id ?? '')
@@ -692,7 +692,7 @@ export function checkLaneReply(
   for (const f of files) {
     const path = (f as Record<string, unknown>)?.path
     if ((f as Record<string, unknown>)?.url !== undefined) return { ok: false, message: 'Only files inside your working folder can be attached.' }
-    const confined = confineLanePath(String(path ?? ''), { workDir: deps.workDir, realpath: deps.realpath, platform: deps.platform })
+    const confined = confineLanePath(String(path ?? ''), { workDir: deps.workDir, realpath: deps.realpath, platform: deps.platform, probeCase: deps.probeCase === true })
     if (!confined.ok) return { ok: false, message: 'Only files inside your working folder can be attached.' }
     paths.push(confined.path)
   }

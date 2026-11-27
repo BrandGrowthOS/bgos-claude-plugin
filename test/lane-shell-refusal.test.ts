@@ -3,6 +3,11 @@ import { test } from 'node:test'
 import * as fs from 'node:fs'
 import { join } from 'node:path'
 import { lanePaths, LANE_NOTICES } from '../lib/lane-core.mjs'
+
+function makeLaneDir(p: { laneDir: string; identityPath: string; userId: string }) {
+  fs.mkdirSync(p.laneDir, { recursive: true })
+  fs.writeFileSync(p.identityPath, JSON.stringify({ v: 1, userId: p.userId }))
+}
 import { prepareLaneLaunch } from '../lib/lane-supervisor.mjs'
 import { drainLaneEvents, supervisorEnv } from '../lib/lane-owner.ts'
 
@@ -59,7 +64,7 @@ for (const [notice, plain] of [['shell_refused', sentence], ['owner_mcp_refused'
 test(`the owner and person receive the same plain ${notice} refusal`, async () => {
   const home = fs.realpathSync(fs.mkdtempSync(join(process.cwd(), 'node_modules/lane-refusal-notice-')))
   const paths = lanePaths({ home, assistantId: '1076', userId: 'user_test' })
-  fs.mkdirSync(paths.laneDir, { recursive: true })
+  makeLaneDir(paths)
   fs.writeFileSync(paths.eventsPath, JSON.stringify({ event: 'notice', notice, chatIds: [777] }) + '\n')
   const owners: string[] = [], people: string[] = []
   try {

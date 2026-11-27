@@ -41,6 +41,10 @@ import {
   LANE_LOGIN_ENV,
   LANE_LOGIN_CONFIG_ENV,
 } from '../lib/lane-core.mjs'
+import { laneUserKey } from '../lib/lane-core.mjs'
+
+// The lane's folder name (fix round 377, finding 7): a key of the whole id, never the id.
+const ANA_KEY = laneUserKey('user_ana')
 
 const HOME = '/Users/owner'
 const PATHS = lanePaths({ home: HOME, assistantId: '1076', userId: 'user_ana', platform: 'darwin' })
@@ -78,7 +82,7 @@ test('the debug file rides only when asked for (the person\'s own sign in), neve
   assert.ok(!plain.includes('--debug-file'))
   const withDebug = laneLaunchArgsFor({ mcpConfigPath: PATHS.mcpPath, settingsPath: PATHS.settingsPath, sessionArgs: laneSessionArgs(PIN, true), debugFile: PATHS.claudeDebugPath })
   assert.deepEqual(withDebug.filter((a) => a !== '--debug-file' && a !== PATHS.claudeDebugPath), argsFor(laneSessionArgs(PIN, true)))
-  assert.equal(withDebug[withDebug.indexOf('--debug-file') + 1], '/Users/owner/.bgos-agent/1076/people/user_ana/claude-debug.log')
+  assert.equal(withDebug[withDebug.indexOf('--debug-file') + 1], `/Users/owner/.bgos-agent/1076/people/${ANA_KEY}/claude-debug.log`)
 })
 
 test('the session pin: --resume when the transcript exists, --session-id when not, never --continue', () => {
@@ -94,8 +98,8 @@ test('the allow list always names reply, and only Read and Edit rules on the wor
   assert.ok(allow.includes('mcp__bgos__reply'))
   assert.deepEqual(allow, [
     'mcp__bgos__reply',
-    `Read(//Users/owner/.bgos-agent/1076/people/user_ana/work/**)`,
-    `Edit(//Users/owner/.bgos-agent/1076/people/user_ana/work/**)`,
+    `Read(//Users/owner/.bgos-agent/1076/people/${ANA_KEY}/work/**)`,
+    `Edit(//Users/owner/.bgos-agent/1076/people/${ANA_KEY}/work/**)`,
   ])
   // Windows spells C:\x as //c/x in a rule.
   assert.equal(laneAllowList('C:\\Users\\o\\work', 'win32')[1], 'Read(//c/Users/o/work/**)')
@@ -225,11 +229,11 @@ test('locked lane environments discard the owner subprocess scrub setting under 
 })
 
 test('lane folders: the floor\'s own-lane key, secrets in the plugin state folder, unsafe ids refused', () => {
-  assert.equal(PATHS.laneDir, '/Users/owner/.bgos-agent/1076/people/user_ana')
-  assert.equal(PATHS.workDir, '/Users/owner/.bgos-agent/1076/people/user_ana/work')
-  assert.equal(PATHS.ticketPath, '/Users/owner/.bgos-plugin-state/1076/lanes/user_ana/ticket.json')
-  assert.equal(PATHS.sessionPath, '/Users/owner/.bgos-plugin-state/1076/lanes/user_ana/session.json')
-  assert.equal(PATHS.configDir, '/Users/owner/.bgos-agent/1076/people/user_ana/claude-config')
+  assert.equal(PATHS.laneDir, `/Users/owner/.bgos-agent/1076/people/${ANA_KEY}`)
+  assert.equal(PATHS.workDir, `/Users/owner/.bgos-agent/1076/people/${ANA_KEY}/work`)
+  assert.equal(PATHS.ticketPath, `/Users/owner/.bgos-plugin-state/1076/lanes/${ANA_KEY}/ticket.json`)
+  assert.equal(PATHS.sessionPath, `/Users/owner/.bgos-plugin-state/1076/lanes/${ANA_KEY}/session.json`)
+  assert.equal(PATHS.configDir, `/Users/owner/.bgos-agent/1076/people/${ANA_KEY}/claude-config`)
   for (const bad of ['../user_ben', 'a/b', '', 'user ana', '..', 'x'.repeat(129)]) {
     assert.throws(() => lanePaths({ home: HOME, assistantId: '1076', userId: bad }), /unsafe/)
   }

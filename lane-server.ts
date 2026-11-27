@@ -163,6 +163,24 @@ if (!read.ok) {
 }
 const CFG = read.config
 const LANE = { userId: CFG.userId, assistantId: CFG.assistantId }
+// The lane folder says whose it is (lib/lane-core.mjs openLaneFolders, fix
+// round 377, finding 7): a folder that names anybody else is never run. A
+// keyed folder with no record yet is this person's (the key is of the exact
+// id, and readLaneDaemonConfig checked the folder is that key's).
+{
+  let owner: unknown = LANE.userId
+  try { owner = (JSON.parse(readFileSync(join(CFG.laneDir, 'identity.json'), 'utf8')) as { userId?: unknown }).userId } catch (err) {
+    if ((err as { code?: unknown })?.code !== 'ENOENT') owner = null
+    // No record yet: written now, so the owner's daemon can read whose this folder is.
+    else {
+      try { writeFileSync(join(CFG.laneDir, 'identity.json'), `${JSON.stringify({ v: 1, userId: LANE.userId })}\n`, { mode: 0o600, flag: 'wx' }) } catch { /* written meanwhile, or read next time */ }
+    }
+  }
+  if (owner !== LANE.userId) {
+    process.stderr.write('[hoai lane] refusing to start: the lane folder does not name this person\n')
+    process.exit(1)
+  }
+}
 // A thread of this lane is a fork of the lane's own Claude session, so its
 // `claude` runs on the lane's own Claude login and config dir. Read here,
 // before the scrub, and handed to that one process only
@@ -566,7 +584,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (req.params.name !== 'reply') {
     return { content: [{ type: 'text' as const, text: `Unknown tool: ${req.params.name}` }], isError: true }
   }
-  const checked = checkLaneReply(req.params.arguments, { workDir: CFG.workDir, realpath: realpathSync, deliveredChats })
+  const checked = checkLaneReply(req.params.arguments, { workDir: CFG.workDir, realpath: (p) => realpathSync.native(p), deliveredChats, probeCase: true })
   if (!checked.ok) return { content: [{ type: 'text' as const, text: checked.message }], isError: true }
   try {
     const files = []
@@ -828,7 +846,9 @@ const laneThreads = new ThreadLaneManager(laneThreadDeps({
     copyClearingGoal: (from, to) => copyTranscriptClearingGoal(from, to),
     clearGoal: (path) => clearActiveGoal(path),
   },
-  realpath: (path) => realpathSync(path),
+  // The disk's own spelling, and its own case behaviour (fix round 377, finding 7).
+  realpath: (path) => realpathSync.native(path),
+  probeCase: true,
   post: (path, body) => laneFetch('POST', path, body),
   now: () => Date.now(),
   setTimer: (fn, ms) => {

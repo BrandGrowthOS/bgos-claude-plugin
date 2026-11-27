@@ -31,6 +31,11 @@ import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 
 import { lanePaths, laneDaemonEnv, LANE_NOTICES, laneEventLine, laneNoticeSentence, parseLaneEventLine } from '../lib/lane-core.mjs'
+// A lane folder as the supervisor opens it: under its key, with the identity record it is read by (fix round 377, finding 7).
+function makeLaneDir(p: { laneDir: string; identityPath: string; userId: string }) {
+  mkdirSync(p.laneDir, { recursive: true })
+  writeFileSync(p.identityPath, JSON.stringify({ v: 1, userId: p.userId }))
+}
 import * as laneOwner from '../lib/lane-owner.ts'
 import { drainLaneEvents, handleLaneRevoked, handleLaneWake, lanesOnFor, readLaneWake, supervisorEnv } from '../lib/lane-owner.ts'
 
@@ -104,7 +109,7 @@ test('a revoke asks the lane to stop and withdraws a waiting ticket', () => {
   try {
     handleLaneWake(WAKE, true, r.deps)
     const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-    mkdirSync(paths.laneDir, { recursive: true })
+    makeLaneDir(paths)
     writeFileSync(paths.sessionPath, '{"sessionToken":"lsess_x"}')
     assert.equal(handleLaneRevoked({ assistantId: 1076, actorUserId: 'user_ana', reason: 'share_revoked' }, r.deps), true)
     assert.equal(JSON.parse(readFileSync(paths.stopRequestPath, 'utf8')).reason, 'revoked')
@@ -126,8 +131,8 @@ test('the drain: reports, fixed notice sentences only, unknown events and bad ch
   try {
     const ana = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
     const ben = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ben' })
-    mkdirSync(ana.laneDir, { recursive: true })
-    mkdirSync(ben.laneDir, { recursive: true })
+    makeLaneDir(ana)
+    makeLaneDir(ben)
     writeFileSync(ana.eventsPath, [
       laneEventLine({ event: 'lane_failed' }),
       laneEventLine({ event: 'notice', notice: 'login_token_missing', chatIds: [777, '778', -1, 'x', 1.5] }),
@@ -200,7 +205,7 @@ test('a refused shell launch tells the owner and the person with fixed text', as
   const r = rig()
   try {
     const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-    mkdirSync(paths.laneDir, { recursive: true })
+    makeLaneDir(paths)
     writeFileSync(paths.eventsPath, laneEventLine({ event: 'notice', notice: 'shell_refused', chatIds: [777] }))
     const owners: string[] = []
     const people: Array<[number, string]> = []
@@ -219,7 +224,7 @@ test('notice sinks are independent', async () => {
   const r = rig()
   try {
     const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-    mkdirSync(paths.laneDir, { recursive: true })
+    makeLaneDir(paths)
     writeFileSync(paths.eventsPath, laneEventLine({ event: 'notice', notice: 'shell_refused', chatIds: [777, 778] }))
     const attempts: number[] = []
     await drainLaneEvents(r.deps, {
@@ -276,7 +281,7 @@ test('the next owner check retires unmarked supervisors, including locked launch
       user_dead: { tools: ['Bash'], policy: { v: 1, shell: true } },
     })) {
       const paths = lanePaths({ home: r.home, assistantId: '1076', userId })
-      mkdirSync(paths.laneDir, { recursive: true })
+      makeLaneDir(paths)
       writeFileSync(paths.launchPolicyPath, JSON.stringify({ ...launch, at: 'made-up-start' }))
       writeFileSync(paths.laneJsonPath, JSON.stringify({ inFlight: true, lastActivityAtMs: Date.now() }))
     }
@@ -313,7 +318,7 @@ test('an update notice survives a temporary backend failure and is delivered onc
   const r = rig()
   try {
     const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-    mkdirSync(paths.laneDir, { recursive: true })
+    makeLaneDir(paths)
     writeFileSync(paths.eventsPath, laneEventLine({ event: 'notice', notice: 'sharing_update' }))
     let attempts = 0
     const delivered: string[] = []
@@ -350,7 +355,7 @@ for (const notice of ['shell_refused', 'owner_mcp_refused']) {
     const r = rig()
     try {
       const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-      mkdirSync(paths.laneDir, { recursive: true })
+      makeLaneDir(paths)
       writeFileSync(paths.eventsPath, laneEventLine({ event: 'notice', notice, noticeId: 'fixture-grant', chatIds: [777, 778] }))
       let ownerAttempts = 0
       const attempts: number[] = []
@@ -381,7 +386,7 @@ test('a failed owner refusal send retries without repeating the successful perso
   const r = rig()
   try {
     const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-    mkdirSync(paths.laneDir, { recursive: true })
+    makeLaneDir(paths)
     writeFileSync(paths.eventsPath, laneEventLine({ event: 'notice', notice: 'owner_mcp_refused', noticeId: 'owner-retry', chatIds: [777] }))
     let ownerAttempts = 0
     const delivered: number[] = []
@@ -402,7 +407,7 @@ test('a refusal without known chats waits for the person sink and delivers once'
   const r = rig()
   try {
     const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-    mkdirSync(paths.laneDir, { recursive: true })
+    makeLaneDir(paths)
     const event = laneEventLine({ event: 'notice', notice: 'shell_refused', noticeId: 'no-chats', chatIds: [] })
     writeFileSync(paths.eventsPath, event)
     let attempts = 0
@@ -425,7 +430,7 @@ test('an old refusal event without an id keeps its identity while retrying', asy
   const r = rig()
   try {
     const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-    mkdirSync(paths.laneDir, { recursive: true })
+    makeLaneDir(paths)
     writeFileSync(paths.eventsPath, laneEventLine({ event: 'notice', notice: 'owner_mcp_refused', chatIds: [777] }))
     let attempts = 0
     const sinks = { report: async () => {}, notify: async () => { if (++attempts === 1) throw new Error('made-up temporary outage') } }
@@ -444,7 +449,7 @@ for (const notice of ['shell_refused', 'owner_mcp_refused']) {
     const r = rig()
     try {
       const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-      mkdirSync(paths.laneDir, { recursive: true })
+      makeLaneDir(paths)
       writeFileSync(join(paths.laneDir, 'refused-grants.json'), JSON.stringify({ [notice]: true }))
       const event = laneEventLine({ event: 'notice', notice, chatIds: [777] })
       let owners = 0
@@ -463,7 +468,7 @@ for (const notice of ['shell_refused', 'owner_mcp_refused']) {
     const r = rig()
     try {
       const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-      mkdirSync(paths.laneDir, { recursive: true })
+      makeLaneDir(paths)
       let owners = 0
       const chats: number[] = []
       const sinks = { report: async () => {}, notifyOwner: async () => { owners++ }, notify: async (id: number) => { chats.push(id) } }
@@ -485,7 +490,7 @@ for (const notice of ['shell_refused', 'owner_mcp_refused']) {
       const r = rig()
       try {
         const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-        mkdirSync(paths.laneDir, { recursive: true })
+        makeLaneDir(paths)
         writeFileSync(join(paths.laneDir, 'notice-delivery.json'), JSON.stringify({ [notice]: { notice, ...bad }, 'old-id': { notice, ...bad } }))
         let owners = 0, people = 0
         const chats: number[] = []
@@ -509,7 +514,7 @@ test('old id receipts merge by refusal kind and preserve only proven recipients'
   const r = rig()
   try {
     const paths = lanePaths({ home: r.home, assistantId: '1076', userId: 'user_ana' })
-    mkdirSync(paths.laneDir, { recursive: true })
+    makeLaneDir(paths)
     const old = Object.fromEntries(Array.from({ length: 100 }, (_, n) => [`old-${n}`, { notice: 'shell_refused', ownerDelivered: true, chatIds: [777], delivered: true }]))
     writeFileSync(join(paths.laneDir, 'notice-delivery.json'), JSON.stringify({ ...old, other: { notice: 'owner_mcp_refused', personDelivered: true, chatIds: [] }, junk: { notice: 'unknown', delivered: true } }))
     const chats: number[] = []

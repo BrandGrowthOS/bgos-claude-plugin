@@ -63,6 +63,7 @@
 import { join } from 'node:path'
 
 import {
+  folderFoldsCase,
   isInsideFolder,
   isSafeLaneUserId,
   LANE_BUILTIN_TOOLS,
@@ -304,6 +305,8 @@ export interface LaneThreadEffects {
   fs: ThreadLaneFs
   transcripts?: ThreadLaneDeps['transcripts']
   realpath(path: string): string
+  /** realpath is the disk's own (realpathSync.native): the containment check asks the disk whether it folds case. */
+  probeCase?: boolean
   /** POST one of integrations/threads/state, reply, summary with the lane session. */
   post(path: string, body: Record<string, unknown>): Promise<unknown>
   now(): number
@@ -370,7 +373,9 @@ export function laneThreadDeps(facts: LaneThreadFacts, effects: LaneThreadEffect
       try {
         const real = effects.realpath(opts.cwd)
         const root = join(effects.realpath(paths.workDir), '.hoai', 'threads')
-        inside = real !== root && isInsideFolder(real, root, platform) && isInsideFolder(opts.cwd, threadsRoot, platform)
+        // Case folds only where the disk itself folds it (fix round 377, finding 7).
+        const folds = effects.probeCase === true ? folderFoldsCase(root, { realpath: effects.realpath, platform }) : undefined
+        inside = real !== root && isInsideFolder(real, root, platform, folds) && isInsideFolder(opts.cwd, threadsRoot, platform, folds)
       } catch {
         inside = false
       }

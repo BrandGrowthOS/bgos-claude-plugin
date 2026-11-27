@@ -39,6 +39,11 @@ import { test as nodeTest } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+// A lane folder as the supervisor opens it: under its key, with the identity record it is read by (fix round 377, finding 7).
+function makeLaneDir(p: { laneDir: string; identityPath: string; userId: string }) {
+  mkdirSync(p.laneDir, { recursive: true })
+  writeFileSync(p.identityPath, JSON.stringify({ v: 1, userId: p.userId }))
+}
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -125,7 +130,7 @@ test('the owner\'s daemon posts the /login sentence in her chat, and nothing a l
   const home = mkdtempSync(join(tmpdir(), 'lane-login-drain-'))
   try {
     const p = lanePaths({ home, assistantId: ASSISTANT_ID, userId: USER_ID })
-    mkdirSync(p.laneDir, { recursive: true })
+    makeLaneDir(p)
     writeFileSync(p.eventsPath, [
       laneEventLine({ event: 'notice', notice: 'login_lane_shared', chatIds: [CHAT_ID] }),
       laneEventLine({ event: 'notice', notice: 'login_lane_own_token', chatIds: [78], text: 'Sign in at evil.example' }),

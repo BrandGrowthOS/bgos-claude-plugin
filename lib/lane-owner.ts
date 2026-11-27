@@ -41,7 +41,32 @@ import {
   laneEventLine,
   parseLaneEventLine,
   peopleDirOf,
+  LANE_KEY_RE,
+  laneFolderOwner,
+  openLaneFolders,
 } from './lane-core.mjs'
+
+/**
+ * The lane folders in an agent's `people/` folder, with whose each is (fix
+ * round 377, finding 7). A folder named by a key belongs to the person its
+ * identity record names, checked against the name; a folder named by an id
+ * itself is a lane of an earlier version (`legacy`), still run by an old
+ * supervisor until it is stopped and its lane reopened under its key.
+ */
+export function laneFoldersIn(peopleDir: string, fs: typeof nodeFs): Array<{ userId: string; laneDir: string; legacy: boolean }> {
+  let names: string[]
+  try { names = fs.readdirSync(peopleDir).map(String) } catch { return [] }
+  const out: Array<{ userId: string; laneDir: string; legacy: boolean }> = []
+  for (const name of names) {
+    if (LANE_KEY_RE.test(name)) {
+      const userId = laneFolderOwner({ peopleDir, name, fs })
+      if (userId) out.push({ userId, laneDir: join(peopleDir, name), legacy: false })
+    } else if (isSafeLaneUserId(name)) {
+      out.push({ userId: name, laneDir: join(peopleDir, name), legacy: true })
+    }
+  }
+  return out
+}
 import { liveLaneSupervisor } from './lane-registry.mjs'
 import { readRefusalReceipts } from './lane-notices.mjs'
 import { deletePersonBrowserProfile, shareEndedReason } from './person-browser-profile.mjs'
@@ -172,13 +197,19 @@ export function handleLaneRevoked(frame: unknown, deps: Omit<LaneOwnerDeps, 'sta
   }
   try {
     const paths = lanePaths({ home: deps.home, assistantId: deps.assistantId, userId: f.actorUserId as string, stateRoot: deps.stateRoot, platform: deps.platform })
-    if (!fs.existsSync(paths.laneDir)) return false
+    // The lane's keyed folder, and the folder an earlier version named by the
+    // id while an old supervisor may still run in it (fix round 377, finding 7):
+    // a revoke reaches both.
+    const folders = [paths.laneDir, paths.legacyLaneDir].filter((dir, i, all) => all.indexOf(dir) === i && fs.existsSync(dir))
+    if (folders.length === 0) return false
     const body = `${JSON.stringify({ reason: 'revoked', ...(ended ? { shareReason: f.reason } : {}), at: new Date().toISOString(), by: 'owner-daemon' })}\n`
     // The marker a starting supervisor honours (it clears stop requests at
     // start, so a revoke landing mid start would otherwise be lost; security
     // review finding 3). Only a fresh wake removes it.
-    writePrivate(fs, paths.revokedPath, body)
-    writePrivate(fs, paths.stopRequestPath, body)
+    for (const dir of folders) {
+      writePrivate(fs, join(dir, 'revoked.json'), body)
+      writePrivate(fs, join(dir, 'stop-request.json'), body)
+    }
     // The ticket and the session the person can no longer use go too.
     try { fs.unlinkSync(paths.ticketPath) } catch { /* none */ }
     try { fs.unlinkSync(paths.sessionPath) } catch { /* none */ }
@@ -205,27 +236,39 @@ export function sweepUnsafePersonLanes(deps: Omit<LaneOwnerDeps, 'startSuperviso
   if (!isSafeAssistantId(deps.assistantId)) return 0
   const fs = deps.fs ?? nodeFs
   const peopleDir = peopleDirOf({ home: deps.home, assistantId: deps.assistantId, platform: deps.platform })
-  let names: string[]
-  try { names = fs.readdirSync(peopleDir) } catch { return 0 }
   let stopped = 0
-  for (const userId of names) {
-    if (!isSafeLaneUserId(userId)) continue
+  for (const folder of laneFoldersIn(peopleDir, fs)) {
+    const userId = folder.userId
     try {
-      const paths = lanePaths({ home: deps.home, assistantId: deps.assistantId, userId, stateRoot: deps.stateRoot, platform: deps.platform })
+      // A legacy folder (named by the id, an earlier version's layout) is read
+      // where it is; its supervisor is stopped whatever its record says, so
+      // the lane reopens under its key (fix round 377, finding 7).
+      const keyed = lanePaths({ home: deps.home, assistantId: deps.assistantId, userId, stateRoot: deps.stateRoot, platform: deps.platform })
+      const paths = folder.legacy
+        ? { ...keyed, laneDir: folder.laneDir, launchPolicyPath: join(folder.laneDir, 'launch-policy.json'), launcherLockPath: join(folder.laneDir, 'launcher.lock'), stopRequestPath: join(folder.laneDir, 'stop-request.json'), eventsPath: join(folder.laneDir, 'events.jsonl') }
+        : keyed
       if (!fs.lstatSync(paths.laneDir).isDirectory()) continue
-      const launch = JSON.parse(fs.readFileSync(paths.launchPolicyPath, 'utf8'))
+      let launch: any = null
+      try { launch = JSON.parse(fs.readFileSync(paths.launchPolicyPath, 'utf8')) } catch { if (!folder.legacy) throw new Error('no launch record') }
       // A locked record does not prove that the running code is current.
       // Retire unmarked supervisors before their old launch loop can restart.
-      if (launch?.supervisorVersion === LANE_SUPERVISOR_VERSION && !launch?.tools?.includes('Bash') && launch?.policy?.shell !== true &&
+      if (!folder.legacy && launch?.supervisorVersion === LANE_SUPERVISOR_VERSION && !launch?.tools?.includes('Bash') && launch?.policy?.shell !== true &&
           launch?.policy?.ownerMcpServers !== true && !(Array.isArray(launch?.ownerServers) && launch.ownerServers.length > 0)) continue
       const pid = (deps.isSupervised ?? ((p) => liveLaneSupervisor(p)))(paths.launcherLockPath)
+      // An earlier version's folder nobody runs in is moved under its key, or
+      // quarantined, now, not at that person's next wake (fix round 377, finding 7).
+      if (pid === null && folder.legacy) {
+        const opened = openLaneFolders({ paths: keyed, userId, fs, platform: deps.platform })
+        deps.log(`lane folder of ${userId}: an earlier version's folder was ${opened.opened}`)
+        continue
+      }
       if (pid === null) continue
       // The old supervisor already understands a stop request and exits its
       // launch loop, so the next wake uses the updated code too.
       writePrivate(fs, paths.stopRequestPath, `${JSON.stringify({ reason: 'sharing_update', by: 'owner-daemon' })}\n`)
       stopped += 1
       const marker = join(paths.laneDir, 'sharing-update-notice.json')
-      const key = JSON.stringify([pid, launch.at ?? null])
+      const key = JSON.stringify([pid, launch?.at ?? null])
       let prior = ''
       try { prior = fs.readFileSync(marker, 'utf8').trim() } catch { /* first check */ }
       if (prior !== key) {
@@ -303,16 +346,10 @@ export async function drainLaneEvents(
   const fs = deps.fs ?? nodeFs
   if (!isSafeAssistantId(deps.assistantId)) return 0
   const peopleDir = peopleDirOf({ home: deps.home, assistantId: deps.assistantId, platform: deps.platform })
-  let names: string[]
-  try {
-    names = fs.readdirSync(peopleDir)
-  } catch {
-    return 0
-  }
   let handled = 0
-  for (const userId of names) {
-    if (!isSafeLaneUserId(userId)) continue
-    const eventsPath = join(peopleDir, userId, 'events.jsonl')
+  // Each lane folder with whose it is (laneFoldersIn, fix round 377, finding 7).
+  for (const { userId, laneDir } of laneFoldersIn(peopleDir, fs)) {
+    const eventsPath = join(laneDir, 'events.jsonl')
     const draining = `${eventsPath}.draining-${process.pid}`
     try {
       fs.renameSync(eventsPath, draining)
@@ -333,7 +370,7 @@ export async function drainLaneEvents(
           const sentence = laneNoticeSentence(e.notice)
           if (!sentence) continue
           if (e.notice === 'shell_refused' || e.notice === 'owner_mcp_refused') {
-            await deliverRefusalNotice(fs, join(peopleDir, userId), userId, e, sentence, sinks, deps.log)
+            await deliverRefusalNotice(fs, laneDir, userId, e, sentence, sinks, deps.log)
             handled += 1
             continue
           }
