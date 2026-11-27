@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## Unreleased
+## 0.90.29 (2026-11-27)
 
 One live permission request per request id. The ids of the CLI's permission requests and of the group lanes' prompts are reserved in one registry (`lib/permission-request-ids.ts`) before any asynchronous step and released when the request ends. The same request sent again joins the one already open; a different request under an id that is open is denied, and so is the open one, because a verdict names only the id. Inside the relay each request keeps the pending entry it registered and binds its card, deletes, retries and watches only while the map still holds that entry: a card post that comes back after the entry was replaced binds nothing and ends in a deny, and a group prompt's verdict goes to its lane only while its reservation holds the id. A card's row id is read one way on every lane (`parseCardRowId`: a positive safe integer or its plain decimal digits): the card post's answer, the poll's click and the stream's click, where an envelope and a row that name different rows name no row. The line logged for a card post with no id now says that no click can settle that request, only a typed answer (a typed denial for a held one) or the local backstop. An install that connects with an account API key is told at boot and on each request that a permission card needs a paired agent: the server takes an approval card in the owner's own chat only from the agent's pairing, so there the card is refused and the request denied. Known limits: an open request whose id another request claims ends in a deny rather than waiting for its card; the pairing notice only says what the server does, it changes no rule.
 
