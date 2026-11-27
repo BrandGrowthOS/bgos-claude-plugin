@@ -29,13 +29,17 @@ import {
   clearPersonOrigins,
   drainAccessChanges,
   queueAccessReconcile,
-  registrableDomain,
   fetchPeopleAccess,
   queueAccessChange,
   readAccessRecord,
   recordFillOrigin,
   reconcilePeopleAccess,
 } from '../lib/person-access.mjs'
+import * as personAccess from '../lib/person-access.mjs'
+
+// Read off the namespace, so each test fails by itself where they are missing.
+const siteOfHost = (host: string, cookies: any[]) => (personAccess as any).siteOfHost(host, cookies)
+const cookieInSite = (cookie: any, site: string) => (personAccess as any).cookieInSite(cookie, site)
 
 const AGENT = 901
 const OWNER = 'user_Owner1'
@@ -159,8 +163,8 @@ test('the daemon queues the frame for the host, which applies each once', async 
 
 /**
  * S1: an origin a person lost is cleared for its whole site: cookies for the
- * login's registrable domain (no public suffix list in this repo: the host
- * after its first label, while that leaves at least two labels), and storage
+ * site the browser itself proves (siteOfHost: the widest domain cookie it
+ * would send the host, else the host; never a label guess), and storage
  * for every origin under it this browser knows of (the origin itself, the
  * bare and www site, each cookie domain under it, and the open frames).
  */
@@ -175,11 +179,51 @@ function fakeBrowser(cookies: any[], frameUrls: string[] = []) {
   return { sent, engine: { selectedPage: () => page, pages: () => [page] } }
 }
 
-test('S1: the registrable domain, and the origins under it', () => {
-  assert.equal(registrableDomain('login.bank.example.com'), 'bank.example.com')
-  assert.equal(registrableDomain('bank.example.com'), 'example.com')
-  assert.equal(registrableDomain('example.com'), 'example.com')
-  assert.equal(registrableDomain('localhost'), 'localhost')
+// Fix round 377, finding 8: the site is what the browser's own cookies prove, never a guess from the labels.
+test('S1: the site of a lost host is the widest domain cookie the browser would send it, else the host', () => {
+  // A multi label public suffix: no browser keeps a .co.uk cookie, so the site never widens to co.uk.
+  assert.equal(siteOfHost('example.co.uk', [{ domain: 'other.co.uk' }, { domain: '.other.co.uk' }]), 'example.co.uk')
+  assert.equal(siteOfHost('login.example.co.uk', [{ domain: '.example.co.uk' }]), 'example.co.uk')
+  // A private suffix (a tenant of a hosting domain): another tenant is never reached.
+  assert.equal(siteOfHost('tenant.github.io', [{ domain: 'other.github.io' }, { domain: '.other.github.io' }]), 'tenant.github.io')
+  // A parent's session cookie two labels up is the site, where the label guess stopped one short.
+  assert.equal(siteOfHost('signin.team.example.com', [{ domain: '.team.example.com' }, { domain: '.example.com' }]), 'example.com')
+  // A host only cookie of a parent is not sent to the host and proves nothing.
+  assert.equal(siteOfHost('signin.team.example.com', [{ domain: 'example.com' }]), 'signin.team.example.com')
+  assert.equal(siteOfHost('localhost', []), 'localhost')
+})
+
+test('S1: the cookies of a site, including those partitioned under it, and never a neighbour that only shares a suffix', () => {
+  assert.equal(cookieInSite({ domain: '.example.co.uk' }, 'example.co.uk'), true)
+  assert.equal(cookieInSite({ domain: 'a.example.co.uk' }, 'example.co.uk'), true)
+  assert.equal(cookieInSite({ domain: 'other.co.uk' }, 'example.co.uk'), false)
+  assert.equal(cookieInSite({ domain: 'notexample.co.uk' }, 'example.co.uk'), false)
+  assert.equal(cookieInSite({ domain: 'idp.test', partitionKey: { topLevelSite: 'https://example.co.uk', hasCrossSiteAncestor: false } }, 'example.co.uk'), true)
+  assert.equal(cookieInSite({ domain: 'idp.test', partitionKey: 'https://example.co.uk' }, 'example.co.uk'), true)
+  assert.equal(cookieInSite({ domain: 'idp.test', partitionKey: { topLevelSite: 'https://other.co.uk' } }, 'example.co.uk'), false)
+})
+
+test('S1: clearing a lost login under a multi label suffix leaves its neighbours, and clears a parent cookie and a partitioned one', async () => {
+  const r = rig()
+  try {
+    const cookies = [
+      { name: 'sid', domain: '.example.co.uk', path: '/' },
+      { name: 'neighbour', domain: 'other.co.uk', path: '/' },
+      { name: 'embedded', domain: 'idp.test', path: '/', partitionKey: { topLevelSite: 'https://example.co.uk', hasCrossSiteAncestor: false } },
+      { name: 'idp-own', domain: 'idp.test', path: '/' },
+    ]
+    const b = fakeBrowser(cookies, ['https://other.co.uk/'])
+    const pool: any = { peek: () => ({ engine: b.engine }) }
+    await clearPersonOrigins({ pool, agentRoot: r.agentRoot, assistantId: AGENT, userId: LEO, origins: ['https://signin.example.co.uk'] })
+    const deleted = b.sent.filter(([m]: any) => m === 'Network.deleteCookies').map(([, p]: any) => p)
+    assert.deepEqual(deleted, [
+      { name: 'sid', domain: '.example.co.uk', path: '/' },
+      { name: 'embedded', domain: 'idp.test', path: '/', partitionKey: { topLevelSite: 'https://example.co.uk', hasCrossSiteAncestor: false } },
+    ])
+    const cleared = b.sent.filter(([m]: any) => m === 'Storage.clearDataForOrigin').map(([, p]: any) => p.origin)
+    assert.equal(cleared.some((o: string) => o.includes('other.co.uk') || o === 'https://co.uk'), false, 'no neighbour, no suffix')
+    assert.ok(cleared.includes('https://signin.example.co.uk') && cleared.includes('https://example.co.uk'))
+  } finally { r.done() }
 })
 
 test('S1: clearing an origin clears cookies for its registrable domain and storage for every origin under it, now or at the next start', async () => {
@@ -204,7 +248,9 @@ test('S1: clearing an origin clears cookies for its registrable domain and stora
     const later = fakeBrowser([{ name: 'x', domain: 'b.example.com', path: '/' }])
     await applyPendingClears({ agentRoot: r.agentRoot, assistantId: AGENT, principal: `user-${BEN}`, engine: later.engine })
     assert.ok(later.sent.some(([m, p]: any) => m === 'Network.deleteCookies' && p.name === 'x'))
-    assert.ok(later.sent.some(([m, p]: any) => m === 'Storage.clearDataForOrigin' && p.origin === 'https://example.com'))
+    // No domain cookie proves example.com is Ben's login's site, so its own host is the site (fix round 377, finding 8).
+    assert.ok(later.sent.some(([m, p]: any) => m === 'Storage.clearDataForOrigin' && p.origin === 'https://b.example.com'))
+    assert.equal(later.sent.some(([m, p]: any) => m === 'Storage.clearDataForOrigin' && p.origin === 'https://example.com'), false)
     later.sent.length = 0
     await applyPendingClears({ agentRoot: r.agentRoot, assistantId: AGENT, principal: `user-${BEN}`, engine: later.engine })
     assert.deepEqual(later.sent, [], 'once')
