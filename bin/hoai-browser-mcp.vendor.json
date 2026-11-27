@@ -1,15 +1,11 @@
 {
   "file": "bin/hoai-browser-mcp.mjs",
   "source": "BGOS: frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs",
-  "sha256": "28b9fc680ddef334ff49958d605b27658e1ceb57a6f83d3bd20ffd7a2a4f02d6",
-  "sourceSha256": "2fd50404ff330d65f5f38017ffb7dd0a5df2f1c560b694c1f329b1bbe88f71ef",
-  "vendoredAt": "2026-11-07",
-  "sourceCommit": "aed69c93bd191ce8de678b4f5cac4761f7130680",
-  "why": "Plugin 0.86.12 copy, ahead of BGOS. It is the BGOS blob at sourceCommit (sourceSha256, measured from that committed blob and still the shim on BGOS main) plus exactly bin/hoai-browser-mcp.ahead.patch: fill-only tool schemas, browser_fill_form limited to textbox fields, composite submission and sequential typing refused before forwarding, whole key chords validated (only Alt, Control, ControlOrMeta, Meta and Shift may precede the final key, and Enter, Return and Space are refused in every position), and the separate approved browser_click rule added to served instructions. The portable host carries the same rules and the filled-field barrier.",
+  "sha256": "4969259ac573f66e16e18837e9d9d4558d543393b614c415245cc234b22c6013",
+  "sourceSha256": "4969259ac573f66e16e18837e9d9d4558d543393b614c415245cc234b22c6013",
+  "vendoredAt": "2026-11-27",
+  "sourceCommit": "41b567e66ee73a593629eec2226ab12ad56b9fc8",
+  "why": "Byte-identical copy of the BGOS blob at sourceCommit (BGOS PR #6039, fix/browser-busy-retry), at parity: the fill-only shim this plugin led with in 0.86.12 (taken back by BGOS d6b67ce9e) plus the busy browser handling. A managed browser that is still busy with an earlier command is retried with a bounded backoff under the same request id, on a call and while connecting (HOAI_BUSY_RETRY_MS, default 15 s, 0 turns it off), then answered as browser_runtime_busy, which says nothing ran and the call can be tried again; one shim sends one command at a time to one profile.",
   "howToUpdate": "docs/vendoring-the-hoai-browser-shim.md",
-  "crossTreeCheck": "Offline CI: node scripts/check-browser-shim-source.mjs verifies the vendored bytes against sourceSha256 recorded with sourceCommit, without network or credentials. Trusted pushes and scheduled runs: node scripts/check-browser-shim-source.mjs --live fetches the pinned source when BGOS_SOURCE_READ_TOKEN is available, verifies both hashes and byte parity, then runs the vendor suite with HOAI_BROWSER_SHIM_SOURCE set. An unavailable token emits a skip notice; fetch failures or mismatches fail. Local checkout audit: HOAI_BROWSER_SHIM_SOURCE=<path to the pinned BGOS shim> node --import tsx --test --test-concurrency=4 test/hoai-browser-mcp.vendor.test.ts",
-  "aheadOfSource": {
-    "patch": "bin/hoai-browser-mcp.ahead.patch",
-    "bgosFollowUp": "Apply bin/hoai-browser-mcp.ahead.patch to frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs (git apply, byte for byte), set hoai-browser-mcp.pin.json sha256 to this sha256, add shim tests for the refusals and fill-only schemas, re-vendor codex-channel-bgos, then re-pin this copy at parity and delete the patch."
-  }
+  "crossTreeCheck": "Offline CI: node scripts/check-browser-shim-source.mjs verifies the vendored bytes against sourceSha256 recorded with sourceCommit, without network or credentials. Trusted pushes and scheduled runs: node scripts/check-browser-shim-source.mjs --live fetches the pinned source when BGOS_SOURCE_READ_TOKEN is available, verifies both hashes and byte parity, then runs the vendor suite with HOAI_BROWSER_SHIM_SOURCE set. An unavailable token emits a skip notice; fetch failures or mismatches fail. Local checkout audit: HOAI_BROWSER_SHIM_SOURCE=<path to the pinned BGOS shim> node --import tsx --test --test-concurrency=4 test/hoai-browser-mcp.vendor.test.ts"
 }

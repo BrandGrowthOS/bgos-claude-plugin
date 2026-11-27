@@ -2,6 +2,14 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.90.32 (2026-11-27)
+
+**The agent browser says a busy browser ran nothing and can be retried.** When the managed browser is still finishing an earlier command, the bundled shim waits and sends the same call again for a short, bounded time (`HOAI_BUSY_RETRY_MS`, default 15 s, `0` turns it off), on a call and while connecting. If it is still busy, the agent is told `browser_runtime_busy`: nothing ran and it can try again, instead of being told the action may have run. One shim now sends one command at a time to one browser profile.
+
+`bin/hoai-browser-mcp.mjs` is re-vendored byte for byte from BGOS `41b567e66ee73a593629eec2226ab12ad56b9fc8` (SHA-256 `4969259ac573f66e16e18837e9d9d4558d543393b614c415245cc234b22c6013`). That source already holds the fill-only bytes this copy led with since 0.86.12, so the pin is back at parity: `aheadOfSource` and `bin/hoai-browser-mcp.ahead.patch` are removed.
+
+Guards: `test/hoai-browser-mcp.vendor.test.ts`, `scripts/check-browser-shim-source.mjs`.
+
 ## 0.90.31 (2026-11-27)
 
 **A paired daemon's connection now says which agent it serves.** The connection handshake carries the agent's id as a whole number in `auth.servesAgent`, beside `capabilities`. The id is left out when the daemon does not know its agent, and a value that is not a positive whole number is never sent, so those handshakes are exactly what they were. The API key connection and the capabilities list are unchanged.

@@ -106,7 +106,7 @@ BGOS, then bring the copy across with this list.
    shim as `vendor/hoai-browser-mcp.mjs`; re-vendor it in the same round or say
    plainly that its parity was not checked when it is outside the work scope.
 
-## When this copy leads (current, 0.86.12)
+## When this copy leads
 
 Sometimes a fix must ship here before BGOS can take it. That copy is still not
 a fork: it is the BGOS blob at `sourceCommit` plus one committed, reviewable
@@ -143,15 +143,21 @@ patch, and the checks prove that relationship instead of being switched off.
    checklist above, pin the new BGOS commit, and delete `aheadOfSource` and the
    patch.
 
-0.86.12 leads for the fill-only contract: tool schemas omit composite
+0.86.12 led for the fill-only contract: tool schemas omit composite
 submission and sequential typing, `browser_fill_form` accepts textbox fields
 only, old composite calls are refused before forwarding, and submission
 requires a separate approved `browser_click` on the exact current submit
 control. Enter, Return and Space are refused in every key chord position, and
 only Alt, Control, ControlOrMeta, Meta and Shift may precede the final key (a
 literal plus remains a valid final key). The local and relay suites cover the
-refusals and ordinary fill forwarding. BGOS and `codex-channel-bgos` have not
-taken these bytes yet; `aheadOfSource.bgosFollowUp` says what they must land.
+refusals and ordinary fill forwarding.
+
+Resolved in 0.90.32 (2026-11-27): BGOS took these bytes back (`d6b67ce9e`) and
+the shim at BGOS `41b567e66ee73a593629eec2226ab12ad56b9fc8` (SHA-256
+`4969259ac573f66e16e18837e9d9d4558d543393b614c415245cc234b22c6013`) carries
+them plus the busy browser handling. The pin is back at parity, so
+`aheadOfSource` and `bin/hoai-browser-mcp.ahead.patch` are gone; the steps above
+are kept for the next time this copy has to lead.
 
 ## Historical exception: when this copy led (0.72.0)
 
