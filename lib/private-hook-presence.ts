@@ -20,7 +20,7 @@
  */
 
 import { exactOwnedHookOf, isOwnHookScript } from './claude-preseed.mjs'
-import { hooksOffIn, sessionSettingsFiles } from './floor-hook-presence.js'
+import { hookSwitchVerdict, hookSwitchWhere } from './floor-hook-presence.js'
 
 /** The private turn hook's script name, the one thing every registration shares. */
 export const PRIVATE_HOOK_SCRIPT = 'hoai-private-turn-hook.mjs'
@@ -45,8 +45,10 @@ export interface PrivateHookPresence {
   registered: boolean
   /** Where it was found, or why it was not, for the daemon's one boot line. */
   where: string
-  /** The settings file that switches every hook off ("disableAllHooks"), when one does. */
+  /** The settings file that switches every hook off ("disableAllHooks"), or may (one that cannot be read). */
   hooksOff?: string
+  /** True when that file is there and cannot be read, so it may switch them off. */
+  hooksOffUnknown?: boolean
   /**
    * A session folder's `.claude/settings.local.json` that is there and is not a JSON object, while the hook is not
    * registered. The hook writer leaves such a file exactly as it is (it holds the owner's own hooks and
@@ -57,9 +59,17 @@ export interface PrivateHookPresence {
 }
 
 export function privateHookPresence(input: PrivateHookPresenceInput): PrivateHookPresence {
-  // Every hook switched off at any level: none runs, the plugin's own hooks file included.
-  const hooksOff = hooksOffIn(sessionSettingsFiles(input), input.readFile)
-  if (hooksOff) return { registered: false, where: `every hook is switched off by "disableAllHooks" in ${hooksOff}`, hooksOff }
+  // Every hook switched off at any level, or a file there that cannot be read and may say so: none runs.
+  const off = hookSwitchVerdict(input)
+  if (off) {
+    // A folder's own settings file that is not JSON: the hook writer leaves it as it is, so it is named as the file
+    // in the way, and the advice is to mend or remove it.
+    const writerFile = input.folders.some((folder) => folder && input.join(folder, '.claude', 'settings.local.json') === off.file)
+    if (off.cause === 'not-json' && writerFile) {
+      return { registered: false, where: `${off.file} is there and ${off.why}`, unreadableSettings: off.file }
+    }
+    return { registered: false, where: hookSwitchWhere(off), hooksOff: off.file, ...(off.cause === 'on' ? {} : { hooksOffUnknown: true }) }
+  }
   const hooksFiles: string[] = []
   if (input.installMethod === 'marketplace' && input.pluginRoot) {
     hooksFiles.push(input.join(input.pluginRoot, 'hooks', 'hooks.json'))
@@ -177,8 +187,9 @@ export function privateHookBootLine(presence: PrivateHookPresence): string {
   if (presence.hooksOff) {
     return (
       `private turn: the private turn hook is NOT registered for this session (${presence.where}). ` +
-      'Boards, schedule and browser tools will refuse every call while it is: take that line out of the file, then ' +
-      'start this agent again'
+      'Boards, schedule and browser tools will refuse every call while it is: ' +
+      (presence.hooksOffUnknown ? 'mend or remove that file' : 'take that line out of the file') +
+      ', then start this agent again'
     )
   }
   if (presence.unreadableSettings) {

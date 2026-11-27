@@ -36,7 +36,7 @@
  * Pure: every file read is injected, so the tests hold each case in place.
  */
 
-import { exactOwnedHookOf, isOwnHookScript, switchesHooksOff } from './claude-preseed.mjs'
+import { exactOwnedHookOf, hooksOffVerdict, isOwnHookScript } from './claude-preseed.mjs'
 import { declaredCapabilities } from './declared-capabilities.js'
 import { HARD_FLOOR_TOKEN } from './claude-capability-tokens.js'
 
@@ -64,8 +64,18 @@ export interface FloorHookPresence {
   registered: boolean
   /** Where it was found, or why it was not, for the daemon's one boot line. */
   where: string
-  /** The settings file that switches every hook off ("disableAllHooks"), when one does. */
+  /** The settings file that switches every hook off ("disableAllHooks"), or may (one that cannot be read). */
   hooksOff?: string
+  /** True when that file is there and cannot be read, so it may switch them off. */
+  hooksOffUnknown?: boolean
+}
+
+/** What one hook switch verdict says (lib/claude-preseed.mjs hooksOffVerdict). */
+export interface HookSwitchVerdict {
+  file: string
+  key: string
+  cause: 'on' | 'not-json' | 'unreadable'
+  why: string
 }
 
 /**
@@ -83,28 +93,43 @@ export function sessionSettingsFiles(input: Pick<FloorHookPresenceInput, 'folder
   return files
 }
 
+/** Is this error the reader's word that a file is not there? */
+function isMissingFile(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code
+  if (code === 'ENOENT' || code === 'ENOTDIR') return true
+  return /^ENOENT\b/.test(String((err as { message?: unknown } | null)?.message ?? ''))
+}
+
 /**
- * The first of these settings files that switches every hook off, or undefined. On at any level, no hook runs,
- * the plugin's own hooks file included (measured on 2.1.332), so neither hook is registered, whatever the files
- * hold.
+ * Does a settings file this session's CLI reads switch every hook off, or may it? The first one that does, or null.
+ * On at any level, no hook runs (measured on 2.1.332), so neither hook is registered, whatever the files hold. FAIL
+ * CLOSED: only a file that is not there (readFile throws ENOENT) is no file; one that is there and cannot be read
+ * may hold the switch.
  */
-export function hooksOffIn(files: readonly string[], readFile: (path: string) => string): string | undefined {
-  for (const file of files) {
+export function hookSwitchVerdict(input: Pick<FloorHookPresenceInput, 'folders' | 'configDir' | 'join' | 'readFile'>): HookSwitchVerdict | null {
+  const sources = sessionSettingsFiles(input).map((file) => {
     try {
-      const text = readFile(file)
-      const parsed: unknown = JSON.parse(typeof text === 'string' && text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)
-      if (switchesHooksOff(parsed)) return file
-    } catch {
-      // Not there, or not JSON: it switches nothing off.
+      const text = input.readFile(file)
+      return { file, read: typeof text === 'string' ? { state: 'ok' as const, text } : { state: 'missing' as const } }
+    } catch (err) {
+      if (isMissingFile(err)) return { file, read: { state: 'missing' as const } }
+      return { file, read: { state: 'unreadable' as const, why: `it could not be read (${String((err as Error)?.message ?? err)})` } }
     }
-  }
-  return undefined
+  })
+  return hooksOffVerdict(sources) as HookSwitchVerdict | null
+}
+
+/** The boot line's account of a verdict. */
+export function hookSwitchWhere(off: HookSwitchVerdict): string {
+  return off.cause === 'on'
+    ? `every hook is switched off by "${off.key}" in ${off.file}`
+    : `hoai cannot tell whether every hook is switched off: ${off.file} is there and ${off.why}`
 }
 
 export function floorHookPresence(input: FloorHookPresenceInput): FloorHookPresence {
   const settingsFiles = sessionSettingsFiles(input)
-  const hooksOff = hooksOffIn(settingsFiles, input.readFile)
-  if (hooksOff) return { registered: false, where: `every hook is switched off by "disableAllHooks" in ${hooksOff}`, hooksOff }
+  const off = hookSwitchVerdict(input)
+  if (off) return { registered: false, where: hookSwitchWhere(off), hooksOff: off.file, ...(off.cause === 'on' ? {} : { hooksOffUnknown: true }) }
   const hooksFiles: string[] = []
   if (input.installMethod === 'marketplace' && input.pluginRoot) {
     hooksFiles.push(input.join(input.pluginRoot, 'hooks', 'hooks.json'))
@@ -212,8 +237,9 @@ export function floorBootLine(presence: FloorHookPresence, authMode: 'pairing' |
   if (presence.hooksOff) {
     return (
       `floor: the blocking floor hook is NOT registered for this session (${presence.where}); ` +
-      `the floor capability (${HARD_FLOOR_TOKEN}) is NOT declared, and no hook runs. ` +
-      'Take that line out of the file, then start this agent again'
+      `the floor capability (${HARD_FLOOR_TOKEN}) is NOT declared, and no hook may run. ` +
+      (presence.hooksOffUnknown ? 'Mend or remove that file' : 'Take that line out of the file') +
+      ', then start this agent again'
     )
   }
   const hook = presence.registered
