@@ -510,8 +510,13 @@ test('the pending replay reads the lane\'s own route and runs only this agent\'s
 })
 
 test('the pending replay has its own second lock: a row stamped for anyone else never runs', async () => {
-  const row = (rootId: string, lane?: unknown) => ({ chatId: '55', rootId, replyId: `${rootId}9`, mode: 'reply', text: 'hi', title: 'T', rootText: 'root', assistantId: AGENT, ...(lane === undefined ? {} : { lane }) })
-  // A person's lane: its own stamp or none (today's rows carry none); never the owner's or another person's.
+  // A person's stamp comes with that person named, as the server writes a lane's row (BGOS laneFrameStamp).
+  const row = (rootId: string, lane?: unknown) => ({
+    chatId: '55', rootId, replyId: `${rootId}9`, mode: 'reply', text: 'hi', title: 'T', rootText: 'root', assistantId: AGENT,
+    ...(lane === undefined ? {} : { lane }),
+    ...(typeof lane === 'string' && lane.startsWith('person:') ? { actorUserId: lane.slice('person:'.length) } : {}),
+  })
+  // A person's lane: only its own stamp; never the owner's or another person's.
   const mine = rig()
   const started = await mine.manager.reconcile(
     async () => ({ turns: [row('101', `person:${BEN}`), row('102', 'owner'), row('103', { person: ANA }), row('104', `person:${ANA}`)] }),
@@ -525,6 +530,34 @@ test('the pending replay has its own second lock: a row stamped for anyone else 
   assert.equal(await owner.manager.reconcile(async () => ({ turns: [row('201', `person:${ANA}`), row('202', 'owner')] }), { assistantIds: [AGENT] }), 1)
   await owner.manager.idle()
   assert.deepEqual(owner.spawned.map((s) => s.cwd), [wt('202')])
+})
+
+test('the pending replay holds the live frame\'s rule: a row that names a person is that person\'s, and a lane takes only its own exact rows', async () => {
+  // The live frame's rule (lib/thread-rpc.ts isPersonThreadFrame in the owner's daemon, lib/lane-thread-rpc.ts classifyLaneThreadFrame in a lane):
+  // a person named at the top makes a frame somebody else's, and a lane takes a frame only with its own stamp AND its
+  // own person. The server's pending rows for a lane carry both (BGOS laneFrameStamp); the owner's carry neither.
+  const row = (rootId: string, extra: Record<string, unknown> = {}) => ({ chatId: '55', rootId, replyId: `${rootId}9`, mode: 'reply', text: 'hi', title: 'T', rootText: 'root', assistantId: AGENT, ...extra })
+  // The owner's daemon: a row naming a person, with no stamp or the owner's, never runs in the owner's session.
+  const owner = rig()
+  assert.equal(await owner.manager.reconcile(async () => ({ turns: [
+    row('301', { actorUserId: ANA }),
+    row('302', { actor_user_id: ANA }),
+    row('303', { actorUserId: ANA, lane: 'owner' }),
+    row('304'),
+  ] }), { assistantIds: [AGENT] }), 1)
+  await owner.manager.idle()
+  assert.deepEqual(owner.spawned.map((s) => s.cwd), [wt('304')])
+  // A person's lane: no stamp, its stamp under another person's name, or its stamp with no person named never runs.
+  const mine = rig()
+  assert.equal(await mine.manager.reconcile(async () => ({ turns: [
+    row('401'),
+    row('402', { actorUserId: ANA }),
+    row('403', { actorUserId: BEN, lane: `person:${ANA}` }),
+    row('404', { lane: `person:${ANA}` }),
+    row('405', { actorUserId: ANA, lane: `person:${ANA}` }),
+  ] }), { assistantIds: [AGENT], lane: `person:${ANA}` }), 1)
+  await mine.manager.idle()
+  assert.deepEqual(mine.spawned.map((s) => s.cwd), [wt('405')])
 })
 
 // ── The login the fork runs on ──────────────────────────────────────────────
@@ -651,13 +684,13 @@ test('the guardrail is put in front of the person\'s thread turn exactly as the 
 })
 
 test('a replayed turn keeps its guardrail in a person\'s lane, and the owner\'s daemon reads none', async () => {
-  const row = { chatId: '55', rootId: '104', replyId: '1049', mode: 'reply', text: 'hi', title: 'T', rootText: 'root', assistantId: AGENT, lane: `person:${ANA}`, senderGuardrail: RIDER }
+  const row = { chatId: '55', rootId: '104', replyId: '1049', mode: 'reply', text: 'hi', title: 'T', rootText: 'root', assistantId: AGENT, actorUserId: ANA, lane: `person:${ANA}`, senderGuardrail: RIDER }
   const mine = rig()
   assert.equal(await mine.manager.reconcile(async () => ({ turns: [row] }), { assistantIds: [AGENT], lane: `person:${ANA}` }), 1)
   await mine.manager.idle()
   assert.ok(mine.spawned[0]!.child.stdin.join('').includes(JSON.stringify(buildSenderGuardrailMarker(RIDER)).slice(1, -1)))
   const owner = rig()
-  const { lane: _drop, ...unstamped } = row
+  const { lane: _drop, actorUserId: _person, ...unstamped } = row
   assert.equal(await owner.manager.reconcile(async () => ({ turns: [unstamped] }), { assistantIds: [AGENT] }), 1)
   await owner.manager.idle()
   assert.equal(owner.spawned[0]!.child.stdin.join('').includes('Guardrail from this agent'), false)

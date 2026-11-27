@@ -83,11 +83,38 @@ import {
 } from './thread-lane-args.ts'
 import { lineSplitter, userMessageLine, type SpawnStreamJson, type StreamJsonChild } from './stream-json-child.ts'
 import { sessionTranscriptPath } from '../bin/hoai-core.mjs'
-import { OWNER_LANE_STAMP, readLaneStamp } from './lane-core.mjs'
+import { OWNER_LANE_STAMP, personLaneStamp, readLaneStamp } from './lane-core.mjs'
 import { readSenderGuardrailField } from './inbound-channel.ts'
 
 export const THREAD_LANE_MAX_RUNNING = 2
 export const THREAD_LANE_IDLE_MS = 20 * 60_000
+
+/**
+ * Is a pending thread row (GET integrations/threads/pending) this manager's
+ * lane's to run? The same rule as a live `thread_turn` frame, so the replay
+ * after a reconnect is never looser than the frame it replays:
+ *
+ *  - the OWNER's daemon (`lane` is the owner's stamp) runs a row with no stamp
+ *    or exactly the owner's, and only when it names no person
+ *    (lib/thread-rpc.ts isPersonThreadFrame): a person named at the top makes
+ *    the row that person's, whatever its stamp says;
+ *  - a PERSON's lane (`lane` is `person:<id>`) runs a row only with exactly its
+ *    own stamp AND its own person named (lib/lane-thread-rpc.ts
+ *    classifyLaneThreadFrame), as the server writes every lane's row (BGOS
+ *    laneFrameStamp). No stamp, another person, or no person named: not ours.
+ */
+export function pendingRowIsThisLane(row: Record<string, unknown>, lane: string): boolean {
+  const stamp = readLaneStamp(row)
+  const named = (v: unknown): boolean => v !== undefined && v !== null
+  if (lane === OWNER_LANE_STAMP) {
+    if (stamp !== null && stamp !== OWNER_LANE_STAMP) return false
+    return !named(row.actorUserId) && !named(row.actor_user_id)
+  }
+  if (stamp !== lane) return false
+  const actor = row.actorUserId
+  if (typeof actor !== 'string' || actor === '' || personLaneStamp(actor) !== lane) return false
+  return !named(row.actor_user_id) || row.actor_user_id === actor
+}
 export const THREAD_LANE_KILL_GRACE_MS = 10_000
 export const THREAD_LANE_KEEP_CLOSED_MS = 7 * 24 * 60 * 60_000
 /** A turn with no result and no exit after this long is failed and its lane stopped. */
@@ -535,12 +562,11 @@ export class ThreadLaneManager {
       if (!row || typeof row !== 'object') continue
       const r = row as Record<string, unknown>
       if (served && str(r.assistantId) !== '' && !served.has(str(r.assistantId))) continue
-      // The second lock (shared agents): a row that carries a lane stamp runs
-      // only in that lane. This manager's lane is `opts.lane` (a person's lane
-      // daemon names its own) or the owner's; a row with no stamp is today's.
-      const stamp = readLaneStamp(r)
-      if (stamp !== null && stamp !== (opts.lane ?? OWNER_LANE_STAMP)) {
-        this.deps.log('threads: a pending thread stamped for another lane was skipped')
+      // The second lock (shared agents): a row runs only in its own lane, by
+      // the live frame's rule (pendingRowIsThisLane). This manager's lane is
+      // `opts.lane` (a person's lane daemon names its own) or the owner's.
+      if (!pendingRowIsThisLane(r, opts.lane ?? OWNER_LANE_STAMP)) {
+        this.deps.log('threads: a pending thread for another lane was skipped')
         continue
       }
       const input: ThreadTurnInput = {
