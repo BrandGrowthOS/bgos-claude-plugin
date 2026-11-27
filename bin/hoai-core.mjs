@@ -2978,6 +2978,20 @@ export async function superviseClaude(args, opts = {}) {
   const probeIdentityFlag = opts.probeIdentityFlag ?? (() => defaultProbeIdentityFlag({ platform, env }))
   const keepAlive = opts.keepAlive === true
   const stopSignal = opts.signal ?? null
+  // Does a settings file switch every hook off now (lib/clone-hooks.mjs hooksSwitchedOffIn)? Through this launch's
+  // own reader: the real one tells a file that is not there from one that cannot be read, an injected one (tests)
+  // answers a text or nothing.
+  const hooksOffNow =
+    opts.hooksOff ??
+    (() =>
+      hooksSwitchedOffIn({
+        folder: cwd,
+        configDir: claudeConfigDir({ env, home }),
+        join: (...parts) => parts.reduce((dir, name) => joinDir(dir, name)),
+        ...(readFile === defaultReadText
+          ? {}
+          : { readState: (path) => { const text = readFile(path); return typeof text === 'string' ? { state: 'ok', text } : { state: 'missing' } } }),
+      }))
   // Has the Claude login every agent of this credential store shares failed? Asked only for a launch
   // with no channel heartbeat: the CLI's own records, in the store it signs in through.
   const loginStore = { configDir: claudeConfigDir({ env, home }), listDir, mtimeMs: fileMtimeMs, readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES) }
@@ -3646,6 +3660,17 @@ export async function superviseClaude(args, opts = {}) {
       // A stop that came while this launch was prepared (the identity read
       // waits up to 3 s): nothing to start, and the finally lets go of the claim.
       if (stopSignal?.aborted) return exitCodeForChild(null, 'SIGTERM')
+      // Asked before every launch, a relaunch included: a settings file can switch every hook off while claude
+      // runs, and claude runs with full access, the hook that asks before a risky action being one of those hooks.
+      const hooksOff = hooksOffNow()
+      if (hooksOff) {
+        const reason =
+          `${upperFirst(hooksSwitchedOffWords(hooksOff))}. This launch runs with full access, so claude was not started ` +
+          'again. Run hoai again once that is done.'
+        print(`[hoai] ${reason}`)
+        noteStatus('hooks-switched-off', { detail: reason })
+        return keepAlive || supervised ? EXIT_UNATTENDED_NEEDS_PERSON : 1
+      }
       /** @type {import('node:child_process').ChildProcess | null} */
       let childRef = null
       let restartRequested = false
