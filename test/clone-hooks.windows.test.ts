@@ -16,11 +16,12 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, parse, resolve, sep } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { main } from '../bin/hoai-core.mjs'
 import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 import * as cloneHooks from '../lib/clone-hooks.mjs'
 import { registerCloneHooks, registerCloneHooksAtBoot, workspaceNamesThisClone } from '../lib/clone-hooks.mjs'
@@ -40,7 +41,7 @@ function checkout(name = 'Plugin Checkout Long Name'): string {
   const dir = join(volumeSpelling(scratchDir('clone-hooks-win-')), name)
   mkdirSync(join(dir, 'bin'), { recursive: true })
   writeFileSync(join(dir, 'server.ts'), '')
-  writeFileSync(join(dir, 'bin', 'hoai-hook.mjs'), '')
+  for (const name of ['hoai-hook.mjs', 'hoai-floor-hook.mjs', 'hoai-private-turn-hook.mjs', 'hoai-mission-turn-hook.mjs']) writeFileSync(join(dir, 'bin', name), '')
   return dir
 }
 
@@ -126,7 +127,14 @@ function windowsVolume({ withIdentity = true } = {}) {
     const stat = statSync(real, { bigint: true })
     return `${stat.dev}:${stat.ino}`
   }
-  return { readFile: read, realpath: (path: string) => (onDisk(path) === null ? null : resolve(path)), ...(withIdentity ? { identity } : {}) }
+  // What is at a path itself, a link not followed: the hook scripts must be plain files of the checkout.
+  const kind = (path: string) => {
+    const real = onDisk(path)
+    if (real === null) return null
+    const stat = lstatSync(real)
+    return stat.isSymbolicLink() ? 'link' : stat.isFile() ? 'file' : stat.isDirectory() ? 'dir' : 'other'
+  }
+  return { readFile: read, realpath: (path: string) => (onDisk(path) === null ? null : resolve(path)), kind, ...(withIdentity ? { identity } : {}) }
 }
 
 const boot = (folder: string, pluginDir: string, privateHookRegistered: boolean, fs?: unknown) =>
@@ -187,15 +195,18 @@ test('a folder that never had the rail still gets no floor from the registration
   assert.doesNotMatch(settingsText(dir), /hoai-floor-hook\.mjs/)
 })
 
-test('hooks that name this checkout\'s forwarder in another spelling are current: a boot does not rewrite them', () => {
+test('hooks that name this checkout\'s forwarder in another spelling are written once more in the checkout\'s own spelling, then are current', () => {
+  // A spelling in the settings file is the folder's text: the boot never takes it over, it writes the checkout's own.
   const ours = checkout()
   const dir = workspace(ours)
   mkdirSync(join(dir, '.claude'), { recursive: true })
-  // What a launcher that reached the checkout by another spelling wrote: the full set, its own spelling.
   ensureHookEntries({ settingsPath: settingsPath(dir), forwarderPath: join(otherCase(ours), 'bin', 'hoai-hook.mjs') })
-  const written = settingsText(dir)
-  assert.deepEqual(outcomes(boot(dir, ours, true, windowsVolume())), ['already'], 'the boot and the launcher would rewrite each other\'s hooks at every start')
-  assert.equal(settingsText(dir), written)
+  const fs = windowsVolume()
+  assert.deepEqual(outcomes(boot(dir, ours, true, fs)), ['registered'], 'the boot kept a spelling the settings file chose')
+  assert.ok(settingsText(dir).includes(JSON.stringify(join(ours, 'bin', 'hoai-hook.mjs')).slice(1, -1)))
+  const settled = settingsText(dir)
+  assert.deepEqual(outcomes(boot(dir, ours, true, fs)), ['already'])
+  assert.equal(settingsText(dir), settled)
 })
 
 test('another checkout is still not this one: a different folder, the same name elsewhere, a folder that is not there', () => {
@@ -429,13 +440,20 @@ test('Windows: another folder is never this checkout, under any spelling of it',
   assert.deepEqual(taken, [])
 })
 
-test('Windows: hooks a launcher wrote under another spelling of this checkout are left as they are', { skip: onWindows ? false : NOT_WINDOWS }, () => {
+test('Windows: a launcher run through another spelling of this checkout writes the volume\'s spelling, so a boot finds it current', { skip: onWindows ? false : NOT_WINDOWS }, async () => {
   const ours = checkout()
-  writeFileSync(join(ours, 'bin', 'hoai-floor-hook.mjs'), '')
   const dir = workspace(ours)
-  mkdirSync(join(dir, '.claude'), { recursive: true })
-  ensureHookEntries({ settingsPath: settingsPath(dir), forwarderPath: join(ours.toLowerCase(), 'bin', 'hoai-hook.mjs') })
+  const code = await main(['hooks'], {
+    env: {},
+    home: volumeSpelling(scratchDir('clone-hooks-win-home-')),
+    cwd: dir,
+    scriptDir: join(ours.toLowerCase(), 'bin'),
+    print: () => {},
+    printError: (line: string) => assert.fail(line),
+  } as never)
+  assert.equal(code, 0)
   const written = settingsText(dir)
+  assert.ok(written.includes(JSON.stringify(join(ours, 'bin', 'hoai-hook.mjs')).slice(1, -1)), written)
   assert.equal(registerCloneHooks({ workdir: dir, pluginDir: ours }).outcome, 'already')
   assert.equal(settingsText(dir), written)
 })

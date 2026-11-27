@@ -948,26 +948,28 @@ test('an empty settings file has nothing to lose: it gets the entries', () => {
   }
 })
 
-test('an owner\'s hook whose path only contains a HOAI script name is the owner\'s: it stays', () => {
+test('an owner\'s hook is the owner\'s unless it is one of the plugin\'s own entries, exactly: it stays', () => {
+  // The plugin's entry is one shape: node running one of its hook scripts as its one argument, on its own event, under
+  // its own matcher, blocking or not as it always is. A name in a path, a command line, another matcher: the owner's.
   const owners = [
     { type: 'command', command: 'node', args: ['/tools/not-hoai-hook.mjs'] },
     { type: 'command', command: 'python3', args: ['/keep/hoai-hook.mjs.d/gate.py'] },
     { type: 'command', command: 'bash', args: ['-c', 'echo hoai-floor-hook.mjsx'] },
     { type: 'command', command: 'C:\\tools\\my-hoai-private-turn-hook.mjs' },
-  ]
-  // What an older install left: the forwarder of another checkout, in the args form and as one command line.
-  const stale = [
     { type: 'command', command: 'node', args: ['/old/checkout/bin/hoai-hook.mjs'], timeout: 5, async: true },
     { type: 'command', command: 'node "/old/checkout/bin/hoai-hook.mjs"' },
     { type: 'command', command: 'node C:\\old\\bin\\hoai-floor-hook.mjs --quiet' },
     { type: 'command', command: 'hoai-hook.mjs' },
   ]
+  // What an older install left, exactly in the plugin's own shape: the forwarder of another checkout.
+  const stale = { hooks: [{ type: 'command', command: 'node', args: ['/old/checkout/bin/hoai-hook.mjs'], timeout: 5, async: true }] }
   const fs = memFs({
-    '/agent/.claude/settings.local.json': JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [...owners, ...stale] }] } }),
+    '/agent/.claude/settings.local.json': JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: owners }, stale] } }),
   })
   assert.equal(ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs }).reason, 'set')
-  const kept = settingsOf(fs).hooks.PreToolUse.find((m: any) => m.matcher === 'Bash')
-  assert.deepEqual(kept?.hooks, owners, 'an owner\'s hook was taken for an old HOAI entry and dropped, or an old HOAI entry was kept')
+  const pre = settingsOf(fs).hooks.PreToolUse
+  assert.deepEqual(pre.find((m: any) => m.matcher === 'Bash')?.hooks, owners, 'an owner\'s hook was taken for an old plugin entry and dropped')
+  assert.equal(JSON.stringify(pre.filter((m: any) => m.matcher !== 'Bash')).includes('/old/checkout/'), false, 'an old plugin entry was kept')
 })
 
 test('no forwarder path means no entries, never a half written hooks block', () => {

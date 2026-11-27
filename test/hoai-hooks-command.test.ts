@@ -18,7 +18,7 @@ import { dirname, join, sep } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { USAGE, buildRunPlan, hookScriptDirFor, main, resolveHoaiAction } from '../bin/hoai-core.mjs'
+import { USAGE, buildRunPlan, main, resolveHoaiAction } from '../bin/hoai-core.mjs'
 import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 import { registerCloneHooksAtBoot } from '../lib/clone-hooks.mjs'
 import { scratchDir } from './helpers/scratch-dirs.ts'
@@ -119,9 +119,10 @@ test('a folder that carries the rail without the floor gets the floor, and the o
   assert.deepEqual(JSON.parse(settingsText(dir)).permissions, { deny: ['AskUserQuestion'] })
 })
 
-test('the marketplace hoai writes nothing in a clone folder, fails, and names the command to run instead', async () => {
+test('the marketplace hoai writes nothing in a clone folder, fails, and says in words which command to run instead', async () => {
   // A marketplace install is never touched: its hooks come from the plugin, and a second set would run each hook
-  // twice. But a launcher line that wrote nothing must not look like success.
+  // twice. But a launcher line that wrote nothing must not look like success. The words are the same in every
+  // folder: a command built from a path the folder's own .mcp.json chose is not one to hand an owner to paste.
   const dir = agentFolder()
   const home = realpathSync.native(scratchDir('hoai-hooks-cmd-market-'))
   const marketplaceBin = join(home, '.claude', 'plugins', 'cache', 'hoai', 'hoai', '1.2.3', 'bin')
@@ -131,7 +132,8 @@ test('the marketplace hoai writes nothing in a clone folder, fails, and names th
   assert.equal(existsSync(settingsPath(dir)), false)
   assert.equal(errors.length, 1, errors.join('\n'))
   assert.match(errors[0]!, /marketplace/)
-  assert.ok(errors[0]!.includes(`node "${join(repoRoot, 'bin', 'hoai-core.mjs')}" hooks`), errors[0])
+  assert.match(errors[0]!, /bin\/hoai-core\.mjs/)
+  assert.equal(errors[0]!.includes(repoRoot), false, errors[0])
   assert.doesNotMatch(errors[0]!, /\n/)
 
   // A folder whose checkout cannot be found gets the same refusal, without a command that would not run.
@@ -266,13 +268,13 @@ test('a folder with no .mcp.json, or one that starts no HOAI server, is not an a
   writeFileSync(join(plain, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(repoRoot, 'server.ts')] } } }))
   assert.equal((await hoai(['hooks'], plain)).code, 0)
   assert.match(settingsText(plain), /hoai-floor-hook\.mjs/)
-  // So is any entry named bgos, even one whose command the boot cannot read (a whole command line in one string):
-  // the line that boot logs sends the owner to this command, so it must not refuse them.
+  // An entry named bgos whose command cannot be read as this checkout (a whole command line in one string) is not
+  // enough: the name is the folder's to choose, so only an entry that starts this checkout admits the folder.
   const oneString = realpathSync.native(scratchDir('hoai-hooks-cmd-onestring-'))
   writeFileSync(join(oneString, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'cmd', args: ['/c', `bun "${join(repoRoot, 'server.ts')}"`] } } }))
   const sent = await hoai(['hooks'], oneString)
-  assert.equal(sent.code, 0, `the folder the boot's own line points at was refused: ${sent.said}`)
-  assert.match(settingsText(oneString), /hoai-floor-hook\.mjs/)
+  assert.equal(sent.code, 1, `a folder was taken for this checkout's by an entry's name: ${sent.said}`)
+  assert.equal(existsSync(settingsPath(oneString)), false)
 })
 
 test('hooks that hold behind a byte order mark are written again without it, and the command says it wrote', async () => {
@@ -285,20 +287,6 @@ test('hooks that hold behind a byte order mark are written again without it, and
   assert.equal(settingsText(dir), current, 'the mark is still in the file, where the daemon\'s own readers refuse it')
   assert.doesNotMatch(said, /already/)
   assert.match((await hoai(['hooks'], dir)).said, /already/)
-})
-
-test('a checkout named with the \\\\?\\ prefix gives hook paths without it: node cannot start a script named with the prefix', () => {
-  const dirFor = (server: string) =>
-    hookScriptDirFor({
-      cwd: '/agent',
-      scriptDir: '/own/bin',
-      serverName: 'bgos',
-      readFile: () => JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [server], env: { BGOS_ASSISTANT_ID: '7' } } } }),
-      exists: () => true,
-    })
-  assert.equal(dirFor('C:/plugin/server.ts'), 'C:/plugin/bin')
-  assert.equal(dirFor('//?/C:/plugin/server.ts'), 'C:/plugin/bin')
-  assert.equal(dirFor('//?/UNC/host/share/plugin/server.ts'), '//host/share/plugin/bin')
 })
 
 test('Windows: a folder that names its checkout with the \\\\?\\ prefix gets hook paths node can start, and the boot leaves them alone', { skip: process.platform === 'win32' ? false : 'the prefix is a Windows spelling' }, async () => {

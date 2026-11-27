@@ -2542,28 +2542,41 @@ test('main(): the preseed is handed the LAUNCH folder and this host\'s config di
   }
 })
 
-test('main(): a registration that throws never stops the launch', async () => {
-  const { home, cwd } = tempAgentFolder()
-  const spawns: Array<{ file: string }> = []
-  try {
-    const code = await main([], {
-      platform: 'linux',
-      env: {},
-      home,
-      cwd,
-      scriptDir: CLONE_SCRIPT_DIR,
-      registerHooks: () => {
-        throw new Error('EACCES: a read only workspace')
-      },
-      spawnImpl: ((file: string) => {
-        spawns.push({ file })
-        return scriptedChild(0)
-      }) as never,
-    } as never)
-    assert.equal(code, 0, 'telemetry plumbing may never cost the user their agent')
-    assert.equal(spawns.length, 1)
-  } finally {
-    rmSync(home, { recursive: true, force: true })
-    rmSync(cwd, { recursive: true, force: true })
+test('main(): a hook write that was refused or did not hold stops the launch: it runs with full access and needs the floor hook', async () => {
+  // A clone launch always runs with --dangerously-skip-permissions, and the hook that asks before a risky action is
+  // in the hooks this step writes. Starting without them is an agent that never asks.
+  const outcomes: Array<[string, () => unknown]> = [
+    ['a refusal', () => {
+      throw new Error('EACCES: a read only workspace')
+    }],
+    ['a write that did not hold', () => ({ changed: false, reason: 'not_persisted' })],
+  ]
+  for (const [name, registerHooks] of outcomes) {
+    const { home, cwd } = tempAgentFolder()
+    const spawns: Array<{ file: string }> = []
+    const errors: string[] = []
+    const originalError = console.error
+    console.error = (...parts: unknown[]) => void errors.push(parts.map(String).join(' '))
+    try {
+      const code = await main([], {
+        platform: 'linux',
+        env: {},
+        home,
+        cwd,
+        scriptDir: CLONE_SCRIPT_DIR,
+        registerHooks,
+        spawnImpl: ((file: string) => {
+          spawns.push({ file })
+          return scriptedChild(0)
+        }) as never,
+      } as never)
+      assert.notEqual(code, 0, `${name}: the launch went on without its hooks`)
+      assert.equal(spawns.length, 0, name)
+      assert.match(errors.join('\n'), /settings\.local\.json/, name)
+    } finally {
+      console.error = originalError
+      rmSync(home, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
   }
 })
