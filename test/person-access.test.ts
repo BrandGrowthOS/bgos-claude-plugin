@@ -71,6 +71,9 @@ test('a fill records the person and the HTTPS origin only, in an owner only file
     const file = join(r.agentRoot, String(AGENT), 'vault-people-access.json')
     if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o077, 0)
     assert.throws(() => recordFillOrigin({ agentRoot: r.agentRoot, assistantId: AGENT, userId: LEO, origin: 'http://a.example.com' }))
+    // A loopback HTTP site is a local site the vault keeps logins for: recorded like an HTTPS one.
+    recordFillOrigin({ agentRoot: r.agentRoot, assistantId: AGENT, userId: LEO, origin: 'http://127.0.0.1:8080' })
+    assert.ok(readAccessRecord({ agentRoot: r.agentRoot, assistantId: AGENT })[LEO].includes('http://127.0.0.1:8080'))
     assert.throws(() => recordFillOrigin({ agentRoot: r.agentRoot, assistantId: AGENT, userId: '../x', origin: A }))
   } finally { r.done() }
 })
