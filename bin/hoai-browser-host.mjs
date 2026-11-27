@@ -79,9 +79,9 @@ import { homedir, hostname, tmpdir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, relative, resolve, posix as posixPath, win32 as win32Path } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { EventEmitter } from 'node:events'
-import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
+import { AgentBrowserVault, browserVaultScope, forgetSavedSites } from '../lib/agent-browser-vault.mjs'
 import { deletePersonBrowserProfile, personShareEnded, principalDirName } from '../lib/person-browser-profile.mjs'
-import { applyPendingClears, clearPersonOrigins, drainAccessChanges, fetchPeopleAccess, reconcilePeopleAccess, recordFillOrigin } from '../lib/person-access.mjs'
+import { applyPendingClears, clearPersonOrigins, drainAccessChanges, fetchPeopleAccess, hasPendingClear, markProfileDeletePending, profileDeletePending, reconcilePeopleAccess, recordFillOrigin, settleProfileDelete } from '../lib/person-access.mjs'
 import { HostFillError, openPersonFill } from '../lib/agent-host-vault-fill.mjs'
 import { fillLoginInPage, forgetPageHistory } from '../lib/agent-host-page-fill.mjs'
 import { commitFillTrust, hostPinStatus, readFillTrust, readHostRecord, readOwnerAnchor, vaultHostDir } from '../lib/vault-host.mjs'
@@ -2196,7 +2196,11 @@ export class ChromiumEngine {
  * Chrome, and one principal's concurrent first calls share one launch.
  */
 export class BrowserPool {
-  constructor({ agentRoot, createEngine, idleMs = BROWSER_IDLE_MS, log = () => {}, loadSignIns = null, bindEngine = /** @type {((engine: any, slot: any, ctx: any) => void) | null} */ (null), afterStart = /** @type {((engine: any, slot: any, ctx: any) => Promise<unknown> | unknown) | null} */ (null) }) {
+  constructor({ agentRoot, createEngine, idleMs = BROWSER_IDLE_MS, log = () => {}, loadSignIns = null, bindEngine = /** @type {((engine: any, slot: any, ctx: any) => void) | null} */ (null), afterStart = /** @type {((engine: any, slot: any, ctx: any) => Promise<unknown> | unknown) | null} */ (null), pendingClear = /** @type {((ctx: any) => boolean) | null} */ (null), beforeStart = /** @type {((ctx: any) => Promise<unknown> | unknown) | null} */ (null) }) {
+    /** Synchronous: does a startup clear still wait for this context (fix round 377, finding 2)? */
+    this.pendingClear = pendingClear
+    /** Before a browser is made for this context: a deletion that failed is tried again, and a throw keeps it closed. */
+    this.beforeStart = beforeStart
     /** Called with each engine once it started, before the call that needed it runs. */
     this.afterStart = afterStart
     this._agentRoot = agentRoot
@@ -2233,6 +2237,13 @@ export class BrowserPool {
     if (!(slot.engine && slot.engine.alive !== false)) {
       if (!slot.starting) {
         slot.starting = (async () => {
+          // A profile whose deletion failed is deleted before it is used again, or not opened (fix round 377, finding 2).
+          if (this.beforeStart) {
+            try { await this.beforeStart(ctx) } catch (err) {
+              this._log(`before start: ${err?.message ?? err}; this browser is not opened`)
+              throw new HostError('browser_cleanup_pending', 'This browser\'s earlier cleanup has not finished, so it was not opened. Try again in a moment.')
+            }
+          }
           const engine = await this._createEngine({ assistantId: ctx.assistantId, principal: ctx.principal, ...paths })
           this.bindEngine?.(engine, slot, ctx)
           engine.onGone = () => {
@@ -2255,7 +2266,9 @@ export class BrowserPool {
           try {
             engine.onStarted?.()
           } catch {}
-          slot.engine = engine
+          // The engine is NOT the slot's yet (fix round 377, finding 2): until
+          // its sign-ins and its startup clear are done, peek() finds no
+          // browser and every other acquire waits on `starting`.
           // With nobody there: an approved machine opens its own sealed copy. A locked key
           // store or a failed read leaves an ordinary browser with no sign-ins, never a stop.
           slot.signIns = null; slot.signInsApplied = false; slot.signInsRefused = false
@@ -2268,7 +2281,25 @@ export class BrowserPool {
             } catch (err) { this._log(`sign-ins: not opened (${err?.code || 'unavailable'})`) }
           }
           slot.openedAt = new Date().toISOString()
-          try { await this.afterStart?.(engine, slot, ctx) } catch (err) { this._log(`after start: ${err?.message ?? err}`) }
+          // The startup clear must finish, and nothing may wait after it, before
+          // the browser is handed out. A clear that fails stops this browser:
+          // it may still hold a site its person lost (fix round 377, finding 2).
+          // A clear queued while one ran is run too; the last check of the
+          // queue is synchronous with the hand out below, so a clear queued
+          // after it finds the browser open (peek) and clears it live.
+          for (let round = 0; this.afterStart; round++) {
+            try {
+              if (round >= 5) throw new Error('the startup clear did not settle')
+              await this.afterStart(engine, slot, ctx)
+            } catch (err) {
+              this._log(`after start: ${err?.message ?? err}; this browser is closed before use`)
+              try { await engine.stop() } catch {}
+              throw new HostError('browser_cleanup_failed', 'This browser could not be cleaned before use, so it was closed. Try again in a moment.')
+            }
+            // Synchronous, so nothing can queue a clear between this check and the hand out.
+            if (!(this.pendingClear?.(ctx) === true)) break
+          }
+          slot.engine = engine
           return engine
         })().finally(() => {
           slot.starting = null
@@ -2528,8 +2559,15 @@ export async function runPersonVaultFill({ pairing, agentRoot, assistantId, acti
     }
     // M2: which sites a person had the owner's logins filled on (no value), so
     // losing access later can clear them from that person's browser.
+    // The site is recorded BEFORE anything is typed, or nothing is typed (fix
+    // round 377, finding 2): a fill the record does not know of could never be
+    // cleared when the person loses the login. A full or unreadable record refuses.
     if (!values.own) {
-      try { recordFillOrigin({ agentRoot, assistantId, userId: actingUserId, origin }) } catch {}
+      try {
+        recordFillOrigin({ agentRoot, assistantId, userId: actingUserId, origin })
+      } catch (err) {
+        return { filled: false, reason: err?.code === 'access_record_full' ? 'vault_access_record_full' : 'vault_access_unrecorded' }
+      }
     }
     const done = await pageFill(page, { username: values.username, password: values.password }, { origin })
     // H1: the filled document can never come back. Whatever the outcome, the
@@ -3818,8 +3856,12 @@ export class BrowserHost {
     this._lastSweep = 0
     this.pool = new BrowserPool({ agentRoot, createEngine: (input) => createEngine({ ...input, personProfile: isPersonProfile(input, this.connectionFor(input.assistantId)?.pairing.ownerUserId ?? null) }), log, bindEngine: (engine, slot, ctx) => this.core?.bindEngine(engine, slot, ctx),
       loadSignIns: ctx => this._machineSignIns(ctx),
-      // M2: origins a person lost while their browser was closed are cleared at its next start.
-      afterStart: (engine, _slot, ctx) => applyPendingClears({ agentRoot, assistantId: ctx.assistantId, principal: ctx.principal, engine }) })
+      // M2: origins a person lost while their browser was closed are cleared at its next start,
+      // before the browser is handed out; one that cannot be cleared is closed (fix round 377, finding 2).
+      afterStart: (engine, _slot, ctx) => applyPendingClears({ agentRoot, assistantId: ctx.assistantId, principal: ctx.principal, engine }),
+      pendingClear: (ctx) => hasPendingClear({ agentRoot, assistantId: ctx.assistantId, principal: ctx.principal }),
+      // A person's profile whose deletion failed is deleted before that browser opens again.
+      beforeStart: (ctx) => this._retryProfileDelete(ctx) })
     this.remoteViews = new RemoteBrowserViews({ pool: this.pool })
     this.connections = new Map()
     this.retiringConnections = new Map()
@@ -3964,17 +4006,68 @@ export class BrowserHost {
 
   _accessEffects(id) {
     return {
-      clearOrigins: (userId, origins) => clearPersonOrigins({ pool: this.pool, agentRoot: this.agentRoot, assistantId: id, userId, origins }),
+      clearOrigins: (userId, origins) => clearPersonOrigins({
+        pool: this.pool, agentRoot: this.agentRoot, assistantId: id, userId, origins,
+        // The saved, encrypted copy forgets the sites too: now when it is open,
+        // else at its next unlock (lib/agent-browser-vault.mjs, fix round 377, finding 2).
+        forgetSaved: async (hosts, liveEngine) => {
+          if (typeof liveEngine?.vault?.forgetSites === 'function') return liveEngine.vault.forgetSites(hosts)
+          const { profileDir } = browserPathsFor({ agentRoot: this.agentRoot, assistantId: id, principal: `user-${userId}` })
+          return forgetSavedSites(profileDir, hosts)
+        },
+      }),
+      // True only when the browser was closed AND its folders are gone. A
+      // close or a deletion that failed is kept (markProfileDeletePending) and
+      // answered false, so the record keeps the person and the deletion is
+      // tried again before that browser opens (fix round 377, finding 2).
       deleteProfile: async (userId) => {
         const owner = this.connectionFor(id)?.pairing.ownerUserId ?? null
-        if (userId === owner) return
-        const ctx = { assistantId: id, principal: `user-${userId}` }
-        try { await this.pool.release(ctx) } catch {}
-        this.pool._slots?.delete?.(this.pool.slotKey(ctx))
-        try { deletePersonBrowserProfile({ agentRoot: this.agentRoot, assistantId: id, userId, ownerUserId: owner }) } catch {}
-        this._log(`a person on agent ${id} lost the owner's logins: their browser was closed and its folders deleted`)
+        if (userId === owner) return true
+        const deleted = await this._deleteProfileNow(id, userId, owner)
+        if (deleted) {
+          this._log(`a person on agent ${id} lost the owner's logins: their browser was closed and its folders deleted`)
+          return true
+        }
+        try { markProfileDeletePending({ agentRoot: this.agentRoot, assistantId: id, userId }) } catch {}
+        this._log(`a person on agent ${id} lost the owner's logins: their browser could not be closed or its folders deleted; this is tried again, and that browser does not open until it is done`)
+        return false
       },
     }
+  }
+
+  /** Close a person's browser and delete its folders. True only when both happened. */
+  async _deleteProfileNow(id, userId, owner) {
+    const ctx = { assistantId: id, principal: `user-${userId}` }
+    try {
+      await this.pool.release(ctx)
+    } catch {
+      return false
+    }
+    const slot = this.pool._slots?.get?.(this.pool.slotKey(ctx))
+    if (slot && (slot.stopError || slot.stopping || slot.starting || (slot.engine && slot.engine.alive !== false))) return false
+    this.pool._slots?.delete?.(this.pool.slotKey(ctx))
+    try {
+      deletePersonBrowserProfile({ agentRoot: this.agentRoot, assistantId: id, userId, ownerUserId: owner })
+    } catch {
+      return false
+    }
+    settleProfileDelete({ agentRoot: this.agentRoot, assistantId: id, userId })
+    return true
+  }
+
+  /** BrowserPool beforeStart: a deletion still owed for this person is done first, or the browser is not opened. */
+  async _retryProfileDelete(ctx) {
+    const m = /^user-(user_[A-Za-z0-9_-]{1,240})$/.exec(String(ctx?.principal ?? ''))
+    if (!m || !profileDeletePending({ agentRoot: this.agentRoot, assistantId: ctx.assistantId, userId: m[1] })) return
+    const owner = this.connectionFor(ctx.assistantId)?.pairing.ownerUserId ?? null
+    if (m[1] === owner) return
+    try {
+      deletePersonBrowserProfile({ agentRoot: this.agentRoot, assistantId: ctx.assistantId, userId: m[1], ownerUserId: owner })
+    } catch {
+      throw new Error('an owed profile deletion failed again')
+    }
+    settleProfileDelete({ agentRoot: this.agentRoot, assistantId: ctx.assistantId, userId: m[1] })
+    this._log(`a person on agent ${ctx.assistantId}: the deletion of their browser folders, owed since an earlier failure, is done`)
   }
 
   /** M2: the changes the owner's daemon queued from its pairing room. */
