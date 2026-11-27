@@ -155,6 +155,8 @@ const ANSWER_REFUSED = 'The server refused this answer, so it did not arrive, an
 const STOP_HOOK_LOOP =
   'This turn was stopped because a Stop hook (such as a /goal set in the main chat) kept blocking it from ending. Send your reply again to retry.'
 const ORPHAN_ALIVE = couldNotOpen('an earlier run of this thread is still stopping. Send your reply again in a minute.')
+/** Fix round 377, finding 4: the manager was stopped (a revoke, a lost session, a shutdown) and starts nothing more. */
+const MANAGER_STOPPED = couldNotOpen('this agent host is stopping its threads. Send your reply again in a moment.')
 
 /** A synthetic user message a blocking Stop hook added: its text starts with the CLI's feedback prefix. */
 function isStopHookFeedback(frame: Record<string, unknown>): boolean {
@@ -362,6 +364,13 @@ export class ThreadLaneManager {
   /** Closed lanes whose process has not exited yet: they still hold a slot. */
   private readonly closing = new Set<Lane>()
   private readonly work = new Set<Promise<unknown>>()
+  /**
+   * Set by stopAll and never cleared (fix round 377, finding 4): a stop is
+   * terminal for this manager. No turn, replay or pump is admitted after it,
+   * and a start already awaiting its setup (no child yet, so stopAll could not
+   * signal it) checks this after every await and right before it spawns.
+   */
+  private stopped = false
 
   constructor(deps: ThreadLaneDeps) {
     this.deps = deps
@@ -417,6 +426,7 @@ export class ThreadLaneManager {
    * background and its answer arrives through the thread routes.
    */
   turn(input: ThreadTurnInput): { accepted: true; state: 'working' | 'waiting' } {
+    if (this.stopped) throw new ThreadLaneError('unavailable', MANAGER_STOPPED)
     validateTurn(input)
     const lane = this.laneFor(input)
     if (lane.state.closedAt !== null) {
@@ -552,7 +562,10 @@ export class ThreadLaneManager {
   }
 
   private async reconcileNow(fetchPending: () => Promise<unknown>, opts: { assistantIds?: readonly string[]; lane?: string }): Promise<number> {
+    if (this.stopped) return 0
     const raw = await fetchPending()
+    // Stopped while the read was out: nothing it lists runs.
+    if (this.stopped) return 0
     const body = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
     const rows: unknown[] = Array.isArray(body?.turns) ? (body!.turns as unknown[]) : []
     const served = opts.assistantIds ? new Set(opts.assistantIds.map(String)) : null
@@ -596,6 +609,7 @@ export class ThreadLaneManager {
 
   /** One pending row, once no post for its lane is in flight: 1 when a turn started. */
   private reconcileTurn(input: ThreadTurnInput): number {
+    if (this.stopped) return 0
     try {
       validateTurn(input)
     } catch (err) {
@@ -642,6 +656,7 @@ export class ThreadLaneManager {
    * killAll for whatever is left.
    */
   stopAll(): Promise<void> {
+    this.stopped = true
     this.waiting = []
     const exits: Array<Promise<void>> = []
     for (const lane of [...this.lanes.values(), ...this.closing]) {
@@ -716,6 +731,7 @@ export class ThreadLaneManager {
   }
 
   private start(lane: Lane): void {
+    if (this.stopped) return
     const turn = lane.queue.shift()
     if (!turn) return
     lane.current = turn
@@ -733,7 +749,7 @@ export class ThreadLaneManager {
       } finally {
         if (lane.starting === starting) lane.starting = null
       }
-      if (lane.current !== turn || !lane.child || lane.closed) return
+      if (lane.current !== turn || !lane.child || lane.closed || this.stopped) return
       lane.childTurn = turn
       lane.stopHookBlocks = 0
       lane.turnSawAssistant = false
@@ -767,6 +783,10 @@ export class ThreadLaneManager {
    * first) and its exit frees the slot.
    */
   private pump(): void {
+    if (this.stopped) {
+      this.waiting = []
+      return
+    }
     while (this.waiting.length > 0) {
       const rootId = this.waiting[0]!
       const lane = this.lanes.get(rootId)
@@ -965,23 +985,23 @@ export class ThreadLaneManager {
       lane.state.pidStamp = null
     }
     if (lane.child && lane.stopping) await lane.exited
-    if (lane.closed || lane.child) return
+    if (lane.closed || this.stopped || lane.child) return
     // A process left from before a daemon crash still runs this thread: never a second one.
     if (!(await this.stopOrphan(lane.state))) throw new ThreadLaneError('busy', ORPHAN_ALIVE)
-    if (lane.closed || lane.child) return
+    if (lane.closed || this.stopped || lane.child) return
     const claude = this.deps.claudeBin()
     if (!claude) throw new ThreadLaneError('unavailable', NO_CLAUDE)
     // An older CLI refuses --restricted: say so, never the generic "turn failed".
     // Asynchronous: a probe still running is waited for off the event loop.
     const problem = await this.deps.cliProblem()
     if (problem) throw new ThreadLaneError('unsupported', couldNotOpen(problem))
-    if (lane.closed || lane.child) return
+    if (lane.closed || this.stopped || lane.child) return
     await this.prepareFolder(lane)
-    if (lane.closed) return
+    if (lane.closed || this.stopped) return
     const confinement = await this.confinement(lane)
     // Closed while the worktree or its confinement was being made: no copy of
     // the main transcript, no process (close removes or keeps the folder).
-    if (lane.closed) return
+    if (lane.closed || this.stopped) return
     const mcp = this.deps.emptyMcpConfigPath()
     let args: string[]
     if (lane.state.forkSessionId) {
@@ -1006,10 +1026,16 @@ export class ThreadLaneManager {
       if (!isSessionId(mainId)) throw new ThreadLaneError('no_session', NO_SESSION)
       args = threadLaneArgs({ mainSessionId: mainId, forkSessionId: null, emptyMcpConfigPath: mcp, confinement })
       await this.copyMainTranscript(lane, mainId)
-      if (lane.closed) {
+      if (lane.closed || this.stopped) {
         this.dropCopiedMain(lane)
         return
       }
+    }
+    // The last check before a process exists (fix round 377, finding 4): the
+    // fork path above awaits its goal clearing with no check after it.
+    if (lane.closed || this.stopped) {
+      this.dropCopiedMain(lane)
+      return
     }
     let child: StreamJsonChild
     try {

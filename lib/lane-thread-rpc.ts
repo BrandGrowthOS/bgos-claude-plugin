@@ -160,6 +160,10 @@ export interface LaneThreadRpcDeps {
   /** POST integrations/voice-rpc/<rpcId>/result with the lane session. */
   postResult: (rpcId: string, body: Record<string, unknown>) => Promise<unknown>
   log: (msg: string) => void
+  /** False once the lane is ending: no thread frame is run after that (checked before and after the ack). */
+  admitting?: () => boolean
+  /** The ack answered 401 or 403: the lane session is refused, and the lane daemon decides what follows. */
+  sessionRefused?: (where: string) => void
 }
 
 export class LaneThreadRpcHandler {
@@ -186,10 +190,30 @@ export class LaneThreadRpcHandler {
     }
     this.seen.add(frame.rpcId)
     if (this.seen.size > SEEN_RPC_MAX) this.seen.delete(this.seen.values().next().value as string)
+    // A lane that is ending (a revoke, a lost session) takes no more thread work (fix round 377, finding 4).
+    if (this.deps.admitting && !this.deps.admitting()) {
+      log(`voice_rpc ${frame.op} not run: the lane is ending`)
+      return
+    }
     try {
       await this.deps.postAck(frame.rpcId)
     } catch (err) {
+      const status = (err as { status?: unknown } | null)?.status
+      if (status === 401 || status === 403) {
+        // The lane session is no longer admitted: the turn does not run on it.
+        // The rpcId is forgotten, so a frame sent again after a fresh session runs.
+        this.seen.delete(frame.rpcId)
+        log(`voice_rpc ${frame.op} not run: the lane session was refused (HTTP ${status})`)
+        this.deps.sessionRefused?.('voice_rpc ack')
+        return
+      }
+      // Anything else (a 5xx, a dropped connection) is transient: the turn still runs.
       log(`voice_rpc ack failed (non-fatal): ${errorKind(err)}`)
+    }
+    // The ack awaited: the lane may have begun ending meanwhile.
+    if (this.deps.admitting && !this.deps.admitting()) {
+      log(`voice_rpc ${frame.op} not run: the lane is ending`)
+      return
     }
     let result: LaneThreadResult
     try {

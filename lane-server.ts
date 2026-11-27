@@ -852,6 +852,9 @@ const laneThreadRpc = new LaneThreadRpcHandler({
   postAck: (rpcId) => laneFetch('POST', `integrations/voice-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
   postResult: (rpcId, body) => laneFetch('POST', `integrations/voice-rpc/${encodeURIComponent(rpcId)}/result`, body),
   log: (line) => log(line),
+  // A revoke or a lost session closes thread admission at once (fix round 377, finding 4).
+  admitting: () => !ending,
+  sessionRefused: (where) => { void sessionRefused(where) },
 })
 
 /**

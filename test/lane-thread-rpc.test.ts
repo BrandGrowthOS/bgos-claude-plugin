@@ -695,3 +695,154 @@ test('a replayed turn keeps its guardrail in a person\'s lane, and the owner\'s 
   await owner.manager.idle()
   assert.equal(owner.spawned[0]!.child.stdin.join('').includes('Guardrail from this agent'), false)
 })
+
+// ── A revoke is terminal for the lane's threads (fix round 377, finding 4) ──
+//
+// endLane stops the manager (stopAll) and the daemon disconnects. Work already
+// on its way must not start a thread after that: a replay whose read was out,
+// a frame whose ack was out, and a start that was awaiting its setup and so
+// had no child for stopAll to signal. Each case counts spawns.
+
+/** A promise the test resolves by hand. */
+function gate<T = void>() {
+  let open!: (value: T) => void
+  const promise = new Promise<T>((resolve) => { open = resolve })
+  return { promise, open }
+}
+
+test('a revoke while the pending read is out starts nothing it lists', async () => {
+  const r = rig()
+  const read = gate<unknown>()
+  const replay = r.manager.reconcile(() => read.promise, { assistantIds: [AGENT], lane: `person:${ANA}` })
+  await r.manager.stopAll()
+  read.open({ turns: [{ chatId: '55', rootId: '301', replyId: '3011', mode: 'start', text: 'hi', title: 'T', rootText: 'r', assistantId: AGENT, actorUserId: ANA, lane: `person:${ANA}` }] })
+  assert.equal(await replay, 0)
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0, 'no process started')
+  // And a replay asked for after the revoke does not even read.
+  let read2 = 0
+  assert.equal(await r.manager.reconcile(async () => { read2++; return { turns: [] } }, { lane: `person:${ANA}` }), 0)
+  assert.equal(read2, 0)
+})
+
+test('a revoke while a start awaits its setup: no process is spawned, and the manager admits no new turn', async () => {
+  const r = rig()
+  const probe = gate<string | null>()
+  r.deps.cliProblem = () => probe.promise
+  r.manager.turn(turn('302'))
+  // The start is now awaiting the CLI probe, with no child yet.
+  await new Promise((resolve) => setImmediate(resolve))
+  const stopped = r.manager.stopAll()
+  probe.open(null)
+  await stopped
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0, 'the start rechecked the stop before spawning')
+  assert.throws(() => r.manager.turn(turn('303')), (err: unknown) => (err as { code?: string }).code === 'unavailable')
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+})
+
+test('a revoke while the start copies the transcript, the last step before the spawn: no process', async () => {
+  const r = rig()
+  const copy = gate()
+  const fs = r.deps.fs
+  const writeFile = fs.writeFile.bind(fs)
+  let stopping: Promise<void> | null = null
+  // The copy of the lane's transcript into the thread's folder: the stop lands while it is written.
+  fs.writeFile = (p: string, s: string) => {
+    writeFile(p, s)
+    if (p.endsWith(`${LANE_SESSION}.jsonl`) && !stopping) {
+      stopping = r.manager.stopAll()
+      copy.open()
+    }
+  }
+  r.manager.turn(turn('304'))
+  await Promise.race([copy.promise, r.manager.idle().then(() => assert.fail('the transcript copy was never written'))])
+  await stopping
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 0)
+})
+
+test('without a revoke the same start spawns exactly once (the control)', async () => {
+  const r = rig()
+  const probe = gate<string | null>()
+  r.deps.cliProblem = () => probe.promise
+  r.manager.turn(turn('305'))
+  await new Promise((resolve) => setImmediate(resolve))
+  probe.open(null)
+  await r.manager.idle()
+  assert.equal(r.spawned.length, 1)
+})
+
+test('a frame whose ack is out when the lane starts ending is not run; a 401 or 403 ack is terminal, a 502 is not', async () => {
+  for (const [status, runs] of [[401, false], [403, false], [502, true]] as const) {
+    const turns: ThreadTurnInput[] = []
+    const refused: string[] = []
+    const handle = new LaneThreadRpcHandler({
+      lane: { userId: ANA, assistantId: AGENT },
+      threads: { turn: (input) => { turns.push(input); return { accepted: true, state: 'working' } }, close: async () => ({ stopped: true }) },
+      postAck: async () => { throw Object.assign(new Error(`HTTP ${status}`), { status }) },
+      postResult: async () => {},
+      log: () => {},
+      admitting: () => true,
+      sessionRefused: (where) => { refused.push(where) },
+    })
+    await handle.handle(frame(ANA, 'thread_turn', TURN_PAYLOAD))
+    assert.equal(turns.length, runs ? 1 : 0, `HTTP ${status}`)
+    assert.deepEqual(refused, runs ? [] : ['voice_rpc ack'], `HTTP ${status}: the lane daemon hears of a refused session`)
+  }
+  // Ending while the ack is out: the turn is not handed over.
+  let admitting = true
+  const ack = gate()
+  const turns: ThreadTurnInput[] = []
+  const handle = new LaneThreadRpcHandler({
+    lane: { userId: ANA, assistantId: AGENT },
+    threads: { turn: (input) => { turns.push(input); return { accepted: true, state: 'working' } }, close: async () => ({ stopped: true }) },
+    postAck: () => ack.promise,
+    postResult: async () => {},
+    log: () => {},
+    admitting: () => admitting,
+  })
+  const handled = handle.handle(frame(ANA, 'thread_turn', TURN_PAYLOAD))
+  admitting = false
+  ack.open()
+  await handled
+  assert.equal(turns.length, 0)
+  // An ending lane does not even acknowledge a new frame.
+  const acks: string[] = []
+  const closed = new LaneThreadRpcHandler({
+    lane: { userId: ANA, assistantId: AGENT },
+    threads: { turn: () => { throw new Error('ran') }, close: async () => ({ stopped: true }) },
+    postAck: async (id) => { acks.push(id) },
+    postResult: async () => {},
+    log: () => {},
+    admitting: () => false,
+  })
+  await closed.handle(frame(ANA, 'thread_turn', TURN_PAYLOAD))
+  assert.deepEqual(acks, [])
+})
+
+test('a 401 ack forgets the rpcId, so the same frame sent again after a fresh session runs', async () => {
+  let fail = true
+  const turns: ThreadTurnInput[] = []
+  const handle = new LaneThreadRpcHandler({
+    lane: { userId: ANA, assistantId: AGENT },
+    threads: { turn: (input) => { turns.push(input); return { accepted: true, state: 'working' } }, close: async () => ({ stopped: true }) },
+    postAck: async () => { if (fail) throw Object.assign(new Error('HTTP 401'), { status: 401 }) },
+    postResult: async () => {},
+    log: () => {},
+  })
+  await handle.handle(frame(ANA, 'thread_turn', TURN_PAYLOAD))
+  fail = false
+  await handle.handle(frame(ANA, 'thread_turn', TURN_PAYLOAD))
+  assert.equal(turns.length, 1)
+})
+
+test('lane-server.ts wires the handler to the ending flag and the session refusal', () => {
+  const lane = readFileSync(join(import.meta.dirname, '..', 'lane-server.ts'), 'utf8')
+  const wiring = lane.slice(lane.indexOf('const laneThreadRpc = new LaneThreadRpcHandler({'), lane.indexOf('function reconcileLaneThreads('))
+  assert.match(wiring, /admitting: \(\) => !ending,/)
+  assert.match(wiring, /sessionRefused: \(where\) => \{ void sessionRefused\(where\) \},/)
+  const end = lane.slice(lane.indexOf('function endLane('), lane.indexOf('function appendEvent('))
+  assert.ok(end.indexOf('ending = true') < end.indexOf('laneThreads.stopAll()'), 'admission closes before the manager stops')
+})
