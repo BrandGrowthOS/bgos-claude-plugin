@@ -266,7 +266,7 @@ export function selectLaneBacklog(
 
 /**
  * The lane's inbox state, persisted in its own state folder
- * (`~/.bgos-plugin-state/<id>/lanes/<userId>/cursor.json`, design 4.2 "Crash
+ * (`~/.bgos-plugin-state/<id>/lanes/<laneUserKey>/cursor.json`, design 4.2 "Crash
  * mid turn"). `cursor` only moves on the poll (rows come back in order there;
  * a socket frame can arrive ahead of an earlier row), `delivered` remembers
  * what Claude was handed so a relaunch never hands it twice, and `pending` is
