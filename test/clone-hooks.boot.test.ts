@@ -92,12 +92,14 @@ test('a folder whose private turn hook is already registered gets the CURRENT ho
   assert.equal(typeof atBoot, 'function', NO_BOOT)
   const stale = staleSettings()
   const dir = workspace(stale)
-  // This is the folder the old gate skipped: the daemon counted the hook as registered.
-  assert.equal(presenceOf(dir).registered, true)
+  // The old gate skipped this folder: the daemon counted the hook as registered. Its entry is not the writer's (a
+  // 3 s timeout), so the daemon no longer counts it as it stands; the boot rewrites it, and then it counts.
+  assert.equal(presenceOf(dir).registered, false)
 
   const boot = atBoot({ folders: [dir], pluginDir: repoRoot, installMethod: 'clone', privateHookRegistered: true })
   assert.deepEqual(boot.results.map((r: { outcome: string }) => r.outcome), ['registered'])
   assert.deepEqual(hooksOf(dir), whatHoaiRunWrites(stale))
+  assert.equal(presenceOf(dir).registered, true)
   assert.match(JSON.stringify(hooksOf(dir).PreToolUse), /hoai-floor-hook\.mjs/, 'a folder that carries the rail keeps its full set')
   // The hook was already there, so this refresh serves the next launch and asks for no restart.
   assert.deepEqual(boot.restartOutcomes, [])
