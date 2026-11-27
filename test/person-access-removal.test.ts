@@ -284,6 +284,22 @@ test('clearing a person\'s site marks the saved copy after the live browser no l
   } finally { r.done() }
 })
 
+test('a person with no browser profile on this computer has nothing saved to forget: the removal completes', async () => {
+  const r = rig()
+  try {
+    const missing = join(r.root, 'no-such-profile')
+    assert.equal(vm.forgetSavedSites(missing, ['a.example.com']), true)
+    pa.recordFillOrigin({ agentRoot: r.agentRoot, assistantId: AGENT, userId: LEO, origin: A })
+    const answer = { assistantId: AGENT, people: [{ userId: LEO, origins: [] }] }
+    // The host's own wiring: no live browser, so the saved copy is marked by path.
+    await pa.reconcilePeopleAccess({
+      agentRoot: r.agentRoot, assistantId: AGENT, answer, ownerUserId: OWNER, deleteProfile: async () => true,
+      clearOrigins: (userId: string, origins: string[]) => pa.clearPersonOrigins({ pool: { peek: () => null }, agentRoot: r.agentRoot, assistantId: AGENT, userId, origins, forgetSaved: (hosts: string[]) => vm.forgetSavedSites(missing, hosts) }),
+    })
+    assert.deepEqual(pa.readAccessRecord({ agentRoot: r.agentRoot, assistantId: AGENT }), {}, 'removed, not retried forever')
+  } finally { r.done() }
+})
+
 // ── A deletion that failed is owed, and done before reuse ────────────────────
 
 test('a profile deletion that failed is owed and done before that browser opens again; a second failure keeps it closed', async () => {
