@@ -31,8 +31,10 @@ export interface PrivateHookPresenceInput {
   pluginRoot: string
   /** The session's folders, most specific first. */
   folders: readonly string[]
-  /** The CLI's config folder (CLAUDE_CONFIG_DIR or ~/.claude). */
+  /** The CLI's config folder (CLAUDE_CONFIG_DIR or ~/.claude), its settings counted; '' for none. */
   configDir: string
+  /** Config folders read for the hook switch only, never counted (lib/floor-hook-presence.ts). */
+  otherConfigDirs?: readonly string[]
   env: Record<string, string | undefined>
   readFile: (path: string) => string
   exists: (path: string) => boolean

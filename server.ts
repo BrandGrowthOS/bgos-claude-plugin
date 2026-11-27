@@ -16771,6 +16771,28 @@ function lockYieldReason(
 }
 
 /**
+ * The user config folders the CLI may be reading for this session, for the hook switch alone (fail closed): the one
+ * this daemon's environment names (CLAUDE_CONFIG_DIR), and ~/.claude by the environment's home and by the
+ * account's. The environment is the folder's to set as well (an .mcp.json "env"), so none of them is trusted to hold
+ * a hook that counts; any of them that switches every hook off, or cannot be read, means no hook is registered.
+ */
+const HOOK_SWITCH_CONFIG_DIRS: string[] = [
+  ...new Set(
+    [
+      CLAUDE_CONFIG_DIR,
+      pathJoin(homedir(), '.claude'),
+      (() => {
+        try {
+          return pathJoin(osUserInfo().homedir, '.claude')
+        } catch {
+          return ''
+        }
+      })(),
+    ].filter(Boolean),
+  ),
+]
+
+/**
  * Is the blocking floor hook registered for this session? Looked up ONCE, at
  * boot, because the CLI reads its hooks when it launches, and hard_floor is
  * declared only when it is (lib/floor-hook-presence.ts): a clone updated in
@@ -16783,7 +16805,10 @@ const FLOOR_HOOK: FloorHookPresence = (() => {
       installMethod: INSTALL_METHOD,
       pluginRoot: PLUGIN_ROOT,
       folders: FLOOR_FOLDERS,
-      configDir: CLAUDE_CONFIG_DIR,
+      // No user config folder to count entries in: this one is named by this daemon's environment, which the
+      // folder's .mcp.json can set, and the plugin writes no hook there. Each is read for the hook switch only.
+      configDir: '',
+      otherConfigDirs: HOOK_SWITCH_CONFIG_DIRS,
       env: process.env,
       // Plain files of bounded size only (a FIFO or a huge file there would hold the boot), and real paths.
       ...hookPresenceFs(),
@@ -16806,7 +16831,10 @@ const PRIVATE_HOOK_AT_BOOT: PrivateHookPresence = (() => {
       installMethod: INSTALL_METHOD,
       pluginRoot: PLUGIN_ROOT,
       folders: FLOOR_FOLDERS,
-      configDir: CLAUDE_CONFIG_DIR,
+      // No user config folder to count entries in: this one is named by this daemon's environment, which the
+      // folder's .mcp.json can set, and the plugin writes no hook there. Each is read for the hook switch only.
+      configDir: '',
+      otherConfigDirs: HOOK_SWITCH_CONFIG_DIRS,
       env: process.env,
       // Plain files of bounded size only (a FIFO or a huge file there would hold the boot), and real paths.
       ...hookPresenceFs(),

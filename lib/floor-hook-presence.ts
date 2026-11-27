@@ -49,8 +49,13 @@ export interface FloorHookPresenceInput {
   pluginRoot: string
   /** The session's folders, most specific first. */
   folders: readonly string[]
-  /** The CLI's config folder (CLAUDE_CONFIG_DIR or ~/.claude). */
+  /** The CLI's config folder (CLAUDE_CONFIG_DIR or ~/.claude), its settings counted; '' for none. */
   configDir: string
+  /**
+   * Config folders the CLI may be using that the caller cannot vouch for (the daemon's own environment names them,
+   * and the folder's .mcp.json can set that environment): read for the hook switch only, never counted.
+   */
+  otherConfigDirs?: readonly string[]
   env: Record<string, string | undefined>
   /** Answers the file's text, or throws. */
   readFile: (path: string) => string
@@ -106,8 +111,15 @@ function isMissingFile(err: unknown): boolean {
  * CLOSED: only a file that is not there (readFile throws ENOENT) is no file; one that is there and cannot be read
  * may hold the switch.
  */
-export function hookSwitchVerdict(input: Pick<FloorHookPresenceInput, 'folders' | 'configDir' | 'join' | 'readFile'>): HookSwitchVerdict | null {
-  const sources = sessionSettingsFiles(input).map((file) => {
+export function hookSwitchVerdict(
+  input: Pick<FloorHookPresenceInput, 'folders' | 'configDir' | 'otherConfigDirs' | 'join' | 'readFile'>,
+): HookSwitchVerdict | null {
+  const files = sessionSettingsFiles(input)
+  for (const dir of input.otherConfigDirs ?? []) {
+    const file = dir ? input.join(dir, 'settings.json') : ''
+    if (file && !files.includes(file)) files.push(file)
+  }
+  const sources = files.map((file) => {
     try {
       const text = input.readFile(file)
       return { file, read: typeof text === 'string' ? { state: 'ok' as const, text } : { state: 'missing' as const } }
