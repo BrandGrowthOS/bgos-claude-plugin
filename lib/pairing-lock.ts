@@ -68,6 +68,12 @@
  * unknown and never taken over by route, and a daemon whose channel is proven
  * not loaded never takes a live channel, as before. No folder is stored.
  *
+ * NOT THIS AGENT (board 01a072c5). A session whose own agent id (its
+ * BGOS_ASSISTANT_ID, else its folder pin) differs from the assistantId of the
+ * pairing it resolved to comes with the route 'not-this-agent'
+ * (lib/agent-credentials.ts decideSessionClaim). It never takes the lock, not
+ * a free one, a stale one or a dead holder's, and so never writes it.
+ *
  * This module is the PURE core (decideLockAction, the staleness maths, the
  * serialize/parse pair, the heartbeat throttle) plus a thin, fully-injectable
  * effectful shell (acquire / refresh / release / touchBeaconHeartbeat). All
@@ -79,7 +85,7 @@
 
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 
-import type { IdentityRoute } from './agent-credentials.js'
+import type { IdentityRoute, LockRoute } from './agent-credentials.js'
 
 /** The three route words a lock record may carry; anything else is dropped. */
 const LOCK_ROUTES: ReadonlySet<string> = new Set(['pin', 'env', 'elimination'])
@@ -213,6 +219,8 @@ export function serializeLockRecord(record: LockRecord): string {
  * THE PURE DECISION. Given the lock currently on disk (or null), decide
  * whether this daemon may acquire it or must stay passive.
  *
+ *   - We are 'not-this-agent'     -> passive, whatever is on disk (we name a
+ *                                    different agent than the pairing's).
  *   - No record on disk           -> acquire ('unlocked').
  *   - Record is our own pid       -> acquire ('own'); a re-acquire refreshes.
  *   - Heartbeat older than window -> acquire ('stale'); the holder stopped
@@ -265,10 +273,19 @@ export function decideLockAction(input: {
   /** This daemon's channel presence: true / false when proven, null or
    *  absent when unknown (today's behaviour). */
   selfChannelLoaded?: boolean | null
-  /** How this daemon found its identity; absent is unknown (no takeover). */
-  selfRoute?: IdentityRoute | null
+  /** How this daemon found its identity; absent is unknown (no takeover).
+   *  'not-this-agent': passive whatever is on disk. */
+  selfRoute?: LockRoute | null
 }): LockDecision {
   const { existing, now, selfPid, stalenessMs, isHolderAlive } = input
+  if (input.selfRoute === 'not-this-agent') {
+    return {
+      action: 'passive',
+      holderPid: existing?.pid ?? 0,
+      ...(typeof existing?.channelLoaded === 'boolean' ? { holderChannelLoaded: existing.channelLoaded } : {}),
+      ...(existing?.route ? { holderRoute: existing.route } : {}),
+    }
+  }
   if (!existing) return { action: 'acquire', reason: 'unlocked' }
   if (existing.pid === selfPid) return { action: 'acquire', reason: 'own' }
   if (now - existing.heartbeatAt >= stalenessMs) {
@@ -426,8 +443,9 @@ export function acquirePairingLock(input: {
    *  takeover rule. null / absent: unknown, nothing recorded. */
   channelLoaded?: boolean | null
   /** How this daemon found its identity, recorded in the lock and used for
-   *  the route takeover. null / absent: unknown, nothing recorded. */
-  route?: IdentityRoute | null
+   *  the route takeover. null / absent: unknown, nothing recorded.
+   *  'not-this-agent' never acquires and is never recorded. */
+  route?: LockRoute | null
   io?: LockIo
 }): AcquireResult {
   const io = input.io ?? defaultLockIo
@@ -542,12 +560,14 @@ export function refreshPairingLockDetailed(input: {
   /** Re-recorded on every refresh, so a takeover rival always reads it. */
   channelLoaded?: boolean | null
   /** Re-recorded on every refresh too, for the same reason. */
-  route?: IdentityRoute | null
+  route?: LockRoute | null
   io?: LockIo
 }): RefreshOutcome {
   const io = input.io ?? defaultLockIo
   try {
     const existing = parseLockRecord(io.readText(input.lockPath))
+    // Never ours to hold, so never re-stamped (it cannot be held: see decideLockAction).
+    if (input.route === 'not-this-agent') return { held: false, holderPid: existing?.pid }
     if (existing && existing.pid !== input.selfPid) {
       return {
         held: false,
@@ -583,7 +603,7 @@ export function refreshPairingLock(input: {
   now: number
   bootedAt?: number
   channelLoaded?: boolean | null
-  route?: IdentityRoute | null
+  route?: LockRoute | null
   io?: LockIo
 }): boolean {
   return refreshPairingLockDetailed(input).held
@@ -704,7 +724,7 @@ export function formatChannelTakeoverLine(input: {
 }
 
 /** How a route reads in a log line. */
-function routePhrase(route: IdentityRoute | null | undefined): string {
+function routePhrase(route: LockRoute | null | undefined): string {
   if (route === 'pin') return 'the folder pin'
   if (route === 'env') return 'BGOS_ASSISTANT_ID or BGOS_CREDENTIALS_PATH'
   return 'elimination'
@@ -715,7 +735,7 @@ function routePhrase(route: IdentityRoute | null | undefined): string {
 export function formatRouteTakeoverLine(input: {
   selfPid: number
   holderPid: number | undefined
-  selfRoute: IdentityRoute | null | undefined
+  selfRoute: LockRoute | null | undefined
 }): string {
   const who = input.holderPid && input.holderPid > 0 ? `pid ${input.holderPid}` : 'the holder'
   return (
@@ -724,6 +744,10 @@ export function formatRouteTakeoverLine(input: {
   )
 }
 
+/** The yield clause of a session that names a different agent (board 01a072c5). */
+export const NOT_THIS_AGENT_YIELD =
+  'never taking the pairing lock: this session names a different agent than the one this pairing was made for'
+
 /**
  * The clause that says WHY this daemon yields to the holder by route, or ''
  * when that is not the reason: the holder is pinned to this agent and this
@@ -731,8 +755,9 @@ export function formatRouteTakeoverLine(input: {
  */
 export function formatLockYieldReason(input: {
   holderRoute: IdentityRoute | null | undefined
-  selfRoute: IdentityRoute | null | undefined
+  selfRoute: LockRoute | null | undefined
 }): string {
+  if (input.selfRoute === 'not-this-agent') return NOT_THIS_AGENT_YIELD
   if (!isPinnedRoute(input.holderRoute) || input.selfRoute !== 'elimination') return ''
   return (
     `yielding the pairing lock: the holder is pinned to this agent ` +
@@ -745,6 +770,14 @@ export function formatLockYieldReason(input: {
  *  `yieldReason` (formatChannelYieldReason) it also says why it will NOT take
  *  over while that holder lives. */
 export function formatPassiveBanner(holderPid: number | undefined, yieldReason = ''): string {
+  if (yieldReason === NOT_THIS_AGENT_YIELD) {
+    return (
+      `passive: this daemon will NOT connect the pairing channel (its MCP tools stay available). ` +
+      `${yieldReason[0].toUpperCase()}${yieldReason.slice(1)} (its BGOS_ASSISTANT_ID, or its folder pin, ` +
+      `differs from the pairing's assistantId), free or held. To run as the paired agent, start it with that ` +
+      `agent's id or from that agent's own folder.`
+    )
+  }
   const who = holderPid && holderPid > 0 ? `pid ${holderPid}` : 'another process'
   return (
     `passive: the pairing is already held by ${who} on this host, so this ` +

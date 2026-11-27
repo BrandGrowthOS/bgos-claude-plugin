@@ -409,7 +409,7 @@ import {
   formatNoHomeWarning,
   homeCheckPassed,
   homeStepWhileHolding,
-  lockRouteFor,
+  decideSessionClaim,
   readFolderPinId,
   formatAuthResolution,
   formatPairingRejection,
@@ -994,10 +994,22 @@ const standDownReporter = createStandDownReporter({
 // agent". Without it, any session started anywhere on a single-agent host
 // resolves by elimination and speaks in that agent's name, and the pairing
 // lock cannot help because it picks a winner without knowing who is who.
+//
+// The claim needs the paired agent's id (board 01a072c5, decideSessionClaim):
+// the agent this session names (BGOS_ASSISTANT_ID, else its folder pin)
+// against the assistantId its credentials were paired for. Naming that agent
+// pins it even through the shared legacy file; naming another one means it
+// never takes the pairing lock (LOCK_ROUTE 'not-this-agent').
+const SESSION_CLAIM = decideSessionClaim({
+  via: CREDENTIALS_SELECTION.via === 'recorded-home' ? 'sole-per-assistant' : CREDENTIALS_SELECTION.via,
+  env: process.env,
+  folderPinId: readFolderPinId(LAUNCH_CWD),
+  pairedAssistantId: CREDENTIALS_FILE?.assistantId,
+})
 const HOME_BINDING = decideHomeBinding({
   // The shared home binder treats a recorded-home selection as a file lookup;
   // canonical confirmation comes from the marketplace preflight below.
-  via: CREDENTIALS_SELECTION.via === 'recorded-home' ? 'sole-per-assistant' : CREDENTIALS_SELECTION.via,
+  via: CREDENTIALS_SELECTION.via === 'recorded-home' ? 'sole-per-assistant' : SESSION_CLAIM.via,
   cwd: LAUNCH_CWD,
   recordedHomeDir: CREDENTIALS_FILE?.homeDir ?? null,
   recordedHomeSource: CREDENTIALS_FILE?.homeSource ?? null,
@@ -1033,8 +1045,9 @@ if (HOME_BINDING.action === 'refuse' && !MARKETPLACE_ATTACH) {
 const HOME_CONFIRMED = homeCheckPassed(HOME_BINDING) || MARKETPLACE_ATTACH?.homeMatched === true
 // How this daemon found its identity, in the one word the pairing lock
 // records ('pin', 'env' or 'elimination'): a pinned agent takes the channel
-// back from a stray that found it by elimination (lib/pairing-lock.ts).
-const LOCK_ROUTE = CREDENTIALS_SELECTION.via === 'recorded-home' ? 'pin' : lockRouteFor(CREDENTIALS_SELECTION.via)
+// back from a stray that found it by elimination (lib/pairing-lock.ts), and
+// 'not-this-agent' for a session naming another agent, which never takes it.
+const LOCK_ROUTE = CREDENTIALS_SELECTION.via === 'recorded-home' ? 'pin' : SESSION_CLAIM.lockRoute
 
 // Warn when this daemon boots ONLY because an env var is present. See
 // describeEnvOnlyIdentityRisk: the failure it predicts is process.exit(1), not
