@@ -330,6 +330,62 @@ test('the keep-alive does not relaunch claude once a settings file switched ever
   }
 })
 
+test('a launch without the keep-alive asks right before its one spawn too: with no identity, or no state folder to arm in', { timeout: 20_000 }, async () => {
+  for (const how of ['no identity', 'no state folder']) {
+    // On from the start: superviseClaude is asked directly, after the check its caller made.
+    const files = new Map<string, string>([[`${CWD}/.claude/settings.json`, JSON.stringify({ disableAllHooks: true })]])
+    const spawns: FakeChild[] = []
+    const prints: string[] = []
+    const clock = { t: 1_000_000_000 }
+    const stop = new AbortController()
+    const key = (p: string) => p.replace(/\\/g, '/')
+    const done = superviseClaude(BASE, {
+      platform: 'linux',
+      env: {},
+      home: HOME,
+      cwd: CWD,
+      scriptDir: '/home/kc/bgos-claude-plugin/bin',
+      readFile: (p: string) => (how !== 'no identity' && key(p) === `${CWD}/.bgos-agent-id` ? '871' : files.get(key(p)) ?? null),
+      listDir: () => [],
+      spawnImpl: (() => {
+        const child = new FakeChild()
+        spawns.push(child)
+        return child
+      }) as never,
+      writeErr: () => {},
+      exists: (p: string) => files.has(key(p)),
+      // Nothing can be written, so a launch that knows its agent has no state folder to arm in.
+      writeFile: () => false,
+      removeFile: (p: string) => files.delete(key(p)),
+      pollMs: 5,
+      print: (l: string) => prints.push(l),
+      now: () => (clock.t += 250),
+      sleep: async () => {},
+      listProcesses: () => [],
+      hasExpect: false,
+      setTimer: (() => 0) as never,
+      clearTimer: () => {},
+      keepAlive: false,
+      signal: stop.signal,
+    } as never)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const late = new Promise<string>((resolve) => {
+        timer = setTimeout(() => resolve('still running'), 2_000)
+      })
+      const code = await Promise.race([done, late])
+      assert.equal(spawns.length, 0, `${how}: claude was started with every hook off`)
+      assert.equal(code, 1, `${how}: ${code}`)
+      assert.match(prints.join('\n'), /disableAllHooks/, how)
+    } finally {
+      clearTimeout(timer)
+      for (const child of spawns) child.exit(0)
+      stop.abort()
+      await done.catch(() => {})
+    }
+  }
+})
+
 // -- 5. the daemon follows a link in place of a settings file, as the CLI does ----------------------------------------
 
 test('the daemon reads a settings file through a link, as the CLI does', { skip: fileSymlinkRefused }, () => {
