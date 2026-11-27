@@ -113,6 +113,19 @@ test('an answer for another agent, or none, changes nothing; a 404 or no answer 
   } finally { r.done() }
 })
 
+// Fix round 377, finding 10: a request carrying a credential header never follows a redirect, which would carry it on.
+test('the people-access request and the lane session requests refuse redirects', async () => {
+  const seen: any[] = []
+  await fetchPeopleAccess({ backendUrl: 'https://api.example.com', token: 'pt', assistantId: AGENT, fetchImpl: async (_url: string, init: any) => { seen.push(init); return new Response('', { status: 404 }) } })
+  assert.equal(seen[0].redirect, 'error')
+  // A redirect answer, as fetch raises it under redirect: 'error', is no answer.
+  assert.equal(await fetchPeopleAccess({ backendUrl: 'https://api.example.com', token: 'pt', assistantId: AGENT, fetchImpl: async () => { throw new TypeError('fetch failed: unexpected redirect') } }), null)
+  const lane = readFileSync(join(import.meta.dirname, '..', 'lane-server.ts'), 'utf8')
+  const laneFetch = lane.slice(lane.indexOf('async function laneFetch('), lane.indexOf('\n}\n', lane.indexOf('async function laneFetch(')))
+  assert.match(laneFetch, /headers\['X-BGOS-Session'\] = session\.sessionToken[\s\S]*redirect: 'error',/)
+  assert.equal((lane.match(/await fetch\(/g) ?? []).length, 1, 'laneFetch is the lane daemon\'s only request')
+})
+
 test('the frame: all deletes the person\'s profile, origins clear only those; never the owner, never another agent', async () => {
   const r = rig()
   try {

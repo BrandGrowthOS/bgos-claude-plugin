@@ -239,6 +239,8 @@ async function laneFetch(method: string, path: string, body?: unknown, opts: { a
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      // Never followed (fix round 377, finding 10): a redirect would carry the session header to wherever it points.
+      redirect: 'error',
       signal: controller.signal,
     })
     const text = await res.text()
