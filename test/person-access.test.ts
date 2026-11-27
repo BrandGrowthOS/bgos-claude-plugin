@@ -128,6 +128,13 @@ test('the people-access request and the lane session requests refuse redirects',
   const laneFetch = lane.slice(lane.indexOf('async function laneFetch('), lane.indexOf('\n}\n', lane.indexOf('async function laneFetch(')))
   assert.match(laneFetch, /headers\['X-BGOS-Session'\] = session\.sessionToken[\s\S]*redirect: 'error',/)
   assert.equal((lane.match(/await fetch\(/g) ?? []).length, 1, 'laneFetch is the lane daemon\'s only request')
+  // The supervisor's own lane session requests: the ticket mint and the session check.
+  const { fetchLaneMe } = await import('../lib/lane-session.mjs')
+  const inits: any[] = []
+  await fetchLaneMe({ session: { sessionToken: 'st' }, lane: { userId: 'user_x', assistantId: '1' }, apiBase: 'https://api.example.com/api/v1', fetch: (async (_u: string, init: any) => { inits.push(init); return new Response('', { status: 404 }) }) as any }).catch(() => {})
+  assert.equal(inits[0]?.redirect, 'error')
+  const session = readFileSync(join(import.meta.dirname, '..', 'lib', 'lane-session.mjs'), 'utf8')
+  assert.equal((session.match(/redirect: 'error'/g) ?? []).length, (session.match(/await doFetch\(/g) ?? []).length, 'every lane session request')
 })
 
 test('the frame: all deletes the person\'s profile, origins clear only those; never the owner, never another agent', async () => {
