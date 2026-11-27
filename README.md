@@ -1207,10 +1207,17 @@ when it did not:
 - when one of this checkout's four hook scripts in `bin` is missing or is a
   link: the hooks always run this checkout's own scripts, never ones the
   folder names;
-- when `"disableAllHooks": true` is in the folder's `.claude/settings.json` or
-  `.claude/settings.local.json`, or in your user `settings.json`: then the CLI
-  runs no hook at all, the one that asks before a risky action included, so the
-  hooks do not hold. A `hoai` launch does not start claude there either;
+- when `"disableAllHooks"` is on (any value but `false`) in the folder's
+  `.claude/settings.json` or `.claude/settings.local.json`, in your user
+  `settings.json`, or in this computer's managed settings: then the CLI runs no
+  hook at all, the one that asks before a risky action included, so the hooks
+  do not hold. The same when the managed settings allow only managed hooks
+  (`allowManagedHooksOnly`) or only an installed plugin's
+  (`strictPluginOnlyCustomization`). A `hoai` launch does not start claude
+  there either, and `hoai --keep-alive` asks again before every relaunch;
+- when one of those settings files is there and hoai cannot read it (over 1 MB,
+  not a plain file, not JSON): it may hold that switch, so it counts as on.
+  Mend or remove it. Only a file that is not there is no file;
 - when the folder's `.claude`, or `.claude/settings.local.json`, is a link to
   somewhere else, or the settings file is larger than any agent's needs (1 MB):
   the write never leaves the agent's folder;
