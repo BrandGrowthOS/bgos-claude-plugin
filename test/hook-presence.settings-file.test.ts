@@ -35,22 +35,32 @@ function fullSet(): string {
   return files.get(SETTINGS)!
 }
 
-/** What the daemon looks at: one agent folder whose settings file holds `text` (no file when undefined). */
-function session(text?: string) {
+/**
+ * What the daemon looks at: one agent folder whose settings file holds `text` (no file when undefined). `folder`
+ * and `slash` spell the folder as its own computer would.
+ */
+function session(text?: string, folder = '/agent', slash = '/') {
+  const settings = [folder, '.claude', 'settings.local.json'].join(slash)
   return {
     installMethod: 'clone' as const,
     pluginRoot: '/plugin',
-    folders: ['/agent'],
+    folders: [folder],
     configDir: '',
     env: {},
     readFile: (path: string) => {
-      if (path !== SETTINGS || text === undefined) throw new Error('ENOENT')
+      if (path !== settings || text === undefined) throw new Error('ENOENT')
       return text
     },
     exists: () => true,
-    join: (...parts: string[]) => parts.join('/'),
+    join: (...parts: string[]) => parts.join(slash),
   }
 }
+
+/** Folders as two computers spell them, with names that appear in no sentence the daemon writes. */
+const LOCAL_FOLDERS: Array<[folder: string, slash: string, parts: string[]]> = [
+  ['/srv/zeta/quartz', '/', ['srv', 'zeta', 'quartz']],
+  ['D:\\Zeta\\Quartz Folder', '\\', ['D:', 'Zeta', 'Quartz']],
+]
 
 test('both readers read past a byte order mark: hooks that are in the file are registered', () => {
   const text = fullSet()
@@ -76,31 +86,44 @@ test('a settings file that is not JSON: no hook is registered, and the daemon kn
   }
 })
 
-test('a refused private call names the file that is not JSON and says to fix or remove it, not to restart', () => {
+test('a refused private call names the file by its place in the agent folder, never by its full path, and says to fix or remove it', () => {
   assert.equal(typeof missingRefusal, 'function', NO_REFUSAL)
-  const blocked = privateHookPresence(session('// my own notes\n{}'))
-  const text: string = missingRefusal(blocked)
-  assert.ok(text.includes(SETTINGS), text)
-  assert.match(text, /private turn hook is not registered/)
-  assert.match(text, /fix/i)
-  assert.match(text, /remove/i)
-  assert.doesNotMatch(text, /Ask the owner to restart this agent/, 'a restart cannot help while the file is not JSON')
-  assert.doesNotMatch(text, /\n/)
-  // The boot line says the same thing, once.
-  const line = privateHookBootLine(blocked)
-  assert.ok(line.includes(SETTINGS), line)
-  assert.match(line, /NOT registered/)
-  assert.doesNotMatch(line, /it loads when this agent restarts/)
+  // The refusal is read in a chat, and an agent answers in groups too: a folder name on the owner's computer is
+  // not for them to read. The full path stays in the log (the boot line below).
+  for (const [folder, slash, parts] of LOCAL_FOLDERS) {
+    const text: string = missingRefusal(privateHookPresence(session('// my own notes\n{}', folder, slash)))
+    assert.ok(text.includes('.claude/settings.local.json'), text)
+    for (const part of parts) assert.ok(!text.includes(part), `the refusal carries "${part}" of the local path: ${text}`)
+    assert.doesNotMatch(text, /[A-Za-z]:[\\/]|\\/, `the refusal carries a local path: ${text}`)
+    assert.match(text, /private turn hook is not registered/)
+    assert.match(text, /fix or remove it/i)
+    assert.doesNotMatch(text, /Ask the owner to restart this agent/, 'a restart cannot help while the file is not JSON')
+    assert.doesNotMatch(text, /\n/)
+  }
   // With nothing in the way the advice is the old one: the daemon writes the hook at boot, a restart loads it.
   assert.equal(missingRefusal(privateHookPresence(session())), PRIVATE_HOOK_MISSING_REFUSAL)
   assert.equal(missingRefusal(privateHookPresence(session('{}'))), PRIVATE_HOOK_MISSING_REFUSAL)
+})
+
+test('the boot line, which stays in the log, names the file by its full path and says to fix or remove it', () => {
+  for (const [folder, slash] of LOCAL_FOLDERS) {
+    const line = privateHookBootLine(privateHookPresence(session('// my own notes\n{}', folder, slash)))
+    assert.match(line, /NOT registered/)
+    assert.match(line, /Fix or remove that file/, `the boot line does not say what to do about a file that is not JSON: ${line}`)
+    assert.ok(line.includes([folder, '.claude', 'settings.local.json'].join(slash)), line)
+    assert.doesNotMatch(line, /it loads when this agent restarts/)
+  }
+  // With nothing in the way the boot line is the old one.
   assert.match(privateHookBootLine(privateHookPresence(session())), /it loads when this agent restarts/)
+  assert.doesNotMatch(privateHookBootLine(privateHookPresence(session())), /Fix or remove/)
 })
 
 test('the running daemon carries the file through to the refusal it words, until the hook is live', () => {
   assert.equal(typeof missingRefusal, 'function', NO_REFUSAL)
-  const hook = createPrivateHookLiveness({ atBoot: privateHookPresence(session('{ not json')) })
-  assert.ok(String(missingRefusal(hook.presence)).includes(SETTINGS))
+  const [folder, slash, parts] = LOCAL_FOLDERS[0]!
+  const hook = createPrivateHookLiveness({ atBoot: privateHookPresence(session('{ not json', folder, slash)) })
+  const text = String(missingRefusal(hook.presence))
+  assert.ok(text.includes('.claude/settings.local.json') && parts.every((part) => !text.includes(part)), text)
   hook.noteTurn({ markerPath: '/state/marker' })
   assert.equal((hook.presence as { unreadableSettings?: string }).unreadableSettings, undefined)
   const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
