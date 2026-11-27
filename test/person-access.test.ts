@@ -155,6 +155,22 @@ test('the frame: all deletes the person\'s profile, origins clear only those; ne
   } finally { r.done() }
 })
 
+test('an all frame whose profile deletion failed keeps the person in the record, so the next reconcile asks again', async () => {
+  const r = rig()
+  try {
+    recordFillOrigin({ agentRoot: r.agentRoot, assistantId: AGENT, userId: LEO, origin: A })
+    const asked: string[] = []
+    const frame = { assistantId: AGENT, userId: LEO, all: true, origins: [] }
+    // The host kept the profile (it could not delete it): the change did not apply.
+    assert.equal(await applyAccessChange({ agentRoot: r.agentRoot, assistantId: AGENT, frame, ownerUserId: OWNER, clearOrigins: r.effects.clearOrigins, deleteProfile: async (u: string) => { asked.push(u); return false } }), false)
+    assert.deepEqual(asked, [LEO])
+    assert.deepEqual(readAccessRecord({ agentRoot: r.agentRoot, assistantId: AGENT }), { [LEO]: [A] }, 'the person stays in the record')
+    // The control: a deletion that worked removes the person.
+    assert.equal(await applyAccessChange({ agentRoot: r.agentRoot, assistantId: AGENT, frame, ownerUserId: OWNER, ...r.effects }), true)
+    assert.deepEqual(readAccessRecord({ agentRoot: r.agentRoot, assistantId: AGENT }), {})
+  } finally { r.done() }
+})
+
 test('the daemon queues the frame for the host, which applies each once', async () => {
   const r = rig()
   try {

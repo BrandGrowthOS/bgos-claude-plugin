@@ -725,6 +725,20 @@ test('a revoke while the pending read is out starts nothing it lists', async () 
   assert.equal(read2, 0)
 })
 
+test('a revoke while the pending read is out: nothing the read lists is even looked at', async () => {
+  const r = rig()
+  const read = gate<unknown>()
+  const replay = r.manager.reconcile(() => read.promise, { assistantIds: [AGENT], lane: `person:${ANA}` })
+  await r.manager.stopAll()
+  read.open({ turns: [{ chatId: '55', rootId: '309', replyId: '3091', mode: 'start', text: 'hi', title: 'T', rootText: 'r', assistantId: AGENT, actorUserId: BEN, lane: `person:${BEN}` }] })
+  assert.equal(await replay, 0)
+  assert.deepEqual(r.logs.filter((l) => /pending thread/.test(l)), [], 'no row was judged after the stop')
+  // The control: the same read with no stop judges the row (another lane's, so skipped).
+  const c = rig()
+  assert.equal(await c.manager.reconcile(async () => ({ turns: [{ chatId: '55', rootId: '309', replyId: '3091', mode: 'start', text: 'hi', title: 'T', rootText: 'r', assistantId: AGENT, actorUserId: BEN, lane: `person:${BEN}` }] }), { assistantIds: [AGENT], lane: `person:${ANA}` }), 0)
+  assert.equal(c.logs.filter((l) => /a pending thread for another lane was skipped/.test(l)).length, 1)
+})
+
 test('a revoke while a start awaits its setup: no process is spawned, and the manager admits no new turn', async () => {
   const r = rig()
   const probe = gate<string | null>()
@@ -761,6 +775,48 @@ test('a revoke while the start copies the transcript, the last step before the s
   await stopping
   await r.manager.idle()
   assert.equal(r.spawned.length, 0)
+})
+
+/** A thread that ran once and kept its fork, its process gone: its next turn resumes the fork, clearing the fork's goal first. */
+async function threadWithFork(rootId: string) {
+  const r = rig()
+  r.manager.turn(turn(rootId))
+  await r.manager.idle()
+  const first = r.spawned[0]!.child
+  first.init(FORK)
+  first.result('first reply')
+  await r.manager.idle()
+  first.exit(0)
+  await r.manager.idle()
+  const state = JSON.parse(r.files.get(join(THREADS_STATE, `${rootId}.json`))!)
+  assert.equal(state.forkSessionId, FORK)
+  r.files.set(sessionTranscriptPath(HOME, state.cwd, FORK, r.deps.configDir), '{"fork":true}\n')
+  return r
+}
+
+test('a revoke while a resumed fork clears its goal, the fork path\'s last step before the spawn: no process', async () => {
+  const r = await threadWithFork('307')
+  let stopping: Promise<void> | null = null
+  let cleared = 0
+  ;(r.deps as any).transcripts = { clearGoal: async () => { cleared += 1; stopping = r.manager.stopAll() } }
+  r.manager.turn(turn('307', { mode: 'reply', replyId: '3072', text: 'again' }))
+  await r.manager.idle()
+  await stopping
+  await r.manager.idle()
+  assert.equal(cleared, 1, 'the fork path ran')
+  assert.equal(r.spawned.length, 1, 'no process after the stop')
+})
+
+test('without a revoke the resumed fork spawns once more, resuming the fork (the control)', async () => {
+  const r = await threadWithFork('308')
+  let cleared = 0
+  ;(r.deps as any).transcripts = { clearGoal: async () => { cleared += 1 } }
+  r.manager.turn(turn('308', { mode: 'reply', replyId: '3082', text: 'again' }))
+  await r.manager.idle()
+  assert.equal(cleared, 1)
+  assert.equal(r.spawned.length, 2)
+  const args = r.spawned[1]!.args
+  assert.equal(args[args.indexOf('--resume') + 1], FORK)
 })
 
 test('without a revoke the same start spawns exactly once (the control)', async () => {
