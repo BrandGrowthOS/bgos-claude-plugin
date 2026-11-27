@@ -117,6 +117,7 @@ import {
   CONFIG_FILE_MAX_BYTES,
   hooksSwitchedOffIn,
   hooksSwitchedOffWords,
+  managedSettingsDir,
   readTextUpTo,
   registerTrustedHooks,
   serversStartingCheckout,
@@ -810,6 +811,7 @@ export function runHooksCommand(
     register = registerTrustedHooks,
     print = (line) => console.log(line),
     printError = (line) => console.error(line),
+    managedSettingsDir: managedDir = managedSettingsDir(),
   },
 ) {
   const words = (Array.isArray(rest) ? rest : []).map((word) => String(word ?? '').trim()).filter(Boolean)
@@ -862,7 +864,7 @@ export function runHooksCommand(
     return 1
   }
   // Hooks written where every hook is switched off would be there, and none would run.
-  const off = hooksSwitchedOffIn({ folder: cwd, configDir: claudeConfigDir({ env, home }) })
+  const off = hooksSwitchedOffIn({ folder: cwd, configDir: claudeConfigDir({ env, home }), managedDir })
   if (off) {
     printError(`[hoai] hooks: nothing written. ${upperFirst(hooksSwitchedOffWords(off))}, then run hoai hooks again.`)
     return 1
@@ -2987,10 +2989,17 @@ export async function superviseClaude(args, opts = {}) {
       hooksSwitchedOffIn({
         folder: cwd,
         configDir: claudeConfigDir({ env, home }),
+        managedDir: opts.managedSettingsDir ?? managedSettingsDir(platform),
         join: (...parts) => parts.reduce((dir, name) => joinDir(dir, name)),
         ...(readFile === defaultReadText
           ? {}
-          : { readState: (path) => { const text = readFile(path); return typeof text === 'string' ? { state: 'ok', text } : { state: 'missing' } } }),
+          : {
+              readState: (path) => {
+                const text = readFile(path)
+                return typeof text === 'string' ? { state: 'ok', text } : { state: 'missing' }
+              },
+              listDir: (path) => listDir(path) ?? null,
+            }),
       }))
   // Has the Claude login every agent of this credential store shares failed? Asked only for a launch
   // with no channel heartbeat: the CLI's own records, in the store it signs in through.
@@ -4751,6 +4760,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       // The folder's .mcp.json is the folder's: read only as a plain file of bounded size, never whole.
       readFile: opts.readFile ?? ((path) => readTextUpTo(path, CONFIG_FILE_MAX_BYTES)),
       register: opts.registerHooks,
+      ...(opts.managedSettingsDir === undefined ? {} : { managedSettingsDir: opts.managedSettingsDir }),
       print: opts.print,
       printError: opts.printError,
     })
@@ -4804,7 +4814,16 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   applyAttachScope(env, plan.attachScope, plan.attachScopeDir)
   // Every launch runs claude with full access, and the hook that asks before a risky action is what holds it.
   // With every hook switched off at any settings level, none runs (measured on 2.1.332), so claude is not started.
-  const hooksOff = hooksSwitchedOffIn({ folder: cwd, configDir: claudeConfigDir({ env, home }) })
+  // The same question before every relaunch of a supervised loop (superviseClaude). A clone's hooks sit in a
+  // settings file; an installed plugin's in its own hooks file, which a managed plugin-only rule leaves running.
+  const checkHooksOff = () =>
+    hooksSwitchedOffIn({
+      folder: cwd,
+      configDir: claudeConfigDir({ env, home }),
+      managedDir: opts.managedSettingsDir ?? managedSettingsDir(platform),
+      settingsHooks: Boolean(plan.hooks),
+    })
+  const hooksOff = checkHooksOff()
   if (hooksOff) {
     const reason =
       `${upperFirst(hooksSwitchedOffWords(hooksOff))}. This launch runs with full access, so claude was not started. ` +
@@ -4924,6 +4943,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       scriptDir,
       readFile,
       listDir,
+      hooksOff: checkHooksOff,
       spawnImpl,
       freshSession: fresh,
       force,

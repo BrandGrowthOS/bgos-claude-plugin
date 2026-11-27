@@ -20,7 +20,7 @@
  */
 
 import { exactOwnedHookOf, isOwnHookScript } from './claude-preseed.mjs'
-import { hookSwitchVerdict, hookSwitchWhere } from './floor-hook-presence.js'
+import { hookSwitchVerdict, switchedOffPresence } from './floor-hook-presence.js'
 
 /** The private turn hook's script name, the one thing every registration shares. */
 export const PRIVATE_HOOK_SCRIPT = 'hoai-private-turn-hook.mjs'
@@ -35,6 +35,8 @@ export interface PrivateHookPresenceInput {
   configDir: string
   /** Config folders read for the hook switch only, never counted (lib/floor-hook-presence.ts). */
   otherConfigDirs?: readonly string[]
+  /** The machine's managed settings files, read for the hook switches. */
+  managedFiles?: readonly string[]
   env: Record<string, string | undefined>
   readFile: (path: string) => string
   exists: (path: string) => boolean
@@ -51,6 +53,8 @@ export interface PrivateHookPresence {
   hooksOff?: string
   /** True when that file is there and cannot be read, so it may switch them off. */
   hooksOffUnknown?: boolean
+  /** True when that file is the machine's managed settings, which only its administrator changes. */
+  hooksOffManaged?: boolean
   /**
    * A session folder's `.claude/settings.local.json` that is there and is not a JSON object, while the hook is not
    * registered. The hook writer leaves such a file exactly as it is (it holds the owner's own hooks and
@@ -62,16 +66,19 @@ export interface PrivateHookPresence {
 
 export function privateHookPresence(input: PrivateHookPresenceInput): PrivateHookPresence {
   // Every hook switched off at any level, or a file there that cannot be read and may say so: none runs.
-  const off = hookSwitchVerdict(input)
-  if (off) {
+  const switchedOff = (settingsHooks: boolean): PrivateHookPresence | null => {
+    const off = hookSwitchVerdict(input, { settingsHooks })
+    if (!off) return null
     // A folder's own settings file that is not JSON: the hook writer leaves it as it is, so it is named as the file
     // in the way, and the advice is to mend or remove it.
     const writerFile = input.folders.some((folder) => folder && input.join(folder, '.claude', 'settings.local.json') === off.file)
     if (off.cause === 'not-json' && writerFile) {
       return { registered: false, where: `${off.file} is there and ${off.why}`, unreadableSettings: off.file }
     }
-    return { registered: false, where: hookSwitchWhere(off), hooksOff: off.file, ...(off.cause === 'on' ? {} : { hooksOffUnknown: true }) }
+    return switchedOffPresence(off)
   }
+  const off = switchedOff(false)
+  if (off) return off
   const hooksFiles: string[] = []
   if (input.installMethod === 'marketplace' && input.pluginRoot) {
     hooksFiles.push(input.join(input.pluginRoot, 'hooks', 'hooks.json'))
@@ -81,6 +88,9 @@ export function privateHookPresence(input: PrivateHookPresenceInput): PrivateHoo
   for (const file of hooksFiles) {
     if (fileRegisters(file, input, true)) return { registered: true, where: file }
   }
+  // Only an installed plugin's hooks on (managed): an entry in a settings file does not run.
+  const settingsOff = switchedOff(true)
+  if (settingsOff) return settingsOff
   const settingsFiles: string[] = []
   // The files the hook writer writes: the only ones whose state decides whether a hook CAN be written.
   const writerFiles = new Set<string>()
@@ -190,8 +200,9 @@ export function privateHookBootLine(presence: PrivateHookPresence): string {
     return (
       `private turn: the private turn hook is NOT registered for this session (${presence.where}). ` +
       'Boards, schedule and browser tools will refuse every call while it is: ' +
-      (presence.hooksOffUnknown ? 'mend or remove that file' : 'take that line out of the file') +
-      ', then start this agent again'
+      (presence.hooksOffManaged
+        ? 'that file is this computer\'s managed settings, so ask whoever manages it'
+        : `${presence.hooksOffUnknown ? 'mend or remove that file' : 'take that line out of the file'}, then start this agent again`)
     )
   }
   if (presence.unreadableSettings) {

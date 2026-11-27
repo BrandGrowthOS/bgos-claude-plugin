@@ -372,7 +372,7 @@ import {
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { createPrivateHookLiveness, privateHookBootLine, privateHookMissingRefusal, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
-import { cloneHooksResultLine, cloneHooksSkippedLine, hookPresenceFs, registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
+import { cloneHooksResultLine, cloneHooksSkippedLine, hookPresenceFs, managedSettingsDir, managedSettingsFiles, registerCloneHooksAtBoot } from './lib/clone-hooks.mjs'
 import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
@@ -16776,7 +16776,7 @@ function lockYieldReason(
  * account's. The environment is the folder's to set as well (an .mcp.json "env"), so none of them is trusted to hold
  * a hook that counts; any of them that switches every hook off, or cannot be read, means no hook is registered.
  */
-const HOOK_SWITCH_CONFIG_DIRS: string[] = [
+const HOOK_SWITCH_CONFIG_DIRS = [
   ...new Set(
     [
       CLAUDE_CONFIG_DIR,
@@ -16791,6 +16791,19 @@ const HOOK_SWITCH_CONFIG_DIRS: string[] = [
     ].filter(Boolean),
   ),
 ]
+
+/**
+ * The machine's managed settings files the CLI reads (lib/clone-hooks.mjs managedSettingsFiles): a managed
+ * "disableAllHooks", "allowManagedHooksOnly" or plugin-only rule leaves this plugin's hooks unrun.
+ */
+const MANAGED_SETTINGS_FILES: string[] = (() => {
+  try {
+    return managedSettingsFiles(managedSettingsDir())
+  } catch {
+    // Fail closed: the folder itself, which reads as a file that cannot be read.
+    return [managedSettingsDir()]
+  }
+})()
 
 /**
  * Is the blocking floor hook registered for this session? Looked up ONCE, at
@@ -16809,6 +16822,7 @@ const FLOOR_HOOK: FloorHookPresence = (() => {
       // folder's .mcp.json can set, and the plugin writes no hook there. Each is read for the hook switch only.
       configDir: '',
       otherConfigDirs: HOOK_SWITCH_CONFIG_DIRS,
+      managedFiles: MANAGED_SETTINGS_FILES,
       env: process.env,
       // Plain files of bounded size only (a FIFO or a huge file there would hold the boot), and real paths.
       ...hookPresenceFs(),
@@ -16835,6 +16849,7 @@ const PRIVATE_HOOK_AT_BOOT: PrivateHookPresence = (() => {
       // folder's .mcp.json can set, and the plugin writes no hook there. Each is read for the hook switch only.
       configDir: '',
       otherConfigDirs: HOOK_SWITCH_CONFIG_DIRS,
+      managedFiles: MANAGED_SETTINGS_FILES,
       env: process.env,
       // Plain files of bounded size only (a FIFO or a huge file there would hold the boot), and real paths.
       ...hookPresenceFs(),

@@ -56,6 +56,8 @@ export interface FloorHookPresenceInput {
    * and the folder's .mcp.json can set that environment): read for the hook switch only, never counted.
    */
   otherConfigDirs?: readonly string[]
+  /** The machine's managed settings files (lib/clone-hooks.mjs managedSettingsFiles), read for the hook switches. */
+  managedFiles?: readonly string[]
   env: Record<string, string | undefined>
   /** Answers the file's text, or throws. */
   readFile: (path: string) => string
@@ -73,6 +75,8 @@ export interface FloorHookPresence {
   hooksOff?: string
   /** True when that file is there and cannot be read, so it may switch them off. */
   hooksOffUnknown?: boolean
+  /** True when that file is the machine's managed settings, which only its administrator changes. */
+  hooksOffManaged?: boolean
 }
 
 /** What one hook switch verdict says (lib/claude-preseed.mjs hooksOffVerdict). */
@@ -81,6 +85,7 @@ export interface HookSwitchVerdict {
   key: string
   cause: 'on' | 'not-json' | 'unreadable'
   why: string
+  managed: boolean
 }
 
 /**
@@ -112,36 +117,54 @@ function isMissingFile(err: unknown): boolean {
  * may hold the switch.
  */
 export function hookSwitchVerdict(
-  input: Pick<FloorHookPresenceInput, 'folders' | 'configDir' | 'otherConfigDirs' | 'join' | 'readFile'>,
+  input: Pick<FloorHookPresenceInput, 'folders' | 'configDir' | 'otherConfigDirs' | 'managedFiles' | 'join' | 'readFile'>,
+  { settingsHooks = true }: { settingsHooks?: boolean } = {},
 ): HookSwitchVerdict | null {
   const files = sessionSettingsFiles(input)
   for (const dir of input.otherConfigDirs ?? []) {
     const file = dir ? input.join(dir, 'settings.json') : ''
     if (file && !files.includes(file)) files.push(file)
   }
-  const sources = files.map((file) => {
+  const readOf = (file: string) => {
     try {
       const text = input.readFile(file)
-      return { file, read: typeof text === 'string' ? { state: 'ok' as const, text } : { state: 'missing' as const } }
+      return typeof text === 'string' ? { state: 'ok' as const, text } : { state: 'missing' as const }
     } catch (err) {
-      if (isMissingFile(err)) return { file, read: { state: 'missing' as const } }
-      return { file, read: { state: 'unreadable' as const, why: `it could not be read (${String((err as Error)?.message ?? err)})` } }
+      if (isMissingFile(err)) return { state: 'missing' as const }
+      return { state: 'unreadable' as const, why: `it could not be read (${String((err as Error)?.message ?? err)})` }
     }
-  })
-  return hooksOffVerdict(sources) as HookSwitchVerdict | null
+  }
+  const sources = [
+    ...(input.managedFiles ?? []).filter(Boolean).map((file) => ({ file, read: readOf(file), managed: true })),
+    ...files.map((file) => ({ file, read: readOf(file) })),
+  ]
+  return hooksOffVerdict(sources, { settingsHooks }) as HookSwitchVerdict | null
+}
+
+/** A presence that a verdict switched off. */
+export function switchedOffPresence(off: HookSwitchVerdict): FloorHookPresence {
+  return {
+    registered: false,
+    where: hookSwitchWhere(off),
+    hooksOff: off.file,
+    ...(off.cause === 'on' ? {} : { hooksOffUnknown: true }),
+    ...(off.managed ? { hooksOffManaged: true } : {}),
+  }
 }
 
 /** The boot line's account of a verdict. */
 export function hookSwitchWhere(off: HookSwitchVerdict): string {
-  return off.cause === 'on'
-    ? `every hook is switched off by "${off.key}" in ${off.file}`
-    : `hoai cannot tell whether every hook is switched off: ${off.file} is there and ${off.why}`
+  if (off.cause !== 'on') return `hoai cannot tell whether every hook is switched off: ${off.file} is there and ${off.why}`
+  if (off.key === 'allowManagedHooksOnly') return `only managed hooks run ("${off.key}" in ${off.file})`
+  if (off.key === 'strictPluginOnlyCustomization') return `only an installed plugin's hooks run ("${off.key}" in ${off.file})`
+  return `every hook is switched off by "${off.key}" in ${off.file}`
 }
 
 export function floorHookPresence(input: FloorHookPresenceInput): FloorHookPresence {
   const settingsFiles = sessionSettingsFiles(input)
-  const off = hookSwitchVerdict(input)
-  if (off) return { registered: false, where: hookSwitchWhere(off), hooksOff: off.file, ...(off.cause === 'on' ? {} : { hooksOffUnknown: true }) }
+  // Every hook off, or only managed ones on, or a file that cannot be read: nothing of the plugin's runs.
+  const off = hookSwitchVerdict(input, { settingsHooks: false })
+  if (off) return switchedOffPresence(off)
   const hooksFiles: string[] = []
   if (input.installMethod === 'marketplace' && input.pluginRoot) {
     hooksFiles.push(input.join(input.pluginRoot, 'hooks', 'hooks.json'))
@@ -151,6 +174,9 @@ export function floorHookPresence(input: FloorHookPresenceInput): FloorHookPrese
   for (const file of hooksFiles) {
     if (fileRegistersFloorHook(file, input, true)) return { registered: true, where: file }
   }
+  // Only an installed plugin's hooks on (managed): an entry in a settings file does not run.
+  const settingsOff = hookSwitchVerdict(input, { settingsHooks: true })
+  if (settingsOff) return switchedOffPresence(settingsOff)
   for (const file of settingsFiles) {
     if (fileRegistersFloorHook(file, input, false)) return { registered: true, where: file }
   }
@@ -250,8 +276,9 @@ export function floorBootLine(presence: FloorHookPresence, authMode: 'pairing' |
     return (
       `floor: the blocking floor hook is NOT registered for this session (${presence.where}); ` +
       `the floor capability (${HARD_FLOOR_TOKEN}) is NOT declared, and no hook may run. ` +
-      (presence.hooksOffUnknown ? 'Mend or remove that file' : 'Take that line out of the file') +
-      ', then start this agent again'
+      (presence.hooksOffManaged
+        ? 'That file is this computer\'s managed settings: ask whoever manages it'
+        : `${presence.hooksOffUnknown ? 'Mend or remove that file' : 'Take that line out of the file'}, then start this agent again`)
     )
   }
   const hook = presence.registered
