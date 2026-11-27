@@ -118,13 +118,16 @@ test('button taps: once lanes run, a tap in a share recipient\'s chat never reac
   assert.equal(ownerAnnounceRefused({ lanesOn: true, chatIsOthers: true }), true)
   assert.equal(ownerAnnounceRefused({ lanesOn: false, chatIsOthers: true }), false, 'lanes off: today\'s path')
   assert.equal(ownerAnnounceRefused({ lanesOn: true, chatIsOthers: false }), false, 'the owner\'s or an unknown chat: today\'s path')
-  const poll = bodyAfter(SERVER, 'const announced = new Set(announce.filter(', 1200)
+  const poll = bodyAfter(SERVER, 'const announced = new Set(announce.filter(', 2400)
   assert.match(poll, /\n\s*if \(announced\.size > 0 && announceRefusedIn\(chatId\)\) \{\n[^\n]*\n\s*announced\.clear\(\)\n/, 'the condition itself guards the clear')
+  assert.ok(poll.indexOf('rememberAnnouncedClick') > 0, 'the claim is in the slice read')
   assert.ok(poll.indexOf('announced.clear()') < poll.indexOf('rememberAnnouncedClick'), 'before the tap is claimed or announced')
-  const stream = bodyAfter(SERVER, 'function applyStreamButtonsAnswered(', 2400)
+  // Another person's tap, row by row, is dropped before the claim too (re-review C).
+  assert.ok(poll.indexOf('announced.delete(id)') > 0 && poll.indexOf('announced.delete(id)') < poll.indexOf('rememberAnnouncedClick'))
+  const stream = bodyAfter(SERVER, 'function applyStreamButtonsAnswered(', 3200)
   const gate = stream.indexOf('ownerLaneVerdict(view.raw)')
   assert.ok(gate > 0 && gate < stream.indexOf('decideButtonsAnswered('), 'the stream tap is gated before it is decided')
-  assert.match(stream, /\n\s*if \(!tapLaneVerdict\.deliver \|\| announceRefusedIn\(chatId\)\) \{\n[^\n]*\n\s*return\n/)
+  assert.match(stream, /\n\s*if \(!tapLaneVerdict\.deliver \|\| announceRefusedIn\(chatId, [^\n]*\)\) \{\n[^\n]*\n\s*return\n/)
 })
 
 test('lane daemon: the gate runs first, and a refused delivery is never acknowledged or delivered', () => {

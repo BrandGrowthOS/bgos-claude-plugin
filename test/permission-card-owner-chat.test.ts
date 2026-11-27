@@ -366,13 +366,14 @@ test('discoverChats marks each inbox row the backend names a user for', async ()
 
 test('every inbound lane notes a person message author from the server stamp, never the owner fallback', () => {
   // ownerSessionRefuses (fix round 377, finding 1) notes the author it was handed, before its admission check.
-  const sites = [...source.matchAll(/noteChatAuthor\(([^\n]*)\)\n/g)].map((m) => m[1]!).filter((s) => s !== 'chatId, human, record')
+  const sites = [...source.matchAll(/noteChatAuthor\(([^\n]*)\)\n/g)].map((m) => m[1]!).filter((s) => s !== 'chatId, reading, record')
   assert.equal(sites.length, 3, `poll, stream and socket each note the author: ${JSON.stringify(sites)}`)
-  assert.ok(sites.some((s) => s.includes('msg.message') && s.includes("pollSenderType === 'user'") && s.includes('!pollAgentOrigin') && s.includes('!pollIsEmail')), 'poll')
-  assert.ok(sites.some((s) => s.includes('view.raw') && s.includes('!isSystem') && s.includes("view.senderKind === 'user'") && s.includes('!view.agentOrigin') && s.includes('!streamIsEmail')), 'stream')
-  assert.ok(sites.some((s) => s.includes('payload') && s.includes("wsSenderType === 'user'") && s.includes('!wsAgentOrigin') && s.includes('!wsIsEmail')), 'socket')
+  // Each site's own reading of the row (lib/lane-core.mjs admissionReading, re-review C).
+  assert.ok(sites.some((s) => s.includes('msg.message') && s.includes('admissionReading({ senderKind: pollSenderType, agentOrigin: !!pollAgentOrigin, isEmail: pollIsEmail })')), 'poll')
+  assert.ok(sites.some((s) => s.includes('view.raw') && s.includes('admissionReading({ senderKind: view.senderKind, agentOrigin: !!view.agentOrigin, isEmail: streamIsEmail, isSystem })')), 'stream')
+  assert.ok(sites.some((s) => s.includes('payload') && s.includes('admissionReading({ senderKind: wsSenderType, agentOrigin: !!wsAgentOrigin, isEmail: wsIsEmail })')), 'socket')
   const helper = source.slice(source.indexOf('function noteChatAuthor('), source.indexOf('\n}\n', source.indexOf('function noteChatAuthor(')))
-  assert.match(helper, /chatOwnership\.noteAuthor\(chatId, privateSenderUserId\(record\)\)/, 'the author stamp only: privateSenderUserId never falls back to the owner')
+  assert.match(helper, /const author = privateSenderUserId\(record\)[\s\S]*chatOwnership\.noteAuthor\(chatId, author\)/, 'the author stamp only: privateSenderUserId never falls back to the owner')
   assert.match(helper, /meetingChatIds\.has\(chatId\)/, 'a meeting chat is never the owner own chat')
   assert.match(relaySource, /pickPermissionChat\(monitoredChatIds, \[hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats\], chatOwnership, \{/)
   // ...with the verified turn's person and chat as snapshotted when the request was created, never read again here.

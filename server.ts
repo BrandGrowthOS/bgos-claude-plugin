@@ -156,7 +156,7 @@ import {
 } from './lib/process-lifecycle.js'
 import { ensureMarketplaceAutoUpdate, readMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
 import { recordKnownGood } from './lib/known-good-store.mjs'
-import { LANE_MEMORY_RPC_TOKEN, ownerAnnounceRefused, ownerLaneVerdict, ownerToolRefused, ownerTurnRefused } from './lib/lane-core.mjs'
+import { LANE_MEMORY_RPC_TOKEN, admissionReading, ownerAnnounceRefused, ownerLaneVerdict, ownerToolRefused, ownerTurnRefused } from './lib/lane-core.mjs'
 import { classifyMemoryFrame, laneMemoryAnswer, LaneMemoryRpcHandler } from './lib/lane-memory-rpc.ts'
 import { laneCliSupport } from './lib/lane-cli-probe.mjs'
 import { drainLaneEvents, handleLaneRevoked, handleLaneWake, lanesOnFor, supervisorEnv, sweepUnsafePersonLanes } from './lib/lane-owner.js'
@@ -3490,20 +3490,29 @@ const chatOwnership = createChatOwnership(USER_ID)
 // hook rail's set, so the tool activity rail still posts in those chats.
 const permissionCardRefusedChats = createRefusedChats()
 
+/** How the owner's session admission reads a row (lib/lane-core.mjs admissionReading). */
+type AdmissionReading = 'person' | 'machine' | 'agent'
+
 /**
- * A person's message in `chatId`, for chatOwnership. `human` is the lane's own
- * verdict (a user row, no peer origin, not an email); the author is the
- * server's stamp only (privateSenderUserId), never senderUserIdOf, whose owner
- * fallback would make every unstamped row the owner's. A meeting chat is never
- * the owner's own chat.
+ * A row's author in `chatId`, for chatOwnership. `reading` is the site's own
+ * (admissionReading); the author is the server's stamp only
+ * (privateSenderUserId), never senderUserIdOf, whose owner fallback would make
+ * every unstamped row the owner's. A meeting chat is never the owner's own
+ * chat. A peer agent and an email note nobody. A machine row (a system or
+ * event row) notes only a person other than the owner: on the socket its stamp
+ * is the chat row's own person, so a share recipient's system row shows the
+ * chat is theirs, while a machine row never makes a chat the owner's own
+ * (fix round 377, re-review C).
  */
-function noteChatAuthor(chatId: string, human: boolean, record: unknown): void {
-  if (!chatId || !human || meetingChatIds.has(chatId)) return
+function noteChatAuthor(chatId: string, reading: AdmissionReading, record: unknown): void {
+  if (!chatId || reading === 'agent' || meetingChatIds.has(chatId)) return
   // A machine event row (a wake, a notice, a session card) is nobody speaking,
   // and an event row stamped with the owner never shows the owner's own chat;
   // an event row another person wrote is that person speaking (eventRowNotesNobody).
   if (eventRowNotesNobody(record, USER_ID)) return
-  chatOwnership.noteAuthor(chatId, privateSenderUserId(record))
+  const author = privateSenderUserId(record)
+  if (reading === 'machine' && (author === null || author === USER_ID)) return
+  chatOwnership.noteAuthor(chatId, author)
 }
 
 /** A recipient's private chat, by what this daemon has read: never a meeting. */
@@ -3513,40 +3522,55 @@ function chatIsOthersPrivate(chatId: string): boolean {
 
 /**
  * ADMISSION TO THE OWNER'S SESSION (lib/lane-core.mjs ownerTurnRefused, fix
- * round 377, finding 1), at each inbound site, BEFORE the sign-in code gate,
- * the verdict parse, the slash commands and the handoff: a person's turn that
- * is not shown to be the owner's, in a chat that is not multi party, is not
- * delivered here, whatever the lane stamp and the lanes switch say. The row's
- * author is noted first, so its own stamp is evidence. `human` is the site's
- * own reading (a user row, no peer origin, not an email); an event row nobody
- * wrote is nobody speaking, as in noteChatAuthor, while an event row a person
- * wrote gets the verdict of any row of theirs (eventRowOfNobody). The id stays
- * claimed, so no other transport delivers it either.
+ * round 377, finding 1, and its re-review C), at each inbound site, BEFORE the
+ * sign-in code gate, the verdict parse, the slash commands and the handoff.
+ * `reading` is the site's own (admissionReading): a person's row and a machine
+ * row (a system or event row, whatever its sender says it is) are judged
+ * alike, by the server's author stamp and the chat; a peer agent and an email
+ * keep their own rules. In a chat known to be another person's private chat
+ * no row is delivered here, its stamp and its sender kind notwithstanding,
+ * whatever the lane stamp and the lanes switch say. The row's author is noted
+ * first, so its own stamp is evidence. The id stays claimed, so no other
+ * transport delivers it either.
  */
-function ownerSessionRefuses(chatId: string, human: boolean, record: unknown, transport: string, messageId: unknown): boolean {
-  if (!chatId || !human) return false
-  if (eventRowOfNobody(record)) return false
+function ownerSessionRefuses(chatId: string, reading: AdmissionReading, record: unknown, transport: string, messageId: unknown): boolean {
+  if (!chatId) return false
   // The delivery's own chat kind counts from its first message (as the stream and socket note it, later).
   if (isGroupChatDelivery(record)) groupChatIds.add(chatId)
-  noteChatAuthor(chatId, human, record)
+  noteChatAuthor(chatId, reading, record)
   const refused = ownerTurnRefused({
-    human: true,
+    reading,
     authorUserId: privateSenderUserId(record),
     ownerUserId: USER_ID,
     chatIsOthersPrivate: chatIsOthersPrivate(chatId),
     // A group, a room or a channel by the inbox, a meeting, or the delivery's own chat kind (its first message included).
     chatIsMultiParty: chatOwnership.isMultiParty(chatId) || meetingChatIds.has(chatId) || groupChatIds.has(chatId) || isGroupChatDelivery(record),
   })
-  if (refused) log(`lane_refused ${transport} message ${String(messageId)} in chat ${chatId}: a person's turn that is not the owner's, with no lane of their own here, not delivered to the owner's session`)
+  if (refused) log(`lane_refused ${transport} message ${String(messageId)} in chat ${chatId}: a ${reading} row that is not the owner's, with no lane of its person here, not delivered to the owner's session`)
   return refused
 }
 
-/** A tap, an ask's answer, a card answer or a reaction in `chatId` the owner's session must not announce (lib/lane-core.mjs ownerAnnounceRefused). */
-function announceRefusedIn(chatId: string): boolean {
+/**
+ * The server's standing for whoever answered a card (`answeredByRelationship`,
+ * BGOS sender-identity.ts tapAnswerForDelivery): `room_member` says the chat is a room.
+ */
+function tapStandingOf(answerPayload: unknown): unknown {
+  const a = answerPayload as Record<string, unknown> | null | undefined
+  return a && typeof a === 'object' ? (a.answeredByRelationship ?? a.answered_by_relationship ?? null) : null
+}
+
+/** A tap, an ask's answer, a card answer or a reaction in `chatId`, by `tapperUserId` when the server named one, the owner's session must not announce (lib/lane-core.mjs ownerAnnounceRefused). */
+function announceRefusedIn(chatId: string, tapperUserId: string | null = null, tapperStanding: unknown = null): boolean {
   return ownerAnnounceRefused({
     lanesOn: lanesOnForThisAgent,
     chatIsOthers: chatOwnership.isOthers(chatId),
     chatIsOthersPrivate: chatIsOthersPrivate(chatId),
+    // Who tapped or reacted, as the server stamped it: another person's tap is theirs, in a chat not yet known too.
+    tapperUserId,
+    // ...unless the server's standing for them says the chat is a room.
+    tapperStanding,
+    ownerUserId: USER_ID,
+    chatIsMultiParty: chatOwnership.isMultiParty(chatId) || meetingChatIds.has(chatId) || groupChatIds.has(chatId),
   })
 }
 
@@ -12820,7 +12844,7 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
   if (!card || card.chatId !== chatId || String(mm.chatId) !== chatId || card.settled || mm.sender !== 'assistant') return
   if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
   const lane = ownerLaneVerdict(mm)
-  if (!lane.deliver || announceRefusedIn(chatId)) {
+  if (!lane.deliver || announceRefusedIn(chatId, readTapperUserId(mm.answerPayload), tapStandingOf(mm.answerPayload))) {
     noteLaneMisroute('card answer', mm.id, lane.deliver ? 'a recipient chat' : lane.stamp)
     return
   }
@@ -13292,6 +13316,16 @@ async function pollChat(chatId: string): Promise<void> {
       noteLaneMisroute('poll tap', [...announced].join(','), 'a recipient chat')
       announced.clear()
     }
+    // ...and, row by row, a tap whose tapper the server named as another
+    // person is that person's turn, in a chat not yet known to be theirs too.
+    const pollAnswerOf = (id: number): unknown => data.messages.find((m) => m.message.id === id)?.message.answerPayload
+    const pollTapperOf = (id: number): string | null => readTapperUserId(pollAnswerOf(id))
+    for (const id of [...announced]) {
+      if (announceRefusedIn(chatId, pollTapperOf(id), tapStandingOf(pollAnswerOf(id)))) {
+        noteLaneMisroute('poll tap', id, 'another person\'s tap')
+        announced.delete(id)
+      }
+    }
     // Group threads: a stamped tap is a turn line in its group's lane, never the main session's.
     routeGroupPollTaps(announced, data.messages)
     // Cross-transport single-announce: every id this poll announces joins
@@ -13309,7 +13343,11 @@ async function pollChat(chatId: string): Promise<void> {
     if (askAnswered.length > 0 && announceRefusedIn(chatId)) {
       noteLaneMisroute('poll ask answer', askAnswered.join(','), 'a recipient chat')
     } else if (askAnswered.length > 0) {
+      // An answer the server says another person gave is theirs: never recorded for the owner's session.
+      const othersAnswers = new Set(askAnswered.filter((id) => announceRefusedIn(chatId, pollTapperOf(id), tapStandingOf(pollAnswerOf(id)))))
+      if (othersAnswers.size > 0) noteLaneMisroute('poll ask answer', [...othersAnswers].join(','), 'another person\'s answer')
       for (const id of askAnswered) {
+        if (othersAnswers.has(id)) continue
         const entry = data.messages.find((m) => m.message.id === id)
         const answer = entry ? askAnswerFromRow(entry as unknown as AskRow) : null
         if (answer) askTracker.record(id, answer)
@@ -13563,7 +13601,7 @@ async function pollChat(chatId: string): Promise<void> {
       // commands (routeSlashCommand's speaker) read this one value.
       const pollFromHuman = !isPollAgent && pollSenderType !== 'system'
       // Admission to the owner's session (ownerSessionRefuses), before the sign-in code gate.
-      if (ownerSessionRefuses(chatId, pollSenderType === 'user' && !pollAgentOrigin && !pollIsEmail, msg.message, 'poll', msg.message.id)) continue
+      if (ownerSessionRefuses(chatId, admissionReading({ senderKind: pollSenderType, agentOrigin: !!pollAgentOrigin, isEmail: pollIsEmail }), msg.message, 'poll', msg.message.id)) continue
 
       // The owner's sign-in code, when one is awaited (lib/auth-login.ts).
       // Here, before the permission parse, the meeting card and every log
@@ -13848,7 +13886,7 @@ async function pollChat(chatId: string): Promise<void> {
       // stamp alone, with no fallback, for whose chat this is (item 0.8).
       // An email has no human sender, and the owner fallback must not stand in.
       if (!pollIsEmail) lastInboundUserByChat.set(chatId, pollSenderUserId)
-      noteChatAuthor(chatId, pollSenderType === 'user' && !pollAgentOrigin && !pollIsEmail, msg.message)
+      noteChatAuthor(chatId, admissionReading({ senderKind: pollSenderType, agentOrigin: !!pollAgentOrigin, isEmail: pollIsEmail }), msg.message)
       actingUser.noteInbound({
         chatId,
         userId: pollSenderUserId,
@@ -17353,7 +17391,7 @@ async function waitForHumanEditCatchup(chatId: string): Promise<boolean> {
 async function forwardHumanEdit(view: StreamMessageView, transport: 'poll' | 'ws' | 'stream', readGeneration?: number): Promise<boolean> {
   if (!channelArmed || updateDrainMode || humanMessageEdits.isDeleted(view) || !ownerLaneVerdict(view.raw).deliver) return false
   // An edit is a person's turn too: the same admission as a new message (ownerSessionRefuses).
-  if (ownerSessionRefuses(view.chatId, true, view.raw, `${transport} edit`, view.messageId)) return false
+  if (ownerSessionRefuses(view.chatId, 'person', view.raw, `${transport} edit`, view.messageId)) return false
   if (transport !== 'poll' && !await waitForHumanEditCatchup(view.chatId)) return false
   return humanMessageEdits.deliverEdit(view, async (edited, originalMeta) => {
     // The queue may have waited for another handoff while this daemon stood down.
@@ -17563,7 +17601,7 @@ async function forwardStreamInbound(
   rememberForwarded(view.messageId)
   rememberSessionHandle(chatId, view.sessionHandle)
   // Admission to the owner's session (ownerSessionRefuses), before the sign-in code gate.
-  if (ownerSessionRefuses(chatId, !isSystem && view.senderKind === 'user' && !view.agentOrigin && !isExternalEmailSenderType(view.senderKind), view.raw, 'stream', view.messageId)) return
+  if (ownerSessionRefuses(chatId, admissionReading({ senderKind: view.senderKind, agentOrigin: !!view.agentOrigin, isEmail: isExternalEmailSenderType(view.senderKind), isSystem }), view.raw, 'stream', view.messageId)) return
 
   // The owner's sign-in code (see the poll site). This rail claimed the id
   // above, so the other two will never offer this message: without this call
@@ -17769,7 +17807,7 @@ async function forwardStreamInbound(
     // An email has no human sender, nor has another agent's message, and the
     // owner fallback must not stand in.
     if (!streamIsEmail && !view.roomAgent) lastInboundUserByChat.set(chatId, senderUserId)
-    noteChatAuthor(chatId, !isSystem && view.senderKind === 'user' && !view.agentOrigin && !streamIsEmail, view.raw)
+    noteChatAuthor(chatId, admissionReading({ senderKind: view.senderKind, agentOrigin: !!view.agentOrigin, isEmail: streamIsEmail, isSystem }), view.raw)
     actingUser.noteInbound({
       chatId,
       userId: senderUserId,
@@ -17899,7 +17937,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     return
   }
   const tapLaneVerdict = ownerLaneVerdict(view.raw)
-  if (!tapLaneVerdict.deliver || announceRefusedIn(chatId)) {
+  if (!tapLaneVerdict.deliver || announceRefusedIn(chatId, view.answerPayload?.tapperUserId ?? null, tapStandingOf(view.raw.answerPayload ?? view.raw.answer_payload))) {
     noteLaneMisroute('stream tap', view.messageId, tapLaneVerdict.deliver ? 'a recipient chat' : tapLaneVerdict.stamp)
     return
   }
@@ -19154,7 +19192,7 @@ function connectWebsocket(): void {
     if (!ownerLaneVerdict(frame).deliver) return
     // A reaction in a chat known to be a share recipient's is that person's,
     // exactly as a button tap there is (fix round 377, finding 6).
-    if (announceRefusedIn(String(frame.chatId))) {
+    if (announceRefusedIn(String(frame.chatId), card.meta.user_id ?? null, card.meta.sender_relationship)) {
       noteLaneMisroute('reaction', frame.messageId, 'a recipient chat')
       return
     }
@@ -19408,7 +19446,7 @@ function connectWebsocket(): void {
       // commands (routeSlashCommand's speaker) read this one value.
       const wsFromHuman = !wsAgentOrigin && !wsRoomAgent && wsSenderType !== 'agent' && wsSenderType !== 'system'
       // Admission to the owner's session (ownerSessionRefuses), before the sign-in code gate.
-      if (ownerSessionRefuses(chatId, wsSenderType === 'user' && !wsAgentOrigin && !wsIsEmail, payload, 'socket', messageId)) return
+      if (ownerSessionRefuses(chatId, admissionReading({ senderKind: wsSenderType, agentOrigin: !!wsAgentOrigin, isEmail: wsIsEmail }), payload, 'socket', messageId)) return
       // The owner's sign-in code (see the poll site), before the sender is
       // noted, the turn is recorded or anything is logged or forwarded.
       if (consumedAsLoginCode({
@@ -19423,7 +19461,7 @@ function connectWebsocket(): void {
       // An email has no human sender, nor has another agent's message, and the
       // owner fallback must not stand in.
       if (chatId && !wsIsEmail && !wsRoomAgent) lastInboundUserByChat.set(chatId, wsSenderUserId)
-      noteChatAuthor(chatId, wsSenderType === 'user' && !wsAgentOrigin && !wsIsEmail, payload)
+      noteChatAuthor(chatId, admissionReading({ senderKind: wsSenderType, agentOrigin: !!wsAgentOrigin, isEmail: wsIsEmail }), payload)
       actingUser.noteInbound({
         chatId,
         userId: wsSenderUserId,

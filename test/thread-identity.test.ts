@@ -83,7 +83,7 @@ test('a reaction in a known recipient chat is refused in the owner daemon, as a 
   const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8')
   const handler = server.slice(server.indexOf("realtimeSocket.on('inbound_reaction'"), server.indexOf("realtimeSocket.on('inbound_message'"))
   const lane = handler.indexOf('if (!ownerLaneVerdict(frame).deliver) return')
-  const known = handler.indexOf('if (announceRefusedIn(String(frame.chatId))) {')
+  const known = handler.indexOf('if (announceRefusedIn(String(frame.chatId), card.meta.user_id ?? null, card.meta.sender_relationship)) {')
   const notify = handler.indexOf('channelNotify(')
   assert.ok(lane > 0 && known > lane && notify > known, 'the recipient chat check sits between the stamp and the delivery')
 })
