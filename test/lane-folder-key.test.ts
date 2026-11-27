@@ -111,6 +111,37 @@ test('a keyed folder made early (the stopped lane\'s memory) still takes in an u
   } finally { h.done() }
 })
 
+test('a moved lane keeps its conversation: the transcript is found under the new working folder, threads included', async () => {
+  const h = home()
+  try {
+    const { moveLaneTranscripts } = await import('../lib/lane-supervisor.mjs')
+    const { sessionTranscriptPath } = await import('../bin/hoai-core.mjs')
+    const paths = c.lanePaths({ home: h.root, assistantId: AGENT, userId: ANA_UPPER })
+    const oldWork = join(paths.legacyLaneDir, 'work')
+    const PIN = '0b9e1a52-1111-4c2d-9a3b-3c4d5e6f7a8b'
+    const config = join(h.root, 'owner-claude')
+    for (const cwd of [oldWork, join(oldWork, '.hoai', 'threads', '501')]) {
+      const t = sessionTranscriptPath(h.root, cwd, PIN, config)
+      mkdirSync(join(t, '..'), { recursive: true })
+      writeFileSync(t, '{"session":"ana"}\n')
+    }
+    // A project of a sibling folder that only shares the prefix is not the lane's.
+    const sibling = sessionTranscriptPath(h.root, `${oldWork}2`, PIN, config)
+    mkdirSync(join(sibling, '..'), { recursive: true })
+    writeFileSync(sibling, 'x')
+    mkdirSync(oldWork, { recursive: true })
+    assert.deepEqual(c.openLaneFolders({ paths, userId: ANA_UPPER, fs: nodeFs }), { opened: 'migrated' })
+    assert.equal(moveLaneTranscripts({ fs: nodeFs, home: h.root, fromWorkDir: oldWork, toWorkDir: paths.workDir, configDirs: [paths.configDir, config] }), 2)
+    assert.equal(readFileSync(sessionTranscriptPath(h.root, paths.workDir, PIN, config), 'utf8'), '{"session":"ana"}\n', 'the supervisor will --resume it')
+    assert.ok(existsSync(sessionTranscriptPath(h.root, join(paths.workDir, '.hoai', 'threads', '501'), PIN, config)))
+    assert.ok(existsSync(sibling), 'the sibling project stays')
+    // The supervisor runs it right after a migration, and sets the old thread state aside.
+    const sup = readFileSync(join(import.meta.dirname, '..', 'lib', 'lane-supervisor.mjs'), 'utf8')
+    assert.match(sup, /if \(opened\.opened === 'migrated'\) \{\n\s*const moved = moveLaneTranscripts\(/)
+    assert.match(sup, /const threadState = join\(paths\.stateDir, 'threads'\)/)
+  } finally { h.done() }
+})
+
 test('an earlier version\'s folder that may be another person\'s is quarantined, never used', () => {
   const h = home()
   try {
