@@ -17,7 +17,8 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { createRefusedChats, isPermissionCardOwnerChatOnly, pickPermissionChat } from '../lib/peer-refusal.ts'
-import { buildPermissionRequestBody, cardMessageIdFrom, choiceToBehavior, permissionBackstopMs, storedWaitSeconds } from '../lib/permission-relay.ts'
+import { buildPermissionRequestBody, cardMessageIdFrom, choiceToBehavior, permissionBackstopMs, permissionCardPairingNotice, storedWaitSeconds } from '../lib/permission-relay.ts'
+import { createPermissionRequestIds, permissionBehaviorToSend } from '../lib/permission-request-ids.ts'
 import { createChatOwnership } from '../lib/chat-ownership.ts'
 import { isOwnSendingTool } from '../lib/hard-floor.ts'
 import { createEmailSendApprovals, emailSendCardBinding, emailSendCardChat, emailSendCardTooLong } from '../lib/email-send-approval.ts'
@@ -79,6 +80,9 @@ function relayRig(opts: { monitored: string[]; main: string[]; refuse?: string[]
     pickPermissionChat,
     pendingPermissions: new Map(),
     buildPermissionRequestBody, cardMessageIdFrom, storedWaitSeconds, permissionBackstopMs, choiceToBehavior,
+    // The reservation asked before a grant is recorded, and the once per request pairing notice.
+    permissionBehaviorToSend, permissionRequestIds: createPermissionRequestIds(),
+    permissionCardPairingNotice, pairingNoticeSaid: new WeakSet(),
     isPermissionCardOwnerChatOnly,
     refuseHookRailChat: () => false,
     bgosPost: async (_path: string, body: { chatId: number | string; approvalMeta?: Record<string, unknown> }) => {

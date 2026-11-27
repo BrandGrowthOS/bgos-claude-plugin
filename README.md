@@ -1386,7 +1386,7 @@ What the flag turns on, when the backend serves the feature:
 
 **Auto-approve** (`BGOS_AUTO_APPROVE=true`): All tool permissions are automatically approved. Best for trusted environments.
 
-**Interactive** (default): a tool permission is posted to the BGOS chat as a real approval card, carrying the tool, the command it wants to run, and two buttons: **Allow once** and **Deny**. Tapping one answers the request.
+**Interactive** (default): a tool permission is posted to the BGOS chat as a real approval card, carrying the tool, the command it wants to run, and two buttons: **Allow once** and **Deny**. Tapping one answers the request. The card needs a paired agent: the server takes an approval card in the owner's own chat only from the agent's pairing, so on an install that connects with an account API key the card is refused and the request is denied. The daemon says so at boot and on each request.
 
 **How long it waits is the owner's choice, not this daemon's.** Every card carries this daemon's offer, `1800` seconds, which is the longest it can hold its side of a request open. The server stores the smaller of that and the per agent wait set for this agent, and the stored number is what the card in your hand counts down. Behind it this daemon keeps a local backstop of that stored wait plus `90` seconds, for the one case the card cannot cover: a server that never answers at all. The old two minute auto deny is gone, because it declared a refusal while the card in the owner's hand was still perfectly tappable.
 

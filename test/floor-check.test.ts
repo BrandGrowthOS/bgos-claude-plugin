@@ -503,8 +503,20 @@ test('the interactive path a hold takes still refuses in a drain and with no cha
   const noChat = relay.slice(relay.indexOf('if (!chatId) {'), relay.indexOf('let resolveButtonChoice'))
   assert.ok(noChat.includes("behavior: 'deny'"), 'the no chat exit refuses a held request')
   assert.ok(relay.includes('buildPermissionRequestBody({'), 'and otherwise the real card is posted')
-  // The handler's own tail is this same function: one interactive path, not two.
-  assert.ok(handler.includes('return relayPermissionToOwner(params)\n})'))
+  // The handler's own tail is this same function: one interactive path, not
+  // two. Asked of the routes, not of the punctuation around them: the
+  // ordinary request's last step, and the floor's hold and owner routes, all
+  // reach relayPermissionToOwner, and nothing else posts a permission card.
+  const ordinary = bodyOf('function handlePermissionRequest(', '\n/**')
+  assert.ok(ordinary.length > 0)
+  const tail = ordinary.slice(ordinary.lastIndexOf('return '))
+  assert.match(tail, /^return relayPermissionToOwner\(params\)/, 'the ordinary request ends on the shared relay')
+  const settle = bodyOf('function settleFloorRequest(', '\n/**')
+  const route = (name: string) => settle.slice(settle.indexOf(`case '${name}':`), settle.indexOf('case ', settle.indexOf(`case '${name}':`) + 5))
+  assert.match(route('hold'), /\breturn relayPermissionToOwner\(params, /, 'a held floor consult reaches the shared relay')
+  assert.match(route('owner'), /\breturn relayPermissionToOwner\(params, /, "an owner's floor consult reaches the shared relay")
+  const posts = SRC.split('buildPermissionRequestBody({').length - 1
+  assert.equal(posts, 1, 'one card post, inside the shared relay')
 })
 
 test('the floor call is bounded, authenticated, and keeps the status', () => {
