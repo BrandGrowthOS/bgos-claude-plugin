@@ -13,8 +13,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import { type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Server as SocketServer } from 'socket.io'
+import { io as socketIoClient } from 'socket.io-client'
 
 import {
   resolveAuth,
@@ -28,6 +32,7 @@ import {
   loadCredentialsFile,
   authHeaders,
   wsAuthOptions,
+  formatHandshakeAgent,
   missingCredsMessage,
 } from '../lib/agent-credentials.ts'
 import {
@@ -80,7 +85,7 @@ test('credentials file resolves to pairing mode with X-BGOS-Pairing + query toke
   assert.equal(auth.assistantId, '1234', 'numeric assistant id becomes a string')
   assert.equal(auth.complete, true)
   assert.deepEqual(authHeaders(auth), { 'X-BGOS-Pairing': 'pair_secret' })
-  assert.deepEqual(wsAuthOptions(auth), { query: { pairingToken: 'pair_secret' } })
+  assert.deepEqual(wsAuthOptions(auth), { query: { pairingToken: 'pair_secret' }, auth: { servesAgent: 1234 } })
 })
 
 test('BGOS_PAIRING_TOKEN env takes precedence over the credentials file', () => {
@@ -178,7 +183,7 @@ test('matching configured and file assistant ids keep pairing file auth', () => 
   assert.equal(auth.apiKey, '')
   assert.equal(auth.complete, true)
   assert.deepEqual(authHeaders(auth), { 'X-BGOS-Pairing': 'pair_secret' })
-  assert.deepEqual(wsAuthOptions(auth), { query: { pairingToken: 'pair_secret' } })
+  assert.deepEqual(wsAuthOptions(auth), { query: { pairingToken: 'pair_secret' }, auth: { servesAgent: 888 } })
 })
 
 test('unsubstituted assistant config placeholder keeps pairing file auth', () => {
@@ -227,7 +232,216 @@ test('pairing file keeps precedence when no assistant id is configured', () => {
   assert.equal(auth.apiKey, '')
   assert.equal(auth.complete, true)
   assert.deepEqual(authHeaders(auth), { 'X-BGOS-Pairing': 'pair_secret' })
-  assert.deepEqual(wsAuthOptions(auth), { query: { pairingToken: 'pair_secret' } })
+  assert.deepEqual(wsAuthOptions(auth), { query: { pairingToken: 'pair_secret' }, auth: { servesAgent: 972 } })
+})
+
+// ── The pairing connection names the agent it serves ─────────────────────────
+//
+// A paired daemon says which agent it serves in its connection handshake: a
+// positive whole number in the handshake auth, beside `capabilities`. It sends
+// nothing there when it does not know its agent, and never any other value.
+
+/** A pairing identity as the resolver hands it over, for the agent id given. */
+function pairingAuthFor(assistantId: unknown) {
+  return {
+    ...resolveAuth({
+      env: {},
+      creds: { backendUrl: 'https://file.example/api/v1', pairingToken: 'pair_secret', userId: 'user_file', assistantId: 1234 },
+    }),
+    assistantId: assistantId as string,
+  }
+}
+
+/** The handshake auth exactly as it is sent: JSON, the way the socket encodes it. */
+const sent = (options: unknown) => JSON.stringify(options)
+
+test('the pairing connection names its agent as a whole number, beside its capabilities', () => {
+  const auth = pairingAuthFor('1234')
+  assert.deepEqual(wsAuthOptions(auth), { query: { pairingToken: 'pair_secret' }, auth: { servesAgent: 1234 } })
+  assert.deepEqual(wsAuthOptions(auth, ['heard_reactions', 'lane_memory_rpc']), {
+    query: { pairingToken: 'pair_secret' },
+    auth: { capabilities: ['heard_reactions', 'lane_memory_rpc'], servesAgent: 1234 },
+  })
+  assert.equal(sent(wsAuthOptions(auth, ['heard_reactions'])), '{"query":{"pairingToken":"pair_secret"},"auth":{"capabilities":["heard_reactions"],"servesAgent":1234}}')
+  // The largest id a number holds exactly still goes out whole.
+  assert.deepEqual(wsAuthOptions(pairingAuthFor('9007199254740991')).auth, { servesAgent: 9007199254740991 })
+  assert.deepEqual(wsAuthOptions(pairingAuthFor('1')).auth, { servesAgent: 1 })
+})
+
+test('a pairing connection that does not know its agent names none: the handshake is what it was', () => {
+  for (const unknown of ['', undefined, null]) {
+    const auth = pairingAuthFor(unknown)
+    assert.equal(sent(wsAuthOptions(auth)), '{"query":{"pairingToken":"pair_secret"}}', `agent ${String(unknown)}`)
+    assert.equal(
+      sent(wsAuthOptions(auth, ['heard_reactions', 'lane_memory_rpc'])),
+      '{"query":{"pairingToken":"pair_secret"},"auth":{"capabilities":["heard_reactions","lane_memory_rpc"]}}',
+      `agent ${String(unknown)}`,
+    )
+  }
+  // The resolver's own "not known yet": a pairing token with no agent beside it.
+  const unbound = resolveAuth({ env: { BGOS_PAIRING_TOKEN: 'pair_secret', BGOS_BACKEND_URL: 'https://env.example/api/v1', BGOS_USER_ID: 'user_env' }, creds: null })
+  assert.equal(unbound.mode, 'pairing')
+  assert.equal(sent(wsAuthOptions(unbound)), '{"query":{"pairingToken":"pair_secret"}}')
+})
+
+test('a value that is not a positive whole number is never sent as the agent', () => {
+  const strays = [
+    'abc', '0', '-7', '+7', '1.5', '7.0', '1e3', '0x10', '007', ' 12', '12 ', '1 2', '12abc', '1,234', '１２',
+    '9007199254740992', '9007199254740993', '9999999999999999', '12345678901234567',
+    'NaN', 'Infinity', 'true', 'null', 'undefined', '[object Object]', '${user_config.assistant_id}',
+    0, -7, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, true, false, {}, [], [12, 13],
+  ]
+  for (const stray of strays) {
+    const auth = pairingAuthFor(stray)
+    const label = `agent ${JSON.stringify(stray) ?? String(stray)}`
+    assert.equal(sent(wsAuthOptions(auth)), '{"query":{"pairingToken":"pair_secret"}}', label)
+    const withCapabilities = wsAuthOptions(auth, ['heard_reactions'])
+    assert.deepEqual(withCapabilities, { query: { pairingToken: 'pair_secret' }, auth: { capabilities: ['heard_reactions'] } }, label)
+    assert.ok(!('servesAgent' in (withCapabilities.auth ?? {})), `${label}: not even an empty field`)
+  }
+  // Read from the environment as a real start does: an unfilled setting is not an agent.
+  const placeholder = resolveAuth({
+    env: { BGOS_PAIRING_TOKEN: 'pair_secret', BGOS_BACKEND_URL: 'https://env.example/api/v1', BGOS_USER_ID: 'user_env', BGOS_ASSISTANT_ID: '${user_config.assistant_id}' },
+    creds: null,
+  })
+  assert.equal(placeholder.mode, 'pairing')
+  assert.equal(sent(wsAuthOptions(placeholder)), '{"query":{"pairingToken":"pair_secret"}}')
+})
+
+test('whatever goes out as the agent is a positive whole number that reads back as the id the daemon holds', () => {
+  const held = ['1', '7', '42', '1234', '999999', '4294967296', '9007199254740991', '0', '-1', '1.0', '08', 'x', '', ' 5']
+  let named = 0
+  for (const id of held) {
+    const auth = wsAuthOptions(pairingAuthFor(id)).auth as { servesAgent?: unknown } | undefined
+    if (!auth || !('servesAgent' in auth)) continue
+    named++
+    assert.equal(typeof auth.servesAgent, 'number', id)
+    assert.ok(Number.isSafeInteger(auth.servesAgent) && (auth.servesAgent as number) > 0, id)
+    assert.equal(String(auth.servesAgent), id, 'the same agent, digit for digit')
+  }
+  assert.equal(named, 7, 'the seven plain ids are named, the other seven are not')
+})
+
+test('an agent id held as a number is named the same as its text', () => {
+  assert.deepEqual(wsAuthOptions(pairingAuthFor(1234)), { query: { pairingToken: 'pair_secret' }, auth: { servesAgent: 1234 } })
+  assert.deepEqual(wsAuthOptions(pairingAuthFor(1), ['heard_reactions']).auth, { capabilities: ['heard_reactions'], servesAgent: 1 })
+  assert.deepEqual(wsAuthOptions(pairingAuthFor(Number.MAX_SAFE_INTEGER)).auth, { servesAgent: 9007199254740991 })
+  assert.equal(formatHandshakeAgent(pairingAuthFor(1234)), 'WS handshake names agent 1234')
+})
+
+// One line at connect says whether the handshake named an agent: its id, or
+// that none was named. A start whose agent setting is padded or unfilled
+// connects without a name, and this line is where that shows.
+
+test('the connect line names the agent the handshake carries, the id only', () => {
+  for (const id of ['1', '42', '1234', '9007199254740991']) {
+    const auth = pairingAuthFor(id)
+    assert.equal(formatHandshakeAgent(auth), `WS handshake names agent ${id}`)
+    assert.equal(String((wsAuthOptions(auth).auth as { servesAgent?: number }).servesAgent), id, 'the line and the handshake agree')
+  }
+  const line = formatHandshakeAgent(pairingAuthFor('1234')) ?? ''
+  assert.ok(!line.includes('pair_secret') && !line.includes('user_file'), 'no token and no user in the line')
+})
+
+test('the connect line says "no agent named" when the handshake carries none, and never repeats the stray value', () => {
+  for (const held of ['', undefined, null, ' 12 ', '12 ', '007', '0', '-7', '1.5', 'abc', '${user_config.assistant_id}', 0, 1.5, {}]) {
+    const auth = pairingAuthFor(held)
+    assert.equal(formatHandshakeAgent(auth), 'WS handshake: no agent named', `agent ${JSON.stringify(held) ?? String(held)}`)
+    assert.ok(!('auth' in wsAuthOptions(auth)), 'and the handshake carries none')
+  }
+  // The environment pairing route, read as a real start reads it.
+  const fromEnv = (assistantId: string | undefined) => resolveAuth({
+    env: { BGOS_PAIRING_TOKEN: 'pair_secret', BGOS_BACKEND_URL: 'https://env.example/api/v1', BGOS_USER_ID: 'user_env', BGOS_ASSISTANT_ID: assistantId },
+    creds: null,
+  })
+  assert.equal(formatHandshakeAgent(fromEnv(' 12 ')), 'WS handshake: no agent named', 'a padded setting')
+  assert.equal(formatHandshakeAgent(fromEnv('${user_config.assistant_id}')), 'WS handshake: no agent named', 'an unfilled setting')
+  assert.equal(formatHandshakeAgent(fromEnv(undefined)), 'WS handshake: no agent named', 'no setting')
+  assert.equal(formatHandshakeAgent(fromEnv('12')), 'WS handshake names agent 12')
+})
+
+test('the API key connection gets no such line: its handshake never carries the field', () => {
+  const apikey = resolveAuth({
+    env: { BGOS_BACKEND_URL: 'https://api.brandgrowthos.ai/api/v1', BGOS_API_KEY: 'raw_key', BGOS_USER_ID: 'user_abc', BGOS_ASSISTANT_ID: '1234' },
+    creds: null,
+  })
+  assert.equal(apikey.mode, 'apikey')
+  assert.equal(formatHandshakeAgent(apikey), null)
+})
+
+test('server.ts: the handshake is built from the daemon\'s own identity, and every connect logs that line right after it logs the connection', () => {
+  // The handshake and the line read the same identity, so the id the line reports is the id that went out.
+  assert.match(serverSource, /\.\.\.wsAuthOptions\(AUTH, \[HEARD_REACTIONS_CAPABILITY, \.\.\.\(laneSupport\(\)\.ok \? \[LANE_MEMORY_RPC_TOKEN\] : \[\]\)\]\),/)
+  assert.match(serverSource, /^  formatHandshakeAgent,$/m, 'imported from the credentials module')
+  const at = serverSource.indexOf("realtimeSocket.on('connect', () => {")
+  assert.ok(at > serverSource.indexOf('function connectWebsocket(): void {'), 'inside connectWebsocket')
+  const handler = serverSource.slice(at, at + 400).replace(/\r\n/g, '\n')
+  assert.match(handler, /log\(`WS connected \(id=\$\{realtimeSocket\?\.id\}\), polling will throttle`\)\n    const handshakeAgent = formatHandshakeAgent\(AUTH\)\n    if \(handshakeAgent\) log\(handshakeAgent\)\n/)
+})
+
+test('the API key connection is unchanged: it never carries the new field', () => {
+  const apikey = resolveAuth({
+    env: { BGOS_BACKEND_URL: 'https://api.brandgrowthos.ai/api/v1', BGOS_API_KEY: 'raw_key', BGOS_USER_ID: 'user_abc', BGOS_ASSISTANT_ID: '1234' },
+    creds: null,
+  })
+  assert.equal(apikey.mode, 'apikey')
+  assert.equal(sent(wsAuthOptions(apikey)), '{"auth":{"apiKey":"raw_key","assistantId":"1234"}}')
+  assert.equal(
+    sent(wsAuthOptions(apikey, ['heard_reactions', 'lane_memory_rpc'])),
+    '{"auth":{"apiKey":"raw_key","assistantId":"1234","capabilities":["heard_reactions"]}}',
+  )
+  assert.equal(sent(wsAuthOptions(apikey, ['lane_memory_rpc'])), '{"auth":{"apiKey":"raw_key","assistantId":"1234"}}')
+})
+
+test('the capabilities a pairing connection declares are unchanged by the agent name', () => {
+  const lists = [['heard_reactions'], ['heard_reactions', 'lane_memory_rpc'], ['lane_memory_rpc', 'heard_reactions']]
+  for (const list of lists) {
+    const named = wsAuthOptions(pairingAuthFor('1234'), list).auth as { capabilities?: string[] }
+    const unnamed = wsAuthOptions(pairingAuthFor(''), list).auth as { capabilities?: string[] }
+    assert.deepEqual(named.capabilities, list)
+    assert.deepEqual(unnamed.capabilities, list)
+    assert.notEqual(named.capabilities, list, 'a copy, never the caller\'s own list')
+    assert.equal(Object.keys(named)[0], 'capabilities', 'capabilities stays first, the name follows it')
+  }
+})
+
+test('on a real connection the server end receives the agent as a number, with the token and capabilities where they were', { timeout: 30_000 }, async () => {
+  const http = createServer()
+  const io = new SocketServer(http)
+  await new Promise<void>((ok) => http.listen(0, '127.0.0.1', ok))
+  const url = `http://127.0.0.1:${(http.address() as AddressInfo).port}`
+  const arrivals: Array<{ auth: Record<string, unknown>; token: unknown }> = []
+  io.on('connection', (socket) => {
+    arrivals.push({ auth: { ...socket.handshake.auth }, token: socket.handshake.query.pairingToken })
+  })
+  const connect = async (options: ReturnType<typeof wsAuthOptions>) => {
+    const before = arrivals.length
+    const client = socketIoClient(url, { transports: ['websocket'], reconnection: false, ...options })
+    try {
+      await new Promise<void>((ok, fail) => {
+        client.once('connect', () => ok())
+        client.once('connect_error', fail)
+      })
+      assert.equal(arrivals.length, before + 1)
+      return arrivals[before]
+    } finally {
+      client.close()
+    }
+  }
+  try {
+    assert.deepEqual(await connect(wsAuthOptions(pairingAuthFor('1234'), ['heard_reactions'])), {
+      auth: { capabilities: ['heard_reactions'], servesAgent: 1234 },
+      token: 'pair_secret',
+    })
+    assert.deepEqual(await connect(wsAuthOptions(pairingAuthFor('1234'))), { auth: { servesAgent: 1234 }, token: 'pair_secret' })
+    assert.deepEqual(await connect(wsAuthOptions(pairingAuthFor(''), ['heard_reactions'])), {
+      auth: { capabilities: ['heard_reactions'] },
+      token: 'pair_secret',
+    })
+    assert.deepEqual(await connect(wsAuthOptions(pairingAuthFor('12abc'))), { auth: {}, token: 'pair_secret' })
+  } finally {
+    await io.close()
+  }
 })
 
 test('missing everything is incomplete and names the missing fields', () => {

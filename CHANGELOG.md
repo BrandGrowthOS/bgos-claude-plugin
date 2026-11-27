@@ -2,6 +2,14 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.90.31 (2026-11-27)
+
+**A paired daemon's connection now says which agent it serves.** The connection handshake carries the agent's id as a whole number in `auth.servesAgent`, beside `capabilities`. The id is left out when the daemon does not know its agent, and a value that is not a positive whole number is never sent, so those handshakes are exactly what they were. The API key connection and the capabilities list are unchanged.
+
+The connect log says whether the handshake named an agent: `WS handshake names agent <id>`, or `WS handshake: no agent named`. The line carries the id only, and the API key connection gets no such line.
+
+Guards: `test/agent-credentials.test.ts`.
+
 ## 0.90.30 (2026-11-27)
 
 **A reply reminder, a peer conversation close or your own scheduled wake no longer stops the board and schedule work of your turn.** Schedule, list and cancel schedules, boards, artifacts and the browser act for you only in a turn nobody else's words reached, so they stop as soon as another card lands. Three cards that hold nobody else's words still stopped them on 27 Nov.

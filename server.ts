@@ -413,6 +413,7 @@ import {
   readFolderPinId,
   formatAuthResolution,
   formatPairingRejection,
+  formatHandshakeAgent,
   authHeaders,
   wsAuthOptions,
   missingCredsMessage,
@@ -18844,6 +18845,8 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
+    const handshakeAgent = formatHandshakeAgent(AUTH)
+    if (handshakeAgent) log(handshakeAgent)
     // The quiet turn's server switch changes only with a backend restart, which this connect follows (review F3).
     refreshServerQuietTurn()
     // From here every chat is behind this connection until a read says otherwise.
