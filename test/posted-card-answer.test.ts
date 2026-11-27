@@ -61,6 +61,8 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown> = async () 
     humanMessageEdits: { isChatDeleted: () => flags.deleted },
     lanesOnForThisAgent: lanesOn, chatOwnership: { isOthers: () => flags.others },
     ownerAnnounceRefused, ownerLaneVerdict, noteLaneMisroute: (...args: unknown[]) => refused.push(args),
+    // Every announce check goes through announceRefusedIn (fix round 377, finding 1); these chats are not known private ones.
+    announceRefusedIn: () => ownerAnnounceRefused({ lanesOn, chatIsOthers: flags.others }),
     // No group lanes here: no tap is a group's.
     routeGroupStreamTap: () => false, routeGroupPollTaps: () => undefined,
     log: () => {}, trackMessageOperation: (op: () => Promise<void>) => op(),

@@ -313,6 +313,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     // are off here, so the tap goes on exactly as before.
     ownerLaneVerdict,
     ownerAnnounceRefused,
+    // Every announce check goes through announceRefusedIn (fix round 377, finding 1); these chats are not known private ones.
+    announceRefusedIn: () => false,
     noteLaneMisroute: () => undefined,
     // No group lanes here: no tap is a group's.
     routeGroupStreamTap: () => false,

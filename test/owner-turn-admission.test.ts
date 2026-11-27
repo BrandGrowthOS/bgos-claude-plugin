@@ -47,7 +47,8 @@ test('a recipient turn in a private chat is refused by the owner session, whatev
   assert.equal(ownerTurnRefused({ human: true, authorUserId: RECIPIENT, ownerUserId: OWNER }), true)
   // Known to be the recipient's private chat, even an unstamped row.
   assert.equal(ownerTurnRefused({ human: true, authorUserId: null, ownerUserId: OWNER, chatIsOthersPrivate: true }), true)
-  // The owner's own turn, in the owner's chat or an unknown one.
+  // The owner's own turn, in the owner's chat or an unknown one, and in a chat marked another person's: the owner's stamp is verified authorship.
+  assert.equal(ownerTurnRefused({ human: true, authorUserId: OWNER, ownerUserId: OWNER, chatIsOthersPrivate: true }), false)
   assert.equal(ownerTurnRefused({ human: true, authorUserId: OWNER, ownerUserId: OWNER }), false)
   // An unstamped row in a chat nobody else was seen in: an old backend's chat with its owner.
   assert.equal(ownerTurnRefused({ human: true, authorUserId: null, ownerUserId: OWNER }), false)
@@ -157,4 +158,43 @@ test('the permission handler refuses another person turn before the floor and au
   // Nothing after creation reads the turn again.
   const after = server.slice(server.indexOf('function relayPermissionToOwner('), server.indexOf('const FLOOR_STATE_ROOT'))
   assert.doesNotMatch(after, /privateTurns\.current\(/, 'the relay and the floor use the snapshot only')
+})
+
+// ── the intake's own check, run out of server.ts ─────────────────────────────
+
+async function intake() {
+  const ts = (await import('typescript')).default
+  const { privateSenderUserId } = await import('../lib/private-turn.mjs')
+  const { isGroupChatDelivery } = await import('../lib/channel-liveness.ts')
+  const body = server.slice(server.indexOf('function noteChatAuthor('), server.indexOf('/** A tap, an ask\'s answer, a card answer or a reaction'))
+  const js = ts.transpileModule(`${body}\nreturn ownerSessionRefuses;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
+  const chatOwnership = createChatOwnership(OWNER)
+  const groupChatIds = new Set<string>()
+  const bindings: Record<string, unknown> = {
+    chatOwnership, groupChatIds, meetingChatIds: new Set<string>(), USER_ID: OWNER, privateSenderUserId, isGroupChatDelivery,
+    ownerTurnRefused: (laneCore as any).ownerTurnRefused, log: () => {},
+  }
+  const refuses = new Function(...Object.keys(bindings), js)(...Object.values(bindings)) as (chatId: string, human: boolean, record: unknown, transport: string, id: unknown) => boolean
+  return { refuses, chatOwnership, groupChatIds }
+}
+
+test('the intake: a group admits other people from its first message, a private chat of another person does not', async () => {
+  const g = await intake()
+  // A new group the inbox has not listed yet: its delivery says it is one.
+  assert.equal(g.refuses('40', true, { senderUserId: RECIPIENT, chatKind: 'group' }, 'socket', 1), false)
+  assert.equal(g.groupChatIds.has('40'), true)
+  // ...and the owner there afterwards is the owner's turn.
+  assert.equal(g.refuses('40', true, { senderUserId: OWNER }, 'socket', 2), false)
+  // A group the inbox listed.
+  g.chatOwnership.noteRow({ chatId: '41', kind: 'group' })
+  assert.equal(g.refuses('41', true, { senderUserId: RECIPIENT }, 'poll', 3), false)
+  // A recipient's private chat: refused, stamped or not once it is known.
+  assert.equal(g.refuses('20', true, { senderUserId: RECIPIENT }, 'stream', 4), true)
+  assert.equal(g.refuses('20', true, {}, 'stream', 5), true)
+  // A chat whose kind nothing said and another person spoke in: refused (fail closed); the owner there stays the owner.
+  assert.equal(g.refuses('30', true, { senderUserId: RECIPIENT }, 'socket', 6), true)
+  assert.equal(g.refuses('30', true, { senderUserId: OWNER }, 'socket', 7), false, 'verified owner authorship is always the owner\'s turn')
+  // Not a person's turn: never refused here.
+  assert.equal(g.refuses('20', false, { senderUserId: RECIPIENT }, 'stream', 8), false)
+  assert.equal(g.refuses('20', true, { senderUserId: RECIPIENT, messageType: 'event' }, 'stream', 9), false)
 })

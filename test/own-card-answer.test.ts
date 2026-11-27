@@ -48,6 +48,8 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown>, post = asy
     recentButtonPrompts: prompts,
     updateDrainMode: false, lockHeld: true, humanMessageEdits: { isChatDeleted: () => flags.deleted },
     ownerLaneVerdict, ownerAnnounceRefused, lanesOnForThisAgent: false,
+    // Every announce check goes through announceRefusedIn (fix round 377, finding 1); these chats are not known private ones.
+    announceRefusedIn: () => ownerAnnounceRefused({ lanesOn: false, chatIsOthers: flags.others }),
     // No group lanes here: no tap is a group's.
     routeGroupStreamTap: () => false,
     chatOwnership: { isOthers: () => flags.others }, noteLaneMisroute: (...args: unknown[]) => refused.push(args),

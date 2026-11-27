@@ -3508,7 +3508,7 @@ function noteChatAuthor(chatId: string, human: boolean, record: unknown): void {
 
 /** A recipient's private chat, by what this daemon has read: never a meeting. */
 function chatIsOthersPrivate(chatId: string): boolean {
-  return !!chatId && chatOwnership.isOthersPrivate(chatId) && !meetingChatIds.has(chatId)
+  return !!chatId && chatOwnership.isOthersPrivate(chatId) && !meetingChatIds.has(chatId) && !groupChatIds.has(chatId)
 }
 
 /**
@@ -3526,13 +3526,16 @@ function ownerSessionRefuses(chatId: string, human: boolean, record: unknown, tr
   if (!chatId || !human) return false
   const row = (record ?? {}) as Record<string, unknown>
   if ((row.messageType ?? row.message_type) === 'event' || row.eventMeta != null || row.event_meta != null) return false
+  // The delivery's own chat kind counts from its first message (as the stream and socket note it, later).
+  if (isGroupChatDelivery(record)) groupChatIds.add(chatId)
   noteChatAuthor(chatId, human, record)
   const refused = ownerTurnRefused({
     human: true,
     authorUserId: privateSenderUserId(record),
     ownerUserId: USER_ID,
     chatIsOthersPrivate: chatIsOthersPrivate(chatId),
-    chatIsMultiParty: chatOwnership.isMultiParty(chatId) || meetingChatIds.has(chatId),
+    // A group, a room or a channel by the inbox, a meeting, or the delivery's own chat kind (its first message included).
+    chatIsMultiParty: chatOwnership.isMultiParty(chatId) || meetingChatIds.has(chatId) || groupChatIds.has(chatId) || isGroupChatDelivery(record),
   })
   if (refused) log(`lane_refused ${transport} message ${String(messageId)} in chat ${chatId}: a person's turn that is not the owner's, with no lane of their own here, not delivered to the owner's session`)
   return refused

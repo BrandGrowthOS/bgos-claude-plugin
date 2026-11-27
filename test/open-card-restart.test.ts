@@ -88,6 +88,8 @@ function daemon(dir: string, read: (path: string) => Promise<unknown>, opts: Dae
     humanMessageEdits: { isChatDeleted: () => false },
     lanesOnForThisAgent: opts.lanesOn ?? false, chatOwnership: { isOthers: () => opts.others ?? false },
     ownerAnnounceRefused, ownerLaneVerdict, noteLaneMisroute: () => {},
+    // Every announce check goes through announceRefusedIn (fix round 377, finding 1); these chats are not known private ones.
+    announceRefusedIn: () => ownerAnnounceRefused({ lanesOn: opts.lanesOn ?? false, chatIsOthers: opts.others ?? false }),
     routeGroupStreamTap: () => opts.groupTap ?? false, routeGroupPollTaps: () => undefined,
     groupLanesOn: () => opts.groupLanes ?? false,
     monitoredChatIds: opts.monitored ?? [],
