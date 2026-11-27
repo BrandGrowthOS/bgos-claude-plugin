@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { decideButtonsAnswered, viewStreamMessage, buildStreamClickMeta } from '../lib/stream-apply.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
+import { readTapperStanding } from '../lib/inbound-channel.ts'
 import { LOGIN_METHOD_WINDOW_MS } from '../lib/auth-login.ts'
 
 const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -50,6 +51,8 @@ function rig(read: (path: string, opts: unknown) => Promise<unknown>, post = asy
     ownerLaneVerdict, ownerAnnounceRefused, lanesOnForThisAgent: false,
     // Every announce check goes through announceRefusedIn (fix round 377, finding 1); these chats are not known private ones.
     announceRefusedIn: () => ownerAnnounceRefused({ lanesOn: false, chatIsOthers: flags.others }),
+    // The tapper's server standing, read beside the tapper at each announce door (re-review C).
+    readTapperStanding,
     // No group lanes here: no tap is a group's.
     routeGroupStreamTap: () => false,
     chatOwnership: { isOthers: () => flags.others }, noteLaneMisroute: (...args: unknown[]) => refused.push(args),

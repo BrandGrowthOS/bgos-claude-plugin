@@ -40,6 +40,7 @@ import type { StreamUpdate } from '../lib/update-stream.ts'
 import { ownerAnnounceRefused, ownerLaneVerdict } from '../lib/lane-core.mjs'
 import { createPostedButtons, createPrivateTurnTracker, privateTapCard } from '../lib/private-turn.mjs'
 import { isHumanClick } from '../lib/skill-origins.ts'
+import { readTapperStanding } from '../lib/inbound-channel.ts'
 
 // Normalized to LF: the working tree is CRLF on a Windows checkout.
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
@@ -315,6 +316,8 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
     ownerAnnounceRefused,
     // Every announce check goes through announceRefusedIn (fix round 377, finding 1); these chats are not known private ones.
     announceRefusedIn: () => false,
+    // The tapper's server standing, read beside the tapper at each announce door (re-review C).
+    readTapperStanding,
     noteLaneMisroute: () => undefined,
     // No group lanes here: no tap is a group's.
     routeGroupStreamTap: () => false,

@@ -923,6 +923,18 @@ export function readTapperUserId(answerPayload: unknown): string | null {
 }
 
 /**
+ * THE TAPPER'S STANDING, as the server gave it on the answer payload
+ * (`answeredByRelationship`, BGOS sender-identity.ts, from the chat's kind and
+ * the agent's owner, never from the request). `room_member` says the chat is a
+ * room. Null when the payload carries none.
+ */
+export function readTapperStanding(answerPayload: unknown): string | null {
+  if (answerPayload == null || typeof answerPayload !== 'object') return null
+  const a = answerPayload as Record<string, unknown>
+  return agreed([a.answeredByRelationship, a.answered_by_relationship], statedString)
+}
+
+/**
  * The meta of a button_clicked event, for every lane that announces a tap (the
  * poll's transition detector, the stream's buttons_answered and the plan boot
  * sweep). `user_id` is the tapper the server named, or absent. No sender

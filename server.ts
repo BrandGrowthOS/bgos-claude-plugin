@@ -62,6 +62,7 @@ import {
   isSelfAuthoredAgentOrigin,
   readPlanPolicyField,
   readRoomAgentSender,
+  readTapperStanding,
   readTapperUserId,
   ROOM_AGENT_SENDER_TYPE,
   roomAgentUserId,
@@ -3548,15 +3549,6 @@ function ownerSessionRefuses(chatId: string, reading: AdmissionReading, record: 
   })
   if (refused) log(`lane_refused ${transport} message ${String(messageId)} in chat ${chatId}: a ${reading} row that is not the owner's, with no lane of its person here, not delivered to the owner's session`)
   return refused
-}
-
-/**
- * The server's standing for whoever answered a card (`answeredByRelationship`,
- * BGOS sender-identity.ts tapAnswerForDelivery): `room_member` says the chat is a room.
- */
-function tapStandingOf(answerPayload: unknown): unknown {
-  const a = answerPayload as Record<string, unknown> | null | undefined
-  return a && typeof a === 'object' ? (a.answeredByRelationship ?? a.answered_by_relationship ?? null) : null
 }
 
 /** A tap, an ask's answer, a card answer or a reaction in `chatId`, by `tapperUserId` when the server named one, the owner's session must not announce (lib/lane-core.mjs ownerAnnounceRefused). */
@@ -12844,7 +12836,7 @@ function announcePostedButtonAnswer(chatId: string, m: ChatMessage): void {
   if (!card || card.chatId !== chatId || String(mm.chatId) !== chatId || card.settled || mm.sender !== 'assistant') return
   if (updateDrainMode || !lockHeld || humanMessageEdits.isChatDeleted(chatId)) return
   const lane = ownerLaneVerdict(mm)
-  if (!lane.deliver || announceRefusedIn(chatId, readTapperUserId(mm.answerPayload), tapStandingOf(mm.answerPayload))) {
+  if (!lane.deliver || announceRefusedIn(chatId, readTapperUserId(mm.answerPayload), readTapperStanding(mm.answerPayload))) {
     noteLaneMisroute('card answer', mm.id, lane.deliver ? 'a recipient chat' : lane.stamp)
     return
   }
@@ -13321,7 +13313,7 @@ async function pollChat(chatId: string): Promise<void> {
     const pollAnswerOf = (id: number): unknown => data.messages.find((m) => m.message.id === id)?.message.answerPayload
     const pollTapperOf = (id: number): string | null => readTapperUserId(pollAnswerOf(id))
     for (const id of [...announced]) {
-      if (announceRefusedIn(chatId, pollTapperOf(id), tapStandingOf(pollAnswerOf(id)))) {
+      if (announceRefusedIn(chatId, pollTapperOf(id), readTapperStanding(pollAnswerOf(id)))) {
         noteLaneMisroute('poll tap', id, 'another person\'s tap')
         announced.delete(id)
       }
@@ -13344,7 +13336,7 @@ async function pollChat(chatId: string): Promise<void> {
       noteLaneMisroute('poll ask answer', askAnswered.join(','), 'a recipient chat')
     } else if (askAnswered.length > 0) {
       // An answer the server says another person gave is theirs: never recorded for the owner's session.
-      const othersAnswers = new Set(askAnswered.filter((id) => announceRefusedIn(chatId, pollTapperOf(id), tapStandingOf(pollAnswerOf(id)))))
+      const othersAnswers = new Set(askAnswered.filter((id) => announceRefusedIn(chatId, pollTapperOf(id), readTapperStanding(pollAnswerOf(id)))))
       if (othersAnswers.size > 0) noteLaneMisroute('poll ask answer', [...othersAnswers].join(','), 'another person\'s answer')
       for (const id of askAnswered) {
         if (othersAnswers.has(id)) continue
@@ -17937,7 +17929,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     return
   }
   const tapLaneVerdict = ownerLaneVerdict(view.raw)
-  if (!tapLaneVerdict.deliver || announceRefusedIn(chatId, view.answerPayload?.tapperUserId ?? null, tapStandingOf(view.raw.answerPayload ?? view.raw.answer_payload))) {
+  if (!tapLaneVerdict.deliver || announceRefusedIn(chatId, view.answerPayload?.tapperUserId ?? null, readTapperStanding(view.raw.answerPayload ?? view.raw.answer_payload))) {
     noteLaneMisroute('stream tap', view.messageId, tapLaneVerdict.deliver ? 'a recipient chat' : tapLaneVerdict.stamp)
     return
   }

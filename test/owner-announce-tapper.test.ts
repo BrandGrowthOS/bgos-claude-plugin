@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import * as laneCore from '../lib/lane-core.mjs'
+import { readTapperStanding } from '../lib/inbound-channel.ts'
 
 const refused = (s: unknown) => (laneCore as any).ownerAnnounceRefused(s)
 const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8')
@@ -41,6 +42,14 @@ test('the owner\'s own tap, a tap naming nobody, and another person\'s tap in a 
   assert.equal(refused({ lanesOn: false, chatIsOthers: false, chatIsOthersPrivate: false, tapperUserId: OWNER, ownerUserId: '' }), true)
 })
 
+test('the tapper\'s standing is read from the answer payload the server wrote, either spelling, and only there', () => {
+  assert.equal(readTapperStanding({ answeredByUserId: RECIPIENT, answeredByRelationship: 'room_member' }), 'room_member')
+  assert.equal(readTapperStanding({ answered_by_relationship: 'shared_recipient' }), 'shared_recipient')
+  assert.equal(readTapperStanding({ answeredByRelationship: 'room_member', answered_by_relationship: 'owner' }), null, 'two spellings that disagree say nothing')
+  assert.equal(readTapperStanding({ relationship: 'room_member' }), null)
+  assert.equal(readTapperStanding(null), null)
+})
+
 test('announceRefusedIn passes the tapper, the owner and the chat kind', () => {
   const helper = server.slice(server.indexOf('function announceRefusedIn('), server.indexOf('\n}\n', server.indexOf('function announceRefusedIn(')))
   assert.match(helper, /function announceRefusedIn\(chatId: string, tapperUserId: string \| null = null, tapperStanding: unknown = null\): boolean/)
@@ -52,12 +61,12 @@ test('announceRefusedIn passes the tapper, the owner and the chat kind', () => {
 
 test('every door that reads a tapper hands it over', () => {
   // The poll's taps and ask answers, one row at a time.
-  assert.match(server, /if \(announceRefusedIn\(chatId, pollTapperOf\(id\), tapStandingOf\(pollAnswerOf\(id\)\)\)\) \{/)
-  assert.match(server, /askAnswered\.filter\(\(id\) => announceRefusedIn\(chatId, pollTapperOf\(id\), tapStandingOf\(pollAnswerOf\(id\)\)\)\)/)
+  assert.match(server, /if \(announceRefusedIn\(chatId, pollTapperOf\(id\), readTapperStanding\(pollAnswerOf\(id\)\)\)\) \{/)
+  assert.match(server, /askAnswered\.filter\(\(id\) => announceRefusedIn\(chatId, pollTapperOf\(id\), readTapperStanding\(pollAnswerOf\(id\)\)\)\)/)
   // The stream's tap.
-  assert.match(server, /if \(!tapLaneVerdict\.deliver \|\| announceRefusedIn\(chatId, view\.answerPayload\?\.tapperUserId \?\? null, tapStandingOf\(view\.raw\.answerPayload \?\? view\.raw\.answer_payload\)\)\) \{/)
+  assert.match(server, /if \(!tapLaneVerdict\.deliver \|\| announceRefusedIn\(chatId, view\.answerPayload\?\.tapperUserId \?\? null, readTapperStanding\(view\.raw\.answerPayload \?\? view\.raw\.answer_payload\)\)\) \{/)
   // A posted card's answer.
-  assert.match(server, /if \(!lane\.deliver \|\| announceRefusedIn\(chatId, readTapperUserId\(mm\.answerPayload\), tapStandingOf\(mm\.answerPayload\)\)\) \{/)
+  assert.match(server, /if \(!lane\.deliver \|\| announceRefusedIn\(chatId, readTapperUserId\(mm\.answerPayload\), readTapperStanding\(mm\.answerPayload\)\)\) \{/)
   // A reaction, by the reactor and the standing the server named.
   assert.match(server, /if \(announceRefusedIn\(String\(frame\.chatId\), card\.meta\.user_id \?\? null, card\.meta\.sender_relationship\)\) \{/)
 })
