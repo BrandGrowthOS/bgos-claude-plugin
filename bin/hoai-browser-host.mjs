@@ -2414,6 +2414,21 @@ export const VAULT_FILL_DEADLINE_MS = 75_000
 
 const fillIdentities = new WeakMap()
 
+/**
+ * Is a PERSON holding this browser right now (fix round 377, finding 9)? Only
+ * a live human lease: one a live view took (it names its view), past its
+ * drain (not pending) and not let go. A fill's privacy hold sits in the same
+ * slot (`ownerInputLease`, so every other input is refused) but nobody holds
+ * the browser through it, so a download it sees is decided by the person's
+ * own download policy, never kept for the owner.
+ */
+export function ownerHoldsBrowser(slot) {
+  const lease = slot?.ownerInputLease
+  if (!lease || typeof lease !== 'object') return false
+  if (lease === slot.vaultHold || lease.kind === 'vault_fill') return false
+  return !!lease.view && lease.pending !== true && lease.released !== true
+}
+
 /** The session id vault_fill names this browser by, stable for the engine's life. */
 export function fillIdsOf(engine) {
   let ids = fillIdentities.get(engine)
@@ -2653,8 +2668,9 @@ export class BrowserHostCore {
       context: () => ({ agentName: slot.agentName ?? null, purpose: slot.purpose ?? null, ownerTurn: this.isOwnerPrincipal?.(ctx) === true }),
       decide: (origin) => policy.decide({ profile: 'signed-in', classification: { kind: 'download', origin }, grants: this._grantsFor(ctx, slot), settings: this._settingsFor(slot), preapproved: [] }),
       remember: (origin, choice) => this._remember(ctx, slot, this._settingsFor(slot), { gate: 'download', origin, choice }),
-      // The owner holding the browser (not while the agent's work drains).
-      ownerControl: () => !!slot.ownerInputLease && slot.ownerInputLease.pending !== true,
+      // The owner holding the browser (not while the agent's work drains), and
+      // never a fill's privacy hold, which shares the slot (ownerHoldsBrowser).
+      ownerControl: () => ownerHoldsBrowser(slot),
       ownerHeldSinceAgent: () => slot.ownerHeldSinceAgent === true,
       choices: policy.gateChoices('download'),
       originOf: (url) => policy.originOf(url),

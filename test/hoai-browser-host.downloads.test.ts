@@ -312,7 +312,7 @@ test("the owner's own download never reaches the agent's replies, and the agent'
   try {
     await s.call('browser_navigate', { url: 'https://files.example.com/' })
     const slot = s.pool.peek(s.ctx)
-    slot.ownerInputLease = { pending: false }
+    slot.ownerInputLease = { view: {}, pending: false }
     s.engines[0].onDownload(fakeDownload(s.engines[0].heldDir, 'tax-return-private.pdf'))
     slot.ownerInputLease = null
     const next = await s.call('browser_snapshot')
@@ -339,7 +339,7 @@ test("an owner's download refused at the start, or one that cannot start, names 
       [readyGuard, noPath],
       [{ ...readyGuard, verify: () => { throw new Error('the folder check broke') } }, fakeDownload(held, 'cannot-start-private.pdf')],
     ] as const) {
-      slot.ownerInputLease = { pending: false }
+      slot.ownerInputLease = { view: {}, pending: false }
       ;(s.store as any).guard = guard
       s.engines[0].onDownload(download)
       ;(s.store as any).guard = readyGuard
@@ -470,7 +470,7 @@ test('a file no download event claimed, found while the owner holds the browser,
   try {
     await s.call('browser_navigate', { url: 'https://files.example.com/' })
     const slot = s.pool.peek(s.ctx)
-    slot.ownerInputLease = { pending: false }
+    slot.ownerInputLease = { view: {}, pending: false }
     const held = s.engines[0].heldDir
     mkdirSync(held, { recursive: true })
     writeFileSync(join(held, randomUUID()), 'x')

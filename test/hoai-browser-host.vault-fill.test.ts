@@ -381,6 +381,55 @@ test('M6: a browser call that does not finish in time keeps the fill out: browse
   } finally { r.done() }
 })
 
+// Fix round 377, finding 9: a fill's privacy hold sits in the owner input slot, but nobody holds the browser through it.
+test('a fill hold is never the owner holding the browser: a download during it meets the person\'s own policy', async () => {
+  const fns: any = await import('../bin/hoai-browser-host.mjs')
+  const holds = (slot: any) => fns.ownerHoldsBrowser(slot)
+  const fill = { kind: 'vault_fill', since: 1 }
+  assert.equal(holds({ vaultHold: fill, ownerInputLease: fill }), false, 'the fill hold')
+  assert.equal(holds({ vaultHold: null, ownerInputLease: { kind: 'vault_fill' } }), false, 'a fill hold however it is reached')
+  assert.equal(holds({ ownerInputLease: { view: {}, pending: true } }), false, 'a lease still draining the agent')
+  assert.equal(holds({ ownerInputLease: { view: {}, pending: false } }), true, 'a live view lease past its drain')
+  assert.equal(holds({ ownerInputLease: { view: {}, pending: null, released: false } }), true, 'a credential lease')
+  assert.equal(holds({ ownerInputLease: { view: {}, pending: false, released: true } }), false, 'a lease let go')
+  assert.equal(holds({ ownerInputLease: null }), false)
+  // During a real fill, the slot reads as nobody holding it.
+  let r: ReturnType<typeof core>
+  let heldDuringFill: boolean | null = null
+  r = core({ vaultFill: async () => { heldDuringFill = holds(r.pool.peek(PERSON)); return { filled: true } } })
+  try {
+    await r.pool.acquire(PERSON)
+    const { sessionId, tabId } = await idsFor(r.core, PERSON)
+    await r.core.callTool(PERSON, 'hoai_vault_fill', { ticket: TICKET, itemId: ITEM, sessionId, tabId, origin: ORIGIN })
+    assert.equal(heldDuringFill, false)
+  } finally { r.done() }
+  // And the download gate reads exactly that.
+  const host = readFileSync(join(import.meta.dirname, '..', 'bin', 'hoai-browser-host.mjs'), 'utf8')
+  assert.match(host, /ownerControl: \(\) => ownerHoldsBrowser\(slot\),/)
+})
+
+test('a live view command queued before a fill began is refused when it runs during the fill', async () => {
+  const page = fakePage()
+  const engine: any = { pages: () => [page] }
+  const slot: any = { engine }
+  const pool: any = { peek: () => slot, slotKey: () => 'k' }
+  const views = new RemoteBrowserViews({ pool })
+  const sent: any[] = []
+  const cdpCalls: string[] = []
+  let openTail!: () => void
+  const blocked = new Promise<void>((resolve) => { openTail = resolve })
+  const view: any = { viewId: 'v1', connectionId: 'c1', closed: false, context: PERSON, engine, page, sessionId: 's', tabId: 't', pendingFrame: null, latestFrame: null, queued: 0, tail: blocked,
+    cdp: { send: async (m: string) => { cdpCalls.push(m); return {} } }, sendFrame: (m: any) => { sent.push(m); return true } }
+  views.views.set('v1', view)
+  // Admitted while no fill runs: it waits behind the command before it.
+  const done = views.command({ viewId: 'v1', frame: { id: 1, method: 'Page.startScreencast', params: {}, sessionId: 's', tabId: 't' } }, 'c1')
+  slot.vaultHold = { kind: 'vault_fill' }
+  openTail()
+  assert.equal(await done, false)
+  assert.equal(sent[0]?.frame?.error?.code, 'vault_fill_running')
+  assert.deepEqual(cdpCalls, [], 'nothing reached the page')
+})
+
 test('H1: the live view takes no command while a login is being filled, and frames come back after', async () => {
   const page = fakePage()
   const engine: any = { pages: () => [page] }
