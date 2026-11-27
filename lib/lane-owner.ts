@@ -43,8 +43,8 @@ import {
   peopleDirOf,
   LANE_KEY_RE,
   laneFolderOwner,
-  openLaneFolders,
 } from './lane-core.mjs'
+import { openLaneFoldersCarried } from './lane-carry.mjs'
 
 /**
  * The lane folders in an agent's `people/` folder, with whose each is (fix
@@ -122,6 +122,12 @@ export interface LaneOwnerDeps {
   fs?: typeof nodeFs
   /** The agent's owner: never treated as a person whose share ended (0.89.0). */
   ownerUserId?: string
+  /**
+   * The owner's CLAUDE_CONFIG_DIR as this daemon has it, unset when unset: the
+   * value a supervisor it starts gets (supervisorEnv), so a lane folder the
+   * sweep moves carries its transcripts in the same config trees.
+   */
+  ownerConfigDir?: string
   /** Start `hoai-lane run --assistant <id> --lane <userId>`, detached. */
   startSupervisor: (userId: string) => void
   isSupervised?: (lockPath: string) => number | null
@@ -257,9 +263,10 @@ export function sweepUnsafePersonLanes(deps: Omit<LaneOwnerDeps, 'startSuperviso
       const pid = (deps.isSupervised ?? ((p) => liveLaneSupervisor(p)))(paths.launcherLockPath)
       // An earlier version's folder nobody runs in is moved under its key, or
       // quarantined, now, not at that person's next wake (fix round 377, finding 7).
+      // Its conversation and thread state follow it, as when the supervisor moves it.
       if (pid === null && folder.legacy) {
-        const opened = openLaneFolders({ paths: keyed, userId, fs, platform: deps.platform })
-        deps.log(`lane folder of ${userId}: an earlier version's folder was ${opened.opened}`)
+        const opened = openLaneFoldersCarried({ paths: keyed, userId, fs, platform: deps.platform, home: deps.home, ownerConfigDir: deps.ownerConfigDir ?? '' })
+        deps.log(`lane folder of ${userId}: an earlier version's folder was ${opened.opened}${opened.carried === null ? '' : `, ${opened.carried} transcript folder(s) moved with it`}`)
         continue
       }
       if (pid === null) continue

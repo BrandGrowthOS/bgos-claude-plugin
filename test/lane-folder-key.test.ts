@@ -135,10 +135,78 @@ test('a moved lane keeps its conversation: the transcript is found under the new
     assert.equal(readFileSync(sessionTranscriptPath(h.root, paths.workDir, PIN, config), 'utf8'), '{"session":"ana"}\n', 'the supervisor will --resume it')
     assert.ok(existsSync(sessionTranscriptPath(h.root, join(paths.workDir, '.hoai', 'threads', '501'), PIN, config)))
     assert.ok(existsSync(sibling), 'the sibling project stays')
-    // The supervisor runs it right after a migration, and sets the old thread state aside.
+    // Both callers that open a lane's folders do what a move owes through one helper (the sweep's run is tested below).
     const sup = readFileSync(join(import.meta.dirname, '..', 'lib', 'lane-supervisor.mjs'), 'utf8')
-    assert.match(sup, /if \(opened\.opened === 'migrated'\) \{\n\s*const moved = moveLaneTranscripts\(/)
-    assert.match(sup, /const threadState = join\(paths\.stateDir, 'threads'\)/)
+    assert.match(sup, /const opened = openLaneFoldersCarried\(\{ paths, userId: o\.userId, fs, now, platform, home: o\.home, ownerConfigDir: o\.ownerEnv\?\.CLAUDE_CONFIG_DIR \?\? '' \}\)/)
+    assert.doesNotMatch(sup, /openLaneFolders\(/, 'the supervisor never opens them without the carry')
+    const own = readFileSync(join(import.meta.dirname, '..', 'lib', 'lane-owner.ts'), 'utf8')
+    assert.doesNotMatch(own, /openLaneFolders\(/, 'nor the owner\'s sweep')
+  } finally { h.done() }
+})
+
+/** An earlier version's lane of Ana: its pinned transcript (and a thread's) under the old working folder, and saved thread state. */
+async function legacyLaneOfAna(root: string) {
+  const { sessionTranscriptPath } = await import('../bin/hoai-core.mjs')
+  const paths = c.lanePaths({ home: root, assistantId: AGENT, userId: ANA_UPPER })
+  const oldWork = join(paths.legacyLaneDir, 'work')
+  const PIN = '0b9e1a52-2222-4c2d-9a3b-3c4d5e6f7a8b'
+  const config = join(root, 'owner-claude')
+  mkdirSync(oldWork, { recursive: true })
+  writeFileSync(join(paths.legacyLaneDir, 'session-id'), PIN)
+  for (const cwd of [oldWork, join(oldWork, '.hoai', 'threads', '501')]) {
+    const t = sessionTranscriptPath(root, cwd, PIN, config)
+    mkdirSync(join(t, '..'), { recursive: true })
+    writeFileSync(t, '{"session":"ana"}\n')
+  }
+  mkdirSync(join(paths.legacyStateDir, 'threads'), { recursive: true })
+  writeFileSync(join(paths.legacyStateDir, 'threads', '501.json'), JSON.stringify({ cwd: join(oldWork, '.hoai', 'threads', '501') }))
+  const at = (cwd: string) => sessionTranscriptPath(root, cwd, PIN, config)
+  return { paths, oldWork, PIN, config, at }
+}
+
+test('a lane folder the owner\'s sweep moves under its key keeps its conversation, and its old thread state is set aside', async () => {
+  const h = home()
+  try {
+    const ana = await legacyLaneOfAna(h.root)
+    const lines: string[] = []
+    // Nobody runs this lane: the owner's drain tick moves it, as on every upgrade.
+    o.sweepUnsafePersonLanes({ assistantId: AGENT, home: h.root, ownerUserId: 'user_owner', ownerConfigDir: ana.config, fs: nodeFs, isSupervised: () => null, log: (l: string) => lines.push(l) })
+    assert.equal(existsSync(ana.paths.legacyLaneDir), false, 'the folder moved')
+    assert.equal(readFileSync(ana.paths.sessionIdPath, 'utf8'), ana.PIN)
+    assert.equal(readFileSync(ana.at(ana.paths.workDir), 'utf8'), '{"session":"ana"}\n', 'the pinned session is found under the new working folder')
+    assert.ok(existsSync(ana.at(join(ana.paths.workDir, '.hoai', 'threads', '501'))), 'and the thread\'s')
+    assert.equal(existsSync(ana.at(ana.oldWork)), false)
+    assert.equal(existsSync(join(ana.paths.stateDir, 'threads')), false, 'thread state naming the old folders is set aside')
+    assert.equal(nodeFs.readdirSync(join(ana.paths.lanesStateDir, '.quarantine')).filter((n) => n.includes('-threads-')).length, 1)
+    // The person's next wake: the supervisor's own open has nothing left to do, and nothing is owed.
+    const carry: any = await import('../lib/lane-carry.mjs')
+    assert.deepEqual(carry.openLaneFoldersCarried({ paths: ana.paths, userId: ANA_UPPER, fs: nodeFs, home: h.root, ownerConfigDir: ana.config }), { opened: 'existing', carried: null })
+    assert.ok(lines.some((l) => /migrated/.test(l)), lines.join('\n'))
+  } finally { h.done() }
+})
+
+test('a transcript move that failed after the folder moved is tried again at the next open', async () => {
+  const h = home()
+  try {
+    const ana = await legacyLaneOfAna(h.root)
+    const carry: any = await import('../lib/lane-carry.mjs')
+    const projects = join(ana.config, 'projects')
+    // The disk refuses the project folder's rename the first time only.
+    let refuse = true
+    const flaky = { ...nodeFs, renameSync: (from: any, to: any) => {
+      if (refuse && String(from).startsWith(projects)) { refuse = false; throw Object.assign(new Error('busy'), { code: 'EBUSY' }) }
+      return nodeFs.renameSync(from, to)
+    } }
+    assert.throws(() => carry.openLaneFoldersCarried({ paths: ana.paths, userId: ANA_UPPER, fs: flaky, home: h.root, ownerConfigDir: ana.config }), /busy/)
+    assert.equal(existsSync(ana.paths.legacyLaneDir), false, 'the folder itself moved and its identity is written')
+    // The next open answers existing, and the move it owed runs now.
+    const again = carry.openLaneFoldersCarried({ paths: ana.paths, userId: ANA_UPPER, fs: nodeFs, home: h.root, ownerConfigDir: ana.config })
+    assert.equal(again.opened, 'existing')
+    assert.equal(again.carried, 2)
+    assert.equal(readFileSync(ana.at(ana.paths.workDir), 'utf8'), '{"session":"ana"}\n')
+    assert.equal(existsSync(join(ana.paths.stateDir, 'threads')), false)
+    // Once done, nothing is owed any more.
+    assert.deepEqual(carry.openLaneFoldersCarried({ paths: ana.paths, userId: ANA_UPPER, fs: nodeFs, home: h.root, ownerConfigDir: ana.config }), { opened: 'existing', carried: null })
   } finally { h.done() }
 })
 

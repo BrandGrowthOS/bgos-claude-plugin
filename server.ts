@@ -18541,6 +18541,8 @@ const LANE_OWNER_DEPS = {
   ownerUserId: USER_ID,
   home: homedir(),
   stateRoot: process.env.BGOS_PLUGIN_STATE_DIR,
+  // The same value a supervisor gets (supervisorEnv keeps CLAUDE_CONFIG_DIR as it is).
+  ownerConfigDir: process.env.CLAUDE_CONFIG_DIR,
   log: (line: string) => log(`person lanes: ${line}`),
 }
 
