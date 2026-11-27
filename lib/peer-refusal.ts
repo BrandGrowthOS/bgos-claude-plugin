@@ -241,16 +241,32 @@ export function a2aRouteRequiredResult(
  * be a recipient's DM, which then saw the owner's command text. A chat neither
  * known to be the owner's nor somebody else's keeps today's order, so with no
  * evidence at all the answer is exactly what it was.
+ *
+ * WITH `turn` (person lanes: a card went to the newest chat rather than the
+ * turn's chat) the verified turn the request was raised in (the private turn
+ * tracker's current()). When it is the OWNER's turn and its chat is one of the
+ * owner's own main chats, watched and open, the card goes there: the owner's
+ * message in another of their chats, delivered while the turn ran, made that
+ * other chat the most recently confirmed one, so the card used to land where
+ * the turn was not. Anyone else's turn (a share recipient's, a turn that names
+ * no person) never chooses the chat: the card is about the owner's machine and
+ * goes to the owner's own chat exactly as above. A turn whose chat is not a
+ * known owner main chat (a group, a chat nobody was seen in) changes nothing.
  */
 export function pickPermissionChat(
   monitored: readonly string[],
   refused: ReadonlyArray<Pick<RefusedChats, 'has'>>,
   ownership?: Pick<ChatOwnership, 'ownerChats' | 'isOthers'>,
+  turn?: { ownerUserId: string; actingUserId?: unknown; chatId?: unknown } | null,
 ): string | undefined {
   const open = (chatId: string): boolean => !refused.some((set) => set.has(chatId))
   if (!ownership) return monitored.find(open)
   const watched = new Set(monitored)
-  const owners = ownership.ownerChats().find((chatId) => watched.has(chatId) && open(chatId))
+  const ownerChats = ownership.ownerChats()
+  const ownersTurn = !!turn && typeof turn.ownerUserId === 'string' && turn.ownerUserId !== '' && turn.actingUserId === turn.ownerUserId
+  const turnChat = ownersTurn ? String(turn.chatId ?? '').trim() : ''
+  if (turnChat !== '' && ownerChats.includes(turnChat) && watched.has(turnChat) && open(turnChat)) return turnChat
+  const owners = ownerChats.find((chatId) => watched.has(chatId) && open(chatId))
   if (owners !== undefined) return owners
   return monitored.find((chatId) => open(chatId) && !ownership.isOthers(chatId))
 }

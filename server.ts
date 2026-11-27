@@ -218,6 +218,7 @@ import { createActingUserTracker } from './lib/acting-user.js'
 import { ARTIFACT_TOOL_DECLS, handleArtifactTool } from './lib/artifacts-tools.js'
 import { VAULT_TOOL_DECLS, handleVaultTool } from './lib/vault-tools.js'
 import { vaultHostDir } from './lib/vault-host.mjs'
+import { queueAccessChange, queueAccessReconcile } from './lib/person-access.mjs'
 import { ensureAutoHost } from './lib/vault-host-auto.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
@@ -4422,6 +4423,9 @@ function relayPermissionToOwner(
   // card goes to the chat of the owner's turn: only the agent's own main chat
   // with its owner can carry an Allow. It skips the same chats and reads the
   // same ownership, so a 403 retry never posts it into one chat twice.
+  // The verified turn that raised a card that is not an email's: the owner's own
+  // turn gets the card in its own chat (lib/peer-refusal.ts pickPermissionChat).
+  const cardTurn = emailCard ? null : privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS })
   const chatId = emailCard
     ? emailSendCardChat({
         turn: privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS }),
@@ -4431,7 +4435,11 @@ function relayPermissionToOwner(
         refused: [hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats],
         ownership: chatOwnership,
       })
-    : pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats], chatOwnership)
+    : pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats], chatOwnership, {
+        ownerUserId: USER_ID,
+        actingUserId: cardTurn?.actingUserId ?? null,
+        chatId: cardTurn?.chatId ?? null,
+      })
   if (emailCard && !chatId) {
     // DATA, 2026-10-15 (the 0.69.0 review, finding 4), fail closed: no main
     // chat of the owner can take this card, so it is posted NOWHERE. Never
@@ -18451,6 +18459,7 @@ function noteLaneMisroute(transport: string, messageId: unknown, stamp: string):
 
 const LANE_OWNER_DEPS = {
   assistantId: String(ASSISTANT_ID),
+  ownerUserId: USER_ID,
   home: homedir(),
   stateRoot: process.env.BGOS_PLUGIN_STATE_DIR,
   log: (line: string) => log(`person lanes: ${line}`),
@@ -18671,6 +18680,9 @@ function connectWebsocket(): void {
     // Threads phase 1: a turn the person sent while this daemon was away is
     // run now (also when the channel arms, for the first connect after boot).
     reconcilePendingThreads('ws connect')
+    // Shared agent vault V2: the browser host compares who may still use the
+    // owner's sites with the server after every (re)connect of this daemon.
+    try { queueAccessReconcile({ agentRoot: joinPath(homedir(), '.bgos-agent'), assistantId: String(ASSISTANT_ID) }) } catch { /* the host's own timer and connect cover it */ }
     // Pending ask groups are read again on every connect: an answer given
     // while this daemon was down or disconnected is due now, and a stream
     // entry for it may be behind a cursor this life never reads.
@@ -19014,6 +19026,12 @@ function connectWebsocket(): void {
   }))
   realtimeSocket.on('lane_revoked', whenArmed('lane_revoked', (frame: unknown) => {
     handleLaneRevoked(frame, LANE_OWNER_DEPS)
+  }))
+  // A person lost the owner's logins (shared agent vault M2): this daemon is in
+  // the pairing room and the browser host is not, so the change is queued for
+  // the host (lib/person-access.mjs), which clears that person's browser.
+  realtimeSocket.on('vault_person_access_changed', whenArmed('vault_person_access_changed', (frame: unknown) => {
+    queueAccessChange({ agentRoot: joinPath(homedir(), '.bgos-agent'), assistantId: String(ASSISTANT_ID), frame })
   }))
 
   // An agent deleted in HOAI (see onAssistantUnbound). Never acked, so the

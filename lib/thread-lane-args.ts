@@ -46,6 +46,7 @@ import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 
 import { permissionRulePath } from './lane-core.mjs'
+import { buildSenderGuardrailMarker } from './inbound-channel.ts'
 
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -101,7 +102,34 @@ export interface ThreadLaneConfinement {
   readablePaths?: readonly string[]
   /** Folders a read only lane may read (the agent folder). Absolute. */
   readDirs?: readonly string[]
+  /**
+   * A person's lane (lib/lane-thread-rpc.ts): the tools that lane itself was
+   * launched with. The thread's list is cut to them, never widened.
+   */
+  tools?: readonly string[]
+  /** A person's lane: the allow rules that lane's own policy adds (its web option), read only lanes only. */
+  allowExtra?: readonly string[]
+  /**
+   * A person's lane: its own floor hook IN PLACE of the owner's plugin hooks,
+   * which belong to the owner's session. It must hold a PreToolUse hook and
+   * no Stop hook (assertLaneHooks).
+   */
+  hooks?: Record<string, unknown>
   platform?: NodeJS.Platform
+}
+
+/** Throws unless hooks handed in for a person's lane hold a PreToolUse hook and no Stop hook. */
+export function assertLaneHooks(hooks: unknown): Record<string, unknown> {
+  const own = hooks as { PreToolUse?: unknown; Stop?: unknown } | null
+  if (!own || typeof own !== 'object' || !Array.isArray(own.PreToolUse) || own.PreToolUse.length === 0 || 'Stop' in own) {
+    throw new Error('refusing a thread lane whose own hooks lost the floor hook or carry a Stop hook')
+  }
+  return own as Record<string, unknown>
+}
+
+/** The lane's hooks: the owner's trusted plugin hooks, or a person's lane's own. */
+function hooksFor(c: ThreadLaneConfinement): Record<string, unknown> {
+  return c.hooks === undefined ? threadLaneHooks() : assertLaneHooks(c.hooks)
 }
 
 /** Trusted hooks come from the manifest, so matcher, timeout and guard changes follow the child. */
@@ -196,8 +224,11 @@ function requireAbsolute(path: unknown, what: string): string {
 
 /** The lane's tool list: read only, working with Bash, or working without (no sandbox on this host). */
 export function threadLaneTools(c: ThreadLaneConfinement): string[] {
-  if (c.readOnly) return [...THREAD_LANE_READ_ONLY_TOOLS]
-  return c.shellSandbox ? [...THREAD_LANE_TOOLS] : THREAD_LANE_TOOLS.filter((t) => t !== 'Bash')
+  const own = c.readOnly
+    ? [...THREAD_LANE_READ_ONLY_TOOLS]
+    : c.shellSandbox ? [...THREAD_LANE_TOOLS] : THREAD_LANE_TOOLS.filter((t) => t !== 'Bash')
+  // A person's lane: at most the tools that lane has.
+  return c.tools ? own.filter((t) => c.tools!.includes(t)) : own
 }
 
 /** acceptEdits: edits inside the working directories go through; dontAsk: anything not allowed is refused. */
@@ -220,12 +251,12 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
     const dirs = (c.readDirs ?? []).map((d) => requireAbsolute(d, 'a folder the lane reads'))
     return {
       permissions: {
-        allow: dirs.map((d) => `Read(${rule(d)})`),
+        allow: [...dirs.map((d) => `Read(${rule(d)})`), ...(c.allowExtra ?? [])],
         deny: [...READ_ONLY_DENIED_TOOLS],
         ...(dirs.length > 0 ? { additionalDirectories: dirs } : {}),
       },
       remoteControlAtStartup: false,
-      hooks: threadLaneHooks(),
+      hooks: hooksFor(c),
     }
   }
   const shell = c.shellSandbox
@@ -251,16 +282,18 @@ export function threadLaneSettings(c: ThreadLaneConfinement): Record<string, unk
     // account (spike S2 finding 2, person lanes).
     remoteControlAtStartup: false,
     // Keep trusted guards while the manager clears the child's inherited goal.
-    hooks: threadLaneHooks(),
+    hooks: hooksFor(c),
   }
 }
 
 /**
  * Throws unless `args` are a confined lane command: --restricted, its own
  * tools, permission mode and trusted hooks without Stop, and none of the
- * forbidden flags.
+ * forbidden flags. `laneHooks` is a person's lane's own hooks
+ * (ThreadLaneConfinement.hooks): only a caller that names them may carry
+ * them in place of the owner's plugin hooks.
  */
-export function assertConfined(args: readonly string[]): void {
+export function assertConfined(args: readonly string[], laneHooks?: Record<string, unknown>): void {
   for (const flag of ['--restricted', '--tools', '--permission-mode', '--settings']) {
     if (!args.includes(flag)) throw new Error(`refusing a thread lane without ${flag}: it would run with the owner's permissions`)
   }
@@ -269,7 +302,8 @@ export function assertConfined(args: readonly string[]): void {
     settings = JSON.parse(args[args.indexOf('--settings') + 1] ?? '')
   } catch {}
   const own = settings as { disableAllHooks?: unknown; hooks?: unknown } | null
-  if (!own || (own.disableAllHooks !== undefined && own.disableAllHooks !== false) || !isDeepStrictEqual(own.hooks, threadLaneHooks())) {
+  const expected = laneHooks === undefined ? threadLaneHooks() : assertLaneHooks(laneHooks)
+  if (!own || (own.disableAllHooks !== undefined && own.disableAllHooks !== false) || !isDeepStrictEqual(own.hooks, expected)) {
     throw new Error('refusing a thread lane without its trusted hooks or with a Stop hook')
   }
   for (const arg of args) {
@@ -306,7 +340,7 @@ export function threadLaneArgs(input: {
   )
   args.push('--strict-mcp-config', '--mcp-config', mcp)
   if (isSessionId(input.mainSessionId)) assertForksMain(args, input.mainSessionId)
-  assertConfined(args)
+  assertConfined(args, input.confinement.hooks)
   return args
 }
 
@@ -488,9 +522,20 @@ export function threadTurnPrompt(input: {
   rootText: string
   readOnly?: boolean
   agentFolder?: string
+  /**
+   * The owner's standing instruction about the person writing (a person's
+   * lane only, BGOS review F5, CORE-CONTRACTS 7.6), as the server built it.
+   * It goes in front of the person's turn with the main chat's own marker
+   * (lib/inbound-channel.ts buildSenderGuardrailMarker), never inside their
+   * words. The summary is the agent's own turn and carries none.
+   */
+  senderGuardrail?: string
 }): string {
   if (input.mode === 'summary') return SUMMARY_INSTRUCTION
-  if (input.mode === 'reply') return input.text
+  const guard = typeof input.senderGuardrail === 'string' && input.senderGuardrail.trim() !== ''
+    ? `${buildSenderGuardrailMarker(input.senderGuardrail)}\n\n`
+    : ''
+  if (input.mode === 'reply') return `${guard}${input.text}`
   const folderInstruction = input.readOnly === true
     ? input.agentFolder
       ? `This thread is read only: read files in the agent folder ${JSON.stringify(input.agentFolder)} and do not edit files.`
@@ -500,6 +545,7 @@ export function threadTurnPrompt(input: {
   const root = input.rootText.trim()
   const rootSentence = /[.!?]$/.test(root) ? root : `${root}.`
   return (
+    guard +
     `[You are now working in a thread of this chat titled "${input.title}". ` +
     `It is a separate conversation about this message: ${rootSentence} ` +
     `${folderInstruction} The main conversation continues without you. ` +

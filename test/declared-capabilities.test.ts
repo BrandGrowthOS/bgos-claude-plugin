@@ -20,6 +20,8 @@ import {
   DECLARED_CAPABILITIES_BASE,
   DECLARED_CAPABILITIES_INJECTOR,
   DECLARED_CAPABILITIES_PAIRING,
+  LANE_THREADS_TOKEN,
+  LANE_VAULT_TOKEN,
   declaredCapabilities,
 } from '../lib/declared-capabilities.ts'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from '../lib/session-controls-contract.ts'
@@ -892,8 +894,86 @@ test('no thread token on Windows in phase 1, nor where threads cannot run', () =
 test('the fullest declaration, every token in its place, is exactly this list', () => {
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: true, floorHook: true, personLanes: true, modelEffortPicker: true, threads: true, authMode: 'pairing', platform: 'darwin' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ui_card_answers', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides', 'group_threads'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'mission_server_checks', 'mission_goal_working', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'boards_download', 'sessions_library', 'changes_rpc', 'doctor_rpc', 'skills_list', 'skills_receive', 'ui_card', 'ui_card_answers', 'ask_answered', 'ask_multi_select', 'email_label', 'email_send', 'email_files', 'hard_floor', 'hard_floor_rules_2', 'mission_goal_loop', 'mission_goal_uncapped', 'mission_pause', 'stop_pauses_mission', 'person_lanes', 'lane_memory_rpc', 'model_effort_picker', 'message_threads', 'thread_sessions', 'asides', 'group_threads', 'lane_threads', 'lane_vault'],
   )
+})
+
+/**
+ * A person's lane runs that person's threads (lib/lane-thread-rpc.ts). The
+ * server offers a thread to a share recipient only when the pairing declares
+ * message_threads, thread_sessions AND lane_threads
+ * (backend/src/common/share-threads.ts LANE_THREADS), so the token is declared
+ * only where BOTH halves are real: person lanes can run and threads can run,
+ * on a pairing (a lane mints its session from a pairing's ticket), never on
+ * Windows.
+ */
+test('lane_threads is declared only with BOTH person lanes and threads, on a pairing, never on Windows', () => {
+  assert.equal(LANE_THREADS_TOKEN, 'lane_threads')
+  const base = { canInjectGoal: false, floorHook: true, platform: 'darwin' as const }
+  const both = declaredCapabilities({ ...base, personLanes: true, threads: true, authMode: 'pairing' })
+  assert.equal(both.filter((t) => t === LANE_THREADS_TOKEN).length, 1, 'once')
+  for (const needed of ['person_lanes', 'message_threads', 'thread_sessions']) assert.ok(both.includes(needed), needed)
+  assert.equal(both.at(-2), LANE_THREADS_TOKEN, 'after every other token but lane_vault, so nothing else moves')
+  for (const [why, shape] of [
+    ['threads without person lanes', { personLanes: false, threads: true, authMode: 'pairing' as const }],
+    ['person lanes absent', { threads: true, authMode: 'pairing' as const }],
+    ['person lanes without threads', { personLanes: true, threads: false, authMode: 'pairing' as const }],
+    ['threads absent', { personLanes: true, authMode: 'pairing' as const }],
+    ['an API key connection', { personLanes: true, threads: true, authMode: 'apikey' as const }],
+    ['Windows', { personLanes: true, threads: true, authMode: 'pairing' as const, platform: 'win32' as const }],
+  ] as const) {
+    assert.equal(declaredCapabilities({ ...base, ...shape }).includes(LANE_THREADS_TOKEN), false, why)
+  }
+})
+
+/**
+ * A person's lane can have the owner's logins filled for it (shared agent
+ * vault, plugin 0.89.0): the lane serves vault_items and vault_fill, and the
+ * agent's own browser host on this machine answers hoai_vault_fill. The
+ * server offers the Vault row only where the pairing declares lane_vault
+ * (BGOS plan 2026-11-13 section 1), so it is declared only where a person's
+ * lane can run (person_lanes, a pairing, not Windows) and the browser host is
+ * not switched off (HOAI_BROWSER_HOST=off, lib/browser-host-supervisor.ts).
+ * lane_threads is kept.
+ */
+test('lane_vault is declared with person lanes, on a pairing, never on Windows, never with the browser host off', () => {
+  assert.equal(LANE_VAULT_TOKEN, 'lane_vault')
+  const base = { canInjectGoal: false, floorHook: true, platform: 'darwin' as const }
+  const on = declaredCapabilities({ ...base, personLanes: true, threads: true, authMode: 'pairing', browserHost: true })
+  assert.equal(on.filter((t) => t === LANE_VAULT_TOKEN).length, 1, 'once')
+  assert.equal(on.at(-1), LANE_VAULT_TOKEN, 'last, so nothing else moves')
+  assert.ok(on.includes(LANE_THREADS_TOKEN), 'lane_threads is kept')
+  assert.ok(declaredCapabilities({ ...base, personLanes: true, authMode: 'pairing', browserHost: true }).includes(LANE_VAULT_TOKEN), 'threads are not needed')
+  for (const [why, shape] of [
+    ['person lanes absent', { authMode: 'pairing' as const, browserHost: true }],
+    ['person lanes off', { personLanes: false, authMode: 'pairing' as const, browserHost: true }],
+    ['an API key connection', { personLanes: true, authMode: 'apikey' as const, browserHost: true }],
+    ['Windows', { personLanes: true, authMode: 'pairing' as const, platform: 'win32' as const, browserHost: true }],
+    ['the browser host switched off', { personLanes: true, authMode: 'pairing' as const, browserHost: false }],
+  ] as const) {
+    assert.equal(declaredCapabilities({ ...base, ...shape }).includes(LANE_VAULT_TOKEN), false, why)
+  }
+  // Absent, the daemon's own environment decides, as the email tokens read theirs.
+  const saved = process.env.HOAI_BROWSER_HOST
+  try {
+    process.env.HOAI_BROWSER_HOST = 'off'
+    assert.equal(declaredCapabilities({ ...base, personLanes: true, authMode: 'pairing' }).includes(LANE_VAULT_TOKEN), false)
+    delete process.env.HOAI_BROWSER_HOST
+    assert.equal(declaredCapabilities({ ...base, personLanes: true, authMode: 'pairing' }).includes(LANE_VAULT_TOKEN), true)
+  } finally {
+    if (saved === undefined) delete process.env.HOAI_BROWSER_HOST
+    else process.env.HOAI_BROWSER_HOST = saved
+  }
+})
+
+test('server.ts passes both halves of lane_threads at every declaration: the lane probe and the threads probe', () => {
+  const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const calls = server.match(/declaredCapabilities\(\{[^}]*\}\)/g) ?? []
+  assert.equal(calls.length, 4)
+  for (const call of calls) {
+    assert.match(call, /personLanes: laneSupport\(\)\.ok,/)
+    assert.match(call, /threads: threadsDeclared\(\),/)
+  }
 })
 
 test('server.ts declares threads from the live claude lookup, its threads CLI probe and the platform, at every declaration', () => {

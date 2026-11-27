@@ -75,11 +75,12 @@ test('looser waits for the lane\'s next idle moment', () => {
 test('the same policy asks nothing; one change is asked once, a new one again', () => {
   const { w, restarts } = watch({ webFetch: true })
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true }, 'boot'), 'same')
-  assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, browser: true }, 'heartbeat'), 'same', 'browser alone changes no launch')
+  assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, shell: true }, 'heartbeat'), 'same', 'shell alone changes no launch')
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, readAgentFolder: true }, 'heartbeat'), 'looser')
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, readAgentFolder: true }, 'heartbeat'), 'already_asked')
+  assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY, webFetch: true, readAgentFolder: true, browser: true }, 'heartbeat'), 'looser', 'browser is a launch option (0.89.0)')
   assert.equal(w.onPolicy({ ...LOCKED_TOOL_POLICY }, 'lane_policy_changed'), 'tighter')
-  assert.equal(restarts.length, 2)
+  assert.equal(restarts.length, 3)
 })
 
 test('the launch it compares with: the daemon\'s own environment, never a file the lane could rewrite (review M1)', () => {

@@ -44,6 +44,7 @@ import {
 } from './lane-core.mjs'
 import { liveLaneSupervisor } from './lane-registry.mjs'
 import { readRefusalReceipts } from './lane-notices.mjs'
+import { deletePersonBrowserProfile, shareEndedReason } from './person-browser-profile.mjs'
 
 /** A lane wake as the backend sends it (BGOS LaneWakeFrame). */
 export interface LaneWake {
@@ -94,6 +95,8 @@ export interface LaneOwnerDeps {
   stateRoot?: string
   platform?: string
   fs?: typeof nodeFs
+  /** The agent's owner: never treated as a person whose share ended (0.89.0). */
+  ownerUserId?: string
   /** Start `hoai-lane run --assistant <id> --lane <userId>`, detached. */
   startSupervisor: (userId: string) => void
   isSupervised?: (lockPath: string) => number | null
@@ -147,15 +150,30 @@ export function handleLaneWake(
   }
 }
 
-/** Handle one `lane_revoked` for this agent: ask that lane to stop. */
+/**
+ * Handle one `lane_revoked` for this agent: ask that lane to stop. When the
+ * SHARE ended (share_revoked, view_removed, agent_transferred; 0.89.0) the
+ * person's browser profile on this computer is deleted too, and the reason is
+ * kept in the revoke marker, where the browser host reads it to close a
+ * browser still open for them (lib/person-browser-profile.mjs).
+ */
 export function handleLaneRevoked(frame: unknown, deps: Omit<LaneOwnerDeps, 'startSupervisor'>): boolean {
   const f = (frame ?? {}) as Record<string, unknown>
   if (String(f.assistantId) !== String(deps.assistantId) || !isSafeLaneUserId(f.actorUserId)) return false
   const fs = deps.fs ?? nodeFs
+  const ended = shareEndedReason(f.reason)
+  if (ended && fs === nodeFs && f.actorUserId !== deps.ownerUserId) {
+    try {
+      const removed = deletePersonBrowserProfile({ agentRoot: join(deps.home, '.bgos-agent'), assistantId: deps.assistantId, userId: f.actorUserId as string, ownerUserId: deps.ownerUserId ?? null })
+      if (removed.length > 0) deps.log(`lane_revoked for ${String(f.actorUserId)}: the share ended; their browser profile on this computer was deleted`)
+    } catch (err) {
+      deps.log(`lane_revoked: the browser profile could not be deleted: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
   try {
     const paths = lanePaths({ home: deps.home, assistantId: deps.assistantId, userId: f.actorUserId as string, stateRoot: deps.stateRoot, platform: deps.platform })
     if (!fs.existsSync(paths.laneDir)) return false
-    const body = `${JSON.stringify({ reason: 'revoked', at: new Date().toISOString(), by: 'owner-daemon' })}\n`
+    const body = `${JSON.stringify({ reason: 'revoked', ...(ended ? { shareReason: f.reason } : {}), at: new Date().toISOString(), by: 'owner-daemon' })}\n`
     // The marker a starting supervisor honours (it clears stop requests at
     // start, so a revoke landing mid start would otherwise be lost; security
     // review finding 3). Only a fresh wake removes it.

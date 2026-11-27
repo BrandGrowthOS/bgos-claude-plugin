@@ -21,6 +21,7 @@ import { AsideError, type AsideInput } from './aside-fork.ts'
 import { ThreadLaneError, type ThreadTurnInput } from './thread-lanes.ts'
 import { GroupLaneError } from './group-lanes.ts'
 import type { AsideExchange, ThreadTurnMode } from './thread-lane-args.ts'
+import { ownerLaneVerdict } from './lane-core.mjs'
 
 export const THREAD_TURN = 'thread_turn'
 export const THREAD_CLOSE = 'thread_close'
@@ -34,6 +35,21 @@ export type ThreadOp = (typeof THREAD_OPS)[number]
 
 export function isThreadOp(op: unknown): op is ThreadOp {
   return op === THREAD_TURN || op === THREAD_CLOSE || op === ASIDE || op === GROUP_THREAD_END || op === GROUP_THREAD_LEVEL
+}
+
+/**
+ * A `thread_turn` or `thread_close` meant for a PERSON's lane (shared
+ * agents: lib/lane-thread-rpc.ts runs it in that person's own lane daemon).
+ * The owner's own frame carries no lane stamp and names no person
+ * (BGOS own-lane-wire.ts), so a stamp that is not the owner's, one that
+ * cannot be read, or a person named at the top makes it somebody else's. The
+ * owner's daemon drops it before anything runs (lib/voice-rpc.ts
+ * normalizeVoiceRpc): never acked, never a fork of the owner's session.
+ */
+export function isPersonThreadFrame(raw: Record<string, unknown>): boolean {
+  if (raw.op !== THREAD_TURN && raw.op !== THREAD_CLOSE) return false
+  if (!ownerLaneVerdict(raw).deliver) return true
+  return raw.actorUserId !== undefined && raw.actorUserId !== null
 }
 
 /** What the voice_rpc handler needs from the lanes and the aside runner. */
