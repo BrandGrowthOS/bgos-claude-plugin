@@ -373,9 +373,14 @@ test('the card id is read off the response, or the server expiry arm is off', ()
   // op, so the whole server-is-the-judge arm quietly falls back to the
   // backstop. The daemon has to be able to SAY that, so the id parse is pinned
   // here and the caller logs a warning on null.
+  // The one row id reading every lane uses (parseCardRowId): a positive safe
+  // integer or its decimal digits; test/permission-card-row-id.test.ts has
+  // the whole table.
   assert.equal(cardMessageIdFrom({ id: 91 }), 91)
-  assert.equal(cardMessageIdFrom({ id: 0 }), 0)
-  assert.equal(cardMessageIdFrom({ id: '91' }), null)
+  assert.equal(cardMessageIdFrom({ id: '91' }), 91)
+  assert.equal(cardMessageIdFrom({ id: 0 }), null)
+  assert.equal(cardMessageIdFrom({ id: -91 }), null)
+  assert.equal(cardMessageIdFrom({ id: 9.5 }), null)
   assert.equal(cardMessageIdFrom({ id: Number.NaN }), null)
   assert.equal(cardMessageIdFrom({ id: Number.POSITIVE_INFINITY }), null)
   assert.equal(cardMessageIdFrom({ message: { id: 91 } }), null)
@@ -386,13 +391,16 @@ test('the card id is read off the response, or the server expiry arm is off', ()
 
 // ── Clicks, on both transports and both vocabularies ─────────────────────────
 
+/** The message id of the card the pending request was posted as. */
+const CARD_ID = 100
+
 function pendingWith(requesterUserId: string): {
   pending: Map<string, PendingPermissionLike>
   answered: PermissionChoice[]
 } {
   const answered: PermissionChoice[] = []
   const pending = new Map<string, PendingPermissionLike>([
-    [REQ, { requesterUserId, resolve: (c) => answered.push(c) }],
+    [REQ, { requesterUserId, resolve: (c) => answered.push(c), cardMessageId: CARD_ID }],
   ])
   return { pending, answered }
 }
@@ -407,6 +415,7 @@ test('an ea: click resolves the pending request, allow and deny alike', () => {
       callbackData,
       clickerUserId: 'user-1',
       pending,
+      cardMessageId: CARD_ID,
     })
     assert.equal(outcome.kind, 'resolved')
     assert.deepEqual(answered, [choice])
@@ -423,6 +432,7 @@ test('a legacy perm: click from a prompt posted before the update still resolves
     callbackData: `perm:session:${REQ}`,
     clickerUserId: 'user-1',
     pending,
+    cardMessageId: CARD_ID,
   })
   assert.equal(outcome.kind, 'resolved')
   assert.equal(outcome.kind === 'resolved' ? outcome.vocabulary : null, 'perm')
@@ -437,6 +447,7 @@ test('a foreign user click is ignored and the request stays open', () => {
     callbackData: `ea:once:${REQ}`,
     clickerUserId: 'someone-else',
     pending,
+    cardMessageId: CARD_ID,
   })
   assert.equal(outcome.kind, 'foreign')
   assert.deepEqual(answered, [])
@@ -449,6 +460,7 @@ test('a click for a request this daemon is not holding reads as stale', () => {
     callbackData: 'ea:once:zyxwv',
     clickerUserId: 'user-1',
     pending,
+    cardMessageId: CARD_ID,
   })
   assert.equal(outcome.kind, 'stale')
   assert.deepEqual(answered, [])
@@ -462,6 +474,7 @@ test('an ordinary agent button is not a permission click', () => {
       callbackData: 'u:ship-it',
       clickerUserId: 'user-1',
       pending,
+      cardMessageId: CARD_ID,
     }).kind,
     'not_permission',
   )
@@ -752,6 +765,7 @@ test('a tap the watch reads settles the request exactly once, whoever sees it se
           taps.push(choice)
           resolveButton(choice)
         },
+        cardMessageId: CARD_ID,
       },
     ],
   ])
@@ -789,6 +803,7 @@ test('a tap the watch reads settles the request exactly once, whoever sees it se
     callbackData: `ea:once:${REQ}`,
     clickerUserId: 'user-1',
     pending,
+    cardMessageId: CARD_ID,
   })
   assert.equal(late.kind, 'stale', 'the late copy finds nothing to resolve')
   assert.deepEqual(verdicts, ['once'], 'the CLI hears exactly one verdict')
@@ -993,7 +1008,9 @@ test('the watch reads the tap off the card, and moves no cursor doing it', () =>
   )
   // Only OUR card, the same rule the expiry arm follows: another agent's
   // answered approval in the same chat is none of this request's business.
-  assert.ok(answeredOn.includes('msg.message.id === cardMessageId'))
+  // Read with the one row id reading, so a history id in digits is the card
+  // too (test/permission-watch-card-row.test.ts).
+  assert.ok(answeredOn.includes('isPermissionCardRow(msg.message.id, cardMessageId)'))
   // And NOT the cursor, unlike verdictFrom: the card is an assistant row the
   // delivery path never forwards, so moving the cursor past it would skip what
   // the owner typed alongside the tap.
@@ -1554,12 +1571,12 @@ test('nothing is awaited between minting the request and posting the card', () =
   // nothing, and the obvious fix for that is to delete the guard.
   const between = stripComments(
     handler.slice(
-      handler.indexOf('pendingPermissions.set(request_id,'),
+      handler.indexOf('const own: PendingPermission = {'),
       handler.indexOf('const posted = await bgosPost('),
     ),
   ).code
   assert.ok(
-    between.includes('pendingPermissions.set(request_id,') &&
+    between.includes('pendingPermissions.set(request_id, own)') &&
       between.includes('resolve: resolveButtonChoice'),
     'the handler must still mint the request before it posts, and this must be reading its CODE',
   )

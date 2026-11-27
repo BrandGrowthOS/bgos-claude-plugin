@@ -43,7 +43,7 @@ import {
   ROOM_AGENT_SENDER_TYPE,
   type RoomAgentSender,
 } from './inbound-channel.ts'
-import { senderUserIdCandidate } from './permission-relay.ts'
+import { parseCardRowId, senderUserIdCandidate } from './permission-relay.ts'
 import { cardAnswerClickOf, type CardAnswerClick } from './card-answer.ts'
 // Re-exported so every lane that reads a stream answer has the card answer's
 // reader and text from the module it already loads.
@@ -149,6 +149,28 @@ function answerPayloadOf(raw: unknown): StreamAnswerPayload | null {
 function cardOf(r: Record<string, unknown>): { card?: CardAnswerClick } {
   const card = cardAnswerClickOf(0, r)
   return card ? { card } : {}
+}
+
+/**
+ * The row a stream click was given on, for the permission click resolver:
+ * read from the raw values with the one row id reading (parseCardRowId), not
+ * through `viewStreamMessage`'s numeric coercion. Every id the update carries
+ * for the card (the envelope's, and the row's or flat payload's) must read as
+ * a row and name the same one; an id that does not read, or two that differ,
+ * name no row, so the click settles nothing.
+ */
+export function streamCardRowId(update: StreamUpdate): number | null {
+  const payload = (update.payload ?? {}) as Record<string, unknown>
+  const envelope = payload.message as Record<string, unknown> | undefined
+  const isRow = envelope != null && typeof envelope === 'object'
+  const source = isRow ? envelope! : payload
+  const named = [update.messageId, source.messageId, source.message_id, isRow ? source.id : undefined].filter(
+    (value) => value !== undefined && value !== null,
+  )
+  if (named.length === 0) return null
+  const rows = named.map(parseCardRowId)
+  const first = rows[0]
+  return first !== null && rows.every((row) => row === first) ? first : null
 }
 
 /**
