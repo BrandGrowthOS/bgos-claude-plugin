@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findOwnAttachedKey, floorKey, floorStateRoot, pidIsAlive, sessionFolders } from '../lib/floor-state.mjs'
-import { GROUP_LANE_ENV, PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateTurnRecord, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
+import { GROUP_LANE_ENV, PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateOwnTurnPath, privatePromptHash, privateRawCardPrompt, privateTurnRecord, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 
 const envText = (env, name) => (env && typeof env[name] === 'string' ? env[name].trim() : '')
 
@@ -303,10 +303,13 @@ export async function main() {
       process.exitCode = 1
       return
     }
-    if (recorded && recorded.marker.live && String(payload.prompt).includes('<hoai-private-turn id="')) {
+    if (recorded && recorded.marker.live && (String(payload.prompt).includes('<hoai-private-turn id="') || privateRawCardPrompt(payload.prompt))) {
       // Claude runs matching hooks in parallel. Give the existing async
       // forwarder and daemon intake time to publish before the first tool,
       // within the deadline counted from this process's start (performance.now()).
+      // A card pushed with no delivery (a reply reminder, a peer close) run as
+      // its own prompt too: the daemon keeps the owner's turn for it only once
+      // its line is read, and the first tool must not come before that.
       const until = readyWaitEnd(performance.now())
       while (performance.now() < until) {
         const ready = readPrivateJson(`${recorded.path}.ready`, 2048)
