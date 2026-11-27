@@ -17,10 +17,13 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -30,8 +33,8 @@ import * as preseed from '../lib/claude-preseed.mjs'
 import { FLOOR_HOOK_MATCHER, ensureHookEntries } from '../lib/claude-preseed.mjs'
 import * as cloneHooks from '../lib/clone-hooks.mjs'
 import { registerCloneHooks } from '../lib/clone-hooks.mjs'
-import { registersFloorHook } from '../lib/floor-hook-presence.ts'
-import { registersPrivateHook } from '../lib/private-hook-presence.ts'
+import { floorHookPresence, registersFloorHook } from '../lib/floor-hook-presence.ts'
+import { privateHookPresence, registersPrivateHook } from '../lib/private-hook-presence.ts'
 import { fileSymlinkRefused, linkFolder } from './helpers/links.ts'
 import { scratchDir } from './helpers/scratch-dirs.ts'
 
@@ -268,7 +271,8 @@ test('the rail is read from the entries, not from the text: a file that only men
 
 test('the line for a PowerShell launcher of your own stops it when hoai hooks fails', () => {
   const readme = readFileSync(join(repoRoot, 'README.md'), 'utf8')
-  assert.match(readme, /hoai hooks; if \(\$LASTEXITCODE -ne 0\) \{ exit \$LASTEXITCODE \}/, 'a PowerShell script goes on after a native command that failed')
+  // `$?` too: when hoai is not found at all, $LASTEXITCODE still holds the last command's 0.
+  assert.match(readme, /hoai hooks; if \(-not \$\? -or \$LASTEXITCODE -ne 0\) \{ exit 1 \}/, 'a PowerShell script goes on after a command that failed or was not found')
 })
 
 // -- one snapshot, one server, one install --------------------------------------------------------------------------
@@ -351,7 +355,7 @@ test('a copy of one of the plugin\'s hooks is not left beside it: duplicates are
 })
 
 test('the daemon counts only the plugin\'s own floor and private turn entries, not a hook that mentions their names', () => {
-  const opts = { exists: () => true, pluginRootVariable: false }
+  const opts = { exists: () => true, pluginRootVariable: false, pluginRoot: '/p' }
   const mention = (event: string, name: string, matcher?: string) => ({
     hooks: { [event]: [{ ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command: 'bash', args: ['-c', `echo /p/bin/${name}`] }] }] },
   })
@@ -456,4 +460,163 @@ test('the line a boot logs for a skipped folder says what to change in words, an
   const line = cloneHooks.cloneHooksSkippedLine([{ folder: '/agents/a', outcome: 'not_clone', detail: 'its .mcp.json names no bgos server of a checkout', floor: false }])
   assert.match(String(line), /server\.ts/)
   assert.match(String(line), /hoai hooks/)
+})
+
+// -- the daemon counts only this install's own scripts ---------------------------------------------------------------
+
+/** A settings text whose floor and private turn entries have the plugin's exact shape but run scripts in `bin`. */
+function entriesRunning(bin: string): string {
+  const entry = (script: string, timeout: number) => ({ type: 'command', command: 'node', args: [join(bin, script)], timeout, async: false })
+  return JSON.stringify({
+    hooks: {
+      PreToolUse: [{ matcher: FLOOR_HOOK_MATCHER, hooks: [entry('hoai-floor-hook.mjs', 3)] }],
+      UserPromptSubmit: [{ hooks: [entry('hoai-private-turn-hook.mjs', 5)] }],
+    },
+  }, null, 2)
+}
+const plainReads = { readFile: (p: string) => readFileSync(p, 'utf8'), exists: existsSync, join }
+
+test('a floor or private turn entry that runs a file of the same name outside this install is not counted, though the file is there', () => {
+  const planted = realpathSync.native(scratchDir('hook-trust-planted-'))
+  for (const name of SCRIPTS) writeFileSync(join(planted, name), '')
+  const dir = agentFolder()
+  mkdirSync(join(dir, '.claude'))
+  writeFileSync(settingsPath(dir), entriesRunning(planted))
+  const input = { installMethod: 'clone' as const, pluginRoot: repoRoot, folders: [dir], configDir: '', env: {}, ...plainReads }
+  assert.equal(floorHookPresence(input).registered, false, 'an empty file named like the floor hook declared the floor')
+  assert.equal(privateHookPresence(input).registered, false, 'an empty file named like the private turn hook counted as that hook')
+  // The same entries, running this install's own scripts, count.
+  writeFileSync(settingsPath(dir), entriesRunning(BIN))
+  assert.equal(floorHookPresence(input).registered, true)
+  assert.equal(privateHookPresence(input).registered, true)
+})
+
+// -- "disableAllHooks" switches every hook off: the floor is not held -------------------------------------------------
+
+/** Put `{ "disableAllHooks": true }` at one level: the folder's local or project settings, or the user's. */
+function switchHooksOff(level: 'local' | 'project' | 'user', dir: string, configDir: string) {
+  const file = level === 'user' ? join(configDir, 'settings.json') : join(dir, '.claude', level === 'local' ? 'settings.local.json' : 'settings.json')
+  mkdirSync(dirname(file), { recursive: true })
+  const before = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
+  writeFileSync(file, JSON.stringify({ ...before, disableAllHooks: true }, null, 2))
+}
+const LEVELS = ['local', 'project', 'user'] as const
+
+test('hoai hooks ends 1 when the folder\'s local or project settings, or the user\'s, switch every hook off', async () => {
+  for (const level of LEVELS) {
+    const home = realpathSync.native(scratchDir('hook-trust-off-home-'))
+    const dir = agentFolder()
+    switchHooksOff(level, dir, join(home, '.claude'))
+    const { code, said, errors } = await hoai(['hooks'], dir, { home })
+    assert.equal(code, 1, `${level}: hoai hooks ended ${code} with every hook off: ${said}`)
+    assert.match(errors, /disableAllHooks/, level)
+  }
+})
+
+test('a launch stops when every hook is switched off: it runs with full access, and the floor hook would not run', async () => {
+  for (const level of LEVELS) {
+    const home = realpathSync.native(scratchDir('hook-trust-off-launch-'))
+    const dir = agentFolder()
+    switchHooksOff(level, dir, join(home, '.claude'))
+    const spawns: string[] = []
+    const errors: string[] = []
+    const original = console.error
+    console.error = (...parts: unknown[]) => void errors.push(parts.map(String).join(' '))
+    try {
+      const code = await main([], {
+        platform: 'linux',
+        env: {},
+        home,
+        cwd: dir,
+        scriptDir: BIN,
+        listProcesses: () => [],
+        print: () => {},
+        hasExpect: true,
+        healthyMs: 60_000,
+        registerHooks: () => ({ changed: false, reason: 'already' }),
+        preseedTrust: () => {},
+        spawnImpl: ((file: string) => {
+          spawns.push(file)
+          const child = new EventEmitter() as EventEmitter & { kill: () => void; pid: number }
+          child.pid = 4242
+          child.kill = () => void child.emit('exit', null, 'SIGTERM')
+          setImmediate(() => child.emit('exit', 0, null))
+          return child
+        }) as never,
+      } as never)
+      assert.notEqual(code, 0, `${level}: the launch went on with every hook off`)
+      assert.equal(spawns.length, 0, level)
+      assert.match(errors.join('\n'), /disableAllHooks/, level)
+    } finally {
+      console.error = original
+    }
+  }
+})
+
+test('the hook write the installers share refuses a folder whose settings switch every hook off', () => {
+  const register: any = (cloneHooks as Record<string, unknown>).registerTrustedHooks
+  for (const level of ['local', 'project'] as const) {
+    const dir = agentFolder()
+    switchHooksOff(level, dir, '')
+    assert.throws(() => register({ settingsPath: settingsPath(dir), forwarderPath: FORWARDER }), /disableAllHooks/, level)
+  }
+})
+
+test('the daemon does not count the floor or the private turn hook while every hook is switched off, at any level', () => {
+  for (const level of LEVELS) {
+    const config = realpathSync.native(scratchDir('hook-trust-off-config-'))
+    const dir = agentFolder()
+    mkdirSync(join(dir, '.claude'))
+    writeFileSync(settingsPath(dir), entriesRunning(BIN))
+    switchHooksOff(level, dir, config)
+    const input = { installMethod: 'clone' as const, pluginRoot: repoRoot, folders: [dir], configDir: config, env: {}, ...plainReads }
+    const floor = floorHookPresence(input)
+    assert.equal(floor.registered, false, `${level}: the floor would be declared with every hook off`)
+    assert.match(floor.where, /disableAllHooks/, level)
+    assert.equal(privateHookPresence(input).registered, false, level)
+  }
+  // The plugin's own hooks file is switched off by it too.
+  const config = realpathSync.native(scratchDir('hook-trust-off-market-'))
+  const market = { installMethod: 'marketplace' as const, pluginRoot: repoRoot, folders: [], configDir: config, env: {}, ...plainReads }
+  assert.equal(floorHookPresence(market).registered, true)
+  switchHooksOff('user', '', config)
+  assert.equal(floorHookPresence(market).registered, false, 'a marketplace install counted its hooks file with every hook off')
+  assert.equal(privateHookPresence(market).registered, false)
+})
+
+// -- bounded reads of plain files only -------------------------------------------------------------------------------
+
+test('a settings file or a .mcp.json is read only as a plain file of bounded size: a folder or a huge file reads as no file', () => {
+  const readUpTo: any = (cloneHooks as Record<string, unknown>).readTextUpTo
+  assert.equal(typeof readUpTo, 'function', 'lib/clone-hooks.mjs has no bounded read to share')
+  const dir = realpathSync.native(scratchDir('hook-trust-reads-'))
+  mkdirSync(join(dir, 'a-folder'))
+  writeFileSync(join(dir, 'big.json'), 'x'.repeat(1_100_000))
+  writeFileSync(join(dir, 'small.json'), '{}')
+  assert.equal(readUpTo(join(dir, 'a-folder'), 1024 * 1024), null)
+  assert.equal(readUpTo(join(dir, 'big.json'), 1024 * 1024), null)
+  assert.equal(readUpTo(join(dir, 'small.json'), 1024 * 1024), '{}')
+  // The daemon reads both hook presences through those reads.
+  const presenceFs: any = (cloneHooks as Record<string, unknown>).hookPresenceFs
+  assert.equal(typeof presenceFs, 'function', 'lib/clone-hooks.mjs has no bounded file layer for the daemon\'s hook readers')
+  const fs = presenceFs()
+  assert.throws(() => fs.readFile(join(dir, 'a-folder')))
+  assert.throws(() => fs.readFile(join(dir, 'big.json')))
+  assert.equal(fs.readFile(join(dir, 'small.json')), '{}')
+  const server = readFileSync(join(repoRoot, 'server.ts'), 'utf8')
+  assert.equal((server.match(/\.\.\.hookPresenceFs\(\)/g) ?? []).length, 2, 'server.ts reads a hook presence with readFileSync, whole')
+  // And hoai hooks reads the folder's .mcp.json through the bounded read.
+  const core = readFileSync(join(BIN, 'hoai-core.mjs'), 'utf8')
+  const action = core.slice(core.indexOf("if (action === 'hooks') {"), core.indexOf("if (action === 'logs') {"))
+  assert.match(action, /readTextUpTo\(/, 'hoai hooks reads the .mcp.json whole')
+})
+
+test('a FIFO in place of a settings file or a .mcp.json does not block the read', { skip: process.platform === 'win32' ? 'Windows has no FIFO' : false }, () => {
+  const readUpTo: any = (cloneHooks as Record<string, unknown>).readTextUpTo
+  assert.equal(typeof readUpTo, 'function')
+  const dir = realpathSync.native(scratchDir('hook-trust-fifo-'))
+  const fifo = join(dir, 'settings.local.json')
+  assert.equal(spawnSync('mkfifo', [fifo]).status, 0)
+  assert.equal(readUpTo(fifo, 1024 * 1024), null)
+  assert.throws(() => (cloneHooks as any).hookPresenceFs().readFile(fifo))
 })

@@ -146,7 +146,7 @@ test('presence: a synchronous UserPromptSubmit entry counts, an async one or ano
     async: false,
     ...extra,
   })
-  const opts = { exists: () => true, pluginRootVariable: false }
+  const opts = { exists: () => true, pluginRootVariable: false, pluginRoot: '/x' }
   assert.equal(registersPrivateHook({ hooks: { UserPromptSubmit: [{ hooks: [entry()] }] } }, opts), true)
   assert.equal(registersPrivateHook({ hooks: { UserPromptSubmit: [{ hooks: [entry({ async: true })] }] } }, opts), false)
   assert.equal(registersPrivateHook({ hooks: { Stop: [{ hooks: [entry()] }] } }, opts), false)

@@ -1053,7 +1053,8 @@ test('every launcher that creates an agent folder registers the hook entries', (
     '../bin/hoai-core.mjs',
   ]) {
     const source = launcher(rel)
-    assert.match(source, /ensureHookEntries/, `${rel} never registers the activity hooks`)
+    // Through the write that checks the four scripts are this checkout's own plain files.
+    assert.match(source, /registerTrustedHooks/, `${rel} writes the hooks without checking their scripts are this checkout's own`)
     assert.match(
       source,
       /hoai-hook\.mjs/,

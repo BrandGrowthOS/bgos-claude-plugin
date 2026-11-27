@@ -285,9 +285,9 @@ test('update re-registers a clone workspace\'s hooks (the floor hook included) b
   // Only a workspace that already carries the rail, so a marketplace channel is left alone.
   assert.match(refresh, /grep -q 'hoai-hook\\\.mjs' "\$settings"/)
   assert.match(refresh, /install_hook_entries "\$workdir" "\$PLUGIN_DIR"/)
-  // And ensureHookEntries is what writes the floor entry beside the forwarder.
+  // And registerTrustedHooks is what writes it: the four scripts checked, then the floor entry beside the forwarder.
   const writer = sh.slice(sh.indexOf('install_hook_entries() {'), sh.indexOf('\n}\n', sh.indexOf('install_hook_entries() {')))
-  assert.match(writer, /m\.ensureHookEntries\(\{/)
+  assert.match(writer, /m\.registerTrustedHooks\(\{/)
 })
 
 test('the README documents supervisor generation 2, with every supervised exit code hoai really uses, and no longer describes run.expect', async () => {
