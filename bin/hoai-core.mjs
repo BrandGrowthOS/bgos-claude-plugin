@@ -3001,6 +3001,16 @@ export async function superviseClaude(args, opts = {}) {
               listDir: (path) => listDir(path) ?? null,
             }),
       }))
+  // The words and the exit code for a spawn that a settings file stops; `note` records them where this launch keeps
+  // a status file.
+  const stopForHooksOff = (off, note = () => {}) => {
+    const reason =
+      `${upperFirst(hooksSwitchedOffWords(off))}. This launch runs with full access, so claude was not started. ` +
+      'Run hoai again once that is done.'
+    print(`[hoai] ${reason}`)
+    note(reason)
+    return keepAlive || supervised ? EXIT_UNATTENDED_NEEDS_PERSON : 1
+  }
   // Has the Claude login every agent of this credential store shares failed? Asked only for a launch
   // with no channel heartbeat: the CLI's own records, in the store it signs in through.
   const loginStore = { configDir: claudeConfigDir({ env, home }), listDir, mtimeMs: fileMtimeMs, readTail: (path) => readFileTail(path, LOGIN_TAIL_BYTES) }
@@ -3161,6 +3171,9 @@ export async function superviseClaude(args, opts = {}) {
       )
       return EXIT_UNATTENDED_NEEDS_PERSON
     }
+    // Asked again right before this one spawn: the caller asked before the identity read, which can take seconds.
+    const hooksOff = hooksOffNow()
+    if (hooksOff) return stopForHooksOff(hooksOff)
     return spawnSupervised(args)
   }
   const stateDir = joinDir(agentDir(home), id)
@@ -3435,8 +3448,11 @@ export async function superviseClaude(args, opts = {}) {
   // Singleton guard: never start a second session behind a live supervisor,
   // and never stay down behind one that supervises nothing (agent 867).
   const claimed = await claimSupervision()
-  // No state dir to arm in: launch exactly as before, unsupervised.
-  if (claimed === 'unarmed') return spawnSupervised(args)
+  // No state dir to arm in: launch exactly as before, unsupervised, once the hooks are asked about again.
+  if (claimed === 'unarmed') {
+    const hooksOff = hooksOffNow()
+    return hooksOff ? stopForHooksOff(hooksOff) : spawnSupervised(args)
+  }
   if (claimed !== 'armed') return claimed
   // A marker left behind by a dead launcher is moot: this launch already
   // starts the newest installed code.
@@ -3672,14 +3688,7 @@ export async function superviseClaude(args, opts = {}) {
       // Asked before every launch, a relaunch included: a settings file can switch every hook off while claude
       // runs, and claude runs with full access, the hook that asks before a risky action being one of those hooks.
       const hooksOff = hooksOffNow()
-      if (hooksOff) {
-        const reason =
-          `${upperFirst(hooksSwitchedOffWords(hooksOff))}. This launch runs with full access, so claude was not started ` +
-          'again. Run hoai again once that is done.'
-        print(`[hoai] ${reason}`)
-        noteStatus('hooks-switched-off', { detail: reason })
-        return keepAlive || supervised ? EXIT_UNATTENDED_NEEDS_PERSON : 1
-      }
+      if (hooksOff) return stopForHooksOff(hooksOff, (reason) => noteStatus('hooks-switched-off', { detail: reason }))
       /** @type {import('node:child_process').ChildProcess | null} */
       let childRef = null
       let restartRequested = false
