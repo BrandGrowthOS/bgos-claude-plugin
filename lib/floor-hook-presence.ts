@@ -36,7 +36,7 @@
  * Pure: every file read is injected, so the tests hold each case in place.
  */
 
-import { isOwnHookScript, ownedHookOf, switchesHooksOff } from './claude-preseed.mjs'
+import { exactOwnedHookOf, isOwnHookScript, switchesHooksOff } from './claude-preseed.mjs'
 import { declaredCapabilities } from './declared-capabilities.js'
 import { HARD_FLOOR_TOKEN } from './claude-capability-tokens.js'
 
@@ -166,10 +166,10 @@ export function registersFloorHook(
   for (const matcher of matchers) {
     if (!isRecord(matcher) || !Array.isArray(matcher.hooks)) continue
     for (const hook of matcher.hooks) {
-      // Only the plugin's own entry counts, by the one definition the writer uses (lib/claude-preseed.mjs
-      // ownedHookOf): node running the script by an absolute path, on this event, under its matcher, blocking.
-      // A hook that only mentions the script's name is the owner's, and it is not this hook.
-      const owned = ownedHookOf('PreToolUse', matcher, hook, { pluginRootVariable: opts.pluginRootVariable })
+      // Only the plugin's own entry counts, exactly as the writer writes it (lib/claude-preseed.mjs
+      // exactOwnedHookOf): `node` running the script by an absolute path, on this event, under its matcher, with
+      // its own timeout, blocking, and no other key. Anything else may not run, or not every time.
+      const owned = exactOwnedHookOf('PreToolUse', matcher, hook, { pluginRootVariable: opts.pluginRootVariable })
       if (!owned || owned.script !== FLOOR_HOOK_SCRIPT || !isRecord(hook) || !Array.isArray(hook.args)) continue
       const path = String(hook.args[0])
       if (path.startsWith('${CLAUDE_PLUGIN_ROOT}/')) return true

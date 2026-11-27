@@ -672,7 +672,8 @@ test('a clone counts only the settings entry the launchers write, and only while
 
 test('an async floor entry cannot stop anything and does not count; a user or project settings file does', () => {
   const asyncEntry = JSON.stringify({
-    hooks: { PreToolUse: [{ matcher: FLOOR_HOOK_MATCHER, hooks: [{ type: 'command', command: 'node', args: ['/p/bin/hoai-floor-hook.mjs'], async: true }] }] },
+    // The writer's entry, timeout included: an entry the writer would not write is not counted.
+    hooks: { PreToolUse: [{ matcher: FLOOR_HOOK_MATCHER, hooks: [{ type: 'command', command: 'node', args: ['/p/bin/hoai-floor-hook.mjs'], timeout: 3, async: true }] }] },
   })
   const syncEntry = asyncEntry.replace('"async":true', '"async":false')
   const script = { '/p/bin/hoai-floor-hook.mjs': '' }

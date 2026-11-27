@@ -142,7 +142,8 @@ test('presence: a synchronous UserPromptSubmit entry counts, an async one or ano
     type: 'command',
     command: 'node',
     args: ['/x/bin/hoai-private-turn-hook.mjs'],
-    timeout: 3,
+    // The writer's own timeout for this hook: an entry with another one is not counted.
+    timeout: 5,
     async: false,
     ...extra,
   })
