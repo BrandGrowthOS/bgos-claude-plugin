@@ -164,14 +164,16 @@ test('the permission handler refuses another person turn before the floor and au
 
 async function intake() {
   const ts = (await import('typescript')).default
-  const { privateSenderUserId } = await import('../lib/private-turn.mjs')
+  const privateTurn = await import('../lib/private-turn.mjs')
+  const { privateSenderUserId } = privateTurn
+  const eventRowOfNobody = (privateTurn as any).eventRowOfNobody
   const { isGroupChatDelivery } = await import('../lib/channel-liveness.ts')
   const body = server.slice(server.indexOf('function noteChatAuthor('), server.indexOf('/** A tap, an ask\'s answer, a card answer or a reaction'))
   const js = ts.transpileModule(`${body}\nreturn ownerSessionRefuses;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
   const chatOwnership = createChatOwnership(OWNER)
   const groupChatIds = new Set<string>()
   const bindings: Record<string, unknown> = {
-    chatOwnership, groupChatIds, meetingChatIds: new Set<string>(), USER_ID: OWNER, privateSenderUserId, isGroupChatDelivery,
+    chatOwnership, groupChatIds, meetingChatIds: new Set<string>(), USER_ID: OWNER, privateSenderUserId, eventRowOfNobody, isGroupChatDelivery,
     ownerTurnRefused: (laneCore as any).ownerTurnRefused, log: () => {},
   }
   const refuses = new Function(...Object.keys(bindings), js)(...Object.values(bindings)) as (chatId: string, human: boolean, record: unknown, transport: string, id: unknown) => boolean
@@ -196,5 +198,54 @@ test('the intake: a group admits other people from its first message, a private 
   assert.equal(g.refuses('30', true, { senderUserId: OWNER }, 'socket', 7), false, 'verified owner authorship is always the owner\'s turn')
   // Not a person's turn: never refused here.
   assert.equal(g.refuses('20', false, { senderUserId: RECIPIENT }, 'stream', 8), false)
-  assert.equal(g.refuses('20', true, { senderUserId: RECIPIENT, messageType: 'event' }, 'stream', 9), false)
+  // A person's row is a person's turn whatever its message type: an event row they wrote is refused like any other.
+  assert.equal(g.refuses('20', true, { senderUserId: RECIPIENT, messageType: 'event' }, 'stream', 9), true)
+})
+
+test('the intake: an event row a person wrote gets the same verdict as their plain row, on every transport', async () => {
+  for (const transport of ['poll', 'stream', 'socket', 'poll edit']) {
+    const g = await intake()
+    // Known as the recipient's private chat first.
+    assert.equal(g.refuses('20', true, { senderUserId: RECIPIENT }, transport, 1), true)
+    for (const shape of [
+      { senderUserId: RECIPIENT, sender: 'user', messageType: 'event' },
+      { sender_user_id: RECIPIENT, message_type: 'event' },
+      { senderUserId: RECIPIENT, eventMeta: { source: 'note', title: 'x' } },
+      { senderUserId: RECIPIENT, event_meta: { title: 'x' } },
+      { sender: { userId: RECIPIENT }, senderType: 'user', messageType: 'event', eventMeta: {} },
+    ]) {
+      assert.equal(g.refuses('20', true, shape, transport, 2), true, `known chat, ${transport}, ${JSON.stringify(shape)}`)
+      // A chat nothing was known about: the row's own stamp names the recipient.
+      const fresh = await intake()
+      assert.equal(fresh.refuses('70', true, shape, transport, 3), true, `unknown chat, ${transport}, ${JSON.stringify(shape)}`)
+      // ...and it counts as the recipient speaking there: a later unstamped row in that chat is refused too.
+      assert.equal(fresh.refuses('70', true, {}, transport, 4), true, `noted, ${transport}, ${JSON.stringify(shape)}`)
+    }
+    // The owner's own event row is the owner's turn.
+    assert.equal(g.refuses('20', true, { senderUserId: OWNER, messageType: 'event' }, transport, 5), false)
+  }
+})
+
+test('the intake: an event row nobody wrote (a system or agent row with no author stamp) stays admitted', async () => {
+  const g = await intake()
+  assert.equal(g.refuses('20', true, { senderUserId: RECIPIENT }, 'poll', 1), true)
+  for (const shape of [
+    { sender: 'system', messageType: 'event' },
+    { sender: 'assistant', messageType: 'event', eventMeta: { source: 'browser_session' } },
+    { senderType: 'system', message_type: 'event' },
+    { sender_type: 'agent', event_meta: {} },
+  ]) {
+    assert.equal(g.refuses('20', true, shape, 'poll', 2), false, JSON.stringify(shape))
+  }
+  // A machine sender with a person's stamp is not nobody: the stamp decides.
+  assert.equal(g.refuses('20', true, { sender: 'assistant', senderUserId: RECIPIENT, messageType: 'event' }, 'poll', 3), true)
+  // An event row that says neither who wrote it nor that a machine did is no exemption: the chat's verdict stands.
+  assert.equal(g.refuses('20', true, { messageType: 'event' }, 'poll', 4), true)
+  // ...and an unexempted unstamped event row in a chat nobody else was seen in reads as the owner's, like a plain one.
+  const fresh = await intake()
+  assert.equal(fresh.refuses('71', true, { messageType: 'event' }, 'poll', 5), false)
+  // A machine row does not make the chat anybody's.
+  const unnoted = await intake()
+  assert.equal(unnoted.refuses('72', true, { sender: 'system', messageType: 'event' }, 'poll', 6), false)
+  assert.equal(unnoted.chatOwnership.isOthersPrivate('72'), false)
 })

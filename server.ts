@@ -222,7 +222,7 @@ import { queueAccessChange, queueAccessReconcile } from './lib/person-access.mjs
 import { ensureAutoHost } from './lib/vault-host-auto.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
-import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, PRIVATE_UNTRACKED_TAG, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
+import { createPrivateTurnTracker, emailSendBasis, eventRowOfNobody, PRIVATE_TURN_REFUSAL, PRIVATE_UNTRACKED_TAG, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_OUTBOUND_FILES_PATH,
@@ -3499,10 +3499,9 @@ const permissionCardRefusedChats = createRefusedChats()
  */
 function noteChatAuthor(chatId: string, human: boolean, record: unknown): void {
   if (!chatId || !human || meetingChatIds.has(chatId)) return
-  // A machine event row (a wake, a notice, an email card) is nobody speaking,
-  // whatever user it is stamped with.
-  const row = (record ?? {}) as Record<string, unknown>
-  if ((row.messageType ?? row.message_type) === 'event' || row.eventMeta != null || row.event_meta != null) return
+  // A machine event row (a wake, a notice, a session card) is nobody speaking;
+  // an event row a person wrote is that person speaking (eventRowOfNobody).
+  if (eventRowOfNobody(record)) return
   chatOwnership.noteAuthor(chatId, privateSenderUserId(record))
 }
 
@@ -3518,14 +3517,14 @@ function chatIsOthersPrivate(chatId: string): boolean {
  * is not shown to be the owner's, in a chat that is not multi party, is not
  * delivered here, whatever the lane stamp and the lanes switch say. The row's
  * author is noted first, so its own stamp is evidence. `human` is the site's
- * own reading (a user row, no peer origin, not an email); a machine event row
- * is nobody speaking, as in noteChatAuthor. The id stays claimed, so no other
- * transport delivers it either.
+ * own reading (a user row, no peer origin, not an email); an event row nobody
+ * wrote is nobody speaking, as in noteChatAuthor, while an event row a person
+ * wrote gets the verdict of any row of theirs (eventRowOfNobody). The id stays
+ * claimed, so no other transport delivers it either.
  */
 function ownerSessionRefuses(chatId: string, human: boolean, record: unknown, transport: string, messageId: unknown): boolean {
   if (!chatId || !human) return false
-  const row = (record ?? {}) as Record<string, unknown>
-  if ((row.messageType ?? row.message_type) === 'event' || row.eventMeta != null || row.event_meta != null) return false
+  if (eventRowOfNobody(record)) return false
   // The delivery's own chat kind counts from its first message (as the stream and socket note it, later).
   if (isGroupChatDelivery(record)) groupChatIds.add(chatId)
   noteChatAuthor(chatId, human, record)
