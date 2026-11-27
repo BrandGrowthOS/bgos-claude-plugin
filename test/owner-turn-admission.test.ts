@@ -167,13 +167,14 @@ async function intake() {
   const privateTurn = await import('../lib/private-turn.mjs')
   const { privateSenderUserId } = privateTurn
   const eventRowOfNobody = (privateTurn as any).eventRowOfNobody
+  const eventRowNotesNobody = (privateTurn as any).eventRowNotesNobody
   const { isGroupChatDelivery } = await import('../lib/channel-liveness.ts')
   const body = server.slice(server.indexOf('function noteChatAuthor('), server.indexOf('/** A tap, an ask\'s answer, a card answer or a reaction'))
   const js = ts.transpileModule(`${body}\nreturn ownerSessionRefuses;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
   const chatOwnership = createChatOwnership(OWNER)
   const groupChatIds = new Set<string>()
   const bindings: Record<string, unknown> = {
-    chatOwnership, groupChatIds, meetingChatIds: new Set<string>(), USER_ID: OWNER, privateSenderUserId, eventRowOfNobody, isGroupChatDelivery,
+    chatOwnership, groupChatIds, meetingChatIds: new Set<string>(), USER_ID: OWNER, privateSenderUserId, eventRowOfNobody, eventRowNotesNobody, isGroupChatDelivery,
     ownerTurnRefused: (laneCore as any).ownerTurnRefused, log: () => {},
   }
   const refuses = new Function(...Object.keys(bindings), js)(...Object.values(bindings)) as (chatId: string, human: boolean, record: unknown, transport: string, id: unknown) => boolean

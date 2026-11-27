@@ -463,10 +463,11 @@ test('discovering the chats again keeps the most recently confirmed owner chat f
 const authorSource = source.slice(source.indexOf('function noteChatAuthor('), source.indexOf('\n}\n', source.indexOf('function noteChatAuthor(')) + 3)
 
 test('a machine event row is never a person speaking, whoever it is stamped with', async () => {
-  const { privateSenderUserId } = await import('../lib/private-turn.mjs')
+  const privateTurn: any = await import('../lib/private-turn.mjs')
+  const { privateSenderUserId } = privateTurn
   const o = createChatOwnership(OWNER)
   const note = (chatId: string, record: unknown) => execute(`${authorSource}\nreturn noteChatAuthor(${JSON.stringify(chatId)}, true, record);`, {
-    chatOwnership: o, meetingChatIds: new Set(['90']), privateSenderUserId, record,
+    chatOwnership: o, meetingChatIds: new Set(['90']), privateSenderUserId, eventRowNotesNobody: privateTurn.eventRowNotesNobody, eventRowOfNobody: privateTurn.eventRowOfNobody, USER_ID: OWNER, record,
   })
   note('10', { senderUserId: OWNER, messageType: 'event', eventMeta: { source: 'scheduler' } })
   note('11', { senderUserId: OWNER, message_type: 'event' })
@@ -475,6 +476,14 @@ test('a machine event row is never a person speaking, whoever it is stamped with
   for (const chatId of ['10', '11', '12', '90']) assert.equal(o.isOwners(chatId), false, chatId)
   note('13', { senderUserId: OWNER, messageType: 'text' })
   assert.equal(o.isOwners('13'), true, 'a person message still counts')
+  // An event row another person wrote is that person speaking: the chat is theirs, never the owner's.
+  note('14', { senderUserId: RECIPIENT, sender: 'user', messageType: 'event' })
+  assert.equal(o.isOwners('14'), false)
+  assert.equal(o.isOthersPrivate('14'), true)
+  // A machine's row, unstamped, notes nobody.
+  note('15', { sender: 'system', messageType: 'event' })
+  assert.equal(o.isOwners('15'), false)
+  assert.equal(o.isOthersPrivate('15'), false)
 })
 
 const httpErrorSource = source.slice(source.indexOf('class HttpError extends Error {'), source.indexOf('\n}\n', source.indexOf('class HttpError extends Error {')) + 3)

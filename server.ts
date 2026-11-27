@@ -222,7 +222,7 @@ import { queueAccessChange, queueAccessReconcile } from './lib/person-access.mjs
 import { ensureAutoHost } from './lib/vault-host-auto.mjs'
 import { createScheduleGrantRuns, holdChannelCardsDuringGrantedRun, requireBoardsTurn, scheduleGrantOf } from './lib/schedule-grant-run.mjs'
 import { createQuietTurns, createServerQuietSwitch, holdChannelCardsDuringQuietTurn, quietCardOf, quietTurnEnabled, voiceQuietCard } from './lib/quiet-turn.mjs'
-import { createPrivateTurnTracker, emailSendBasis, eventRowOfNobody, PRIVATE_TURN_REFUSAL, PRIVATE_UNTRACKED_TAG, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
+import { createPrivateTurnTracker, emailSendBasis, eventRowNotesNobody, eventRowOfNobody, PRIVATE_TURN_REFUSAL, PRIVATE_UNTRACKED_TAG, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn, turnAwarePrivateTurn, voiceDispatchActor } from './lib/private-turn.mjs'
 import { createFireLedger, createPostedButtons, privateFireKey, privateFiresPath, privateEndedLine, privateReplayLine, privateTapCard, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_OUTBOUND_FILES_PATH,
@@ -3499,9 +3499,10 @@ const permissionCardRefusedChats = createRefusedChats()
  */
 function noteChatAuthor(chatId: string, human: boolean, record: unknown): void {
   if (!chatId || !human || meetingChatIds.has(chatId)) return
-  // A machine event row (a wake, a notice, a session card) is nobody speaking;
-  // an event row a person wrote is that person speaking (eventRowOfNobody).
-  if (eventRowOfNobody(record)) return
+  // A machine event row (a wake, a notice, a session card) is nobody speaking,
+  // and an event row stamped with the owner never shows the owner's own chat;
+  // an event row another person wrote is that person speaking (eventRowNotesNobody).
+  if (eventRowNotesNobody(record, USER_ID)) return
   chatOwnership.noteAuthor(chatId, privateSenderUserId(record))
 }
 
