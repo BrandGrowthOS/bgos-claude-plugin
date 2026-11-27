@@ -90,6 +90,27 @@ test('only a share that ended counts, read from the lane\'s revoke marker', () =
   } finally { h.done() }
 })
 
+test('an earlier version\'s revoke marker counts only from the folder spelled exactly as the id, alone in its case', () => {
+  const h = home()
+  try {
+    const people = join(h.agentRoot, '1076', 'people')
+    const ended = (userId: string, listPeople?: (dir: string) => string[]) => personShareEnded({ agentRoot: h.agentRoot, assistantId: 1076, userId, ...(listPeople ? { listPeople } : {}) } as never)
+    mkdirSync(join(people, 'user_Ana1'), { recursive: true })
+    writeFileSync(join(people, 'user_Ana1', 'revoked.json'), JSON.stringify({ reason: 'revoked', shareReason: 'share_revoked' }))
+    assert.equal(ended('user_Ana1'), true, 'the earlier version\'s folder of this id')
+    // A folding disk opens user_Ana1's folder for user_ana1, a different person; the folder list says whose it is.
+    const reads: string[] = []
+    const folding = (userId: string) => personShareEnded({
+      agentRoot: h.agentRoot, assistantId: 1076, userId,
+      readText: (p: string) => { reads.push(p); return readFileSync(p.replace(`/people/${userId}/`, '/people/user_Ana1/'), 'utf8') },
+    } as never)
+    assert.equal(folding('user_ana1'), false, 'another person\'s marker by case is never this person\'s')
+    // Two spellings that differ only by case: neither is read, the keyed marker alone decides.
+    mkdirSync(join(people, 'user_ANA1'), { recursive: true })
+    assert.equal(ended('user_Ana1', () => ['user_Ana1', 'user_ANA1']), false)
+  } finally { h.done() }
+})
+
 test('the owner daemon deletes the profile on a share that ended, and leaves the reason in the marker', () => {
   const h = home()
   try {

@@ -4028,8 +4028,13 @@ export class BrowserHost {
           this._log(`a person on agent ${id} lost the owner's logins: their browser was closed and its folders deleted`)
           return true
         }
-        try { markProfileDeletePending({ agentRoot: this.agentRoot, assistantId: id, userId }) } catch {}
-        this._log(`a person on agent ${id} lost the owner's logins: their browser could not be closed or its folders deleted; this is tried again, and that browser does not open until it is done`)
+        try {
+          markProfileDeletePending({ agentRoot: this.agentRoot, assistantId: id, userId })
+          this._log(`a person on agent ${id} lost the owner's logins: their browser could not be closed or its folders deleted; this is tried again, and that browser does not open until it is done`)
+        } catch (err) {
+          // Still owed in this host (person-access.mjs keeps it in memory), but not on disk.
+          this._log(`a person on agent ${id} lost the owner's logins: their browser could not be closed or its folders deleted, and that could not be recorded on disk (${err?.code ?? 'error'}); this host keeps that browser closed while it runs, and the next reconcile asks again`)
+        }
         return false
       },
     }

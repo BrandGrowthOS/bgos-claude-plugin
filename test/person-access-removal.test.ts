@@ -302,6 +302,26 @@ test('a person with no browser profile on this computer has nothing saved to for
 
 // ── A deletion that failed is owed, and done before reuse ────────────────────
 
+test('an owed deletion that cannot be written to disk is still owed while this host runs', () => {
+  const r = rig()
+  try {
+    const full = { ...nodeFs, writeFileSync: () => { throw Object.assign(new Error('no space'), { code: 'ENOSPC' }) } }
+    assert.throws(() => pa.markProfileDeletePending({ agentRoot: r.agentRoot, assistantId: AGENT, userId: LEO, fs: full }), /no space/)
+    // Nothing reached the disk, and that browser still does not open.
+    assert.equal(pa.profileDeletePending({ agentRoot: r.agentRoot, assistantId: AGENT, userId: LEO }), true)
+    assert.equal(pa.profileDeletePending({ agentRoot: r.agentRoot, assistantId: AGENT, userId: 'user_other' }), false)
+    // Done, it is owed no longer.
+    pa.settleProfileDelete({ agentRoot: r.agentRoot, assistantId: AGENT, userId: LEO })
+    assert.equal(pa.profileDeletePending({ agentRoot: r.agentRoot, assistantId: AGENT, userId: LEO }), false)
+  } finally { r.done() }
+})
+
+test('the host says so when an owed deletion could not be recorded, never that the browser stays closed', () => {
+  const host = readFileSync(join(import.meta.dirname, '..', 'bin', 'hoai-browser-host.mjs'), 'utf8')
+  const effects = host.slice(host.indexOf('  _accessEffects(id) {'), host.indexOf('  /** M2: the changes the owner\'s daemon queued from its pairing room. */'))
+  assert.doesNotMatch(effects, /try \{ markProfileDeletePending\([^)]*\) \} catch \{\}/, 'a failed mark is not swallowed')
+})
+
 test('a profile deletion that failed is owed and done before that browser opens again; a second failure keeps it closed', async () => {
   const r = rig()
   try {
