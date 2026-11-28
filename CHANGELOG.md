@@ -10,9 +10,9 @@ Notable changes to the HOAI Claude Code plugin.
 - **One plain refusal over the limit.** A 201 MB file is refused from its size on disk before a byte is read or anything is called: `"cut.mov" is 201 MB, over the 200 MB limit on a file you send. Send a smaller file or a link to it.`
 - **Boards.** At or under 25 MB the server still answers one signed PUT, which is kept; above it the attach answer is an upload session, completed and then the row is completed. `boards_download` now fetches up to 200 MB (it was 100 MB), so an agent can read back what it attached. `content_base64` stays at 25 MB, since those bytes are already whole in memory; its refusal points at `file_path`.
 - **A raw API key keeps the old limits**, as the server does: 10 MB images, 100 MB videos, 20 MB audio, 25 MB documents and board files.
-- The agent facing text (the reply instructions, the bundled capabilities fallback, the `boards_attach` description and the README) says 200 MB. Email attachment caps (25 MB) are a separate limit and unchanged.
+- The agent facing text (the reply instructions, the bundled capabilities fallback, the `boards_attach` description and the README) says 200 MB. The reply instructions now list audio (MP3, WAV, M4A, AAC, FLAC, max 200 MB) beside images, videos and documents, and the raw API key note names its 20 MB audio cap. Email attachment caps (25 MB) are a separate limit and unchanged.
 
-Guards: `test/direct-upload.test.ts`, `test/boards-tools.test.ts`, `test/boards-download.test.ts`.
+Guards: `test/direct-upload.test.ts`, `test/large-file-local-receiver.test.ts` (a 26 MB and a 200 MB file, from `boards_attach` and from a reply, sent through the daemon's own PUT to a real loopback receiver that hashes every byte; one byte over 200 MB refused in the stated sentence; the 200 MB wording swept), `test/boards-tools.test.ts`, `test/boards-download.test.ts`.
 
 ## 0.90.32 (2026-11-27)
 
