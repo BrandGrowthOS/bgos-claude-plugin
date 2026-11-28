@@ -89,6 +89,7 @@ function makeClaudeStandIn(root: string): { claude: string; stub: string } {
       "import { spawn } from 'node:child_process'",
       "const child = spawn(process.env.HOMECLAIM_BUN, [process.env.HOMECLAIM_SERVER], { stdio: 'inherit' })",
       "for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal))",
+      "process.on('exit', () => child.kill())",
       "child.on('exit', (code) => process.exit(code ?? 0))",
       '',
     ].join('\n'),

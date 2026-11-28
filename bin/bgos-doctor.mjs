@@ -1774,11 +1774,11 @@ export function resolveDoctorIdentity({
     via: chosen.via,
     sessionVia: session.via,
     sessionMissing: session.missing === true,
-    // The session names the shared legacy file's own agent (a pin or an env
-    // id the legacy file was paired for): the daemon treats that as the pin
-    // or env route it is, never as elimination (homeclaim, board 01a072c5;
-    // lib/agent-credentials.ts identityViaFor), so it is never refused.
-    sessionNamesFileAgent: session.via === 'legacy' && Boolean(session.id),
+    // This folder's pin names the shared legacy file's own agent: the daemon's
+    // home check treats that as the folder pin it is, never as elimination
+    // (homeclaim, board 01a072c5; lib/agent-credentials.ts homeViaFor), so it
+    // is never refused. An env id alone is checked against the home as before.
+    sessionNamesFileAgent: session.via === 'legacy' && pin !== '' && session.id === pin,
     path: chosen.path ?? '',
     assistantId,
     expectedAssistantId,
@@ -1967,7 +1967,7 @@ export function probeCredentials({
     // this agent's (helperwedge finding 4); otherwise only an elimination start
     // outside the home is refused. `sessionVia`, not `via`: the operator's
     // --assistant-id is not how a session started in this folder would resolve.
-    // A session naming the legacy file's own agent is no elimination start.
+    // A folder pinned to the legacy file's own agent is no elimination start.
     result.workdirRefused = Boolean(
       result.homeDir &&
         (found.sessionMissing === true ||

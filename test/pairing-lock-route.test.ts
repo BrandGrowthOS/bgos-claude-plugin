@@ -311,7 +311,9 @@ test('server.ts derives the identity once and hands both agent ids to every acqu
   assert.match(identity[0], /folderPinId: LAUNCH_FOLDER_PIN_ID,/)
   const binding = /\nconst HOME_BINDING = decideHomeBinding\(\{[\s\S]*?\n\}\)\n/.exec(server)
   assert.ok(binding, 'HOME_BINDING must exist')
-  assert.match(binding[0], /\n  via: IDENTITY_VIA,\n/, 'the home binding reads the identity route, not the resolver route')
+  assert.match(server, /\nconst HOME_VIA = homeViaFor\(\{ via: RESOLVED_VIA, folderPinId: LAUNCH_FOLDER_PIN_ID, pairedAgentId: PAIRED_AGENT_ID \}\)\n/)
+  assert.match(identity[0], /\n  via: RESOLVED_VIA,\n/)
+  assert.match(binding[0], /\n  via: HOME_VIA,\n/, 'the home binding reads the pin-upgraded route, not the resolver route')
   assert.match(binding[0], /\n  folderPinId: LAUNCH_FOLDER_PIN_ID,\n/)
   assert.match(binding[0], /\n  assistantId: PAIRED_AGENT_ID,\n/)
   const acquires = server.match(/acquirePairingLock\(\{[\s\S]*?\n\s*\}\)/g) ?? []

@@ -2037,7 +2037,7 @@ test('doctor: probeCredentials reads the home, its source, and whether this fold
   assert.equal(probeCredentials({ env: { BGOS_CREDENTIALS_PATH: join(root, 'x.json') }, home: root, expectedAssistantId: '871', workdir: bare }).workdirRefused, false, 'an explicit file path')
 })
 
-test('doctor: on a legacy-file host, a session naming the file\'s own agent is not predicted refused (homeclaim, board 01a072c5)', () => {
+test('doctor: on a legacy-file host, a folder pinned to the file\'s own agent is not predicted refused (homeclaim, board 01a072c5)', () => {
   // The daemon no longer refuses it (lib/agent-credentials.ts identityViaFor),
   // so the doctor must not say it will. A bare folder is still refused.
   const root = scratchDir('doctor-homeclaim-')
@@ -2050,7 +2050,8 @@ test('doctor: on a legacy-file host, a session naming the file\'s own agent is n
   const byPin = probeCredentials({ env: {}, home: root, workdir: pinned })
   assert.equal(byPin.homeDir, recorded)
   assert.equal(byPin.workdirRefused, false, 'the pinned folder of the legacy file\'s agent')
-  assert.equal(probeCredentials({ env: { BGOS_ASSISTANT_ID: '871' }, home: root, workdir: bare }).workdirRefused, false, 'the env id of the legacy file\'s agent')
+  assert.equal(probeCredentials({ env: { BGOS_ASSISTANT_ID: '871' }, home: root, workdir: bare }).workdirRefused, true, 'an env id names an agent, never a home: still refused away from it')
+  assert.equal(probeCredentials({ env: { BGOS_ASSISTANT_ID: '871' }, home: root, workdir: pinned }).workdirRefused, false, 'the env id in the pinned folder')
   assert.equal(probeCredentials({ env: {}, home: root, workdir: bare }).workdirRefused, true, 'a bare folder is still refused')
   writeFileSync(join(bare, '.bgos-agent-id'), '999\n')
   assert.equal(probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: bare }).workdirRefused, true, 'a pin naming another agent is still refused')

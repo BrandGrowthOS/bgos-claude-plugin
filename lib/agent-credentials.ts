@@ -549,6 +549,23 @@ export function identityViaFor(input: {
   return str(input.folderPinId).trim() === paired ? 'folder-pin' : input.via
 }
 
+/**
+ * The route the HOME binding uses: the same upgrade, by the folder pin only.
+ * An env id names which agent but never where it lives (every child process
+ * inherits it, in whatever folder it runs), so an env-named elimination start
+ * (a bgos-claim agent on the legacy file) is still checked against a recorded
+ * home exactly as before; only its lock route is upgraded (identityViaFor).
+ */
+export function homeViaFor(input: {
+  via: CredentialsVia
+  folderPinId?: string
+  pairedAgentId?: unknown
+}): CredentialsVia {
+  if (input.via !== 'legacy' && input.via !== 'sole-per-assistant') return input.via
+  const paired = str(input.pairedAgentId).trim()
+  return paired && str(input.folderPinId).trim() === paired ? 'folder-pin' : input.via
+}
+
 /** The digits in <folder>/.bgos-agent-id, or '' when there is no usable pin. */
 export function readFolderPinId(
   cwd: string,

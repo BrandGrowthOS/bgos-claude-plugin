@@ -129,9 +129,10 @@ function bootDaemon(
   const identityVia = lib.identityViaFor
     ? lib.identityViaFor({ via: selection.via, env, folderPinId, pairedAgentId })
     : selection.via
+  const homeVia = lib.homeViaFor ? lib.homeViaFor({ via: selection.via, folderPinId, pairedAgentId }) : selection.via
   const agentId: string = lib.sessionAgentId ? lib.sessionAgentId({ env, folderPinId }) : ''
   const binding = credentials.decideHomeBinding({
-    via: identityVia,
+    via: homeVia,
     cwd,
     recordedHomeDir: file?.homeDir ?? null,
     recordedHomeSource: (file as Record<string, unknown> | null)?.homeSource ?? null,
@@ -261,6 +262,23 @@ test('the race on a legacy-file host, env pinned: an agent named by BGOS_ASSISTA
     assert.equal(stray.held, false)
     holdChannel(host, agent, T0 + 15_000, T0 + 20_000)
     assert.equal(host.readFile().homeDir, undefined, 'an env var names an agent, never a home: nothing is written')
+  } finally {
+    host.cleanup()
+  }
+})
+
+test('an env id names an agent, never a home: an env-named legacy start away from a recorded home is still refused, as before', () => {
+  const host = makeHost({ layout: 'legacy', recordedHomeDir: (h) => h.agent })
+  try {
+    const envNamed = bootDaemon(host, host.elsewhere, AGENT_PID, T0, { BGOS_ASSISTANT_ID: AGENT_ID })
+    assert.equal(envNamed.via, 'legacy')
+    assert.equal(envNamed.binding.action, 'refuse', 'the home check is unchanged for an env-named start')
+    assert.equal(envNamed.held, false)
+    // In the recorded home it starts, and its lock route is the env route.
+    const atHome = bootDaemon(host, host.agent, LATER_PID, T0 + 1_000, { BGOS_ASSISTANT_ID: AGENT_ID })
+    assert.notEqual(atHome.binding.action, 'refuse')
+    assert.equal(atHome.route, 'env')
+    assert.equal(atHome.held, true)
   } finally {
     host.cleanup()
   }
@@ -456,4 +474,15 @@ test('the mismatch line names both agents and no secret', () => {
   assert.equal(lockLib.agentIdsDisagree('', 888), false)
   assert.equal(lockLib.agentIdsDisagree('999', ''), false)
   assert.equal(lockLib.agentIdsDisagree(null, undefined), false)
+})
+
+test('homeViaFor upgrades by the folder pin only, never by an env id', () => {
+  assert.equal(typeof lib.homeViaFor, 'function')
+  const h = (via: string, folderPinId: string, pairedAgentId: unknown) => lib.homeViaFor({ via, folderPinId, pairedAgentId })
+  assert.equal(h('legacy', AGENT_ID, 888), 'folder-pin')
+  assert.equal(h('sole-per-assistant', AGENT_ID, AGENT_ID), 'folder-pin')
+  assert.equal(h('legacy', '', AGENT_ID), 'legacy', 'no pin: an env id alone never upgrades the home route')
+  assert.equal(h('legacy', OTHER_AGENT_ID, AGENT_ID), 'legacy')
+  assert.equal(h('legacy', AGENT_ID, ''), 'legacy')
+  for (const via of ['folder-pin', 'env-assistant', 'env-path']) assert.equal(h(via, OTHER_AGENT_ID, AGENT_ID), via)
 })
