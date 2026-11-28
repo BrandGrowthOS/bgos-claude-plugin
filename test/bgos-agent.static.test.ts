@@ -321,3 +321,35 @@ test('the README documents supervisor generation 2, with every supervised exit c
   assert.doesNotMatch(gateHeader, /copies it into the supervisor's\s*#?\s*run\.expect/)
   assert.doesNotMatch(gateHeader, /which run\.expect derives/)
 })
+
+test('install --always-on asks whether this computer keeps its agents running before anything is written, and refuses in one plain line when the watcher\'s fresh answer says off', () => {
+  const ask = sh.indexOf('agent_service_js kept-switch --assistant "$ASSISTANT_ID" --os "$OS"')
+  assert.ok(ask > 0, 'the shared helper is asked (bin/hoai-agent-service.mjs kept-switch)')
+  assert.ok(ask > sh.indexOf('if [ "${ALWAYS_ON:-}" = "1" ]; then'), 'only for an always-on install')
+  assert.ok(ask < sh.indexOf('date +%s > "$statedir/installed-at"'), 'before anything is written')
+  assert.ok(ask < sh.indexOf('select_claude\n'), 'and before the slower preflight')
+  assert.match(sh, /kept-switch --assistant "\$ASSISTANT_ID" --os "\$OS" \| head -n 1\)" = "switch_off" \]; then\n\s+die "refused: Keep agents running is off for this computer, [^"\n]*"\n/)
+  // The cached answer can be up to 5 minutes old, so a switch just turned on can still read off (review round 5, M4).
+  assert.match(sh, /die "refused: Keep agents running is off for this computer, [^"\n]*try again in a minute[^"\n]*"\n/)
+})
+
+test('r7 M1: an install clears a removal\'s not-kept marker once its service is in place, so the sweep no longer reads the agent as removed', () => {
+  const start = sh.indexOf('cmd_install() {')
+  const service = sh.indexOf('Linux)  install_systemd "$ASSISTANT_ID"', start)
+  const clear = sh.indexOf('rm -f "$statedir/not-kept"', start)
+  assert.ok(start > 0 && service > start, 'cmd_install installs the service')
+  assert.ok(clear > service, 'cleared after the service is installed, never before: an install that fails keeps the sign')
+  assert.ok(clear < sh.indexOf('\ncmd_', service), 'inside cmd_install')
+})
+
+test('r7 M3: install --always-on asks the switch again under its lock, after the slow part and right before it writes the supervisor', () => {
+  const start = sh.indexOf('cmd_install() {')
+  const lock = sh.indexOf('acquire_install_lock "$ASSISTANT_ID"', start)
+  const first = sh.indexOf('kept-switch --assistant "$ASSISTANT_ID" --os "$OS"', start)
+  const bun = sh.indexOf('bun install --no-summary', start)
+  const again = sh.indexOf('kept-switch --assistant "$ASSISTANT_ID" --os "$OS"', first + 1)
+  const write = sh.indexOf('date +%s > "$statedir/installed-at"', start)
+  assert.ok(start < lock && lock < first && first < bun, 'the lock first, then the first ask, then the slow part')
+  assert.ok(again > bun && again < write, 'asked again after it, before the first supervisor file')
+  assert.match(sh.slice(again - 60, write), /\[ "\$\{ALWAYS_ON:-\}" = "1" \] && \[ "\$\(agent_service_js kept-switch[^\n]*= "switch_off" \]; then\n\s+die "refused: Keep agents running went off for this computer[^"\n]*"\n/)
+})

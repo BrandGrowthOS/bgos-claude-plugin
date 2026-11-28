@@ -104,7 +104,7 @@ import { TEACH_WRITE_FIRST, applyOrigins, closingTeachWindows, createCardDeliver
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { DoctorRpcHandler, buildDoctorChecks, normalizeDoctorRpc, type DoctorCheck } from './lib/doctor-rpc.ts'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
-import { SESSION_ID_FILE_NAME, defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { SESSION_ID_FILE_NAME, canonicalService, defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { createUnboundFrameRouter, createUnboundNoticeHandler } from './lib/agent-unbound.mjs'
 import { cleanIdentityName, identityFilePath, identityFromMe, takeIdentityNotice, writeAgentIdentity } from './lib/agent-identity.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
@@ -139,7 +139,21 @@ import {
   rollbackMarketplaceInstall,
 } from './lib/idle-update-host.mjs'
 import { buildCallOwnerBody, CALL_OWNER_OTHER_CHAT_REFUSAL } from './lib/call-owner.js'
-import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
+import {
+  INSTALL_GRACE_MS,
+  INSTALLED_AT_FILE_NAME,
+  KEPT_CACHE_FRESH_MS,
+  KEPT_SEEN_FILE_NAME,
+  WAITS_FOR_LIVE_LIST,
+  decideKeptSupervisor,
+  hasPairingFile,
+  keepAliveCacheFile,
+  keepAliveStandingFromCache,
+  markInstallSeenKept,
+  releasePosixSupervisor,
+  supervisorRemovedNotKept,
+  watcherServiceInstalled,
+} from './lib/agent-kept.mjs'
 import {
   buildReachableChatsPath,
   summarizeReachableChats,
@@ -1231,6 +1245,7 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -20563,6 +20578,8 @@ let reconcileDisabledReason: string | null = null
 let alwaysOnDeferLogged = false
 // F4: so is the "could not read the job list, asking again next cycle" line.
 let alwaysOnWaitLogged = false
+// Review round 7 M5: "a removed supervisor waits for the watcher's live list" is said once per wait.
+let alwaysOnHeldLogged = false
 // Board row d6198bb6: a refusal from bin/bgos-agent (this agent's service name
 // is held by a registration another HOME installed, which it never touches) is
 // said once per refusal, not every 15 minutes.
@@ -20578,6 +20595,43 @@ const alwaysOnExecSync = userBusExecSync(defaultExecSync, {
   env: process.env,
   uid: typeof process.getuid === 'function' ? process.getuid() : null,
 })
+
+/**
+ * The exec a removal runs its few commands through (lib/agent-kept.mjs releasePosixSupervisor):
+ * never throws, says how it ended, and reaches the user bus the way the G11 reading does.
+ */
+const alwaysOnReleaseExec = async (
+  file: string,
+  args: readonly string[],
+  opts?: { timeoutMs?: number },
+): Promise<{ code: number | null; stdout: string; stderr: string }> => {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null
+  const [cmd, argv] =
+    process.platform === 'linux' && file === 'systemctl' && !String(process.env.XDG_RUNTIME_DIR ?? '').trim() && typeof uid === 'number'
+      ? ['env', [`XDG_RUNTIME_DIR=/run/user/${uid}`, file, ...args]]
+      : [file, [...args]]
+  try {
+    const out = await execFileAsync(cmd, argv, { timeout: opts?.timeoutMs ?? 30_000 })
+    return { code: 0, stdout: String(out?.stdout ?? ''), stderr: String(out?.stderr ?? '') }
+  } catch (err) {
+    const e = err as { code?: unknown; stdout?: unknown; stderr?: unknown; message?: unknown }
+    return { code: typeof e?.code === 'number' ? e.code : null, stdout: String(e?.stdout ?? ''), stderr: String(e?.stderr ?? e?.message ?? '') }
+  }
+}
+
+/** The file system a removal writes through: the not-kept run.sh moved into place, the service file deleted. */
+const alwaysOnReleaseFs = {
+  exists: (path: string) => existsSync(path),
+  writeFile: (path: string, text: string, opts?: { mode?: number }) => writeFileSync(path, text, opts?.mode != null ? { mode: opts.mode } : undefined),
+  rename: (from: string, to: string) => renameSync(from, to),
+  rm: (path: string) => rmSync(path, { force: true }),
+  // bin/bgos-agent's install lock, taken by the removal (lib/agent-kept.mjs, review round 7 M3).
+  mkdirExclusive: (path: string) => void mkdirSync(path),
+  rmdir: (path: string) => rmdirSync(path),
+}
+
+/** The removal's last failure, said once until it changes. */
+let alwaysOnReleaseFailure: string | null = null
 
 async function isAlwaysOnInstalled(): Promise<boolean> {
   try {
@@ -20655,8 +20709,78 @@ async function reconcileAlwaysOn(): Promise<void> {
     // absent (older/transitional backend, pre-deploy), do nothing, never tear
     // down a wanted supervisor just because the field is missing.
     if (typeof a?.alwaysOn !== 'boolean') return
-    const desired = a.alwaysOn === true
     const installed = await isAlwaysOnInstalled()
+    // Switched off stays off (lib/agent-kept.mjs). Kept is Always on for this agent AND Keep agents
+    // running for this computer, read from the watcher's cached keep-alive answer while it is fresh
+    // (KEPT_CACHE_FRESH_MS: the watcher rewrites it every minute while it runs). Not kept: the switch
+    // off removes the supervisor at once, an install once seen kept goes at once, an install never
+    // seen kept keeps 15 minutes from its install (desktop one-click records Always on only after the
+    // agent connected). No answer (a stale, missing or refused cache) moves nothing. A never set
+    // switch, a computer with no watcher installed, and an agent with no pairing (the backend's list
+    // can never name it) keep today's meaning: Always on.
+    const home = homedir()
+    const stateDir = joinPath(home, '.bgos-agent', String(ASSISTANT_ID))
+    const installedAt = readTextOrNull(joinPath(stateDir, INSTALLED_AT_FILE_NAME))
+    const now = Date.now()
+    const watcherInstalled = watcherServiceInstalled({ platform: process.platform, home, env: process.env, exists: (path: string) => existsSync(path) })
+    const kept = decideKeptSupervisor({
+      alwaysOn: a.alwaysOn,
+      standing: keepAliveStandingFromCache(readTextOrNull(keepAliveCacheFile(home)), ASSISTANT_ID, now, { maxAgeMs: KEPT_CACHE_FRESH_MS, watcherInstalled, paired: AUTH.mode === 'pairing' }),
+      installed,
+      installedAt,
+      keptSeen: readTextOrNull(joinPath(stateDir, KEPT_SEEN_FILE_NAME)),
+      now,
+      // A supervisor a removal took is put back by the watcher's live list, never by this cached one (review round 7 M5),
+      // for an agent with its own pairing file only: one paired through a shared credentials.json is on no sweep's list
+      // of agents, so no live list puts it back and this daemon does (review round 8 K1).
+      removedNotKept:
+        hasPairingFile({ home, assistantId: ASSISTANT_ID, exists: (path: string) => existsSync(path) }) &&
+        supervisorRemovedNotKept({ platform: process.platform, stateDir, exists: (path: string) => existsSync(path), readFile: readTextOrNull }),
+    })
+    if (kept.markSeen) {
+      try {
+        writeFileSync(joinPath(stateDir, KEPT_SEEN_FILE_NAME), String(installedAt))
+      } catch {
+        // Marked by the next read; until then this install keeps the grace of one never seen kept.
+      }
+    }
+    const held = kept.reason === WAITS_FOR_LIVE_LIST
+    if (held && !alwaysOnHeldLogged) {
+      log(
+        `always-on: Always on is on and the watcher's cached list keeps this agent, but its supervisor was removed ` +
+          `when it was not kept, and that list may be older than the removal: not installing it here; the watcher ` +
+          `installs it once a live keep-alive read names it. Logged once.`,
+      )
+    }
+    alwaysOnHeldLogged = held
+    if (kept.action === 'none') return
+    if (kept.action === 'grace') {
+      log(`always-on: not kept running (${kept.reason}), but this supervisor was installed ${Math.round((INSTALL_GRACE_MS - kept.graceLeftMs) / 1000)}s ago and never seen kept; leaving it for the app to record always-on (grace ${Math.round(kept.graceLeftMs / 1000)}s left)`)
+      return
+    }
+    if (kept.action === 'remove') {
+      // Takes away what would START the agent again, never what runs now (this session included):
+      // never bgos-agent uninstall, whose bootout or stop ends the agent's tmux server.
+      const service = canonicalService(process.platform, home, ASSISTANT_ID, (path: string) => existsSync(path))
+      const out = service
+        ? await releasePosixSupervisor({ platform: process.platform, service, assistantId: String(ASSISTANT_ID), home, exec: alwaysOnReleaseExec, fs: alwaysOnReleaseFs, env: process.env })
+        : { ok: false, message: 'no canonical service file for this agent in this HOME' }
+      // A Linux unit removed but its run.sh not replaced (review round 7 M1) is no success, and no failure either.
+      const partial = 'partial' in out && out.partial === true
+      if (out.ok) {
+        alwaysOnReleaseFailure = null
+        log(`always-on: not kept running (${kept.reason}), supervisor removed: ${out.message}`)
+      } else if (partial) {
+        if (alwaysOnReleaseFailure !== out.message) log(`always-on: not kept running (${kept.reason}), supervisor removed in part: ${out.message} (logged once)`)
+        alwaysOnReleaseFailure = out.message
+      } else if (alwaysOnReleaseFailure !== out.message) {
+        alwaysOnReleaseFailure = out.message
+        log(`always-on: not kept running (${kept.reason}), supervisor NOT removed: ${out.message}; trying again next cycle (logged once)`)
+      }
+      return
+    }
+    // Kept: the supervisor stays, or is installed.
+    const desired = true
     // G11 (lib/always-on-reconcile.ts): is-installed sees only the CANONICAL
     // file, so before installing, ask whether a bespoke job or a live
     // keepalive already keeps this agent alive. Read only on the install row:
@@ -20705,27 +20829,9 @@ async function reconcileAlwaysOn(): Promise<void> {
         { timeout: 120_000 },
       )
       logAgentServiceNotes(installed)
+      // Installed because this agent is kept: seen kept now, so it goes at once when it stops being kept.
+      markInstallSeenKept({ stateDir, readFile: readTextOrNull, writeFile: (path: string, text: string) => writeFileSync(path, text) })
       log('always-on: supervisor installed (takes over when this session ends)')
-    } else if (decision.action === 'remove') {
-      // A supervisor installed moments ago is NOT "switched off": the app records
-      // alwaysOn only after it has seen this agent connect. See lib/always-on-grace.ts.
-      let stamp: string | null = null
-      try {
-        stamp = readFileSync(joinPath(homedir(), '.bgos-agent', String(ASSISTANT_ID), ALWAYS_ON_INSTALLED_AT_FILE), 'utf8')
-      } catch {
-        stamp = null
-      }
-      const graceLeft = alwaysOnGraceRemainingMs(stamp, Date.now())
-      if (graceLeft > 0) {
-        log(`always-on: off in BGOS, but this supervisor was installed ${Math.round((ALWAYS_ON_INSTALL_GRACE_MS - graceLeft) / 1000)}s ago; leaving it for the app to record always-on (grace ${Math.round(graceLeft / 1000)}s left)`)
-        return
-      }
-      log('always-on: disabled in BGOS, removing supervisor')
-      const removed = await execFileAsync(BGOS_AGENT_BIN, ['uninstall', '--assistant', ASSISTANT_ID], {
-        timeout: 60_000,
-      })
-      logAgentServiceNotes(removed)
-      log('always-on: supervisor removed')
     }
   } catch (err) {
     const out = err as { stdout?: unknown; stderr?: unknown }

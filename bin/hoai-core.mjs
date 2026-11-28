@@ -135,6 +135,7 @@ import {
   writePrivateText,
 } from '../lib/agent-identity.mjs'
 import { PROBE_TIMEOUT_MS, classifyFlagProbe } from '../lib/claude-binary.mjs'
+import { KEPT_CHECK_CAPABILITY, START_ONCE_WORDS, hasPairingFile, launchSupervisorGone } from '../lib/agent-kept.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -1165,13 +1166,16 @@ export function folderIdentity(cwd, readFile = defaultReadText) {
  * `relaunchBy` (ISO) is written only while the launcher is between two
  * children on purpose, the keep-alive backoff: it has no child then, and
  * says by when it will have one again (holderActivity).
+ * KEPT_CHECK_CAPABILITY says this launcher stops once its supervisor is
+ * removed (lib/agent-kept.mjs launchSupervisorGone); a live launcher without
+ * it is from an older version, which the watcher names when it removes one.
  * @param {number} pid
  * @param {string} startedAt
  * @param {{ id: string, uptimeMs: number } | null} [boot]
  * @param {{ relaunchBy?: string }} [extra]
  * @returns {string} */
 export function supervisorFileBody(pid, startedAt, boot = null, { relaunchBy } = {}) {
-  return JSON.stringify({ pid, capabilities: ['relaunch'], startedAt, ...(boot ? { boot } : {}), ...(relaunchBy ? { relaunchBy } : {}) })
+  return JSON.stringify({ pid, capabilities: ['relaunch', KEPT_CHECK_CAPABILITY], startedAt, ...(boot ? { boot } : {}), ...(relaunchBy ? { relaunchBy } : {}) })
 }
 
 /**
@@ -2984,6 +2988,27 @@ export async function superviseClaude(args, opts = {}) {
     )
   }
   if (supervised) supervisedStateDir = stateDir
+  // Switched off stays off (lib/agent-kept.mjs): a supervisor removed because this agent is no longer
+  // kept running left what ran alone. What it started must not bring the agent back: a launch it made
+  // after that (a run.sh that was waiting, a task launcher between two relaunches) starts nothing.
+  const supervisorGone = () => launchSupervisorGone({ platform, supervised, keepAlive, stateDir, exists, readFile })
+  const stopNotKept = (why) => {
+    noteStatus('not-kept', { supervisor: why })
+    // An agent with no pairing file is found again only through the job that was removed, so the switch alone
+    // cannot bring it back; its own daemon can, once it runs (lib/agent-kept.mjs hasPairingFile, review round 6 F1).
+    const again = hasPairingFile({ home, assistantId: id, exists })
+      ? 'Turn it back on to have it kept running.'
+      : START_ONCE_WORDS
+    print(
+      `[hoai] agent ${id} is not kept running (Keep agents running is off for this computer, or Always on is off ` +
+        `for this agent), and its supervisor was removed: not starting it. ${again}`,
+    )
+    return 0
+  }
+  {
+    const gone = supervisorGone()
+    if (gone) return stopNotKept(gone)
+  }
   // Nobody at the terminal: the launches noteStatus reports on, and the only ones hoai relaunches
   // for a gate that is not proven answered or a channel that never sent a heartbeat (board row
   // d806c69f). A person at the terminal sees the screen and is never relaunched under.
@@ -3876,6 +3901,11 @@ export async function superviseClaude(args, opts = {}) {
       )
       await sleep(backoff.delayMs)
       if (stopSignal?.aborted) return code
+      // Its task went while claude ran or while this waited: no relaunch (lib/agent-kept.mjs).
+      {
+        const gone = supervisorGone()
+        if (gone) return stopNotKept(gone)
+      }
       // The channel is re-resolved, and the session args are the identity-safe
       // pair: --resume <pin> when its transcript exists, else --session-id <pin>.
       rereadPin()

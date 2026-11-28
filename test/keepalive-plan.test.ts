@@ -85,6 +85,7 @@ import {
   reportEntry,
   decideHeldFailure,
 } from '../lib/keepalive-plan.mjs'
+import { EMPTY_LIST_CONFIRM_MAX_MS, listReadGapMs, nextListReads } from '../lib/keepalive-plan.mjs'
 
 const NOW = Date.parse('2026-10-06T19:00:00.000Z')
 const MIN = 60_000
@@ -620,7 +621,7 @@ test('agentWindows rides the live answer, the cache and the decision; a refusal 
   assert.equal('agentWindows' in decideKeepAliveConsent({ live: null, cache, now: NOW, refused: true }), false)
   assert.equal('agentWindows' in decideKeepAliveConsent({ live: null, cache: null, now: NOW }), false)
   const plain = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: true }
-  assert.equal(buildKeepAliveCache(plain, NOW), `${JSON.stringify({ schemaVersion: 1, enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() }, null, 2)}\n`, 'no field, the same bytes as before')
+  assert.equal(buildKeepAliveCache(plain, NOW), `${JSON.stringify({ schemaVersion: 1, format: 2, enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() }, null, 2)}\n`, 'no field, the same bytes as before (with the format mark)')
 })
 
 test('decideKeepAliveConsent: live answer wins; a failure falls back to a cache younger than 24 h; otherwise OFF', () => {
@@ -645,8 +646,9 @@ test('decideKeepAliveConsent: a refusal of the watcher pairing (401, 403) is OFF
 
 test('buildKeepAliveCache / parseKeepAliveCache: the design 3.4 file shape round trips (with the switch and the windows setting); a cache written before them reads as today; junk is null', () => {
   const body = buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true }, NOW)
-  assert.deepEqual(JSON.parse(body), { schemaVersion: 1, enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() })
-  assert.deepEqual(parseKeepAliveCache(body), { enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true, fetchedAtMs: NOW })
+  // format 2: this writer marks a refusal refused (lib/agent-kept.mjs reads a cache without it as no answer).
+  assert.deepEqual(JSON.parse(body), { schemaVersion: 1, format: 2, enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() })
+  assert.deepEqual(parseKeepAliveCache(body), { enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true, format: 2, fetchedAtMs: NOW })
   const older = JSON.stringify({ schemaVersion: 1, enabled: false, enabledAt: null, assistantIds: [], fetchedAt: new Date(NOW).toISOString() })
   assert.deepEqual(parseKeepAliveCache(older), { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, fetchedAtMs: NOW })
   const neverSet = buildKeepAliveCache({ enabled: false, enabledAt: null, assistantIds: [], switchState: 'never_set', showAgentWindows: false }, NOW)
@@ -1219,4 +1221,21 @@ test('decideWatchedDeaf: junk in the record never throws and never confirms', ()
     const out = decideWatchedDeaf({ prev: prev as any, readable: true, channel: watchDeaf(), explained: null, now: WATCH_NOW })
     assert.deepEqual(out, { record: { deafSince: watchIso(WATCH_NOW), deafSeenAt: watchIso(WATCH_NOW) }, found: null }, JSON.stringify(prev))
   }
+})
+
+// Review round 6, V2 and V3: the memory of good list reads (lib/keepalive-plan.mjs, the two-read rule).
+test('r6 V2: listReadGapMs measures from the LAST good read: an old first read beside a recent last one is no slow gap', () => {
+  const reads = [{ atMs: 0, ids: ['7'] }, { atMs: 60_000, ids: ['7'] }]
+  assert.equal(listReadGapMs(reads, 130_000), null, 'the last read is 70 s old')
+  assert.equal(listReadGapMs(reads, 60_000 + EMPTY_LIST_CONFIRM_MAX_MS + 5_000), EMPTY_LIST_CONFIRM_MAX_MS + 5_000)
+  assert.equal(listReadGapMs([], 130_000), null)
+})
+
+test('r6 V3: nextListReads keeps only the reads of the last 120 s, so a day of reads a minute apart holds two or three, never all', () => {
+  let reads: Array<{ atMs: number; ids: string[] }> = []
+  const live = { enabled: true, assistantIds: ['7'] } as any
+  for (let i = 0; i < 1440; i++) reads = nextListReads(reads, { live, steadyMs: i * 60_000 })
+  assert.ok(reads.length <= 3, `${reads.length} reads kept`)
+  assert.deepEqual(reads.map((r) => r.atMs), [1437, 1438, 1439].map((i) => i * 60_000))
+  assert.deepEqual(nextListReads([{ atMs: 0, ids: ['7'] }], { live, steadyMs: EMPTY_LIST_CONFIRM_MAX_MS + 1 }).map((r) => r.atMs), [EMPTY_LIST_CONFIRM_MAX_MS + 1])
 })

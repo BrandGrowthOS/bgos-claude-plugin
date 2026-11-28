@@ -21,6 +21,7 @@ import assert from 'node:assert/strict'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { restartAgent } from '../lib/agent-restart.mjs'
 import { fakeAgentTasks } from './helpers/fake-agent-tasks.ts'
+import { buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
 
 const MISSING =
   'lib/restart-handoff.mjs is missing: nothing carries out a restart the hoai launcher refused (bin/hoai-core.mjs:2295-2299), ' +
@@ -371,6 +372,42 @@ test('a task registered for a differently spelled folder falls back to the recip
   none.put(TASK_VBS, 'shell.CurrentDirectory = "C:\\hoai-agents\\vera"\r\n')
   assert.equal((await run(none)).outcome, 'no_way_back')
   assert.deepEqual(none.kills, [])
+})
+
+test('switched off stays off: an agent that is not kept running is never handed to its logon task; the hidden recipe launch brings it back once, as it was started', async () => {
+  // The watcher's cached keep-alive answer (lib/watcher-keepalive.mjs keepAliveCachePath): what the task
+  // would mean is "kept running from now on", and the owner has said this agent is not.
+  const cache = (enabled: boolean, ids: number[], switchState = enabled ? 'on' : 'off', extra: Record<string, unknown> = {}) =>
+    buildKeepAliveCache({ enabled, enabledAt: null, assistantIds: ids, switchState, showAgentWindows: false, ...extra }, T0 - 60_000)
+  const CACHE = `${HOME}\\.bgos-agent\\watcher\\keepalive.json`
+  for (const [name, text] of [
+    ['the computer switch off', cache(false, [909])],
+    ['the agent not on the list, confirmed by a second read', cache(true, [7], 'on', { listedRecently: ['7'] })],
+  ] as const) {
+    const w = world({ task: true })
+    w.put(CACHE, text)
+    assert.equal((await run(w)).outcome, 'restarted', `${name}: ${w.logs.join('\n')}`)
+    assert.equal(w.restarts[0].row.supervisor, 'none', `${name}: recipe-hidden, not the task`)
+    // With no recipe either, there is no way back: nothing is touched.
+    const none = world({ task: true, recipe: false })
+    none.put(CACHE, text)
+    assert.equal((await run(none)).outcome, 'no_way_back', name)
+    assert.deepEqual(none.kills, [], name)
+  }
+  // Kept, never set, no watcher at all, or left out of one read only (no answer yet): the task, as before.
+  for (const [name, text] of [['kept', cache(true, [909])], ['never set', cache(false, [], 'never_set')], ['no watcher', null], ['left out of one read', cache(true, [7])]] as const) {
+    const w = world({ task: true })
+    if (text) w.put(CACHE, text)
+    assert.equal((await run(w)).outcome, 'restarted', name)
+    assert.notEqual(w.restarts[0].row.supervisor, 'none', `${name}: the task`)
+  }
+  // Review round 5, B2: an agent with no pairing (no credentials file) can never be on the list, so being left out says nothing.
+  const key = world({ task: true })
+  const listed = key.deps.listAgents
+  key.deps.listAgents = (...args: any[]) => listed(...args).map((r: any) => ({ ...r, discoveredVia: 'supervised-folder' }))
+  key.put(CACHE, cache(true, [7], 'on', { listedRecently: ['7'] }))
+  assert.equal((await run(key)).outcome, 'restarted', key.logs.join('\n'))
+  assert.notEqual(key.restarts[0].row.supervisor, 'none', 'a key-connected agent keeps the way back through its task')
 })
 
 test('claude replaced between the listing and the kill (another creation time) or the daemon gone: nothing is killed', async () => {

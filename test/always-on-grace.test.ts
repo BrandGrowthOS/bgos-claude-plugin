@@ -17,6 +17,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from '../lib/always-on-grace.ts'
+import { INSTALL_GRACE_MS, INSTALLED_AT_FILE_NAME } from '../lib/agent-kept.mjs'
 
 const NOW = 1_790_000_000_000
 const stamp = (msAgo: number) => String(Math.floor((NOW - msAgo) / 1000))
@@ -36,15 +37,25 @@ test('the guard fails CLOSED: no stamp, junk, or a stamp from the future is no g
   assert.ok(alwaysOnGraceRemainingMs(`${stamp(1000)}\n`, NOW) > 0)
 })
 
-test('server.ts consults the grace in the UNINSTALL branch, before removing anything, and the installer stamps the same file name', () => {
+test('server.ts decides through lib/agent-kept.mjs before it installs or removes anything: the grace is that decision\'s, only for an install never seen kept, and the installer stamps the same file name', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
   const server = readFileSync(join(root, 'server.ts'), 'utf8')
-  const branch = server.slice(server.indexOf("} else if (decision.action === 'remove') {"), server.indexOf("log('always-on: supervisor removed')"))
-  assert.ok(branch.length > 0, 'the uninstall branch must exist')
-  assert.ok(branch.indexOf('alwaysOnGraceRemainingMs(') > 0, 'the grace must be read in this branch')
-  assert.ok(branch.indexOf('alwaysOnGraceRemainingMs(') < branch.indexOf("['uninstall'"), 'and BEFORE the uninstall is spawned')
-  assert.match(branch, /if \(graceLeft > 0\) \{[\s\S]*?return\s*\n\s*\}/, 'a supervisor still in its grace is left alone')
-  assert.match(branch, /ALWAYS_ON_INSTALLED_AT_FILE/)
+  const start = server.indexOf('async function reconcileAlwaysOn(')
+  const body = server.slice(start, server.indexOf('\n// ── Startup', start))
+  const decideAt = body.indexOf('decideKeptSupervisor(')
+  assert.ok(start > 0 && decideAt > 0, 'the kept decision drives the reconcile')
+  assert.ok(decideAt < body.indexOf("['install'"), 'before any install is spawned')
+  assert.ok(decideAt < body.indexOf('releasePosixSupervisor('), 'and before any removal')
+  // What it reads: this install's stamp, whether this install was seen kept, and the computer's switch.
+  assert.match(body, /INSTALLED_AT_FILE_NAME/)
+  assert.match(body, /KEPT_SEEN_FILE_NAME/)
+  assert.match(body, /keepAliveStandingFromCache\(/)
+  const graceAt = body.indexOf("if (kept.action === 'grace') {")
+  const grace = body.slice(graceAt, body.indexOf("if (kept.action === 'remove') {", graceAt))
+  assert.ok(graceAt > 0 && grace.length > 0, 'the grace branch, before the removal')
+  assert.match(grace, /\n\s*return\s*\n\s*\}\s*$/, 'an install inside its grace is left alone: the branch returns')
+  assert.equal(ALWAYS_ON_INSTALLED_AT_FILE, INSTALLED_AT_FILE_NAME)
+  assert.equal(ALWAYS_ON_INSTALL_GRACE_MS, INSTALL_GRACE_MS)
   const agent = readFileSync(join(root, 'bin', 'bgos-agent'), 'utf8')
   assert.ok(agent.includes(`date +%s > "$statedir/${ALWAYS_ON_INSTALLED_AT_FILE}"`), 'bin/bgos-agent must stamp the file the daemon reads')
 })

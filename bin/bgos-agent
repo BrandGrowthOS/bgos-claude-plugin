@@ -422,6 +422,13 @@ cmd_install() {
     # here, before anything is written, so a refused install leaves nothing.
     command -v node >/dev/null 2>&1 \
       || die "supervisor:node-not-found the always-on supervisor runs hoai on Node.js and no node is on PATH. Install a current patched Node.js 22 or 24 LTS release (minimum 22.12.0), then run this again."
+    # Switched off stays off (lib/agent-kept.mjs): with this computer's Keep agents running off
+    # (its watcher's fresh answer) no supervisor is installed, which the watcher would remove at
+    # once. Asked before anything is written. No answer (no watcher, a stale or refused
+    # read, no runtime) is not off: the install goes on as before.
+    if [ "$(agent_service_js kept-switch --assistant "$ASSISTANT_ID" --os "$OS" | head -n 1)" = "switch_off" ]; then
+      die "refused: Keep agents running is off for this computer, so agent $ASSISTANT_ID is not kept running and no supervisor was installed; turn it on in HOAI (Settings, Computers), then try again in a minute."
+    fi
     # WHICH claude gets baked. `command -v claude` under the watcher's service PATH
     # returned a stale /usr/local/bin/claude 2.1.22 that does not know the launch flag
     # and exited rc=1 on every launch (board row 84296679, kc-server, 2026-10-12: five
@@ -574,6 +581,12 @@ cmd_install() {
     path="$path:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   fi
   path="$(dedupe_path "$path")"
+  # Asked again here, under the install lock, right before the supervisor is written: the switch
+  # may have gone off while this install ran, and a watcher removal waits only so long for the
+  # lock (lib/agent-kept.mjs, review round 7 M3).
+  if [ "${ALWAYS_ON:-}" = "1" ] && [ "$(agent_service_js kept-switch --assistant "$ASSISTANT_ID" --os "$OS" | head -n 1)" = "switch_off" ]; then
+    die "refused: Keep agents running went off for this computer while agent $ASSISTANT_ID was being installed, so no supervisor was written; turn it on in HOAI (Settings, Computers), then try again in a minute."
+  fi
   # Stamped for EVERY always-on install (fact 3). The app records alwaysOn in BGOS only
   # after it has seen this agent connect, and until then the agent's own daemon reads
   # "off" with a supervisor installed, which used to mean "remove it", within seconds,
@@ -639,6 +652,9 @@ cmd_install() {
   esac
   [ -n "$RUN_SH_PREV" ] && rm -f "$RUN_SH_PREV"
   RUN_SH_PREV=""
+  # Kept again: a removal's not-kept marker (lib/agent-kept.mjs, left when its run.sh could not be
+  # replaced) would read as "removed" to the watcher's sweep. Cleared only once the service is in place.
+  rm -f "$statedir/not-kept"
   # Round 2 L6: a tmux server from before 0.69.5 orphaned on the OLD socket (its job gone,
   # killed past run.sh's trap) with a pane in this agent's folder would hold the
   # new job's singleton wait for good; the new run.sh clears only its own

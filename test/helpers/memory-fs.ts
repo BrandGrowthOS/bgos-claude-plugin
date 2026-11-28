@@ -19,6 +19,9 @@ export type MemoryFs = {
   /** The last maxBytes of a file from its first whole line, like the production adapter. */
   readTail: (path: string, maxBytes: number) => string | null
   mkdir: (path: string) => void
+  /** A lock directory, as the production adapter: throws EEXIST when the path is there. */
+  mkdirExclusive: (path: string) => void
+  rmdir: (path: string) => void
   listDir: (path: string) => string[]
   stat: (path: string) => { mtimeMs: number; isDirectory: boolean } | null
   rm: (path: string) => void
@@ -79,6 +82,13 @@ export function memoryFs(initial: Record<string, string> = {}, dirs: string[] = 
     },
     mkdir: (p) => {
       dirSet.add(norm(p))
+    },
+    mkdirExclusive: (p) => {
+      if (fs.exists(p)) throw Object.assign(new Error(`EEXIST: file already exists, mkdir '${p}'`), { code: 'EEXIST' })
+      dirSet.add(norm(p))
+    },
+    rmdir: (p) => {
+      dirSet.delete(norm(p))
     },
     listDir: (p) => {
       const dir = norm(p)

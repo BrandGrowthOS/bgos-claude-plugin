@@ -313,11 +313,11 @@ test('superviseAssistantId: folder pin, then env pin, then sole paired agent, el
   )
 })
 
-test('supervisorFileBody: pid + relaunch capability + startedAt', () => {
+test('supervisorFileBody: pid + relaunch capability (and kept-check: it stops once its supervisor is removed) + startedAt', () => {
   const parsed = JSON.parse(supervisorFileBody(4242, '2026-08-22T00:00:00.000Z'))
   assert.deepEqual(parsed, {
     pid: 4242,
-    capabilities: ['relaunch'],
+    capabilities: ['relaunch', 'kept-check'],
     startedAt: '2026-08-22T00:00:00.000Z',
   })
 })
@@ -423,7 +423,7 @@ test('superviseClaude: a normal exit relaunches nothing and cleans up supervisor
   await waitUntil(() => h.spawns.length === 1, 'first spawn')
   assert.equal(h.files.has(SUPERVISOR_PATH), true)
   const supervisor = JSON.parse(h.files.get(SUPERVISOR_PATH)!)
-  assert.deepEqual(supervisor.capabilities, ['relaunch'])
+  assert.deepEqual(supervisor.capabilities, ['relaunch', 'kept-check'])
   assert.equal(typeof supervisor.pid, 'number')
   h.spawns[0]!.exit(7)
   assert.equal(await done, 7)

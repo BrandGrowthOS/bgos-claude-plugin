@@ -341,9 +341,15 @@ test('server.ts reconcile asks the shared detection, defers before installing, a
   const waitBranch = body.slice(waitAt, body.indexOf('\n    }\n', waitAt) + 6)
   assert.match(waitBranch, /\n\s*return\s*\n\s*\}\s*$/, 'and it returns')
   assert.match(waitBranch, /if \(!alwaysOnWaitLogged\) \{\s*alwaysOnWaitLogged = true/)
-  // The removal still goes only through the canonical uninstall.
-  const removeBranch = body.slice(body.indexOf("} else if (decision.action === 'remove') {"))
-  assert.ok(removeBranch.includes("['uninstall', '--assistant', ASSISTANT_ID]"))
+  // Switched off stays off (lib/agent-kept.mjs): the removal takes away what would START the agent
+  // again and ends nothing that runs. Never `bgos-agent uninstall`, which boots the job out (or stops
+  // the unit), and run.sh's TERM trap then ends the agent's tmux server.
+  const removeAt = body.indexOf("if (kept.action === 'remove') {")
+  assert.ok(removeAt > 0 && removeAt < installAt, 'a supervisor that is not kept goes before any install is considered')
+  const removeBranch = body.slice(removeAt, body.indexOf('\n    }\n', removeAt) + 6)
+  assert.ok(removeBranch.includes('releasePosixSupervisor('), removeBranch)
+  assert.match(removeBranch, /\n\s*return\s*\n\s*\}\s*$/, 'and it returns: nothing is installed after it')
+  assert.equal(body.includes("'uninstall'"), false, 'the reconcile never runs bgos-agent uninstall')
 })
 
 // Mission 104 fix round (C1). On a marketplace install bin/bgos-launch.mjs
