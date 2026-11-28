@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.90.33
+## 0.90.34 (2026-11-28)
 
 The startup instructions now remind the agent to apply the existing skill rule before sending its final reply to the owner.
 
