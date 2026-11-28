@@ -25,13 +25,13 @@ import { test } from 'node:test'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { Server } from 'socket.io'
-import { CORE_RULES_TEXT, OWNER_CHAT_ACK_RULE } from '../lib/core-rules.ts'
+import { CORE_RULES_TEXT, OWNER_CHAT_ACK_RULE, SAVE_SKILLS_PARAGRAPH } from '../lib/core-rules.ts'
 
 const SERVED = gunzipSync(readFileSync(new URL('./fixtures/served-canon-claude-2026-11-25.txt.gz', import.meta.url))).toString('utf8')
 const SHOWN = 4096
 const CAP = 20_000
 
-test('a fresh session sees rule 1 in its instructions, and every guide answer is small', { timeout: 90_000 }, async () => {
+test('initialize shows the reaction and skill rules and when to apply them, and every guide answer is small', { timeout: 90_000 }, async () => {
   const assistantId = randomInt(1, 1000000)
   const chatId = randomInt(1, 1000000)
   const owner = 'user_' + randomUUID()
@@ -95,6 +95,9 @@ test('a fresh session sees rule 1 in its instructions, and every guide answer is
     assert.ok(shown.includes(CORE_RULES_TEXT), 'the core rules are not inside the first 4,096 characters')
     assert.ok(shown.includes(OWNER_CHAT_ACK_RULE))
     assert.ok(shown.includes('Every response to a BGOS message MUST go through the `reply` tool.'))
+    assert.ok(shown.includes(SAVE_SKILLS_PARAGRAPH), 'initialize must include the whole skill rule before any tool call')
+    assert.ok(shown.includes('Before your final `reply` to your owner, apply the skill rule above to the work you just finished.'),
+      'initialize must remind the agent to apply the skill rule before its final reply')
 
     // 2. The tool: every answer on the wire is under the cap.
     const tools = await client.listTools()
