@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.90.34 (2026-11-28)
+
+The startup instructions now remind the agent to apply the existing skill rule before sending its final reply to the owner.
+
 ## 0.90.32 (2026-11-27)
 
 **The agent browser says a busy browser ran nothing and can be retried.** When the managed browser is still finishing an earlier command, the bundled shim waits and sends the same call again for a short, bounded time (`HOAI_BUSY_RETRY_MS`, default 15 s, `0` turns it off), on a call and while connecting. If it is still busy, the agent is told `browser_runtime_busy`: nothing ran and it can try again, instead of being told the action may have run. One shim now sends one command at a time to one browser profile.

@@ -3609,7 +3609,7 @@ const mcp = new Server(
       'this by sending a [reply-overdue] notification 4 minutes after any inbound',
       'message that has not been answered via the `reply` (or `meeting_reply`) tool.',
       '',
-      'Once you have a response, use the `reply` tool to send it back.',
+      'Before your final `reply` to your owner, apply the skill rule above to the work you just finished.',
       'The reply will appear as a chat bubble in the BGOS desktop/mobile app.',
       'You can use markdown in your replies: **bold**, *italic*, `inline code`,',
       'fenced code blocks, [links](url), #/##/### headers, lists, > blockquotes.',
