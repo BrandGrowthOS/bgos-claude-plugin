@@ -230,20 +230,23 @@ export function createBoundedFetchImpl(
 }
 
 /**
- * The one upload deadline, shared by BOTH presigned PUT paths in this daemon:
- * `uploadViaS3` in server.ts (outbound message files, up to 100 MB for video)
- * and `defaultPutBytes` in lib/boards-tools.ts (board attachments, up to 25 MB).
+ * The one upload deadline, shared by every presigned PUT in this daemon:
+ * `putToStorage` in lib/direct-upload.ts (each part of a message file or a
+ * board attachment, up to 200 MB in 8 MiB parts, and the one PUT of a file up
+ * to 16 MiB) and `defaultPutBytes` in lib/boards-tools.ts (a board attachment
+ * the server answers one signed PUT for, up to 25 MB).
  *
- * It lives here rather than once per file because the two paths drifted apart
- * exactly once already: the message upload was bounded and documented at 600s
- * while the boards attachment PUT stayed an unbounded `await fetch`, and the
- * PR body then claimed a bound that covered only one of them. One exported
+ * It lives here rather than once per file because the upload paths drifted
+ * apart exactly once already: the message upload was bounded and documented at
+ * 600s while the boards attachment PUT stayed an unbounded `await fetch`, and
+ * the PR body then claimed a bound that covered only one of them. One exported
  * constant means the documented number and the enforced number cannot differ.
  *
- * 10 minutes is deliberately generous: a large upload legitimately takes
- * minutes (600s still completes a 100 MB PUT on an uplink as slow as about
- * 1.4 Mbps, and a 25 MB attachment on one as slow as about 0.35 Mbps). What it
- * refuses to do is wait forever on a socket that has stopped moving.
+ * 10 minutes is deliberately generous, and it bounds ONE request: a 25 MB
+ * single PUT completes in it on an uplink as slow as about 0.35 Mbps, and an
+ * 8 MiB part on one as slow as about 0.12 Mbps. A 200 MB file is 25 such parts,
+ * each with its own deadline. What it refuses to do is wait forever on a
+ * socket that has stopped moving.
  */
 export const UPLOAD_DEADLINE_MS = 600_000
 
