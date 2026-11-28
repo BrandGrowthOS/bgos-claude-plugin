@@ -321,5 +321,5 @@ test('server.ts derives the identity once and hands both agent ids to every acqu
     assert.match(call, /\n\s*pairedAgentId: PAIRED_AGENT_ID,\n/)
   }
   // A session naming another agent says why it stays off the pairing.
-  assert.match(server, /lockAtBoot\.agentMismatch\) \{\s*log\(`pid \$\{process\.pid\}: \$\{formatAgentMismatchYield\(/)
+  assert.match(server, /lockAtBoot\.agentMismatch\s*\?\s*`pid \$\{process\.pid\}: \$\{formatAgentMismatchYield\(/)
 })

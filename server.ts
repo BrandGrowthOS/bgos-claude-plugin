@@ -22545,15 +22545,14 @@ async function main(): Promise<void> {
               `${PAIRING_LOCK_PATH}; this daemon owns the channel for this pairing`,
     )
     await armDelivery()
-  } else if (lockAtBoot.agentMismatch) {
-    log(`pid ${process.pid}: ${formatAgentMismatchYield({ agentId: SESSION_AGENT_ID, pairedAgentId: PAIRED_AGENT_ID })}`)
-    void reportStandDown('passive_at_boot', 'boot')
-    // Still watched, on the same cadence, so the rule stays one place: the
-    // recheck asks decideLockAction again and it stays passive for this session.
-    resumeLockRecheck()
   } else {
+    // A session naming a different agent than this file was paired for says
+    // so instead of the banner. It is still watched by the same recheck, so the
+    // rule stays in one place: decideLockAction keeps it passive (homeclaim).
     log(
-      `pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid, lockYieldReason(lockAtBoot.holderChannelLoaded, lockAtBoot.holderRoute))}`,
+      lockAtBoot.agentMismatch
+        ? `pid ${process.pid}: ${formatAgentMismatchYield({ agentId: SESSION_AGENT_ID, pairedAgentId: PAIRED_AGENT_ID })}`
+        : `pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid, lockYieldReason(lockAtBoot.holderChannelLoaded, lockAtBoot.holderRoute))}`,
     )
     // Not awaited: a report never delays a boot.
     void reportStandDown('passive_at_boot', 'boot')

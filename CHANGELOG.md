@@ -10,7 +10,7 @@ Notable changes to the HOAI Claude Code plugin.
 - **A session naming a different agent never takes or overwrites the pairing lock**, whether the lock is free, stale or held by a dead process. It says so in one line and stays passive.
 - **Unchanged:** a session naming no agent still starts and takes a free lock (one agent with no pin keeps working), writes no home, and yields to the agent. Two sessions naming the agent still never take the lock from each other. The resolver's own route, the boot log and the stand-down report are unchanged. `hoai doctor` no longer predicts a refusal the daemon no longer makes.
 
-Guards: `test/homeclaim.test.ts` (the race over real files; red on 0.90.32), `test/pairing-lock-route.test.ts` (server.ts wiring) and `test/bgos-doctor.test.ts`. No new setting.
+Guards: `test/homeclaim.test.ts` (the race over real files) and `test/homeclaim.daemon.test.ts` (two real daemons, stray first), both red on 0.90.32; `test/pairing-lock-route.test.ts` (server.ts wiring) and `test/bgos-doctor.test.ts`. No new setting.
 
 ## 0.90.32 (2026-11-27)
 
