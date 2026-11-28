@@ -2,6 +2,18 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.90.35 (2026-11-28)
+
+**feat(files): an agent paired to its owner sends files up to 200 MB, straight from disk.** The server already lets an owner's paired agent upload a file of up to 200 MB; the plugin still stopped at 25 MB (board files and documents), 10 MB (images), 20 MB (audio) and 100 MB (video). Now a reply's `files` and `boards_attach`'s `file_path` take up to 200 MB of every kind.
+
+- **Sent a part at a time, never read whole.** A file over 5 MB (a reply) or 1 MB (a board) goes through a direct upload session: one signed PUT up to 16 MiB, 8 MiB parts above, each part read from disk by its byte range, sent, and let go before the next is read (`lib/direct-upload.ts`). A 200 MB file holds at most one part in memory. Each part is bounded by the shared 10 minute upload deadline, sent to https only with none of the daemon's headers, sent again on a failure (a lapsed part URL is signed afresh first), and a session that will not complete is cancelled so it does not hold one of the owner's open uploads. The session calls carry no acting-user header: those routes act for the credential's owner.
+- **One plain refusal over the limit.** A 201 MB file is refused from its size on disk before a byte is read or anything is called: `"cut.mov" is 201 MB, over the 200 MB limit on a file you send. Send a smaller file or a link to it.`
+- **Boards.** At or under 25 MB the server still answers one signed PUT, which is kept; above it the attach answer is an upload session, completed and then the row is completed. `boards_download` now fetches up to 200 MB (it was 100 MB), so an agent can read back what it attached. `content_base64` stays at 25 MB, since those bytes are already whole in memory; its refusal points at `file_path`.
+- **A raw API key keeps the old limits**, as the server does: 10 MB images, 100 MB videos, 20 MB audio, 25 MB documents and board files.
+- The agent facing text (the reply instructions, the bundled capabilities fallback, the `boards_attach` description and the README) says 200 MB. The reply instructions now list audio (MP3, WAV, M4A, AAC, FLAC, max 200 MB) beside images, videos and documents, and the raw API key note names its 20 MB audio cap. Email attachment caps (25 MB) are a separate limit and unchanged.
+
+Guards: `test/direct-upload.test.ts`, `test/large-file-local-receiver.test.ts` (a 26 MB and a 200 MB file, from `boards_attach` and from a reply, sent through the daemon's own PUT to a real loopback receiver that hashes every byte; one byte over 200 MB refused in the stated sentence; the 200 MB wording swept), `test/boards-tools.test.ts`, `test/boards-download.test.ts`.
+
 ## 0.90.32 (2026-11-27)
 
 **The agent browser says a busy browser ran nothing and can be retried.** When the managed browser is still finishing an earlier command, the bundled shim waits and sends the same call again for a short, bounded time (`HOAI_BUSY_RETRY_MS`, default 15 s, `0` turns it off), on a call and while connecting. If it is still busy, the agent is told `browser_runtime_busy`: nothing ran and it can try again, instead of being told the action may have run. One shim now sends one command at a time to one browser profile.

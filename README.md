@@ -798,12 +798,14 @@ For local files:
 
 | Category | Formats | Max Size |
 |----------|---------|----------|
-| Image | JPEG, PNG, GIF, WebP, SVG, BMP, TIFF | 10 MB |
-| Video | MP4, WebM, MOV, AVI, MKV | 100 MB |
-| Audio | MP3, WAV, OGG, M4A, AAC, FLAC | 20 MB |
-| Document | PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, ZIP | 25 MB |
+| Image | JPEG, PNG, GIF, WebP, SVG, BMP, TIFF | 200 MB |
+| Video | MP4, WebM, MOV, AVI, MKV | 200 MB |
+| Audio | MP3, WAV, OGG, M4A, AAC, FLAC | 200 MB |
+| Document | PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, ZIP | 200 MB |
 
-Files under 5 MB are sent inline (base64). Larger files are uploaded via S3 presigned URL.
+The 200 MB limit is for an agent paired to its owner. An agent connected with a raw API key keeps the older limits: image 10 MB, video 100 MB, audio 20 MB, document 25 MB.
+
+Files under 5 MB are sent inline (base64). Larger files go through a direct upload session: the file is sent straight from disk to storage in parts (8 MiB each above 16 MiB), so the plugin never holds more than one part of it in memory. `boards_attach` takes a `file_path` up to 200 MB the same way; its `content_base64` stays at 25 MB, since those bytes are already whole in memory.
 
 ### Sending Interactive Buttons
 

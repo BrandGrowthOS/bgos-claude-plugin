@@ -30,6 +30,18 @@ import { basename, dirname, join } from 'node:path'
 
 import { guessOutboundMime } from './message-text.js'
 import { boundedFetch, UPLOAD_DEADLINE_MS } from './bounded-fetch.js'
+import {
+  PAIRED_AGENT_UPLOAD_MAX_BYTES,
+  bytesSource,
+  fileSource,
+  readUploadSession,
+  sendAndComplete,
+  cancelSession,
+  tooLargeMessage,
+  withoutLinks as uploadErrorText,
+  type DirectUploadDeps,
+  type UploadSource,
+} from './direct-upload.js'
 import { saveName } from './browser-downloads.mjs'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -42,6 +54,19 @@ export interface BoardsToolDeps {
   bgosDelete?: (path: string) => Promise<unknown>
   /** Presigned upload for attachments over the inline cap. Defaults to fetch. */
   putBytes?: (url: string, bytes: Uint8Array, mime: string) => Promise<void>
+  /**
+   * The direct upload session calls for a file over 25 MB (POST
+   * uploads/sessions/:id/complete, /parts, DELETE): the agent's own
+   * credential with NO acting-user header, since those routes act for the
+   * credential's owner. Each part goes to its signed URL through `put`.
+   * Defaults to bgosPost and bgosDelete, which tests use.
+   */
+  uploads?: DirectUploadDeps
+  /**
+   * The largest file boards_attach sends: 200 MB for an owner's pairing (the
+   * default), 25 MB for an API key, which the server keeps at the old cap.
+   */
+  maxAttachBytes?: number
   /**
    * boards_download: the folder a fetched file is saved under, absolute, and
    * already the folder of the person this turn acts for (boardFilesFolder).
@@ -198,14 +223,25 @@ const MAX_LIMIT = 200
  */
 const MAX_SEARCH_LIMIT = 100
 const INLINE_ATTACH_BYTES = 1024 * 1024
-const MAX_ATTACH_BYTES = 25 * 1024 * 1024
 /**
- * The largest file boards_download fetches. Board files are capped at 25 MB
- * server side today; this is the largest file class HOAI stores at all (a
- * video), so a raised board cap does not silently break the tool, while a
- * runaway link still cannot fill the disk.
+ * The largest content_base64 boards_attach takes. The bytes are already whole
+ * in memory (they arrived as a tool argument), so they cannot be streamed: a
+ * larger file goes as file_path, which is sent from disk a part at a time.
  */
-const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
+const MAX_INLINE_ARG_BYTES = 25 * 1024 * 1024
+/**
+ * The largest file the server answers one signed PUT for (its board default).
+ * Above it the attach answer is an upload session, sent in parts; a single
+ * PUT is read whole, so it is never read for more than this.
+ */
+const SINGLE_PUT_MAX_BYTES = 25 * 1024 * 1024
+/**
+ * The largest file boards_download fetches. An owner's paired agent attaches
+ * files up to 200 MB, so a board file can be that large: an agent must be
+ * able to read back what it attached, while a runaway link still cannot fill
+ * the disk.
+ */
+const MAX_DOWNLOAD_BYTES = PAIRED_AGENT_UPLOAD_MAX_BYTES
 /** An attachment id. Files have no short key, so only the full uuid is accepted. */
 const ATTACHMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /**
@@ -813,7 +849,8 @@ export const BOARDS_TOOL_DECLS = [
       'that row can fetch it later with boards_download. Attach the file ' +
       'instead of pasting its ' +
       'contents into a cell: cells are for the one-line truth, files are for ' +
-      'the evidence. Give either file_path or content_base64 with a name.',
+      'the evidence. Give either file_path or content_base64 with a name. ' +
+      'A file can be up to 200 MB; a big one is sent from disk in parts.',
     inputSchema: {
       type: 'object' as const,
       additionalProperties: false,
@@ -829,8 +866,8 @@ export const BOARDS_TOOL_DECLS = [
         file_path: {
           type: 'string',
           description:
-            'Absolute path to a file on this machine. It is read and ' +
-            'uploaded for you.',
+            'Absolute path to a file on this machine, up to 200 MB. It is ' +
+            'uploaded for you straight from disk.',
         },
         name: {
           type: 'string',
@@ -842,7 +879,8 @@ export const BOARDS_TOOL_DECLS = [
           type: 'string',
           description:
             'The file bytes, base64 encoded, when they are not already on ' +
-            'disk. Do not send this together with file_path.',
+            'disk: up to 25 MB, so save a bigger file and send file_path. ' +
+            'Do not send this together with file_path.',
         },
         mime: {
           type: 'string',
@@ -2203,22 +2241,23 @@ function errorResult(text: string): BoardsToolResult {
 
 // ── Attachment bytes ─────────────────────────────────────────────────────────
 
-function tooBig(tool: string, bytes: number): Fail {
-  return fail(
-    `${tool} file is ${Math.round(bytes / 1024 / 1024)} MB, over the ` +
-      `${MAX_ATTACH_BYTES / 1024 / 1024} MB limit. Attach a smaller file or ` +
-      'a link to it.',
-  )
+/** What boards_attach sends: its name, type and size, and where its bytes are read from. */
+interface AttachmentFile {
+  ok: true
+  name: string
+  mime: string
+  size: number
+  /** Read by range: a file on disk is never read whole unless it rides inline. */
+  source: UploadSource
+  /** Only for a file small enough to ride inline (INLINE_ATTACH_BYTES). */
+  base64: string | null
 }
 
-async function resolveAttachmentBytes(
+async function resolveAttachment(
   tool: string,
   args: Record<string, unknown>,
-):
-  | Promise<
-      | { ok: true; bytes: Uint8Array; base64: string; name: string; mime: string }
-      | Fail
-    > {
+  maxBytes: number,
+): Promise<AttachmentFile | Fail> {
   const filePath = readString(tool, args, 'file_path', false)
   if (!filePath.ok) return filePath
   const contentB64 = readString(tool, args, 'content_base64', false)
@@ -2241,62 +2280,77 @@ async function resolveAttachmentBytes(
     )
   }
 
-  let bytes: Uint8Array
-  let base64: string
   let name: string
+  let size: number
+  let source: UploadSource
+  let base64: string | null = null
 
   if (filePath.value) {
-    // stat BEFORE read: reading first would pull a multi-gigabyte path into
-    // the daemon's memory just to find out it is over the cap.
-    let onDisk: number
+    name = explicitName.value || basename(filePath.value)
+    // stat BEFORE any read: the size on disk decides, so a file over the cap
+    // is refused without a byte of it read, and one under it is then sent
+    // from disk a part at a time, never read whole.
     try {
       const info = await stat(filePath.value)
       if (!info.isFile()) {
         return fail(`${tool} "${filePath.value}" is not a file.`)
       }
-      onDisk = info.size
+      size = info.size
     } catch (err) {
       return fail(
         `${tool} could not read "${filePath.value}": ` +
           `${err instanceof Error ? err.message : String(err)}`,
       )
     }
-    if (onDisk > MAX_ATTACH_BYTES) return tooBig(tool, onDisk)
-    try {
-      const buf = await readFile(filePath.value)
-      bytes = new Uint8Array(buf)
-      base64 = Buffer.from(buf).toString('base64')
-    } catch (err) {
-      return fail(
-        `${tool} could not read "${filePath.value}": ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-      )
+    if (size > maxBytes) return fail(tooLargeMessage(name, size, maxBytes))
+    source = fileSource(filePath.value, size)
+    if (size <= INLINE_ATTACH_BYTES) {
+      try {
+        const buf = await readFile(filePath.value)
+        size = buf.length
+        source = bytesSource(new Uint8Array(buf))
+        base64 = Buffer.from(buf).toString('base64')
+      } catch (err) {
+        return fail(
+          `${tool} could not read "${filePath.value}": ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
     }
-    name = explicitName.value || basename(filePath.value)
   } else {
     if (!explicitName.value) {
       return fail(`${tool} needs "name" when you send "content_base64".`)
     }
-    base64 = contentB64.value as string
-    // 4 base64 chars carry 3 bytes: size the decode before doing it.
-    const estimated = Math.floor((base64.length * 3) / 4)
-    if (estimated > MAX_ATTACH_BYTES) return tooBig(tool, estimated)
-    const buf = Buffer.from(base64, 'base64')
+    name = explicitName.value
+    const encoded = contentB64.value as string
+    // 4 base64 chars carry 3 bytes: size the decode before doing it. These
+    // bytes are already whole in memory, so they keep the 25 MB cap; a bigger
+    // file goes from disk.
+    const estimated = Math.floor((encoded.length * 3) / 4)
+    const inlineCap = Math.min(MAX_INLINE_ARG_BYTES, maxBytes)
+    if (estimated > inlineCap) {
+      return fail(
+        `${tool} "content_base64" is ${Math.ceil(estimated / 1024 / 1024)} MB, over the ` +
+          `${inlineCap / 1024 / 1024} MB it can carry. Save the file and send its ` +
+          `"file_path" instead: a file on disk can be up to ${maxBytes / 1024 / 1024} MB.`,
+      )
+    }
+    const buf = Buffer.from(encoded, 'base64')
     if (!buf.length) {
       return fail(`${tool} "content_base64" did not decode to any bytes.`)
     }
-    bytes = new Uint8Array(buf)
-    name = explicitName.value
+    if (buf.length > inlineCap) return fail(tooLargeMessage(name, buf.length, inlineCap))
+    size = buf.length
+    source = bytesSource(new Uint8Array(buf))
+    base64 = size <= INLINE_ATTACH_BYTES ? encoded : null
   }
-
-  if (bytes.length > MAX_ATTACH_BYTES) return tooBig(tool, bytes.length)
 
   const mime =
     explicitMime.value ||
     guessOutboundMime(filePath.value ?? '', name, null) ||
     'application/octet-stream'
 
-  return { ok: true, bytes, base64, name, mime }
+  return { ok: true, name, mime, size, source, base64 }
 }
 
 /**
@@ -2730,7 +2784,7 @@ async function attach(
     )
   }
 
-  const file = await resolveAttachmentBytes(name, args)
+  const file = await resolveAttachment(name, args, deps.maxAttachBytes ?? PAIRED_AGENT_UPLOAD_MAX_BYTES)
   if (!file.ok) return file
 
   const attachPath = boardPath(
@@ -2741,13 +2795,13 @@ async function attach(
   const meta: Record<string, unknown> = {
     name: file.name,
     mime: file.mime,
-    size: file.bytes.length,
+    size: file.size,
   }
   if (fieldKeyRaw.value) meta.field_key = fieldKeyRaw.value
 
   // Small files ride inline. Bigger ones take the presigned route so the
   // bytes never pass through the API process.
-  if (file.bytes.length <= INLINE_ATTACH_BYTES) {
+  if (file.base64 !== null) {
     meta.content_base64 = file.base64
     return { ok: true, data: await deps.bgosPost(attachPath, meta) }
   }
@@ -2755,9 +2809,37 @@ async function attach(
   const created = (await deps.bgosPost(attachPath, meta)) as {
     attachmentId?: string
     uploadUrl?: string
+    upload?: unknown
   } | null
-  const uploadUrl = created?.uploadUrl
   const attachmentId = created?.attachmentId
+  const completePath = (id: string) =>
+    boardPath(deps, boardSeg, `/attachments/${encodeURIComponent(id)}/complete`)
+
+  // Over 25 MB the server answers a direct upload session: the parts go
+  // straight to storage from disk, the session is completed, then the row.
+  if (attachmentId && created?.upload !== undefined && created.upload !== null) {
+    const uploads: DirectUploadDeps = deps.uploads ?? {
+      post: deps.bgosPost,
+      ...(deps.bgosDelete ? { del: deps.bgosDelete } : {}),
+    }
+    const session = readUploadSession(created.upload, file.size)
+    if (typeof session === 'string') {
+      const id = (created.upload as { sessionId?: unknown }).sessionId
+      if (typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id)) await cancelSession(id, uploads)
+      return fail(`${name} refused to upload "${file.name}": ${session}. Nothing was sent.`)
+    }
+    try {
+      await sendAndComplete(session, file.source, uploads)
+    } catch (err) {
+      return fail(
+        `${name} could not upload "${file.name}": ${uploadErrorText(err)}. ` +
+          'The upload was cancelled; try again.',
+      )
+    }
+    return { ok: true, data: await deps.bgosPost(completePath(attachmentId), {}) }
+  }
+
+  const uploadUrl = created?.uploadUrl
   if (!uploadUrl || !attachmentId) {
     return fail(
       `${name} did not get an upload url back for "${file.name}". ` +
@@ -2780,14 +2862,17 @@ async function attach(
         'Nothing was sent.',
     )
   }
+  // One signed PUT is read whole, which the server answers only at or under
+  // its 25 MB default; never read a larger file in for it.
+  if (file.size > SINGLE_PUT_MAX_BYTES) {
+    return fail(
+      `${name} did not get an upload session for "${file.name}" ` +
+        `(${Math.ceil(file.size / 1024 / 1024)} MB). Nothing was sent.`,
+    )
+  }
   const put = deps.putBytes ?? defaultPutBytes
-  await put(uploadUrl, file.bytes, file.mime)
-  const completePath = boardPath(
-    deps,
-    boardSeg,
-    `/attachments/${encodeURIComponent(attachmentId)}/complete`,
-  )
-  return { ok: true, data: await deps.bgosPost(completePath, {}) }
+  await put(uploadUrl, await file.source.read(0, file.size), file.mime)
+  return { ok: true, data: await deps.bgosPost(completePath(attachmentId), {}) }
 }
 
 // ── boards_download (HOAI board rows 01a14840-19e0, 01a14840-27c2) ───────────
