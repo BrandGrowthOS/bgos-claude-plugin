@@ -289,10 +289,37 @@ test('the takeover and the yield each say why in one line', () => {
 const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
 test('server.ts records its route on EVERY acquire and refresh, and logs a route takeover on both paths', () => {
-  assert.match(server, /\nconst LOCK_ROUTE = CREDENTIALS_SELECTION\.via === 'recorded-home' \? 'pin' : lockRouteFor\(CREDENTIALS_SELECTION\.via\)\n/)
+  // homeclaim (board 01a072c5): the route comes from whom the session names
+  // (IDENTITY_VIA), not the resolver's route alone, or a legacy-file agent's
+  // pinned start records 'elimination' and never takes its channel back.
+  assert.match(server, /\nconst LOCK_ROUTE = CREDENTIALS_SELECTION\.via === 'recorded-home' \? 'pin' : lockRouteFor\(IDENTITY_VIA\)\n/)
   const calls = server.match(/(?:acquirePairingLock|refreshPairingLockDetailed)\(\{[\s\S]*?\n\s*\}\)/g) ?? []
   assert.equal(calls.length, 5)
   for (const call of calls) assert.match(call, /\n\s*route: LOCK_ROUTE,\n/)
   assert.match(server, /lockAtBoot\.reason === 'route-takeover'\s*\?\s*`\$\{formatRouteTakeoverLine\(/)
   assert.match(server, /res\.reason === 'route-takeover'\) \{\s*log\(\s*`\$\{formatRouteTakeoverLine\(/)
+})
+
+test('server.ts derives the identity once and hands both agent ids to every acquire (homeclaim, board 01a072c5)', () => {
+  // One folder pin read, shared by the session id, the identity route and the home binding.
+  assert.match(server, /\nconst LAUNCH_FOLDER_PIN_ID = readFolderPinId\(LAUNCH_CWD\)\n/)
+  assert.match(server, /\nconst PAIRED_AGENT_ID = String\(CREDENTIALS_FILE\?\.assistantId \?\? ''\)\n/)
+  assert.match(server, /\nconst SESSION_AGENT_ID = sessionAgentId\(\{ env: process\.env, folderPinId: LAUNCH_FOLDER_PIN_ID \}\)\n/)
+  const identity = /\nconst IDENTITY_VIA = identityViaFor\(\{[\s\S]*?\n\}\)\n/.exec(server)
+  assert.ok(identity, 'IDENTITY_VIA must exist')
+  assert.match(identity[0], /pairedAgentId: PAIRED_AGENT_ID,/)
+  assert.match(identity[0], /folderPinId: LAUNCH_FOLDER_PIN_ID,/)
+  const binding = /\nconst HOME_BINDING = decideHomeBinding\(\{[\s\S]*?\n\}\)\n/.exec(server)
+  assert.ok(binding, 'HOME_BINDING must exist')
+  assert.match(binding[0], /\n  via: IDENTITY_VIA,\n/, 'the home binding reads the identity route, not the resolver route')
+  assert.match(binding[0], /\n  folderPinId: LAUNCH_FOLDER_PIN_ID,\n/)
+  assert.match(binding[0], /\n  assistantId: PAIRED_AGENT_ID,\n/)
+  const acquires = server.match(/acquirePairingLock\(\{[\s\S]*?\n\s*\}\)/g) ?? []
+  assert.equal(acquires.length, 2, 'the boot acquire and the recheck acquire')
+  for (const call of acquires) {
+    assert.match(call, /\n\s*agentId: SESSION_AGENT_ID,\n/)
+    assert.match(call, /\n\s*pairedAgentId: PAIRED_AGENT_ID,\n/)
+  }
+  // A session naming another agent says why it stays off the pairing.
+  assert.match(server, /lockAtBoot\.agentMismatch\) \{\s*log\(`pid \$\{process\.pid\}: \$\{formatAgentMismatchYield\(/)
 })

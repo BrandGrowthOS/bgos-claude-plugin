@@ -412,3 +412,48 @@ test('two sessions naming the paired agent keep today\'s rule: neither takes the
     }
   }
 })
+
+// ── The two helpers and the log line, on their own ───────────────────────────
+
+test('sessionAgentId: BGOS_ASSISTANT_ID first, else the folder pin, else none', () => {
+  assert.equal(typeof lib.sessionAgentId, 'function')
+  assert.equal(lib.sessionAgentId({ env: { BGOS_ASSISTANT_ID: ' 888 ' }, folderPinId: '999' }), '888')
+  assert.equal(lib.sessionAgentId({ env: {}, folderPinId: '999' }), '999')
+  assert.equal(lib.sessionAgentId({ env: { BGOS_ASSISTANT_ID: '${user_config.assistant_id}' }, folderPinId: '' }), '', 'the unsubstituted placeholder names nobody')
+  assert.equal(lib.sessionAgentId({}), '')
+})
+
+test('identityViaFor only upgrades an elimination route, and only to the agent the file was paired for', () => {
+  assert.equal(typeof lib.identityViaFor, 'function')
+  const v = (via: string, env: Record<string, string>, folderPinId: string, pairedAgentId: unknown) =>
+    lib.identityViaFor({ via, env, folderPinId, pairedAgentId })
+  // Upgrades.
+  assert.equal(v('legacy', {}, AGENT_ID, 888), 'folder-pin')
+  assert.equal(v('legacy', { BGOS_ASSISTANT_ID: AGENT_ID }, '', '888'), 'env-assistant')
+  assert.equal(v('sole-per-assistant', {}, AGENT_ID, AGENT_ID), 'folder-pin')
+  // The env id decides when both are present, as in the resolver.
+  assert.equal(v('legacy', { BGOS_ASSISTANT_ID: OTHER_AGENT_ID }, AGENT_ID, AGENT_ID), 'legacy')
+  // Never for a session naming nobody or another agent, or a file with no id.
+  assert.equal(v('legacy', {}, '', AGENT_ID), 'legacy')
+  assert.equal(v('legacy', {}, OTHER_AGENT_ID, AGENT_ID), 'legacy')
+  assert.equal(v('legacy', {}, AGENT_ID, ''), 'legacy')
+  assert.equal(v('legacy', {}, AGENT_ID, null), 'legacy')
+  // Never a downgrade, and never a change to a route that is pinned today.
+  for (const via of ['folder-pin', 'env-assistant', 'env-path']) {
+    assert.equal(v(via, {}, OTHER_AGENT_ID, AGENT_ID), via)
+    assert.equal(v(via, {}, '', AGENT_ID), via)
+  }
+})
+
+test('the mismatch line names both agents and no secret', () => {
+  assert.equal(typeof lockLib.formatAgentMismatchYield, 'function')
+  const line = lockLib.formatAgentMismatchYield({ agentId: OTHER_AGENT_ID, pairedAgentId: AGENT_ID })
+  assert.match(line, /names agent 999/)
+  assert.match(line, /paired for agent 888/)
+  assert.doesNotMatch(line, /token/i)
+  assert.equal(lockLib.agentIdsDisagree('999', 888), true)
+  assert.equal(lockLib.agentIdsDisagree('888', 888), false)
+  assert.equal(lockLib.agentIdsDisagree('', 888), false)
+  assert.equal(lockLib.agentIdsDisagree('999', ''), false)
+  assert.equal(lockLib.agentIdsDisagree(null, undefined), false)
+})

@@ -499,6 +499,56 @@ export function lockRouteFor(via: CredentialsVia): IdentityRoute {
   return 'elimination'
 }
 
+// ── Whom the session names (homeclaim, board 01a072c5) ───────────────────────
+//
+// The route above is the RESOLVER's, and on a host whose pairing lives in the
+// shared legacy credentials.json the resolver reports 'legacy' for every
+// session: a folder pin or a BGOS_ASSISTANT_ID naming the legacy file's own
+// agent still comes back via 'legacy' (agent-credentials-core.mjs,
+// ownOrNothing). So the real agent, started from its pinned folder, looked
+// like a bare `claude` anywhere else: a stray that booted first kept the
+// pairing lock, and a home a 0.64.3 stray had recorded refused the real agent
+// outright. The two helpers below let the lock and the home binding ask the
+// question directly: does this session name the agent this file was paired
+// for (its assistantId)?
+
+/**
+ * The agent this SESSION names for itself, in the resolver's precedence:
+ * BGOS_ASSISTANT_ID, else the launch folder's pin. '' when it names none (a
+ * bare start that can only find an agent by elimination).
+ */
+export function sessionAgentId(input: { env?: Env; folderPinId?: string }): string {
+  return configuredAssistantId(input.env ?? {}) || str(input.folderPinId).trim()
+}
+
+/**
+ * The route the identity checks (the home binding and the lock route) use.
+ * It only ever UPGRADES: an elimination route ('legacy', 'sole-per-assistant')
+ * becomes the route the session named its agent by ('env-assistant' for
+ * BGOS_ASSISTANT_ID, 'folder-pin' for a pin) when that id is the file's own
+ * assistantId. Every other case returns the resolver's route unchanged: a
+ * session naming no agent, or another agent, never borrows this one's
+ * identity, and a route that is pinned today is never downgraded. The
+ * resolver's own via is left alone for everything else that reads it (the
+ * boot log, the stand-down report, doctor).
+ */
+export function identityViaFor(input: {
+  via: CredentialsVia
+  env?: Env
+  folderPinId?: string
+  /** The credentials file's assistantId: the agent this host was paired for. */
+  pairedAgentId?: unknown
+}): CredentialsVia {
+  if (input.via !== 'legacy' && input.via !== 'sole-per-assistant') return input.via
+  const paired = str(input.pairedAgentId).trim()
+  if (!paired) return input.via
+  const env = input.env ?? {}
+  if (configuredAssistantId(env)) {
+    return configuredAssistantId(env) === paired ? 'env-assistant' : input.via
+  }
+  return str(input.folderPinId).trim() === paired ? 'folder-pin' : input.via
+}
+
 /** The digits in <folder>/.bgos-agent-id, or '' when there is no usable pin. */
 export function readFolderPinId(
   cwd: string,
