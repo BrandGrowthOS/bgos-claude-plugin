@@ -411,6 +411,9 @@ import {
   homeStepWhileHolding,
   lockRouteFor,
   readFolderPinId,
+  sessionAgentId,
+  identityViaFor,
+  homeViaFor,
   formatAuthResolution,
   formatPairingRejection,
   formatHandshakeAgent,
@@ -520,6 +523,7 @@ import {
   formatChannelTakeoverLine,
   formatLockYieldReason,
   formatRouteTakeoverLine,
+  formatAgentMismatchYield,
   parseLockRecord,
   BEACON_HEARTBEAT_FILE,
 } from './lib/pairing-lock.js'
@@ -990,22 +994,44 @@ const standDownReporter = createStandDownReporter({
   log: (line: string) => log(line),
 })
 
+// Whom this session names, against the agent the file was paired for
+// (homeclaim, board 01a072c5). The resolver reports 'legacy' for every session
+// on a host paired in the shared credentials.json, the real agent's pinned
+// start included, so the lock route reads IDENTITY_VIA instead: the
+// resolver's route, upgraded to the pin or env route when the folder pin or
+// BGOS_ASSISTANT_ID names this file's own agent, never otherwise
+// (lib/agent-credentials.ts identityViaFor). The home binding reads HOME_VIA,
+// the same upgrade by the folder pin only (an env id never names a home). The
+// acquire sites pass both ids, so a session naming a different agent never
+// takes this pairing's lock.
+const LAUNCH_FOLDER_PIN_ID = readFolderPinId(LAUNCH_CWD)
+const PAIRED_AGENT_ID = String(CREDENTIALS_FILE?.assistantId ?? '')
+const SESSION_AGENT_ID = sessionAgentId({ env: process.env, folderPinId: LAUNCH_FOLDER_PIN_ID })
+// The shared home binder treats a recorded-home selection as a file lookup;
+// canonical confirmation comes from the marketplace preflight below.
+const RESOLVED_VIA = CREDENTIALS_SELECTION.via === 'recorded-home' ? 'sole-per-assistant' : CREDENTIALS_SELECTION.via
+const IDENTITY_VIA = identityViaFor({
+  via: RESOLVED_VIA,
+  env: process.env,
+  folderPinId: LAUNCH_FOLDER_PIN_ID,
+  pairedAgentId: PAIRED_AGENT_ID,
+})
+const HOME_VIA = homeViaFor({ via: RESOLVED_VIA, folderPinId: LAUNCH_FOLDER_PIN_ID, pairedAgentId: PAIRED_AGENT_ID })
+
 // Home-folder identity binding (see decideHomeBinding). The resolver above
 // answered "which agent is on this HOST"; this answers "is this session that
 // agent". Without it, any session started anywhere on a single-agent host
 // resolves by elimination and speaks in that agent's name, and the pairing
 // lock cannot help because it picks a winner without knowing who is who.
 const HOME_BINDING = decideHomeBinding({
-  // The shared home binder treats a recorded-home selection as a file lookup;
-  // canonical confirmation comes from the marketplace preflight below.
-  via: CREDENTIALS_SELECTION.via === 'recorded-home' ? 'sole-per-assistant' : CREDENTIALS_SELECTION.via,
+  via: HOME_VIA,
   cwd: LAUNCH_CWD,
   recordedHomeDir: CREDENTIALS_FILE?.homeDir ?? null,
   recordedHomeSource: CREDENTIALS_FILE?.homeSource ?? null,
   // The location proof: a pinned start confirms its folder as the home only
   // when this folder's pin names the agent the file belongs to.
-  folderPinId: readFolderPinId(LAUNCH_CWD),
-  assistantId: String(CREDENTIALS_FILE?.assistantId ?? ''),
+  folderPinId: LAUNCH_FOLDER_PIN_ID,
+  assistantId: PAIRED_AGENT_ID,
   env: process.env,
 })
 if (HOME_BINDING.action === 'refuse' && !MARKETPLACE_ATTACH) {
@@ -1035,7 +1061,7 @@ const HOME_CONFIRMED = homeCheckPassed(HOME_BINDING) || MARKETPLACE_ATTACH?.home
 // How this daemon found its identity, in the one word the pairing lock
 // records ('pin', 'env' or 'elimination'): a pinned agent takes the channel
 // back from a stray that found it by elimination (lib/pairing-lock.ts).
-const LOCK_ROUTE = CREDENTIALS_SELECTION.via === 'recorded-home' ? 'pin' : lockRouteFor(CREDENTIALS_SELECTION.via)
+const LOCK_ROUTE = CREDENTIALS_SELECTION.via === 'recorded-home' ? 'pin' : lockRouteFor(IDENTITY_VIA)
 
 // Warn when this daemon boots ONLY because an env var is present. See
 // describeEnvOnlyIdentityRisk: the failure it predicts is process.exit(1), not
@@ -22428,6 +22454,8 @@ async function main(): Promise<void> {
           bootedAt: DAEMON_START_MS,
           channelLoaded: channelPresence().loaded,
           route: LOCK_ROUTE,
+          agentId: SESSION_AGENT_ID,
+          pairedAgentId: PAIRED_AGENT_ID,
         })
         if (!res.acquired) return
         if (lockRecheck) clearInterval(lockRecheck)
@@ -22500,6 +22528,8 @@ async function main(): Promise<void> {
     bootedAt: DAEMON_START_MS,
     channelLoaded: bootPresence.loaded,
     route: LOCK_ROUTE,
+    agentId: SESSION_AGENT_ID,
+    pairedAgentId: PAIRED_AGENT_ID,
   })
   if (lockAtBoot.acquired) {
     // Ownership is true from HERE, not from the end of the arm below: the poll
@@ -22521,8 +22551,13 @@ async function main(): Promise<void> {
     )
     await armDelivery()
   } else {
+    // A session naming a different agent than this file was paired for says
+    // so instead of the banner. It is still watched by the same recheck, so the
+    // rule stays in one place: decideLockAction keeps it passive (homeclaim).
     log(
-      `pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid, lockYieldReason(lockAtBoot.holderChannelLoaded, lockAtBoot.holderRoute))}`,
+      lockAtBoot.agentMismatch
+        ? `pid ${process.pid}: ${formatAgentMismatchYield({ agentId: SESSION_AGENT_ID, pairedAgentId: PAIRED_AGENT_ID })}`
+        : `pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid, lockYieldReason(lockAtBoot.holderChannelLoaded, lockAtBoot.holderRoute))}`,
     )
     // Not awaited: a report never delays a boot.
     void reportStandDown('passive_at_boot', 'boot')

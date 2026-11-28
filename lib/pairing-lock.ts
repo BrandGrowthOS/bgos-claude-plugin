@@ -68,6 +68,16 @@
  * unknown and never taken over by route, and a daemon whose channel is proven
  * not loaded never takes a live channel, as before. No folder is stored.
  *
+ * AGENT CHECK (homeclaim, board 01a072c5). The route word is only as good as
+ * the route the resolver reported, and on a host paired in the shared legacy
+ * credentials.json every session came back 'legacy', the real agent's pinned
+ * start included, so a stray that booted first kept the lock. server.ts now
+ * derives the route from whom the session NAMES (lib/agent-credentials.ts
+ * identityViaFor: a pin or BGOS_ASSISTANT_ID naming the file's own assistantId
+ * records 'pin' or 'env'), and passes both ids here: a session naming a
+ * DIFFERENT agent than the file was paired for never takes or overwrites the
+ * lock, whatever it holds. A session naming no agent decides as before.
+ *
  * This module is the PURE core (decideLockAction, the staleness maths, the
  * serialize/parse pair, the heartbeat throttle) plus a thin, fully-injectable
  * effectful shell (acquire / refresh / release / touchBeaconHeartbeat). All
@@ -161,7 +171,22 @@ export type LockDecision =
       holderPid: number
       holderChannelLoaded?: boolean
       holderRoute?: IdentityRoute
+      /** This session names a different agent than the file was paired for:
+       *  passive whatever the lock holds (holderPid is 0 when nothing does). */
+      agentMismatch?: true
     }
+
+/**
+ * Do the agent a session names and the agent the file was paired for
+ * disagree? Only when BOTH are known: a session naming no agent (an
+ * elimination start) or a file with no assistantId is unknown, never a
+ * mismatch, so neither changes a single decision made today.
+ */
+export function agentIdsDisagree(agentId: unknown, pairedAgentId: unknown): boolean {
+  const self = agentId == null ? '' : String(agentId).trim()
+  const paired = pairedAgentId == null ? '' : String(pairedAgentId).trim()
+  return self !== '' && paired !== '' && self !== paired
+}
 
 /**
  * Parse a lock file's raw contents into a LockRecord, or null when the file is
@@ -267,8 +292,21 @@ export function decideLockAction(input: {
   selfChannelLoaded?: boolean | null
   /** How this daemon found its identity; absent is unknown (no takeover). */
   selfRoute?: IdentityRoute | null
+  /** The agent this session names for itself (lib/agent-credentials.ts
+   *  sessionAgentId); '' or absent when it names none. */
+  agentId?: string | null
+  /** The agent the credentials file was paired for (its assistantId). */
+  pairedAgentId?: string | null
 }): LockDecision {
   const { existing, now, selfPid, stalenessMs, isHolderAlive } = input
+  // homeclaim (board 01a072c5): the lock is the pairing's, so a session that
+  // names a DIFFERENT agent than the one this file was paired for never takes
+  // it, free, stale or dead, and never overwrites it. Checked first, before
+  // every reclaim rule. A session naming no agent, or a file with no id, is
+  // unknown and decides exactly as before.
+  if (agentIdsDisagree(input.agentId, input.pairedAgentId)) {
+    return { action: 'passive', holderPid: existing?.pid ?? 0, agentMismatch: true }
+  }
   if (!existing) return { action: 'acquire', reason: 'unlocked' }
   if (existing.pid === selfPid) return { action: 'acquire', reason: 'own' }
   if (now - existing.heartbeatAt >= stalenessMs) {
@@ -401,6 +439,9 @@ export interface AcquireResult {
   /** The pid we deferred to (when passive), the pid that beat us in a race,
    *  or (on a channel takeover) the pid we took the lock from. */
   holderPid?: number
+  /** Passive because this session names a different agent than the file was
+   *  paired for (decideLockAction): it never takes this lock. */
+  agentMismatch?: true
   /** What the holder we deferred to recorded about its channel, when it did. */
   holderChannelLoaded?: boolean
   /** The route the holder we deferred to recorded, when it did. */
@@ -428,6 +469,11 @@ export function acquirePairingLock(input: {
   /** How this daemon found its identity, recorded in the lock and used for
    *  the route takeover. null / absent: unknown, nothing recorded. */
   route?: IdentityRoute | null
+  /** The agent this session names, and the agent the file was paired for:
+   *  when both are known and differ the lock is never taken (decideLockAction).
+   *  Neither is recorded in the lock. */
+  agentId?: string | null
+  pairedAgentId?: string | null
   io?: LockIo
 }): AcquireResult {
   const io = input.io ?? defaultLockIo
@@ -458,8 +504,13 @@ export function acquirePairingLock(input: {
       isHolderAlive: io.isProcessAlive.bind(io),
       selfChannelLoaded: input.channelLoaded,
       selfRoute: input.route,
+      agentId: input.agentId,
+      pairedAgentId: input.pairedAgentId,
     })
     if (decision.action === 'passive') {
+      if (decision.agentMismatch) {
+        return { acquired: false, agentMismatch: true, ...(existing ? { holderPid: existing.pid } : {}) }
+      }
       return {
         acquired: false,
         holderPid: decision.holderPid,
@@ -737,6 +788,19 @@ export function formatLockYieldReason(input: {
   return (
     `yielding the pairing lock: the holder is pinned to this agent ` +
     `(${routePhrase(input.holderRoute)}) and this daemon found it by elimination`
+  )
+}
+
+/** The clause that says WHY this daemon stays off the pairing for good: it
+ *  names a different agent than the one this credentials file was paired for. */
+export function formatAgentMismatchYield(input: {
+  agentId: string | null | undefined
+  pairedAgentId: string | null | undefined
+}): string {
+  return (
+    `staying off the pairing: this session names agent ${String(input.agentId ?? '').trim()} ` +
+    `(BGOS_ASSISTANT_ID or the folder pin) and this credentials file was paired for agent ` +
+    `${String(input.pairedAgentId ?? '').trim()}, so it never takes that agent's channel`
   )
 }
 

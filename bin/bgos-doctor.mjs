@@ -1645,6 +1645,7 @@ function selectCredentials({ path, id, pin, agentDir, defaultPath, exists, listD
  *   via: 'env-path' | 'env-assistant' | 'folder-pin' | 'sole-per-assistant' | 'legacy' | 'refuse' | 'unreadable',
  *   sessionVia: string,
  *   sessionMissing: boolean,
+ *   sessionNamesFileAgent?: boolean,
  *   path: string,
  *   assistantId: string,
  *   expectedAssistantId: string,
@@ -1773,6 +1774,11 @@ export function resolveDoctorIdentity({
     via: chosen.via,
     sessionVia: session.via,
     sessionMissing: session.missing === true,
+    // This folder's pin names the shared legacy file's own agent: the daemon's
+    // home check treats that as the folder pin it is, never as elimination
+    // (homeclaim, board 01a072c5; lib/agent-credentials.ts homeViaFor), so it
+    // is never refused. An env id alone is checked against the home as before.
+    sessionNamesFileAgent: session.via === 'legacy' && pin !== '' && session.id === pin,
     path: chosen.path ?? '',
     assistantId,
     expectedAssistantId,
@@ -1961,10 +1967,13 @@ export function probeCredentials({
     // this agent's (helperwedge finding 4); otherwise only an elimination start
     // outside the home is refused. `sessionVia`, not `via`: the operator's
     // --assistant-id is not how a session started in this folder would resolve.
+    // A folder pinned to the legacy file's own agent is no elimination start.
     result.workdirRefused = Boolean(
       result.homeDir &&
         (found.sessionMissing === true ||
-          (!EXPLICIT_VIA.has(found.sessionVia) && normalizeHomeForCompare(dir) !== normalizeHomeForCompare(result.homeDir))),
+          (!EXPLICIT_VIA.has(found.sessionVia) &&
+            found.sessionNamesFileAgent !== true &&
+            normalizeHomeForCompare(dir) !== normalizeHomeForCompare(result.homeDir))),
     )
   }
   return result
